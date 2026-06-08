@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0.0",
+  "$id": "https://rabbit.dev/phase-ports/port-contracts.json",
+  "title": "phase-ports port contract bundle",
+  "description": "The seven swappable TICK adapter ports, each declaring its input and output type by reference to the shared domain types in domain-types.json. A single bundle schema_version covers all seven ports (v1 decision 6). null denotes the unit type () for PULL input and CLEANUP output. [] denotes an array of the named type.",
+  "owner": "rabbit-workflow team",
+  "deprecation_criterion": "superseded when per-port independent contract versioning replaces the single-bundle version (deferred to v2)",
+  "domain_types": "domain-types.json",
+  "ports": {
+    "PULL": {
+      "input": null,
+      "output": "WorkItem[]"
+    },
+    "TRIAGE": {
+      "input": "WorkItem[]",
+      "output": "WorkOrder[]"
+    },
+    "PRIORITIZE": {
+      "input": "WorkOrder[]",
+      "output": "ExecutionPlan"
+    },
+    "IMPLEMENT": {
+      "input": ["WorkOrder", "Workspace"],
+      "output": "Handoff"
+    },
+    "VERIFY": {
+      "input": "Handoff",
+      "output": "Verdict"
+    },
+    "INTEGRATE": {
+      "input": "Verdict[]",
+      "output": "IntegrationResult"
+    },
+    "CLEANUP": {
+      "input": "IntegrationResult",
+      "output": null
+    }
+  }
+}

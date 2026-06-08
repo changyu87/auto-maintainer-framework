@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rabbit.dev/phase-ports/domain-types.json",
+  "title": "phase-ports shared domain types",
+  "description": "The six structural types that flow across the seven TICK port boundaries, plus the Workspace passed to IMPLEMENT. phase-ports owns these types (v1 decision 7).",
+  "owner": "rabbit-workflow team",
+  "deprecation_criterion": "superseded when per-port independent contract versioning replaces the single-bundle version (deferred to v2)",
+  "$defs": {
+    "WorkItem": {
+      "type": "object",
+      "description": "A raw unit of pulled work, the output of PULL and input of TRIAGE.",
+      "properties": {
+        "id": {"type": "string"},
+        "source": {"type": "string"},
+        "title": {"type": "string"}
+      },
+      "required": ["id", "source", "title"],
+      "additionalProperties": true
+    },
+    "WorkOrder": {
+      "type": "object",
+      "description": "A triaged, actionable order produced by TRIAGE and prioritized by PRIORITIZE.",
+      "properties": {
+        "id": {"type": "string"},
+        "work_item_id": {"type": "string"},
+        "what": {"type": "string"}
+      },
+      "required": ["id", "work_item_id", "what"],
+      "additionalProperties": true
+    },
+    "ExecutionPlan": {
+      "type": "object",
+      "description": "The ordered plan PRIORITIZE emits: a sequence of work order ids plus optional parallel groups.",
+      "properties": {
+        "ordered": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "parallel_groups": {
+          "type": "array",
+          "items": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "required": ["ordered"],
+      "additionalProperties": true
+    },
+    "Handoff": {
+      "type": "object",
+      "description": "The result IMPLEMENT hands to VERIFY.",
+      "properties": {
+        "status": {"type": "string"},
+        "artifact": {"type": ["string", "null"]},
+        "discovered_work": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/WorkItem"}
+        },
+        "blocked_reason": {"type": ["string", "null"]}
+      },
+      "required": ["status"],
+      "additionalProperties": true
+    },
+    "Verdict": {
+      "type": "object",
+      "description": "The pass/fail judgement VERIFY emits for a Handoff.",
+      "properties": {
+        "ok": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["ok", "reasons"],
+      "additionalProperties": true
+    },
+    "IntegrationResult": {
+      "type": "object",
+      "description": "The result INTEGRATE emits for a batch of verdicts; input to CLEANUP.",
+      "properties": {
+        "integrated": {"type": "array", "items": {"type": "string"}},
+        "released": {"type": "boolean"}
+      },
+      "required": ["integrated", "released"],
+      "additionalProperties": true
+    },
+    "Workspace": {
+      "type": "object",
+      "description": "The isolated working state passed to IMPLEMENT alongside the WorkOrder. v1 exposes exactly two fields (decision 4); credential and quota fields are deferred.",
+      "properties": {
+        "scratch_dir": {"type": "string"},
+        "branch": {"type": "string"}
+      },
+      "required": ["scratch_dir", "branch"],
+      "additionalProperties": false
+    }
+  }
+}
