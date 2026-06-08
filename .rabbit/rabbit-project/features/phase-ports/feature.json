@@ -5,7 +5,7 @@
   "paths": [],
   "created": "2026-06-07T16:33:19Z",
   "deprecation_criterion": null,
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-08",
   "spec_no_change_reason": "spec authored in prior cycle (793ba84); this cycle implements the v1 surface to match it"
 }
