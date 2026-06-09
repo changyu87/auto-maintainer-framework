@@ -1,0 +1,10 @@
+# rabbit-owned ephemerals — never commit these
+.runtime/
+prompts/
+tdd-report-*.json
+impl-suggestion-*.json
+.scope-active-*
+.scope-bypass-once
+.rabbit-restart-snapshot
+__pycache__/
+*.pyc

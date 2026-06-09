@@ -1,2 +1,4 @@
 # Rabbit workflow (vendored dev tool, plugin mode) — not part of the framework source
-.rabbit/
+
+# rabbit vendored install — ignore ONLY ephemerals; track the whole .rabbit/ tool+project (Strategy D, #1086)
+.rabbit/.runtime/

@@ -24,14 +24,24 @@
 
 ## 1. Glossary
 
-### 1.1 Tick phase pipeline
+### 1.1 The tick FSM
 
-A single scheduled run of the loop is a **TICK**. Its phases (uppercase
-throughout; the final phase is named `EXIT` for code safety — no slash):
+A single scheduled run of the loop is a **TICK**. A tick executes as a finite
+state machine — the **tick FSM** — composed of **tick states** (uppercase
+throughout; the terminal state is named `EXIT` for code safety — no slash). The
+tick FSM runs entirely inside the `RUNNING` disposition of the outer lifecycle
+machine (section 1.2).
+
+The default shipped route is the linear spine:
 
 ```
 GUARD -> DRAIN -> PULL -> TRIAGE -> PRIORITIZE -> IMPLEMENT -> VERIFY -> INTEGRATE -> CLEANUP -> PERSIST -> EXIT
 ```
+
+This order is **data, not code** (see section 1.1.1 below): the arrows above are
+the contents of the default `route.json`, not a hardcoded pipeline.
+
+**The tick states:**
 
 - **GUARD** (core) — entry gate: honor STOPPED / ABORTED / RESTART_NEEDED;
   enforce single-writer mutual exclusion (stale-marker detection).
@@ -43,25 +53,80 @@ GUARD -> DRAIN -> PULL -> TRIAGE -> PRIORITIZE -> IMPLEMENT -> VERIFY -> INTEGRA
 - **PRIORITIZE** (adapter) — decide order and (v2) parallel grouping; back-fill
   status (e.g. in-progress).
 - **IMPLEMENT** (adapter) — dispatch an isolated coding agent per work order;
-  the only phase that requires a model.
+  the only state that requires a model.
 - **VERIFY** (adapter) — gate the result (tests / CI / review) before
   integration.
 - **INTEGRATE** (adapter) — the VCS hook: merge / release.
 - **CLEANUP** (adapter) — release isolated workspaces, branch + marker hygiene.
 - **PERSIST** (core) — write durable state (the backbone of resumability).
-- **EXIT** (core) — decide the next action: refire-now (work remains), idle
-  (queue empty, rely on heartbeat), break (restart owed), or halt
-  (stop/abort).
+- **EXIT** (core, terminal) — emit the signal that selects the next lifecycle
+  disposition: refire-now (work remains), idle (queue empty, rely on
+  heartbeat), break (restart owed), or halt (stop/abort).
 
-**Core phases** (`GUARD`, `DRAIN`, `PERSIST`, `EXIT`) are owned by the loop and
-not project-overridable. **Adapter phases** (`PULL`, `TRIAGE`, `PRIORITIZE`,
-`IMPLEMENT`, `VERIFY`, `INTEGRATE`, `CLEANUP`) are swappable ports.
+**Core states** (`GUARD`, `DRAIN`, `PERSIST`, `EXIT`) are owned by the loop and
+not project-overridable; they are fixed **anchors**. **Adapter states**
+(`PULL`, `TRIAGE`, `PRIORITIZE`, `IMPLEMENT`, `VERIFY`, `INTEGRATE`, `CLEANUP`)
+are swappable ports composed freely between the anchors.
 
-### 1.2 Lifecycle state machine
+#### 1.1.1 Decoupled states + declarative routing
 
-| State | Meaning | Caused by | Auto-resumes on next heartbeat? | Surfacing |
+The tick states are **fully decoupled**: no state names another. The old
+point-to-point pipe (where `PULL`'s output type was `TRIAGE`'s input type) is
+replaced by a **uniform contract over a shared blackboard**.
+
+- **Uniform state signature.** Every tick state implements the same entry
+  point: `run(TickContext) -> StateResult`. A state never receives a typed
+  input from a named predecessor nor hands one to a named successor.
+- **`TickContext` is the blackboard** — a machine-first record carrying
+  **named, schema'd, versioned slots**: `work_items`, `work_orders`,
+  `execution_plan`, `handoffs`, `verdicts`, `integration_result`,
+  `discoveries`, plus tick metadata (`tick_id`, budget accounting, config). A
+  state reads the slots it needs and writes its products back into named slots.
+- **`StateResult` is the uniform outcome envelope** —
+  `{ signal, writes: { <slot>: <value> }, journal: [...] }`. The `signal` is
+  drawn from a **closed, shared vocabulary** (e.g. `OK`, `EMPTY`, `BLOCKED`,
+  `OWED_WORK`, `FAULT`, `RESTART_REQUIRED`, `HALT_REQUESTED`). A state reports
+  *what happened*; it never decides *what runs next*.
+- **Per-state manifest.** Each state declares its contract:
+  `{ reads: [slots], writes: [slots], emits: [signals] }`. This is the
+  machine-first realization of the bounded-scope contract (philosophy section
+  2) and is what makes any custom route statically checkable.
+
+**Routing is a declarative data file, chained by a script orchestrator.** A
+per-project `route.json` defines the state set and the transition table
+`(state, signal) -> next_state`; the orchestrator — a script, deterministic
+(tool-tier `script`, spec-rules section 1) — loads it and loops: run the current
+state, read its `signal`, resolve `next = route[state].on[signal]`, checkpoint,
+repeat until the terminal state. Inserting a custom state is a data edit: add a
+node, wire two edges. The transition conditions that were implicit in the old
+pipeline become an **explicit, inspectable artifact**.
+
+**A route validator (script) guards flexibility with three deterministic
+checks**, run before any tick:
+
+1. **Anchor invariants** (crash-safety, non-negotiable): entry is `GUARD`;
+   `DRAIN` precedes every adapter state; `PERSIST` precedes `EXIT`; `EXIT` is
+   the sole terminal. Core anchors are fixed; adapter states compose between
+   them.
+2. **Signal validity**: every `on` key is in that state's declared `emits`, and
+   every transition target exists.
+3. **Data-readiness**: on every path reaching a state, each slot it `reads` was
+   `written` by a predecessor. A route that runs IMPLEMENT before
+   `execution_plan` exists fails validation statically, not at runtime.
+
+`REPORT` (section 1.3) is **not** a routed tick state — it stays out-of-band,
+flushed from the `discoveries` slot at journaled points by the orchestrator.
+
+### 1.2 Lifecycle dispositions
+
+The loop's coarse, cross-tick operating condition is its **disposition** — the
+outer state machine, kept terminologically distinct from the inner tick FSM's
+*states* (section 1.1). The tick FSM executes entirely within the `RUNNING`
+disposition; every other disposition is a between-tick or halt condition.
+
+| Disposition | Meaning | Caused by | Auto-resumes on next heartbeat? | Surfacing |
 |---|---|---|---|---|
-| `RUNNING` | A tick is actively executing | — | n/a | — |
+| `RUNNING` | A tick FSM is actively executing | — | n/a | — |
 | `IDLE` | Healthy, no work right now (queue empty) | the loop, normally | **Yes** | silent |
 | `STOPPED` | Intentional pause | a **human** explicit stop | **No** — holds until a human resumes | neutral |
 | `ABORTED` | Fault halt (safety violation / hard blocker) | the loop self-halting | **No** — holds until a human investigates | **alarm** |
@@ -70,7 +135,8 @@ not project-overridable. **Adapter phases** (`PULL`, `TRIAGE`, `PRIORITIZE`,
 Key distinctions: **IDLE auto-resumes; STOPPED and ABORTED both latch.** STOPPED
 is a deliberate human choice (neutral, resume at will); ABORTED is an
 involuntary fault (alarms, demands investigation). They are kept distinct so a
-fault never masquerades as a normal pause.
+fault never masquerades as a normal pause. The terminal tick state `EXIT` emits
+the signal that selects the next disposition (refire / idle / break / halt).
 
 ### 1.3 Outbound reporting model (loop as producer)
 
@@ -85,12 +151,13 @@ Two discovery sources feed one outbound sink:
 - **Implementer discoveries** — the IMPLEMENT adapter surfaces follow-on work in
   `Handoff.discovered_work[]` (section 2.6). v1 *durably files* these through the
   REPORT port rather than only re-queuing them in memory.
-- **Orchestrator / phase discoveries** — the dispatcher and any phase
-  (`GUARD` … `CLEANUP`) may emit a `DiscoveredIssue` to a per-tick discovery
-  sink carried on `TickContext`. The sink is flushed through the REPORT port.
+- **Orchestrator / state discoveries** — the dispatcher and any tick state
+  (`GUARD` … `CLEANUP`) may emit a `DiscoveredIssue` to the per-tick
+  `discoveries` slot on `TickContext`. The slot is flushed through the REPORT
+  port.
 
 REPORT is the write-side mirror of PULL: an adapter-swappable outbound port,
-invoked out-of-band — it is NOT a sequential phase in the spine of section 1.1.
+invoked out-of-band — it is NOT a routed tick state in the spine of section 1.1.
 Filing is an outward effect, so it obeys the same record-before-act,
 exactly-once journal discipline as every other side effect (section 3.2.4): each
 `DiscoveredIssue` carries a stable `dedup_key`, the intent is journaled before
@@ -126,9 +193,9 @@ trust opt-in and graduated. **[v1]**
 
 ### 2.4 Extensibility — ports-and-adapters via script contracts
 
-Each adapter phase is a script with a typed input -> output contract; project
-config maps port -> adapter; default adapters ship for GitHub + git +
-generic-implement. **[v1]**
+Each adapter state is a script with a typed slot contract (the slots it reads
+and writes on `TickContext`, section 2.6); project config maps port -> adapter;
+default adapters ship for GitHub + git + generic-implement. **[v1]**
 
 ### 2.5 The loop is a producer, not only a consumer
 
@@ -141,34 +208,52 @@ tracker from defects in the *project*. *Rationale:* a maintainer that cannot
 record what it finds silently drops real defects; a consumer-only model has
 nowhere to put them. **[v1]**
 
-### 2.6 Adapter port contracts (shape)
+### 2.6 Adapter contracts (slots, signals, manifests)
+
+Every tick state implements the uniform signature `run(TickContext) ->
+StateResult` (section 1.1). What used to be a point-to-point port signature is
+now expressed as **which blackboard slots a state reads and writes**, plus the
+**signals it emits**. The seven adapter states and their slot contracts:
 
 ```
-PULL        : ()                       -> WorkItem[]
-TRIAGE      : WorkItem[]               -> WorkOrder[]   (validated, dedup'd, decomposed, ordered) + decisions
-PRIORITIZE  : WorkOrder[]              -> ExecutionPlan (order + parallel groups + status backfill)
-IMPLEMENT   : (WorkOrder, Workspace)   -> Handoff       (status, artifact=branch|pr, discovered_work[], blocked_reason)
-VERIFY      : Handoff                  -> Verdict        (ok: bool, reasons[])
-INTEGRATE   : Verdict[]                -> IntegrationResult
-CLEANUP     : IntegrationResult        -> ()
-
-REPORT      : DiscoveredIssue[]        -> ReportResult       (outbound; files new tracked items, provenance-stamped, idempotent by dedup_key)
+state       reads                       writes                signals (typical)
+PULL        —                           work_items            OK | EMPTY
+TRIAGE      work_items                  work_orders           OK | EMPTY
+PRIORITIZE  work_orders                 execution_plan        OK | EMPTY
+IMPLEMENT   execution_plan, workspace   handoffs              OK | BLOCKED
+VERIFY      handoffs                    verdicts              OK | FAULT
+INTEGRATE   verdicts                    integration_result    OK
+CLEANUP     integration_result          —                     OK
 ```
 
-The first seven ports are the sequential adapter phases of section 1.1. `REPORT`
-is different: it is the outbound counterpart to `PULL` (section 1.3, decision
-2.5), invoked out-of-band by the orchestrator or any phase — never as a step in
-the fixed spine — and its adapter owns how a `DiscoveredIssue` becomes a tracked
-item (the default adapter files a GitHub Issue).
+The slot **schemas** — the typed shape of `WorkItem`, `WorkOrder` (validated,
+dedup'd, decomposed, ordered; + decisions), `ExecutionPlan` (order + parallel
+groups + status backfill), `Handoff` (status, artifact=branch|pr,
+discovered_work[], blocked_reason), `Verdict` (ok: bool, reasons[]),
+`IntegrationResult` — are the load-bearing contracts. Their content is unchanged
+from the old signatures; they are now carried as named slots on `TickContext`
+rather than as a pipe between neighbors. A state knows only the slot schemas and
+the closed signal vocabulary; it never knows another state's identity or
+implementation.
+
+`REPORT` is **not** a routed tick state: it is the outbound counterpart to the
+`PULL` slot fill (section 1.3, decision 2.5), invoked out-of-band by the
+orchestrator from the `discoveries` slot — never a node in the route — and its
+adapter owns how a `DiscoveredIssue` becomes a tracked item (the default adapter
+files a GitHub Issue):
+
+```
+REPORT      : DiscoveredIssue[]        -> ReportResult   (outbound; files new tracked items, provenance-stamped, idempotent by dedup_key)
+```
 
 `Handoff` is the load-bearing seam between the loop and any project's
 implementer (TDD subagent, plain-PR agent, spec-then-code agent). The core
-knows only these schemas; it never knows an adapter's implementation.
+knows only these slot schemas; it never knows an adapter's implementation.
 
 The two outbound schemas carried by REPORT:
 
 - `DiscoveredIssue` — `{ title, body, kind: bug|enhancement|task, severity:
-  low|medium|high|critical, origin: {phase, tick_id, work_order_id?}, target:
+  low|medium|high|critical, origin: {tick_state, tick_id, work_order_id?}, target:
   project|maintainer-self, dedup_key, filed_by: autonomous-maintainer }`. The
   `body` is machine-first / structured, not free prose. `target` routes the
   item (project tracker vs. the maintainer's own tracker); `dedup_key` makes
@@ -178,6 +263,22 @@ The two outbound schemas carried by REPORT:
   [dedup_key], errors: [{dedup_key, reason}] }`. Re-filing an existing
   `dedup_key` is a no-op that returns the prior `tracker_ref`.
 
+### 2.7 Decoupled tick states + declarative routing
+
+The tick FSM (section 1.1) is built from fully decoupled states behind one
+uniform contract (`run(TickContext) -> StateResult`) over a schema'd blackboard,
+chained by a script orchestrator that reads a per-project `route.json`
+transition table, and enforced by a route validator (anchor invariants, signal
+validity, data-readiness). *Rationale:* point-to-point phase coupling makes the
+spine rigid and the transition conditions implicit; a uniform slot contract plus
+a declarative route makes states independently testable, lets a project insert
+or reorder adapter states by editing data (not code), and turns the transition
+table into an inspectable, statically-validated artifact — all while staying
+machine-first and deterministic (script-tier). Core states remain
+non-overridable anchors. The runtime (orchestrator + validator) belongs to the
+lifecycle core; the schemas (slots, signals, `StateResult`, per-state manifest,
+`route.json`) belong to the port-contract layer. **[v1]**
+
 ---
 
 ## 3. Feature areas (with adopt/defer decisions)
@@ -186,9 +287,11 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 **[excluded]** out of scope.
 
 ### 3.1 Lifecycle Core
-- **3.1.1** The TICK phase spine (section 1.1). **[v1]**
-- **3.1.2** Lifecycle state machine (section 1.2): states + transitions, each
-  durably encoded by a marker/state. **[v1]**
+- **3.1.1** The tick FSM (section 1.1): the uniform state contract, the script
+  orchestrator that chains states via `route.json`, and the route validator
+  (anchor invariants, signal validity, data-readiness). **[v1]**
+- **3.1.2** Lifecycle dispositions (section 1.2): dispositions + transitions,
+  each durably encoded by a marker/state. **[v1]**
 - **3.1.3** Single-writer mutual exclusion (running-guard + stale-marker
   detection). **[v1]**
 - **3.1.4** Host-agnostic resumption contract — identical behavior on fresh
@@ -218,12 +321,16 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
   **[v1]** *(forced by the platform: self-modifying code needs a restart; also
   the hook for self-evolution)*
 
-### 3.4 Phase Ports & Adapters
-- **3.4.1** Typed port contracts for all adapter phases (section 2.6). **[v1]**
+### 3.4 State Ports & Adapters
+- **3.4.1** Typed contracts for all adapter states (section 2.6): the
+  `TickContext` slot schemas, the closed signal vocabulary, the `StateResult`
+  envelope, the per-state read/write/emit manifest, and the `route.json`
+  schema. **[v1]**
 - **3.4.2** Default adapters: GitHub-Issues `PULL`, generic `IMPLEMENT`, git+PR
   `INTEGRATE`. **[v1]**
-- **3.4.3** Override mechanism (project config maps each port to a script).
-  **[v1]**
+- **3.4.3** Override + routing mechanism (project config maps each port to a
+  script; `route.json` defines the transition table and may insert or reorder
+  adapter states between the core anchors). **[v1]**
 - **3.4.4** Adapter SDK + authoring docs. **[v2]** *Rationale:* v1 ships working
   defaults; formal SDK ergonomics follow once contracts are battle-tested.
 - **3.4.5** Built-in non-GitHub trackers (Jira / Linear). **[deferred]**
@@ -359,6 +466,7 @@ dispatch (-> v2); recursive decomposition (-> v2); learned scope inference
 
 | Concern | Home | Decision |
 |---|---|---|
+| Tick-FSM decoupling + routing | 1.1, 2.7, 3.1.1, 3.4.1, 3.4.3 | v1 |
 | State / resumability | 3.2.1-3.2.3 | v1 |
 | Idempotency / exactly-once | 3.2.4 | v1 |
 | Scheduling / lifecycle | 3.3.1-3.3.3, 3.1.2 | v1 |
