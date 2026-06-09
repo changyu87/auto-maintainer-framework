@@ -1,0 +1,15 @@
+# Rabbit (Plugin Mode)
+
+> Install rabbit. `cd .rabbit/ && claude`. Your AI now reads policy on
+> every action — no speculative refactors, no orphan files, no
+> documentation you didn't ask for. When you want spec-as-memory for a
+> slice of code, run `rabbit-feature-new <name> <path-glob>` — and now
+> that slice has durable intent that survives every session.
+
+## What to do next
+
+1. **Just chat with Claude.** Drift protection is on by default. Try `claude` and ask for changes to files at `../` (your project root). Claude will read policy and stay surgical.
+2. **Promote a slice to a feature** when you want spec-as-memory: `rabbit-feature-new <name> <path-glob>`. Example: `rabbit-feature-new auth ../src/auth/**`.
+3. **Update rabbit** when a new version is available — see install docs.
+
+For full install instructions and design, see the upstream rabbit-workflow repo.

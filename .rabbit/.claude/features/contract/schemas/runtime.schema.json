@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "runtime.schema.json",
+  "schema_version": "1.4.0",
+  "owner": "rabbit-workflow team",
+  "deprecation_criterion": "when Claude Code exposes a native per-event hook plugin mechanism that subsumes this schema",
+  "title": "Feature RUNTIME",
+  "description": "Per-event lists of runtime API calls. The dispatcher hook for each Claude Code event invokes the calls in declaration order and aggregates typed returns.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "Stop": {
+      "$ref": "#/definitions/call_list",
+      "description": "Runs after every Claude Code response. Used for drift checks, active-override alerts, and policy re-injection on detected drift."
+    },
+    "SessionStart": {
+      "$ref": "#/definitions/call_list",
+      "description": "Runs once per session at startup. Used for welcome banners, policy injection, and runtime-flag display."
+    },
+    "UserPromptSubmit": {
+      "$ref": "#/definitions/call_list",
+      "description": "Runs each time the user submits a prompt. Used for counter-driven policy refresh."
+    },
+    "PreToolUse": {
+      "$ref": "#/definitions/call_list",
+      "description": "Runs before every tool invocation. rabbit-cage owns this slot exclusively (scope-guard); no other feature should declare PreToolUse APIs."
+    }
+  },
+  "definitions": {
+    "call_list": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["api", "args"],
+        "additionalProperties": false,
+        "properties": {
+          "api": {
+            "type": "string",
+            "enum": [
+              "check_drift_regenerate",
+              "check_manifest_drift",
+              "check_marker_alert",
+              "check_marker_consume_alert",
+              "check_counter_threshold_refresh",
+              "welcome_with_policy",
+              "emit_configurable_alert",
+              "check_prompt_injection_failures",
+              "cleanup_old_prompts",
+              "write_mode_marker",
+              "check_release_update",
+              "emit_auto_evolve_banner",
+              "emit_auto_evolve_stop_line",
+              "emit_stop_timestamp"
+            ]
+          },
+          "args": {"type": "object"}
+        }
+      }
+    }
+  }
+}

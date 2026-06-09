@@ -1,0 +1,121 @@
+{
+  "template_version": "2.0.0",
+  "name": "rabbit-feature",
+  "version": "1.46.0",
+  "owner": "rabbit-workflow team",
+  "housekeeping_clean": true,
+  "tdd_state": "test-green",
+  "summary": "Dispatcher-side feature-touch orchestration surface. Owns the rabbit-feature-touch skill and two general-purpose helper skills (rabbit-feature-scope, rabbit-feature-scaffold) plus their backing scripts (resolve-scope.py, format-feature-context.py, scaffold-feature.py, audit-owner.py). Feature-conformance auditing is run directly via the contract-owned validate-feature.py <feature-dir>|all CLI; audit-owner.py is the standalone team-owner enforcement script. Spec lifecycle (the rabbit-spec-creator subagent and the rabbit-spec-update skill) is owned by rabbit-spec. Executor-side TDD machinery (dispatch-tdd-subagent.py, tdd-step.py) lives in tdd-subagent and is consumed via the cross-feature contract.",
+  "surface": {
+    "hooks": [],
+    "commands": [
+      "commands/rabbit-tdd-autonomous.md"
+    ],
+    "agents": [],
+    "skills": [
+      "skills/rabbit-feature-touch/SKILL.md",
+      "skills/rabbit-feature-scope/SKILL.md",
+      "skills/rabbit-feature-scaffold/SKILL.md"
+    ],
+    "scripts": [
+      "scripts/resolve-scope.py",
+      "scripts/format-feature-context.py",
+      "scripts/scaffold-feature.py",
+      "scripts/audit-owner.py"
+    ]
+  },
+  "deprecation_criterion": "When feature-touch orchestration is natively handled by the rabbit CLI or by Claude Code's native workflow mechanism.",
+  "updated": "2026-06-09",
+  "manifest": [
+    {
+      "api": "publish_skill",
+      "args": {
+        "source": "skills/rabbit-feature-touch/SKILL.md"
+      }
+    },
+    {
+      "api": "publish_skill",
+      "args": {
+        "source": "skills/rabbit-feature-scope/SKILL.md"
+      }
+    },
+    {
+      "api": "publish_skill",
+      "args": {
+        "source": "skills/rabbit-feature-scaffold/SKILL.md"
+      }
+    },
+    {
+      "api": "publish_command",
+      "args": {
+        "source": "commands/rabbit-tdd-autonomous.md"
+      }
+    }
+  ],
+  "runtime": {
+    "Stop": [
+      {
+        "api": "check_marker_alert",
+        "args": {
+          "path": ".rabbit-tdd-autonomous",
+          "content": null,
+          "alert": {
+            "text": "TDD-AUTONOMOUS MODE ACTIVE \u2014 TDD cycle Step 4 (human approval) skipped",
+            "icon": "\ud83d\udd11",
+            "color": "red"
+          }
+        }
+      }
+    ],
+    "SessionStart": [
+      {
+        "api": "check_marker_alert",
+        "args": {
+          "path": ".rabbit-tdd-autonomous",
+          "content": null,
+          "alert": {
+            "text": "TDD-AUTONOMOUS MODE ACTIVE \u2014 TDD cycle Step 4 (human approval) skipped",
+            "icon": "\ud83d\udd11",
+            "color": "red"
+          }
+        }
+      }
+    ]
+  },
+  "configuration": [
+    {
+      "id": "tdd-autonomous",
+      "subcommand": "tdd-autonomous",
+      "command": "rabbit-tdd-autonomous",
+      "storage": {
+        "type": "marker-file",
+        "path": ".rabbit-tdd-autonomous"
+      },
+      "values": {
+        "false": {
+          "api": "delete_marker",
+          "args": {
+            "path": ".rabbit-tdd-autonomous"
+          }
+        },
+        "true": {
+          "api": "write_marker",
+          "args": {
+            "path": ".rabbit-tdd-autonomous",
+            "content": "session"
+          }
+        }
+      },
+      "default": "false",
+      "alert-on": "true",
+      "alert-message": {
+        "text": "TDD-AUTONOMOUS MODE ACTIVE \u2014 TDD cycle Step 4 (human approval) skipped",
+        "icon": "\ud83d\udd11",
+        "color": "red"
+      },
+      "restart_required": true
+    }
+  ],
+  "prompts": [],
+  "spec_no_change_reason": "Bug #1114: plugin-scaffold missing test/run.py is a behavior-conformance fix; spec already requires a conforming feature skeleton, no spec prose change needed"
+}
