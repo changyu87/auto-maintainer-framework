@@ -2,3 +2,7 @@
 
 # rabbit vendored install — ignore ONLY ephemerals; track the whole .rabbit/ tool+project (Strategy D, #1086)
 .rabbit/.runtime/
+
+# Claude Code scheduler state (cron jobs) — runtime, not part of the vendored tool
+.rabbit/.claude/scheduled_tasks.json
+.rabbit/.claude/scheduled_tasks.lock
