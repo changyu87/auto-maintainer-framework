@@ -239,7 +239,6 @@ def test_route_schema_accepts_valid_pingpong_route():
 
 
 def test_route_schema_rejects_edge_referencing_unknown_state():
-    bad = dict(PINGPONG_ROUTE)
     bad = {**PINGPONG_ROUTE,
            "edges": PINGPONG_ROUTE["edges"] + [
                {"state": "PING", "signal": "GO", "next": "GHOST"}]}
@@ -276,7 +275,7 @@ def test_route_is_data_not_code_and_external_to_states():
 # over the contract mechanism with zero maintainer-domain meaning.
 # ==========================================================================
 
-def _make_ping(vocab):
+def _make_ping():
     """A domain-free state: run(TickContext) -> StateResult."""
     manifest = fc.StateManifest(reads=["count"], writes=["count"],
                                 emits=["GO", "STOP"])
@@ -290,7 +289,7 @@ def _make_ping(vocab):
     return manifest, run
 
 
-def _make_pong(vocab):
+def _make_pong():
     manifest = fc.StateManifest(reads=["count"], writes=["count"],
                                 emits=["GO", "STOP"])
 
@@ -313,8 +312,8 @@ def test_e2e_uniform_signature_and_decoupled_ping_pong():
     ctx = _fresh_context()
     ctx.write("count", 0)
 
-    ping_manifest, ping_run = _make_ping(vocab)
-    pong_manifest, pong_run = _make_pong(vocab)
+    ping_manifest, ping_run = _make_ping()
+    pong_manifest, pong_run = _make_pong()
 
     states = {"PING": (ping_manifest, ping_run),
               "PONG": (pong_manifest, pong_run)}
@@ -335,7 +334,6 @@ def test_e2e_uniform_signature_and_decoupled_ping_pong():
         fc.apply_result(ctx, manifest, result, vocab)
         transcript.append((current, result.signal, ctx.read("count")))
         if result.signal == "STOP":
-            assert current in PINGPONG_ROUTE["terminal"] or True
             break
         current = edge_lookup[(current, result.signal)]
 
