@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded when the tick-FSM route contract reaches a breaking major version (e.g. the v2 parallelism tier introduces scope/conflict slots that change the edge shape).",
+  "title": "route.json",
+  "description": "The tick-FSM transition-table shape: a state set, a (state, signal) -> next_state edge table, and a terminal-state marker. Routing is data, not code, and lives outside every state. This feature owns the shape; the resolver that executes it is tick-orchestrator.",
+  "type": "object",
+  "required": ["states", "edges", "terminal"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "description": "The set of state symbols. No state names another state."
+    },
+    "edges": {
+      "type": "array",
+      "description": "The (state, signal) -> next edge table.",
+      "items": {
+        "type": "object",
+        "required": ["state", "signal", "next"],
+        "properties": {
+          "state": {"type": "string", "minLength": 1},
+          "signal": {"type": "string", "minLength": 1},
+          "next": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "terminal": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "States at which the machine halts; each must be in `states`."
+    }
+  }
+}
