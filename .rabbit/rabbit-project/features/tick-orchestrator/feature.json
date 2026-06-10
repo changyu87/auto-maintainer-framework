@@ -5,7 +5,7 @@
   "paths": [],
   "created": "2026-06-10T05:44:01Z",
   "deprecation_criterion": "Retired/superseded when the declarative-route execution model is replaced, or folded into a larger lifecycle-core runtime that the project migrates to.",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-10",
   "spec_no_change_reason": "first cycle: spec was seeded in a prior commit; this cycle implements it without spec edits"
 }
