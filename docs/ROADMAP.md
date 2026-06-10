@@ -26,8 +26,8 @@ decomposition. Update the **Status** column as features progress.
 
 | # | Feature | DESIGN.md refs | One-line scope (v1) | Status |
 |---|---------|----------------|---------------------|--------|
-| 1 | `fsm-contracts` | §1.1.1, §2.6, §2.7, §3.4.1 | Blackboard slot schema, `StateResult`, signal vocabulary, per-state manifest, `route.json` schema. Pure data. | **spec-drafted** |
-| 2 | `tick-orchestrator` | §1.1.1, §3.1.1, §2.7 | External router: `resolve_next`, run loop to terminal, structural validators (signal-validity, data-readiness). | **spec-drafted** |
+| 1 | `fsm-contracts` | §1.1.1, §2.6, §2.7, §3.4.1 | Blackboard slot schema, `StateResult`, signal vocabulary, per-state manifest, `route.json` schema. Pure data. | **implemented** (PR #8, merged; 22 tests) |
+| 2 | `tick-orchestrator` | §1.1.1, §3.1.1, §2.7 | External router: `resolve_next`, run loop to terminal, structural validators (signal-validity, data-readiness). | **implemented** (PR #9, merged; 13 tests) |
 | 3 | `lifecycle-dispositions` | §1.2, §3.1.2, §3.1.3, §3.1.4 | Disposition machine (`RUNNING`/`IDLE`/`STOPPED`/`ABORTED`/`RESTART_NEEDED`), single-writer mutex, host-agnostic resumption. | planned |
 | 4 | `durable-state` | §3.2.1–§3.2.4 | Versioned state schema, per-tick record-before-act journal, DRAIN owed-work step, idempotency/dedup-key convention. | planned |
 | 5 | `scheduling` | §3.3.1–§3.3.4 | Scheduler detection, heartbeat bootstrap, immediate-refire dedup, restart-and-resume. | planned |
@@ -47,11 +47,12 @@ decomposition. Update the **Status** column as features progress.
 
 Bit-by-bit, verifying each before the next:
 
-1. **`fsm-contracts` + `tick-orchestrator`** ← *current milestone.* Proven by a
-   generic, domain-free two-state ping-pong transition test (zero maintainer
-   meaning) — validates the FSM mechanism in isolation.
-2. `durable-state` + `lifecycle-dispositions` — make a tick crash-safe and
-   resumable; wire the disposition outcomes.
+1. **`fsm-contracts` + `tick-orchestrator`** — **DONE** (merged, PRs #8/#9).
+   Proven by the generic, domain-free PING/PONG two-state transition test
+   (fsm-contracts 22 tests; tick-orchestrator 13 tests) — FSM mechanism
+   validated in isolation, zero maintainer-domain coupling.
+2. `durable-state` + `lifecycle-dispositions` ← *next milestone.* Make a tick
+   crash-safe and resumable; wire the disposition outcomes.
 3. `work-intake` → `implement` → `verify-integrate` — the adapter spine over the
    real maintainer slots.
 4. `safety-governance`, `outbound-report`, `observability` — cross-cutting.
