@@ -6,5 +6,6 @@ impl-suggestion-*.json
 .scope-active-*
 .scope-bypass-once
 .rabbit-restart-snapshot
+.rabbit-prompt-counter
 __pycache__/
 *.pyc
