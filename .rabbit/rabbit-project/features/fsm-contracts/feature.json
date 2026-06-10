@@ -1,0 +1,8 @@
+{
+  "name": "fsm-contracts",
+  "version": "0.1.0",
+  "owner": "changyu87",
+  "paths": [],
+  "created": "2026-06-10T05:44:01Z",
+  "deprecation_criterion": "Superseded when the tick-FSM contract schema reaches a breaking major version — e.g. when the v2 parallelism tier (DESIGN §2.2) introduces scope/conflict slots that change the TickContext shape."
+}
