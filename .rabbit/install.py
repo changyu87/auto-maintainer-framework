@@ -39,7 +39,7 @@ This module has two distinct roles:
      (test-deployed-hooks-execute.py, test-install-publish-loop.py) to exercise
      the publish flow against a freshly copied .claude tree.
 
-Version: 6.8.0
+Version: 6.9.0
 Owner: rabbit-workflow team
 Deprecation criterion: when rabbit's per-project vendored model is superseded
 """
@@ -375,20 +375,90 @@ def rewrite_settings_for_plugin(dst_root: Path) -> None:
         _rewrite_one(source_settings, rabbit_root)
 
 
+# Single source of truth for the inner `.rabbit/.gitignore` ephemeral ignore
+# list. `write_rabbit_gitignore` renders it; `untrack_ignored_rabbit_ephemerals`
+# matches tracked `.rabbit/` files against it (via `git check-ignore` over the
+# rendered file) on `--update`. Keep the list HERE only — never hardcode a
+# second copy of the ephemeral names elsewhere.
+_RABBIT_GITIGNORE_BODY = (
+    "# rabbit-owned ephemerals — never commit these\n"
+    ".runtime/\n"
+    "prompts/\n"
+    "tdd-report-*.json\n"
+    "impl-suggestion-*.json\n"
+    ".scope-active-*\n"
+    ".scope-bypass-once\n"
+    ".rabbit-restart-snapshot\n"
+    ".rabbit-prompt-counter\n"
+    "__pycache__/\n"
+    "*.pyc\n"
+)
+
+
 def write_rabbit_gitignore(dst_root: Path) -> None:
-    content = (
-        "# rabbit-owned ephemerals — never commit these\n"
-        ".runtime/\n"
-        "prompts/\n"
-        "tdd-report-*.json\n"
-        "impl-suggestion-*.json\n"
-        ".scope-active-*\n"
-        ".scope-bypass-once\n"
-        ".rabbit-restart-snapshot\n"
-        "__pycache__/\n"
-        "*.pyc\n"
-    )
-    (dst_root / ".gitignore").write_text(content)
+    (dst_root / ".gitignore").write_text(_RABBIT_GITIGNORE_BODY)
+
+
+def untrack_ignored_rabbit_ephemerals(dst_root: Path) -> None:
+    """`--update` self-heal (#1137): index-only untrack any file TRACKED under
+    `.rabbit/` that NOW matches the inner ephemeral ignore list.
+
+    Background: `write_rabbit_gitignore` writes the inner `.rabbit/.gitignore`
+    list. When a NEW ephemeral joins that list (e.g. `.rabbit-prompt-counter`,
+    #1135), gitignore alone does NOT untrack a file an existing vendored host
+    repo already committed — it keeps churning until a human runs
+    `git rm --cached`. This converges those Strategy D full-vendor installs on
+    `--update` with no manual step.
+
+    Match set = the SAME source of truth `write_rabbit_gitignore` renders: we
+    ask `git check-ignore` (which evaluates the just-written
+    `.rabbit/.gitignore`) which tracked `.rabbit/` paths it ignores, so the
+    gitignore glob semantics are never reimplemented here.
+
+    `git rm --cached` is index-only: the working-tree file stays on disk. Only
+    files that BOTH (a) are tracked AND (b) match the current inner ignore list
+    are touched — nothing else. Degrades to a clean no-op when `dst_root` is a
+    standalone install (not a `.rabbit` dir), when `.rabbit/` is untracked
+    entirely, when not in a git repo, or when git is unavailable.
+    """
+    if dst_root.name != ".rabbit":
+        return  # standalone install — no vendored host repo to heal
+    host_root = dst_root.parent
+
+    def _git(*args: str, stdin: str | None = None):
+        try:
+            return subprocess.run(
+                ["git", "-C", str(host_root), *args],
+                capture_output=True, text=True, input=stdin)
+        except Exception:
+            return None
+
+    # Files currently tracked under `.rabbit/` (host-relative paths). Empty /
+    # error (not a repo, git absent, `.rabbit/` untracked) -> clean no-op.
+    listed = _git("ls-files", "-z", "--", ".rabbit")
+    if listed is None or listed.returncode != 0 or not listed.stdout:
+        return
+    tracked = [p for p in listed.stdout.split("\0") if p]
+    if not tracked:
+        return
+
+    # Of those, the ones git would ignore per the inner `.rabbit/.gitignore`.
+    # `--no-index` is REQUIRED: by default check-ignore never reports a TRACKED
+    # path as ignored (a tracked file is, by git's rules, not "ignored"), but
+    # tracked-yet-now-ignored is exactly the state we must heal — so evaluate
+    # the patterns directly, irrespective of index membership. Paths are fed via
+    # `--stdin -z` (NUL-separated) because `-z` requires `--stdin`.
+    checked = _git("check-ignore", "--no-index", "-z", "--stdin",
+                   stdin="\0".join(tracked))
+    # check-ignore exits 1 when NO paths are ignored (a no-op) and 0 when some
+    # are; any other code (or a missing process) -> degrade to no-op.
+    if checked is None or checked.returncode not in (0, 1) or not checked.stdout:
+        return
+    to_untrack = [p for p in checked.stdout.split("\0") if p]
+    if not to_untrack:
+        return
+
+    _git("rm", "--cached", "-q", "--", *to_untrack)
 
 
 # Strategy D host-gitignore tokens (#1086 / #1085, full-vendor). Strategy D
@@ -1141,6 +1211,12 @@ def _main_with_args(args: argparse.Namespace) -> int:
     rewrite_settings_for_plugin(dst_root)
     write_rabbit_gitignore(dst_root)
     write_host_gitignore(dst_root)
+    # #1137: on --update, self-heal vendored hosts that already committed a file
+    # now in the inner ignore list (e.g. .rabbit-prompt-counter, #1135) by
+    # index-only untracking it. Runs AFTER write_rabbit_gitignore so the match
+    # set reflects the freshly written list. No-op outside --update / vendored.
+    if args.update:
+        untrack_ignored_rabbit_ephemerals(dst_root)
     write_version_pin(dst_root, src_root)
 
     # Inv 43: canonicalize surfaces AFTER rewrite_settings_for_plugin so the
