@@ -2,7 +2,7 @@
   "name": "fsm-contracts",
   "version": "0.1.0",
   "owner": "changyu87",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "paths": [
     "rabbit-project/features/fsm-contracts/src/**"
   ],
