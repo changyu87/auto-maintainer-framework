@@ -223,9 +223,11 @@ def test_e2e_decoupling_insert_state_is_route_data_edit_only():
 
     result = to.run(rerouted, states, ctx, vocab, start="PING")
     assert result.final_state == "END"
-    # PING(0->1) MID(1->2) PONG(2->3) PING(3-> STOP) END
+    # PING(0->1,GO) MID(1->2,GO) PONG(2->3,GO) PING(3->4,STOP) END.
+    # PING emits STOP once `count` (before-value) >= 2, which first holds on
+    # its second visit (before=3), so the machine bumps count to 4 and halts.
     assert result.path == ["PING", "MID", "PONG", "PING", "END"]
-    assert ctx.read("count") == 3
+    assert ctx.read("count") == 4
     assert result.signals == ["GO", "GO", "GO", "STOP"]
 
 
