@@ -39,8 +39,11 @@ Subcommands:
       `docs/spec.md` layout (ratified migration target) and falls back only
       to the legacy `docs/spec/spec.md` for any not-yet-migrated nested-docs
       feature. The dead specs/ fallback has been removed. Mode-aware: detects
-      standalone vs plugin mode from <repo_root>/.rabbit/.runtime/mode and
-      picks the matching feature_dir prefix. In plugin/vendored mode the path
+      standalone vs plugin mode from <repo_root>/.rabbit/.runtime/mode, falling
+      back STRUCTURALLY to the presence of <repo_root>/.rabbit/rabbit-project/
+      when the gitignored runtime marker is absent (the per-session worktree
+      case, #1141), and picks the matching feature_dir prefix. In plugin/
+      vendored mode the path
       is emitted relative to the CURRENT WORKING DIRECTORY (the rabbit session
       cwd, which IS the `.rabbit/` install dir), so the consumer
       dispatch-tdd-subagent.py — which resolves --spec against its cwd — finds
@@ -87,7 +90,7 @@ All paths are resolved relative to the repo root, which the script derives
 by walking up from the cwd to the nearest ancestor containing a `.git`
 entry (file or directory, so git worktrees are handled).
 
-Version: 0.9.0
+Version: 0.10.0
 Owner: rabbit-workflow team
 Deprecation criterion: when feature-touch orchestration is natively handled
 by the rabbit CLI or by Claude Code's native workflow mechanism.
@@ -130,14 +133,33 @@ _VENDORED_MODES = ("vendored", "plugin")
 
 
 def _mode(repo_root: Path) -> str:
-    """Detect rabbit mode from <repo_root>/.rabbit/.runtime/mode.
+    """Detect rabbit mode for <repo_root>.
 
-    Returns 'plugin' when the marker content is a plugin-mode value
-    (`vendored` or the legacy `plugin`); otherwise 'standalone' (marker
-    absent or any other content).
+    Primary signal: the runtime marker <repo_root>/.rabbit/.runtime/mode.
+    Returns 'plugin' when its content is a plugin-mode value (`vendored` or
+    the legacy `plugin`).
+
+    Structural fallback (#1141): when the marker is ABSENT, fall back to the
+    presence of the tracked work tree <repo_root>/.rabbit/rabbit-project/.
+    The whole feature-touch cycle runs in a per-session git worktree built via
+    `git worktree add ... HEAD` (Strategy D), but `.rabbit/.runtime/` is
+    ephemeral and gitignored — a `... HEAD` worktree carries the committed
+    work tree (rabbit-project/) yet NOT the runtime marker. Without this
+    fallback every script run from `<worktree>/.rabbit` misdetected standalone
+    (resolve-spec-path emitted the standalone path, commit-spec no-op'd,
+    dispatch-prompt pointed --spec at a nonexistent path). Detecting vendored
+    structurally from the committed work tree keeps mode detection
+    self-contained inside the worktree — no host fallback, no reliance on the
+    ephemeral marker.
+
+    Returns 'standalone' otherwise (no marker AND no vendored work tree).
     """
     marker = repo_root / ".rabbit/.runtime/mode"
-    if marker.is_file() and marker.read_text(encoding="utf-8").strip() in _VENDORED_MODES:
+    if marker.is_file():
+        if marker.read_text(encoding="utf-8").strip() in _VENDORED_MODES:
+            return "plugin"
+        return "standalone"
+    if (repo_root / ".rabbit/rabbit-project").is_dir():
         return "plugin"
     return "standalone"
 

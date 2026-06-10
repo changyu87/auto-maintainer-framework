@@ -100,7 +100,12 @@ Output (always JSON on stdout):
       "batch_file": "<abs path>" | null,
       "source_root": "<abs path>",
       "features": [ {"name": ..., "globs": [...]}, ... ],
-      "dispatched": <bool>          # false under --plan-only
+      "dispatched": <bool>,         # false under --plan-only
+      "vendored_commit_warning": "<str>" | null  # non-null in vendored/plugin
+                                    # mode: commit the scaffold to the user repo
+                                    # BEFORE rabbit-feature-touch (its worktree
+                                    # branches from HEAD, sees committed files
+                                    # only); null in standalone mode.
     }
   Step 1 (--source-root):
     {
@@ -135,7 +140,7 @@ both keeps this script correct before AND after that rename. The legacy
 "plugin" arm is removed only after the rename completes and the old value is
 fully retired (coexistence-window deprecation).
 
-Version: 0.8.0
+Version: 0.9.0
 Owner: rabbit-workflow team
 Deprecation criterion: when Step 4 scaffold hand-off is provided natively by
     the rabbit CLI, retiring this companion script.
@@ -163,6 +168,29 @@ from pathlib import Path
 # deprecation: the legacy "plugin" entry is removed only after the #980 rename
 # completes and the old value is fully retired.
 _VENDORED_MODES = ("vendored", "plugin")
+
+
+# The mode-aware commit-the-scaffold warning surfaced in the Step 4 plan JSON
+# and reflected in SKILL.md Step 8 (Report). In vendored/plugin mode
+# rabbit-feature-touch's create-branch step runs the TDD subagent inside a
+# per-session git worktree branched from the host repo's HEAD, and a worktree
+# contains only COMMITTED files. The scaffolded
+# `.rabbit/rabbit-project/features/<name>/` dirs and seeded specs are NOT
+# committed by decompose, so a feature-touch run immediately after a greenfield
+# decompose creates a worktree that does not contain the new feature dir and the
+# TDD subagent has nothing to implement. This warning instructs the user to
+# commit the scaffold to the user repo BEFORE running rabbit-feature-touch. It
+# is vendored-only: standalone mode has no HEAD-based worktree, so the value is
+# None there.
+_VENDORED_COMMIT_WARNING = (
+    "Vendored/plugin mode: COMMIT the scaffolded "
+    ".rabbit/rabbit-project/features/<name>/ dirs and seeded specs to the user "
+    "repo (e.g. a PR to main) BEFORE running rabbit-feature-touch. "
+    "rabbit-feature-touch's create-branch runs the TDD cycle inside a git "
+    "worktree branched from the host repo's HEAD, and a worktree only contains "
+    "committed files — an uncommitted scaffold is invisible to it, so the TDD "
+    "subagent would have nothing to implement."
+)
 
 
 def _err(msg: str) -> None:
@@ -576,6 +604,7 @@ def main(argv) -> int:
             "source_root": source_root,
             "features": features,
             "dispatched": False,
+            "vendored_commit_warning": _VENDORED_COMMIT_WARNING,
         }
         if plan_only:
             print(json.dumps(result))
@@ -623,6 +652,9 @@ def main(argv) -> int:
         "source_root": source_root,
         "features": features,
         "dispatched": False,
+        # Standalone has no HEAD-based worktree, so the commit-the-scaffold
+        # warning does not apply.
+        "vendored_commit_warning": None,
     }
     print(json.dumps(result))
     return 0
