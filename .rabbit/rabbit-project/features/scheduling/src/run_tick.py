@@ -276,6 +276,44 @@ def _resolve_project_dir():
     return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
 
+# The project-local override config dir + route filename — the SAME constants
+# adapter-wiring's loader uses, so route_source reports exactly what build_loop
+# actually reads (#59). Kept in lock-step with adapter_wiring._CONFIG_DIRNAME /
+# _ROUTE_FILENAME (consumed-unchanged, so referenced by value, not import).
+_OVERRIDE_CONFIG_DIRNAME = ".auto-maintainer"
+_OVERRIDE_ROUTE_FILENAME = "route.json"
+
+
+def route_source(project_dir=None):
+    """The SOURCE of the route this tick runs, so a misplaced/absent override is
+    visible rather than silently ignored (#59).
+
+    Returns ``("override", "<abs path>")`` when a project-local
+    ``${project_dir}/.auto-maintainer/route.json`` exists — the SAME path
+    adapter-wiring's loader reads — else ``("default", None)``. ``project_dir``
+    defaults to the CLAUDE_PROJECT_DIR / cwd anchor, exactly as the loader and
+    resolve_runtime_paths resolve it, so the reported source agrees with the
+    route actually loaded. This is the single source of truth: status.py reuses
+    it rather than re-probing for route.json.
+    """
+    if project_dir is None:
+        project_dir = _resolve_project_dir()
+    path = os.path.join(
+        project_dir, _OVERRIDE_CONFIG_DIRNAME, _OVERRIDE_ROUTE_FILENAME)
+    if os.path.isfile(path):
+        return ("override", path)
+    return ("default", None)
+
+
+def route_source_label(project_dir=None):
+    """The route source as a single trace/status token: ``default`` or
+    ``override:<abs path>`` (#59)."""
+    label, path = route_source(project_dir)
+    if label == "override":
+        return f"override:{path}"
+    return label
+
+
 def persisted_work_items(state_path):
     """The last pull's work_items snapshot persisted in durable state (a list of
     WorkItem dicts), or [] when the loop never ran a pull."""
@@ -331,7 +369,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     reference time.
 
     Prints a one-line tick trace (state path, work_items/work_orders counts,
-    disposition).
+    disposition, and the route source — default vs override:<path>, #59).
     """
     if runtime_dir is None or state_path is None or journal_path is None:
         _rt, _state, _journal = resolve_runtime_paths()
@@ -378,10 +416,14 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     disposition = ld.read_disposition(runtime_dir)
     work_items_count = persisted_work_items_count(state_path)
     work_orders_count = persisted_work_orders_count(state_path)
+    # The route source (#59): default vs the project-local override path, so a
+    # misplaced/absent route.json is visible in the trace, not silently ignored.
+    # Resolved from the SAME project_dir build_loop loaded the route from.
+    route_src = route_source_label(project_dir)
     sys.stdout.write(
         f"[tick] path={'->'.join(result.path)} work_items={work_items_count} "
         f"work_orders={work_orders_count} disposition={disposition} "
-        f"signal={signal}\n")
+        f"signal={signal} route={route_src}\n")
 
     if return_run_result:
         return result

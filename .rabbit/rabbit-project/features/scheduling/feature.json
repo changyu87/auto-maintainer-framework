@@ -10,5 +10,5 @@
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
   "tdd_state": "test-green",
   "updated": "2026-06-11",
-  "spec_no_change_reason": "spec for #44 (script-backed start.py that clears STOPPED latch / refuses ABORTED) already committed at 22a0e39; this cycle implements that committed spec"
+  "spec_no_change_reason": "spec for #59 (report route source default vs override in trace + status) already committed at 2cf7b82 / merged PR #60; this cycle implements that committed spec"
 }

@@ -45,18 +45,22 @@ def status_line():
     Reads the disposition marker, the last tick's persisted work_items count, and
     — when the active route produced any — the work_orders count, from the runtime
     dir run_tick resolves, WITHOUT creating it. Returns a single human-readable
-    line naming the disposition, the counts, and the runtime dir. The work_orders
-    field is appended only when the last tick produced orders (e.g. a TRIAGE
-    route), so the default read-and-idle loop's line stays unchanged.
+    line naming the disposition, the counts, the route source, and the runtime
+    dir. The work_orders field is appended only when the last tick produced orders
+    (e.g. a TRIAGE route), so the default read-and-idle loop's line stays
+    unchanged. The route source (#59) reuses run_tick.route_source — the SAME
+    helper the trace uses — so status and the trace never diverge on whether an
+    override is active.
     """
     runtime_dir, state_path, _journal_path = rt.resolve_runtime_paths()
     disposition = ld.read_disposition(runtime_dir)
     work_items = rt.persisted_work_items_count(state_path)
     work_orders = rt.persisted_work_orders_count(state_path)
+    route_src = rt.route_source_label()
     line = (f"[status] disposition={disposition} work_items={work_items} ")
     if work_orders:
         line += f"work_orders={work_orders} "
-    line += f"runtime_dir={runtime_dir}"
+    line += f"route={route_src} runtime_dir={runtime_dir}"
     return line
 
 
