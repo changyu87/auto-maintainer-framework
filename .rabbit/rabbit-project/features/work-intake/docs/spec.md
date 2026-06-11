@@ -56,15 +56,36 @@ source. Tests drive `PULL` with a stub source over fixture issues and assert the
 `work_items` slot + `OK`/`EMPTY` signal; production wiring shells `gh`. No AI/prompt
 tier anywhere.
 
+## Slice 2 — TRIAGE (validity gate → work_orders)
+
+Turn raw `work_items` into validated `work_orders`. Slice 2 implements a
+**deterministic validity gate** only; richer TRIAGE is deferred.
+
+1. **`WorkOrder` slot schema** — a validated, decision-carrying item:
+   `{ id, work_item_id, title, body, url, labels, decision: accepted|rejected,
+   reason, created_at }`. Machine-first, versioned. Written to the `work_orders`
+   slot, consumed downstream (PRIORITIZE/IMPLEMENT, future).
+2. **`TRIAGE` state** — `run(TickContext) -> StateResult`: reads `work_items`,
+   applies a deterministic validity gate (well-formed = has a title; not stale =
+   updated within a hardcoded window; in-scope = open, non-draft), maps each
+   accepted item to a `WorkOrder` (1:1, no decompose), writes the `work_orders`
+   slot, emits `OK` if any accepted else `EMPTY`. Rejected items may be recorded
+   with a reason but are not forwarded. Manifest `{reads: ["work_items"],
+   writes: ["work_orders"], emits: ["OK","EMPTY"]}`. Script-tier, no AI.
+3. **Determinism** — pure rules over the in-memory `work_items`; no network, no
+   AI. The stale window is hardcoded (config deferred, #17-style).
+
 ## Current behaviour
 
-None yet — `tdd_state: spec` (this is the seeded spec; implementation follows
-this cycle).
+Slice 1 (PULL) implemented and merged (`tdd_state: test-green`) — `WorkItem` +
+`PULL` adapter, live in the loop. Slice 2 (TRIAGE validity gate → `work_orders`)
+is being added this cycle.
 
 ## Known gaps / deferred
 
-- **TRIAGE pipeline** (validity gate, dedup-vs-closed, 1-level decompose,
-  dependency ordering, WHAT-generation seam) → `work_orders` — slice 2 (§3.5).
+- **TRIAGE — slice 2 (this cycle):** deterministic validity gate → `work_orders`.
+  **Slice 3+ deferred:** dedup-vs-closed (§3.5.3), 1-level decompose (§3.5.5),
+  dependency ordering (§3.5.7), WHAT-generation/spec seam (§3.5.8, the AI seam).
 - **Loopback / provenance guard** — recognizing `filed_by: autonomous-maintainer`
   so the loop never auto-consumes its own filings (§3.11.5) — belongs to
   safety-governance; deferred (and moot until `REPORT`/outbound-report exists).
