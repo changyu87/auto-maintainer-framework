@@ -19,15 +19,48 @@ swappable adapter. Default adapters ship for GitHub Issues + git.
 
 ## Status
 
-**Design / draft.** No runnable code yet. The current contents are the design
-plan; see [`docs/DESIGN.md`](docs/DESIGN.md).
+**Early development.** The FSM core is taking shape and the plugin is already
+installable as a packaging skeleton — but the autonomous maintainer loop itself
+is not built yet. Implemented so far: the tick-FSM contract layer
+(`fsm-contracts`), the external route orchestrator (`tick-orchestrator`), and
+clean plugin packaging + a marketplace (`packaging-config`). See
+[`docs/DESIGN.md`](docs/DESIGN.md) for the design and
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for per-feature status.
 
-## Packaging
+Installing today gives you a working `/plugin install` and an
+`/auto-maintainer:status` skill that reports *"no loop configured yet"* — the
+maintainer adapters (PULL / TRIAGE / IMPLEMENT / scheduling) are still on the
+roadmap.
 
-Distributed as a **Claude Code plugin**, installable via a Claude plugin
-marketplace (`/plugin`). The repository layout will follow the Claude
-marketplace convention (`.claude-plugin/plugin.json`, etc.) so installation is
-a standard `/plugin install` for end users.
+## Installation
+
+Distributed as a **Claude Code plugin** served from a self-hosted marketplace.
+Inside Claude Code, run these three steps:
+
+```
+/plugin marketplace add changyu87/auto-maintainer-framework
+/plugin install auto-maintainer@auto-maintainer
+/reload-plugins
+```
+
+> **The third step is required.** `/plugin install` stages the plugin and prints
+> *"Run /reload-plugins to apply"* — `/reload-plugins` activates it in the
+> current session. (Restarting Claude Code instead also works.)
+
+Verify it loaded:
+
+```
+/auto-maintainer:status
+```
+
+A startup banner also appears the next time you open Claude Code.
+
+**Update or remove later:**
+
+```
+/plugin marketplace update                          # pull catalog changes, then re-install
+/plugin uninstall auto-maintainer@auto-maintainer   # remove the plugin
+```
 
 ## Relationship to rabbit-workflow
 
