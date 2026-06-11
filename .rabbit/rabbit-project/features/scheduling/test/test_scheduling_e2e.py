@@ -160,13 +160,16 @@ def test_run_tick_releases_mutex_after_exit():
 
 
 def test_run_tick_traverses_full_route():
-    """The orchestrator visits GUARD->DRAIN->DEMO_WORK->PERSIST->EXIT."""
+    """The orchestrator runs GUARD->DRAIN->DEMO_WORK->PERSIST->EXIT (EXIT runs
+    and selects the disposition; the run halts at the DONE terminal)."""
     runtime_dir, state_path, journal_path = _paths()
     result = rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
                          journal_path=journal_path, return_run_result=True)
-    assert result.final_state == "EXIT", result.path
-    assert result.path == ["GUARD", "DRAIN", "DEMO_WORK", "PERSIST", "EXIT"], \
-        result.path
+    assert result.path[:5] == ["GUARD", "DRAIN", "DEMO_WORK", "PERSIST",
+                               "EXIT"], result.path
+    # EXIT actually runs (it is not terminal); the run halts at the DONE
+    # terminal after EXIT selects the disposition + releases the mutex.
+    assert result.final_state == "DONE", result.path
 
 
 # --------------------------------------------------------------------------
