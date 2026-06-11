@@ -6,6 +6,6 @@
   "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-06-10",
-  "spec_no_change_reason": "Seeded spec is complete and unchanged; this cycle implements the assembly pipeline it already describes."
+  "updated": "2026-06-11",
+  "spec_no_change_reason": "Slice-2 spec section already committed (PR #22); this cycle implements the ship/ collection + loop-core libs it describes."
 }

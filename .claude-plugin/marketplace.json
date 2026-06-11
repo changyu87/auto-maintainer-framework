@@ -5,10 +5,10 @@
   },
   "plugins": [
     {
-      "description": "Auto-maintainer: an autonomous repository maintenance loop, shipped as a Claude Code plugin (packaging slice 1).",
+      "description": "Auto-maintainer: an autonomous repository maintenance loop, shipped as a Claude Code plugin.",
       "name": "auto-maintainer",
       "source": "./plugins/auto-maintainer",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }
