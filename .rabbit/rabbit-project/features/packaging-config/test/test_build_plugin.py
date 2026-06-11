@@ -237,6 +237,9 @@ def test_status_skill_present():
 
 # ---------------------------------------------------------------------------
 # Spec: core libs copied in byte-identical from their feature src/ dirs.
+# fsm_contracts, tick_orchestrator, durable_state, and lifecycle_dispositions
+# are pure libs copied verbatim. run_tick is normalized for self-containment
+# (see test_shipped_run_tick_is_self_contained) so it is NOT byte-identical.
 # ---------------------------------------------------------------------------
 def test_core_libs_copied_byte_identical():
     out_root = _build_into_temp()
@@ -251,6 +254,14 @@ def test_core_libs_copied_byte_identical():
                 _REPO_ROOT, ".rabbit", "rabbit-project", "features",
                 "tick-orchestrator", "src", "tick_orchestrator.py",
             ),
+            "durable_state.py": os.path.join(
+                _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+                "durable-state", "src", "durable_state.py",
+            ),
+            "lifecycle_dispositions.py": os.path.join(
+                _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+                "lifecycle-dispositions", "src", "lifecycle_dispositions.py",
+            ),
         }
         for fname, src_path in mapping.items():
             dst = os.path.join(lib, fname)
@@ -258,6 +269,136 @@ def test_core_libs_copied_byte_identical():
             with open(src_path, "rb") as a, open(dst, "rb") as b:
                 assert a.read() == b.read(), \
                     f"{fname} is not byte-identical to its source"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec: all FIVE loop-core libs ship under lib/ — the four pure libs
+# plus scheduling's run_tick.py.
+# ---------------------------------------------------------------------------
+def test_all_five_loop_libs_present():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        for fname in (
+            "fsm_contracts.py",
+            "tick_orchestrator.py",
+            "durable_state.py",
+            "lifecycle_dispositions.py",
+            "run_tick.py",
+        ):
+            assert os.path.isfile(os.path.join(lib, fname)), \
+                f"lib/{fname} must ship in the plugin tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec: the ship/ collection convention — scheduling's
+# ship/skills/{start,stop} land at the plugin root as skills/{start,stop}.
+# ---------------------------------------------------------------------------
+def test_ship_collection_start_stop_skills_present():
+    out_root = _build_into_temp()
+    try:
+        skills = os.path.join(
+            out_root, "plugins", "auto-maintainer", "skills"
+        )
+        for name in ("start", "stop"):
+            sk = os.path.join(skills, name, "SKILL.md")
+            assert os.path.isfile(sk), \
+                f"ship/ collection must place skills/{name}/SKILL.md"
+            with open(sk, encoding="utf-8") as fh:
+                assert fh.read().lstrip().startswith("---"), \
+                    f"skills/{name}/SKILL.md must carry YAML frontmatter"
+        # the slice-1 status skill must still ship alongside them
+        assert os.path.isfile(
+            os.path.join(skills, "status", "SKILL.md")
+        ), "slice-1 status skill must remain"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec: version bumped to 0.2.0 in BOTH plugin.json and
+# marketplace.json, and the two are consistent.
+# ---------------------------------------------------------------------------
+def test_version_bumped_to_0_2_0_and_consistent():
+    out_root = _build_into_temp()
+    try:
+        pj = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            ".claude-plugin", "plugin.json",
+        )
+        mk = os.path.join(out_root, ".claude-plugin", "marketplace.json")
+        with open(pj, encoding="utf-8") as fh:
+            pdata = json.load(fh)
+        with open(mk, encoding="utf-8") as fh:
+            mdata = json.load(fh)
+        assert pdata.get("version") == "0.2.0", \
+            f"plugin.json version must be 0.2.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.0", \
+            "marketplace.json plugin entry version must be 0.2.0"
+        assert pdata["version"] == mdata["plugins"][0]["version"], \
+            "plugin.json and marketplace.json versions must be consistent"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec (self-containment, critical): the shipped run_tick.py imports
+# fsm_contracts / tick_orchestrator / durable_state / lifecycle_dispositions,
+# which must resolve with ONLY the plugin tree on sys.path. Claude copies just
+# the plugin dir into its cache, so the shipped run_tick must NOT depend on the
+# feature src/ dirs. Prove it by importing the shipped run_tick in a subprocess
+# whose sys.path is restricted to the shipped lib/ dir alone.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_is_self_contained():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        # A probe that puts ONLY the shipped lib dir on sys.path (after
+        # clearing the inherited PYTHONPATH) and imports the shipped run_tick.
+        # If run_tick still resolved its deps from the feature src/ dirs the
+        # import would fail here, because those dirs are not on this path.
+        probe = (
+            "import sys; "
+            f"sys.path = [{lib!r}]; "
+            "import run_tick; "
+            "assert hasattr(run_tick, 'run_tick'); "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+        )
+        assert proc.returncode == 0, \
+            f"shipped run_tick not self-contained: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec: even the shipped run_tick.py (the one file the build rewrites)
+# must not leak a path back into the source feature tree — the headline
+# clean-ship invariant applies to the normalized file too.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            body = fh.read()
+        assert ".rabbit" not in body, "shipped run_tick leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "shipped run_tick references the source feature tree"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
