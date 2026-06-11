@@ -63,6 +63,7 @@ import work_intake as wi  # noqa: E402
 import run_tick as rt  # noqa: E402
 import status as st  # noqa: E402
 import stop as sp  # noqa: E402
+import start as sa  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -519,7 +520,7 @@ def _materialize_plugin_lib():
     flat dir, mirroring the installed plugin `lib/` layout."""
     import shutil
     lib = tempfile.mkdtemp(prefix="scheduling-lib-")
-    for fn in ("run_tick.py", "status.py", "stop.py"):
+    for fn in ("run_tick.py", "status.py", "stop.py", "start.py"):
         shutil.copy(os.path.join(_SRC, fn), os.path.join(lib, fn))
     for dep, mod in (("fsm-contracts", "fsm_contracts.py"),
                      ("tick-orchestrator", "tick_orchestrator.py"),
@@ -622,3 +623,148 @@ def test_control_skills_have_no_inline_python_heredoc():
         body = open(_ship_skill(name)).read()
         assert "python3 - <<" not in body, (name, body)
         assert "<<EOF" not in body, (name, body)
+
+
+# --------------------------------------------------------------------------
+# Control script: start.py (#44) — deterministic fresh-start + tick #1.
+#
+# A latched STOPPED disposition (from a prior /stop) must NOT block /start:
+# start IS the human resume (§1.2), so start.py clears the STOPPED latch to a
+# runnable state and then runs tick #1. A latched ABORTED is a fault: start.py
+# REFUSES (non-zero, no tick) and tells the user to investigate — it NEVER
+# silently clears a fault. A clean state (IDLE/absent/RUNNING) ticks normally.
+# start.py reuses run_tick's path resolution + the lifecycle API and must NOT
+# duplicate the route — it imports/calls run_tick for the tick itself.
+# --------------------------------------------------------------------------
+
+
+def test_start_after_stopped_clears_latch_and_ticks():
+    """#44: start after a latched STOPPED clears the latch and runs tick #1 —
+    work_items get pulled/persisted and the disposition is no longer STOPPED."""
+    runtime_dir, state_path, journal_path = _paths()
+    # A prior /stop latched STOPPED.
+    ld.write_disposition(runtime_dir, ld.Disposition.STOPPED)
+
+    signal = sa.start(runtime_dir=runtime_dir, state_path=state_path,
+                      journal_path=journal_path, source=_stub_source())
+
+    # Tick #1 actually ran (read-and-idle): the pull persisted, EXIT idled.
+    assert signal == "idle", signal
+    assert rt.persisted_work_items_count(state_path) == 2
+    # The STOPPED latch was cleared — the loop is runnable again.
+    assert ld.read_disposition(runtime_dir) != ld.Disposition.STOPPED
+
+
+def test_start_after_aborted_refuses_and_does_not_tick():
+    """#44: start after a latched ABORTED REFUSES — it raises, runs NO tick, and
+    leaves the ABORTED latch in place (a fault is never silently cleared)."""
+    runtime_dir, state_path, journal_path = _paths()
+    ld.write_disposition(runtime_dir, ld.Disposition.ABORTED)
+
+    def _exploding_source(repo=None):
+        raise AssertionError("start.py must not tick while ABORTED is latched")
+
+    raised = False
+    try:
+        sa.start(runtime_dir=runtime_dir, state_path=state_path,
+                 journal_path=journal_path, source=_exploding_source)
+    except sa.StartRefused:
+        raised = True
+    assert raised, "start.py must refuse (raise StartRefused) on ABORTED"
+    # No tick ran: no work_items were persisted.
+    assert rt.persisted_work_items_count(state_path) == 0
+    # The fault latch stays in place.
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.ABORTED
+
+
+def test_start_when_clean_ticks_normally():
+    """#44: start on a clean state (no marker -> default IDLE) ticks normally."""
+    runtime_dir, state_path, journal_path = _paths()
+    signal = sa.start(runtime_dir=runtime_dir, state_path=state_path,
+                      journal_path=journal_path, source=_stub_source())
+    assert signal == "idle", signal
+    assert rt.persisted_work_items_count(state_path) == 2
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.IDLE
+
+
+def test_start_main_exits_nonzero_on_aborted():
+    """End-to-end via the CLI entrypoint: `python3 start.py` against a latched
+    ABORTED runtime dir exits NON-ZERO and runs no tick (the #44 fault refusal
+    surfaces as a process failure, not a silent clear)."""
+    import subprocess
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    am_dir = os.path.join(project_dir, ".auto-maintainer")
+    ld.write_disposition(am_dir, ld.Disposition.ABORTED)
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = project_dir
+    proc = subprocess.run(
+        [sys.executable, os.path.join(_SRC, "start.py")],
+        capture_output=True, text=True, env=env)
+    assert proc.returncode != 0, (proc.returncode, proc.stdout, proc.stderr)
+    # The fault latch stays ABORTED — start did not clear it.
+    assert ld.read_disposition(am_dir) == ld.Disposition.ABORTED
+
+
+def test_start_resolves_runtime_dir_the_same_way_as_run_tick():
+    """start.py with no injected paths resolves the runtime dir exactly as
+    run_tick does (reuses resolve_runtime_paths), then ticks."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        sa.start(source=_stub_source())
+        runtime_dir, state_path, _ = rt.resolve_runtime_paths()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    assert rt.persisted_work_items_count(state_path) == 2
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.IDLE
+
+
+def test_start_imports_self_contained_from_plugin_lib():
+    lib = _materialize_plugin_lib()
+    saved = dict(sys.modules)
+    try:
+        mod = _import_from_lib(lib, "start")
+        assert hasattr(mod, "start")
+        assert hasattr(mod, "StartRefused")
+    finally:
+        for k in list(sys.modules):
+            if k not in saved:
+                del sys.modules[k]
+
+
+# --------------------------------------------------------------------------
+# Shipped /start skill is script-backed for tick #1 (#44): it invokes
+# ${CLAUDE_PLUGIN_ROOT}/lib/start.py (NOT inline Python) for the first tick,
+# then schedules the recurring heartbeat that re-runs run_tick.py (NOT start.py
+# — no reset per tick).
+# --------------------------------------------------------------------------
+
+_START_INSTALL = "${CLAUDE_PLUGIN_ROOT}/lib/start.py"
+
+
+def test_start_skill_invokes_start_script_for_tick_one():
+    body = open(_ship_skill("start")).read()
+    # Tick #1 goes through start.py (clears STOPPED / refuses ABORTED first).
+    assert _START_INSTALL in body, body
+    assert "src/start.py" not in body, body
+
+
+def test_start_skill_heartbeat_uses_run_tick_not_start():
+    """The recurring heartbeat re-runs run_tick.py (no per-tick reset), so the
+    start skill still references the installed run_tick.py for the heartbeat."""
+    body = open(_ship_skill("start")).read()
+    assert _INSTALL_PATH in body, body  # ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py
+
+
+def test_start_skill_has_no_handrolled_disposition_clear():
+    """#44 regression: the skill must not hand-roll the STOPPED-clear in Python
+    (the #30-class prompt-tier drift). start.py owns that logic."""
+    body = open(_ship_skill("start")).read()
+    assert "write_disposition(" not in body, body
+    assert "import lifecycle_dispositions" not in body, body
+    assert "from lifecycle_dispositions" not in body, body
+    assert "import durable_state" not in body, body
