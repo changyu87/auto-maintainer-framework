@@ -58,7 +58,9 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    DEFAULT_ADAPTER_MAP, runtime, …)` to load (project-local override else default)
    → resolve → validate → `(route, states)`, runs `tick_orchestrator.run(...)`
    over a `TickContext` seeded from durable state, prints a tick trace (tick
-   number, state path, `work_items`/`work_orders` counts, resulting disposition),
+   number, state path, `work_items`/`work_orders` counts, resulting disposition,
+   and the **route source** — `default` vs the project-local override path, so a
+   misplaced/absent `route.json` is visible, not silently ignored, #59),
    and returns/persists the outcome. One invocation = one tick. `PULL`'s issue
    source is the live `gh` CLI in production but **injectable** so tests pass a
    stub (no network).
@@ -74,7 +76,8 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      investigate (never silently clears a fault); otherwise proceeds. Reuses
      `run_tick`'s path resolution + the lifecycle API.
    - `src/status.py` — reads the disposition marker + the persisted `work_items`
-     count (via `run_tick`'s `resolve_runtime_paths`) and prints the real loop
+     count (via `run_tick`'s `resolve_runtime_paths`), the **route source**
+     (`default` vs the project-local `route.json` override path, #59), and the real loop
      status.
    - `src/stop.py` — writes disposition `STOPPED` (via the lifecycle-dispositions
      API) using the same runtime-path resolution. Owns the state write.
