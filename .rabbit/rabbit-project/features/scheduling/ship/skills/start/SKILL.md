@@ -19,11 +19,17 @@ one invocation of the deterministic tick-runner shipped at
 ## What a tick does
 
 `run_tick.py` runs the real lifecycle route
-`GUARD -> DRAIN -> DEMO_WORK -> PERSIST -> EXIT` through tick-orchestrator:
+`GUARD -> DRAIN -> PULL -> PERSIST -> EXIT` through tick-orchestrator:
 GUARD takes the single-writer mutex, DRAIN finishes any owed work from a
-truncated prior tick, DEMO_WORK does one unit of (stubbed) work and advances
-the persisted counter, PERSIST flushes durable state, and EXIT selects the next
-disposition and releases the mutex. The counter is persisted across ticks.
+truncated prior tick, PULL fetches the repo's open issues into the `work_items`
+slot, PERSIST flushes durable state (including the pulled count), and EXIT
+selects the next disposition and releases the mutex. The pulled `work_items`
+count is persisted across ticks.
+
+Because PULL is a read with no act stage yet, EXIT goes **idle** after the pull
+rather than refiring (read-and-idle): re-firing would just busy-loop re-pulling
+the same issues, so the heartbeat re-pulls on the next interval instead. EXIT's
+refire/idle becomes work-driven again once an act stage lands.
 
 ## Steps
 
@@ -36,7 +42,7 @@ disposition and releases the mutex. The counter is persisted across ticks.
    `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the installed plugin's root,
    so the tick-runner resolves regardless of the session's working directory
    (skills run with cwd = the user's project, where a bare `src/` path would not
-   exist). Print the tick trace it emits (tick path, counter, resulting
+   exist). Print the tick trace it emits (tick path, work_items count, resulting
    disposition).
 
 2. Schedule a recurring heartbeat that re-runs

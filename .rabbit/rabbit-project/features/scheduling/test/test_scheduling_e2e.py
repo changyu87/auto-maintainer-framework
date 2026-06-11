@@ -1,39 +1,39 @@
 #!/usr/bin/env python3
-"""End-to-end conformance tests for scheduling (slice 1).
+"""End-to-end conformance tests for scheduling (slice 2: real PULL work).
 
 scheduling is the INTEGRATION cycle: it composes the already-implemented
 lifecycle-core anchors (GUARD/EXIT from lifecycle-dispositions, DRAIN/PERSIST
-from durable-state) plus a local DEMO_WORK state into a single self-restarting
-tick loop driven through tick-orchestrator. Every behaviour in docs/spec.md has
-an e2e test here:
+from durable-state) plus work-intake's real PULL state into a single tick loop
+driven through tick-orchestrator. The slice-1 DEMO_WORK stub is retired; PULL is
+real read work. Every behaviour in docs/spec.md has an e2e test here:
 
-  1. DEMO_WORK state — run(TickContext) -> StateResult: reads counter, writes
-     counter+1, journals the increment intent (record-before-act via
-     durable-state's Journal), emits OK while counter < THRESHOLD else EMPTY.
-  2. run_tick — one invocation = one tick: assembles the route
-     GUARD->DRAIN->DEMO_WORK->PERSIST->EXIT and the states map, seeds a
-     TickContext from durable state, runs tick_orchestrator.run(...), and
-     persists/returns the EXIT disposition signal.
-  3. HEADLINE multi-tick run — invoke run_tick repeatedly; the persisted counter
-     advances 0->1->2->...; GUARD acquires / EXIT releases the mutex each tick;
-     dispositions transition RUNNING (refire while counter < THRESHOLD) -> idle
-     at THRESHOLD.
-  4. HEADLINE crash-safety across the full route — truncate a tick after the
-     journal records the increment intent but before PERSIST; the next tick's
-     DRAIN finishes the owed increment EXACTLY ONCE (no double-count) and the
-     loop continues correctly.
-  5. HEADLINE STOPPED latches — after stop, GUARD halts and the tick does not
-     advance the counter.
-  6. Control scripts (#29/#30) — status.py reads the REAL disposition + counter
-     (no slice-1 stub) and reports a sane "not started" state when no runtime
-     dir exists; stop.py latches STOPPED via the lifecycle-dispositions API
-     using run_tick's runtime-path resolution; both import self-contained from
-     the flat shipped lib/ layout. The shipped start/stop/status skills invoke
-     ${CLAUDE_PLUGIN_ROOT}/lib/{run_tick,stop,status}.py and hand-roll NO Python.
+  1. run_tick — one invocation = one tick: assembles the route
+     GUARD->DRAIN->PULL->PERSIST->EXIT and the states map, seeds a TickContext
+     from durable state, runs tick_orchestrator.run(...), persists the pulled
+     work_items count, and returns the EXIT disposition signal.
+  2. PULL integration (read-and-idle) — PULL fetches the repo's open issues via
+     an INJECTABLE source (tests inject a stub; production defaults to
+     work-intake's live gh source) and writes the work_items slot. After PULL +
+     PERSIST, EXIT selects IDLE (NOT refire) regardless of how many items were
+     pulled — a pure read has no act stage, so refiring would busy-loop.
+  3. HEADLINE multi-tick run — invoking run_tick repeatedly re-pulls the current
+     open issues idempotently (a read has no owed mutation); each tick persists
+     the pulled count and idles.
+  4. Crash-safety — a pure read has NO owed mutation to DRAIN: DRAIN remains a
+     no-op for PULL. The route still flows correctly across ticks.
+  5. HEADLINE STOPPED latches — after stop, GUARD halts and the tick does NOT
+     pull (work_items is not re-read/persisted past the latch).
+  6. Control scripts (#29/#30) — status.py reads the REAL disposition + the
+     persisted work_items count (no slice-1 stub) and reports a sane "not
+     started" state when no runtime dir exists; stop.py latches STOPPED via the
+     lifecycle-dispositions API using run_tick's runtime-path resolution; both
+     import self-contained from the flat shipped lib/ layout. The shipped
+     start/stop/status skills invoke ${CLAUDE_PLUGIN_ROOT}/lib/{run_tick,stop,
+     status}.py and hand-roll NO Python.
 
-scheduling CONSUMES fsm-contracts, tick-orchestrator, durable-state, and
-lifecycle-dispositions UNCHANGED (imported via sys.path). It does NOT edit or
-fork them.
+scheduling CONSUMES fsm-contracts, tick-orchestrator, durable-state,
+lifecycle-dispositions, and work-intake UNCHANGED (imported via sys.path). It
+does NOT edit or fork them.
 
 Owner: changyu87
 """
@@ -51,22 +51,63 @@ if _SRC not in sys.path:
 # other feature tests do. Do NOT edit/fork any of them.
 _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
-             "lifecycle-dispositions"):
+             "lifecycle-dispositions", "work-intake"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
 
-import fsm_contracts as fc  # noqa: E402
+import fsm_contracts as fc  # noqa: E402,F401
 import durable_state as ds  # noqa: E402
 import lifecycle_dispositions as ld  # noqa: E402
+import work_intake as wi  # noqa: E402
 import run_tick as rt  # noqa: E402
 import status as st  # noqa: E402
 import stop as sp  # noqa: E402
 
 
 # --------------------------------------------------------------------------
-# Helpers
+# Fixtures — a stub PULL issue source over two fixture issues (no network).
 # --------------------------------------------------------------------------
+
+GH_JSON_FIXTURE = """[
+  {
+    "number": 7,
+    "title": "Crash on empty config",
+    "body": "Steps to reproduce ...",
+    "url": "https://github.com/acme/widget/issues/7",
+    "state": "OPEN",
+    "labels": [{"name": "bug"}, {"name": "p1"}],
+    "author": {"login": "octocat"},
+    "createdAt": "2026-05-01T10:00:00Z",
+    "updatedAt": "2026-05-02T11:30:00Z"
+  },
+  {
+    "number": 9,
+    "title": "Add retry knob",
+    "body": "",
+    "url": "https://github.com/acme/widget/issues/9",
+    "state": "OPEN",
+    "labels": [],
+    "author": {"login": "hubber"},
+    "createdAt": "2026-05-03T08:00:00Z",
+    "updatedAt": "2026-05-03T08:00:00Z"
+  }
+]"""
+
+
+def _stub_source(json_text=GH_JSON_FIXTURE):
+    """An injectable PULL source returning fixture WorkItems with NO network.
+
+    The injectable contract is callable(repo) -> list[WorkItem]; the stub
+    ignores repo and parses a fixed gh-shaped payload, so the suite is
+    deterministic (spec-rules §1: the live-gh edge is isolated behind injection).
+    """
+    items = wi.parse_gh_issues(json_text)
+
+    def source(repo=None):
+        return list(items)
+    return source
+
 
 def _paths():
     """A fresh temp dir with injectable runtime/state/journal paths."""
@@ -77,220 +118,130 @@ def _paths():
     return runtime_dir, state_path, journal_path
 
 
-def _demo_ctx(state_path, journal_path, counter):
-    """A TickContext carrying the slots DEMO_WORK reads/writes."""
-    ctx = fc.TickContext()
-    ctx.register_slot("counter", {"type": "integer"}, version="1.0.0")
-    ctx.register_slot("state_path", {"type": "string"}, version="1.0.0")
-    ctx.register_slot("journal_path", {"type": "string"}, version="1.0.0")
-    ctx.register_slot("tick_outcome", {"type": "string"}, version="1.0.0")
-    ctx.write("state_path", state_path)
-    ctx.write("journal_path", journal_path)
-    ctx.write("counter", counter)
-    return ctx
-
-
 # --------------------------------------------------------------------------
-# Behaviour 1 — DEMO_WORK state contract.
+# Behaviour 1+2 — run_tick over the real PULL route (read-and-idle).
 # --------------------------------------------------------------------------
 
-def test_demo_work_reads_counter_writes_increment_and_emits_ok_below_threshold():
-    _, state_path, journal_path = _paths()
-    ctx = _demo_ctx(state_path, journal_path, counter=0)
-    result = rt.demo_work_run(ctx)
-    assert isinstance(result, fc.StateResult), result
-    assert result.signal == "OK", result.signal
-    assert result.writes["counter"] == 1, result.writes
-    # work-remains while below THRESHOLD -> EXIT will refire.
-    assert result.writes["tick_outcome"] == "work-remains", result.writes
-
-
-def test_demo_work_emits_empty_at_threshold():
-    _, state_path, journal_path = _paths()
-    ctx = _demo_ctx(state_path, journal_path, counter=rt.THRESHOLD)
-    result = rt.demo_work_run(ctx)
-    assert result.signal == "EMPTY", result.signal
-    assert result.writes["tick_outcome"] == "empty", result.writes
-    # At/above THRESHOLD the queue is empty: DEMO_WORK does NOT advance the
-    # counter and journals nothing.
-    assert result.writes["counter"] == rt.THRESHOLD, result.writes
-    assert ds.Journal(journal_path).entries() == []
-
-
-def test_demo_work_journals_increment_intent_record_before_act():
-    """record-before-act: the increment intent (target = counter+1) is durably
-    journaled with a stable dedup_key BEFORE PERSIST commits it."""
-    _, state_path, journal_path = _paths()
-    ctx = _demo_ctx(state_path, journal_path, counter=3)
-    rt.demo_work_run(ctx)
-    journal = ds.Journal(journal_path)
-    entries = journal.entries()
-    assert len(entries) == 1, entries
-    assert entries[0]["target_counter"] == 4, entries
-    assert "dedup_key" in entries[0], entries
-    # The intent is recorded but not yet confirmed (PERSIST/DRAIN confirm it).
-    assert journal.unconfirmed() == [entries[0]["dedup_key"]], journal.unconfirmed()
-
-
-def test_demo_work_manifest_conforms_to_route_enforcement():
-    """DEMO_WORK exposes an fsm-contracts manifest whose writes/emits cover
-    what it actually writes/emits, so apply_result accepts its StateResult."""
-    manifest = rt.DEMO_WORK_MANIFEST
-    ctx = _demo_ctx(_paths()[1], _paths()[2], counter=0)
-    result = rt.demo_work_run(ctx)
-    vocab = fc.SignalVocabulary(["OK", "EMPTY"])
-    # apply_result raises if writes escape manifest.writes or signal escapes
-    # manifest.emits / the vocabulary; a clean return proves conformance.
-    fc.apply_result(ctx, manifest, result, vocab)
-    assert ctx.read("counter") == 1
-
-
-# --------------------------------------------------------------------------
-# Behaviour 2 — run_tick: one invocation = one tick over the full route.
-# --------------------------------------------------------------------------
-
-def test_run_tick_single_tick_advances_counter_and_returns_refire():
+def test_run_tick_pulls_issues_persists_count_and_idles():
     runtime_dir, state_path, journal_path = _paths()
     signal = rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                         journal_path=journal_path)
-    # Counter 0 -> 1, work remains -> refire.
-    assert ds.DurableState(state_path).load()["counter"] == 1
-    assert signal == "refire", signal
-    assert ld.read_disposition(runtime_dir) == ld.Disposition.RUNNING
+                         journal_path=journal_path, source=_stub_source())
+    # Read-and-idle: a pure read has no act stage, so EXIT idles (NOT refire)
+    # regardless of how many items were pulled.
+    assert signal == "idle", signal
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.IDLE
+    # The pulled work_items count is persisted into durable state.
+    assert rt.persisted_work_items_count(state_path) == 2
+
+
+def test_run_tick_traverses_full_pull_route():
+    runtime_dir, state_path, journal_path = _paths()
+    result = rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
+                         journal_path=journal_path, source=_stub_source(),
+                         return_run_result=True)
+    assert result.path[:5] == ["GUARD", "DRAIN", "PULL", "PERSIST", "EXIT"], \
+        result.path
+    # EXIT runs (it is not terminal); the run halts at the DONE terminal after
+    # EXIT selects the disposition + releases the mutex.
+    assert result.final_state == "DONE", result.path
 
 
 def test_run_tick_releases_mutex_after_exit():
     runtime_dir, state_path, journal_path = _paths()
     rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                journal_path=journal_path)
-    # EXIT released the single-writer mutex: no live holder remains.
+                journal_path=journal_path, source=_stub_source())
     assert not ld.lock_is_held(runtime_dir)
 
 
-def test_run_tick_traverses_full_route():
-    """The orchestrator runs GUARD->DRAIN->DEMO_WORK->PERSIST->EXIT (EXIT runs
-    and selects the disposition; the run halts at the DONE terminal)."""
+def test_run_tick_idles_even_when_no_issues_pulled():
+    """Read-and-idle holds for an EMPTY pull too: zero items still idles (the
+    loop relies on the next heartbeat, never busy-firing)."""
+    runtime_dir, state_path, journal_path = _paths()
+    signal = rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
+                         journal_path=journal_path, source=_stub_source("[]"))
+    assert signal == "idle", signal
+    assert rt.persisted_work_items_count(state_path) == 0
+
+
+def test_run_tick_writes_work_items_into_blackboard():
+    """The PULL state writes the real work_items slot (full WorkItem dicts) into
+    the tick blackboard, mapped from the pulled issues."""
     runtime_dir, state_path, journal_path = _paths()
     result = rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                         journal_path=journal_path, return_run_result=True)
-    assert result.path[:5] == ["GUARD", "DRAIN", "DEMO_WORK", "PERSIST",
-                               "EXIT"], result.path
-    # EXIT actually runs (it is not terminal); the run halts at the DONE
-    # terminal after EXIT selects the disposition + releases the mutex.
-    assert result.final_state == "DONE", result.path
+                         journal_path=journal_path, source=_stub_source(),
+                         return_run_result=True)
+    assert "PULL" in result.path, result.path
+    # The persisted snapshot carries the pulled items, schema-versioned.
+    items = rt.persisted_work_items(state_path)
+    assert len(items) == 2, items
+    assert items[0]["number"] == 7
+    assert items[0]["labels"] == ["bug", "p1"]
+    assert items[0]["schema_version"] == wi.WORK_ITEM_SCHEMA_VERSION
 
 
 # --------------------------------------------------------------------------
-# Behaviour 3 — HEADLINE multi-tick run: counter advances across ticks,
-# dispositions transition RUNNING (refire) -> idle at THRESHOLD.
+# Behaviour 3 — HEADLINE multi-tick run: re-pulls idempotently, idles each tick.
 # --------------------------------------------------------------------------
 
-def test_multi_tick_run_advances_counter_and_idles_at_threshold():
+def test_multi_tick_run_repulls_idempotently_and_idles():
     runtime_dir, state_path, journal_path = _paths()
-
-    signals = []
-    # Ticks 1..THRESHOLD each advance the persisted counter by exactly 1
-    # (0->1->2->...->THRESHOLD); each refires because the counter was below
-    # THRESHOLD at the start of the tick.
-    for expected in range(1, rt.THRESHOLD + 1):
+    source = _stub_source()
+    for _ in range(4):
         sig = rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                          journal_path=journal_path)
-        signals.append(sig)
-        assert ds.DurableState(state_path).load()["counter"] == expected, \
-            (expected, ds.DurableState(state_path).load())
-        # The mutex is released at the end of every tick.
+                          journal_path=journal_path, source=source)
+        # Each tick re-pulls the current open issues (a read is idempotent) and
+        # idles; the persisted count stays the fixture count.
+        assert sig == "idle", sig
+        assert rt.persisted_work_items_count(state_path) == 2
         assert not ld.lock_is_held(runtime_dir)
-        assert sig == "refire", (expected, sig)
-
-    # The next tick sees counter == THRESHOLD: the queue is empty, so it idles
-    # and the counter does not advance.
-    idle_sig = rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                           journal_path=journal_path)
-    assert idle_sig == "idle", idle_sig
-    assert ds.DurableState(state_path).load()["counter"] == rt.THRESHOLD
     assert ld.read_disposition(runtime_dir) == ld.Disposition.IDLE
 
 
 # --------------------------------------------------------------------------
-# Behaviour 4 — HEADLINE crash-safety across the full route: truncate after the
-# journal records the increment but before PERSIST; the next tick's DRAIN
-# finishes the owed increment EXACTLY ONCE.
+# Behaviour 4 — crash-safety: a pure read has NO owed mutation. DRAIN is a
+# no-op for PULL; the route still flows correctly tick-to-tick.
 # --------------------------------------------------------------------------
 
-def test_crash_safety_truncate_after_journal_before_persist_then_resume():
+def test_drain_is_noop_for_pull_pure_read():
+    """A PULL tick journals no mutation intent, so there is nothing for DRAIN to
+    reconcile: the journal stays empty and ticks remain stable."""
     runtime_dir, state_path, journal_path = _paths()
-
-    # --- Tick 1 (TRUNCATED): record-before-act journals the move 0 -> 1, then
-    # the process dies BEFORE PERSIST commits it. Durable counter is still 0;
-    # the journal owes the move to 1. We simulate the truncated tick by running
-    # only DEMO_WORK's journaling against a fresh durable baseline. ---
-    ds.DurableState(state_path).save(
-        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
-    ctx = _demo_ctx(state_path, journal_path, counter=0)
-    rt.demo_work_run(ctx)  # journals intent target=1; crash before PERSIST
-    assert ds.DurableState(state_path).load()["counter"] == 0
-    owed = ds.Journal(journal_path).unconfirmed()
-    assert len(owed) == 1, owed
-
-    # --- Tick 2: a full run_tick. DRAIN finishes the owed increment EXACTLY
-    # ONCE before DEMO_WORK does new work. After DRAIN reconciles 0 -> 1, the
-    # loop continues. The persisted counter must NOT double-count the owed
-    # move. ---
     rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                journal_path=journal_path)
-    after = ds.DurableState(state_path).load()["counter"]
-    # DRAIN drains the owed move to 1; then DEMO_WORK does one more increment to
-    # 2. No double-count: had DRAIN re-incremented instead of reconciling to
-    # target, the counter would overshoot.
-    assert after == 2, after
-    # The owed intent from tick 1 (target_counter == 1) is now confirmed.
-    confirmed = ds.Journal(journal_path).confirmed_keys()
-    owed_key = owed[0]
-    assert owed_key in confirmed, (owed_key, confirmed)
-
-
-def test_crash_safety_drain_does_not_double_count_on_repeated_resume():
-    """A second resume after the owed work is drained must not re-apply it."""
-    runtime_dir, state_path, journal_path = _paths()
-    ds.DurableState(state_path).save(
-        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
-    ctx = _demo_ctx(state_path, journal_path, counter=0)
-    rt.demo_work_run(ctx)  # owed move to 1, truncated
-
+                journal_path=journal_path, source=_stub_source())
+    # No owed work was recorded by a pure read.
+    assert ds.Journal(journal_path).unconfirmed() == []
+    # A second tick still completes and re-persists the same count.
     rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                journal_path=journal_path)
-    first = ds.DurableState(state_path).load()["counter"]
-    rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                journal_path=journal_path)
-    second = ds.DurableState(state_path).load()["counter"]
-    # Each genuine tick advances by exactly 1; the drained intent is never
-    # re-counted.
-    assert second == first + 1, (first, second)
+                journal_path=journal_path, source=_stub_source())
+    assert rt.persisted_work_items_count(state_path) == 2
+    assert ds.Journal(journal_path).unconfirmed() == []
 
 
 # --------------------------------------------------------------------------
 # Behaviour 5 — HEADLINE STOPPED latches: after stop, GUARD halts and the tick
-# does not advance the counter.
+# does NOT pull.
 # --------------------------------------------------------------------------
 
-def test_stopped_disposition_latches_guard_halts_counter_frozen():
+def test_stopped_disposition_latches_guard_halts_no_pull():
     runtime_dir, state_path, journal_path = _paths()
 
-    # One clean tick advances the counter to 1.
+    # One clean tick pulls and persists the count.
     rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                journal_path=journal_path)
-    assert ds.DurableState(state_path).load()["counter"] == 1
+                journal_path=journal_path, source=_stub_source())
+    assert rt.persisted_work_items_count(state_path) == 2
 
     # A human stop latches STOPPED.
     ld.write_disposition(runtime_dir, ld.Disposition.STOPPED)
 
-    # The next tick: GUARD halts; the counter does NOT advance.
+    # The next tick: GUARD halts; PULL never runs. We use a source that would
+    # raise if invoked, proving the latched tick does no pull.
+    def _exploding_source(repo=None):
+        raise AssertionError("PULL must not run while STOPPED is latched")
+
     result = rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                         journal_path=journal_path, return_run_result=True)
-    assert ds.DurableState(state_path).load()["counter"] == 1, \
-        "STOPPED must freeze the counter (GUARD halts before DEMO_WORK)"
-    # GUARD short-circuited to the halt terminal; DEMO_WORK never ran.
-    assert "DEMO_WORK" not in result.path, result.path
+                         journal_path=journal_path, source=_exploding_source,
+                         return_run_result=True)
+    assert "PULL" not in result.path, result.path
     # STOPPED stays latched (a halt does not clear it).
     assert ld.read_disposition(runtime_dir) == ld.Disposition.STOPPED
 
@@ -299,8 +250,18 @@ def test_run_tick_returns_halt_signal_when_stopped():
     runtime_dir, state_path, journal_path = _paths()
     ld.write_disposition(runtime_dir, ld.Disposition.STOPPED)
     signal = rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                         journal_path=journal_path)
+                         journal_path=journal_path, source=_stub_source())
     assert signal == "halt", signal
+
+
+# --------------------------------------------------------------------------
+# Default source — the SHIPPED run_tick pulls real issues: when no source is
+# injected, run_tick uses work-intake's live gh source. We assert the wiring
+# (the default callable is work-intake's gh source) WITHOUT touching the network.
+# --------------------------------------------------------------------------
+
+def test_default_pull_source_is_work_intake_gh_source():
+    assert rt.DEFAULT_PULL_SOURCE is wi.gh_issue_source
 
 
 # --------------------------------------------------------------------------
@@ -318,23 +279,23 @@ def test_start_and_stop_skills_are_shipped():
     assert os.path.isfile(stop), stop
     start_body = open(start).read()
     stop_body = open(stop).read()
-    # The control skills name the documented commands and the hardcoded ~1-min
-    # heartbeat interval.
     assert "auto-maintainer:start" in start_body, start_body[:200]
     assert "auto-maintainer:stop" in stop_body, stop_body[:200]
-    # start runs the tick-runner and schedules the recurring heartbeat.
     assert "run_tick.py" in start_body, start_body[:400]
-    # stop latches STOPPED + cancels the heartbeat.
     assert "STOPPED" in stop_body, stop_body[:400]
+
+
+def test_no_skill_references_retired_demo_work():
+    """The DEMO_WORK stub is retired; no shipped control skill may still
+    describe it (stale-route guard)."""
+    for name in ("start", "stop", "status"):
+        body = open(_ship_skill(name)).read()
+        assert "DEMO_WORK" not in body, (name, body)
 
 
 # --------------------------------------------------------------------------
 # Regression (auto-maintainer-framework#24) — the shipped /start and /stop
-# skills must invoke run_tick at its INSTALLED path. In an installed plugin
-# run_tick lands at lib/run_tick.py and skills run with cwd = the user's
-# project, so a bare `src/run_tick.py` does not resolve and /start fails. Both
-# skills must reference ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py and carry NO bare
-# src/run_tick.py.
+# skills must invoke run_tick at its INSTALLED path.
 # --------------------------------------------------------------------------
 
 _INSTALL_PATH = "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py"
@@ -343,25 +304,20 @@ _INSTALL_PATH = "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py"
 def test_start_skill_references_install_correct_run_tick_path():
     body = open(_ship_skill("start")).read()
     assert _INSTALL_PATH in body, body
-    # No bare src/run_tick.py — that path does not exist in an installed plugin.
     assert "src/run_tick.py" not in body, body
 
 
 def test_stop_skill_has_no_bare_src_run_tick_path():
     body = open(_ship_skill("stop")).read()
-    # stop need not run the tick-runner, but if it names run_tick at all it must
-    # use the install-correct path, never the bare src/ path.
     assert "src/run_tick.py" not in body, body
     if "run_tick.py" in body:
         assert _INSTALL_PATH in body, body
 
 
 # --------------------------------------------------------------------------
-# Regression (auto-maintainer-framework#24) — run_tick, invoked with NO
-# injected paths (the installed case), must default its durable-state / journal
-# / disposition-marker location to a writable per-project runtime dir:
-# ${CLAUDE_PROJECT_DIR}/.auto-maintainer/ when that env var is set, else
-# .auto-maintainer/ under cwd. Injected paths still win.
+# Regression (auto-maintainer-framework#24) — run_tick, invoked with NO injected
+# paths (the installed case), defaults its durable-state / journal / disposition
+# location to a writable per-project runtime dir. Injected paths still win.
 # --------------------------------------------------------------------------
 
 def test_resolve_runtime_paths_prefers_claude_project_dir():
@@ -392,64 +348,37 @@ def test_resolve_runtime_paths_falls_back_to_cwd_when_no_project_dir():
         os.chdir(old_cwd)
         if old_env is not None:
             os.environ["CLAUDE_PROJECT_DIR"] = old_env
-    # cwd fallback: <cwd>/.auto-maintainer (realpath-normalized for macos /tmp).
     assert runtime_dir == os.path.join(os.path.realpath(cwd), ".auto-maintainer") \
         or runtime_dir == os.path.join(cwd, ".auto-maintainer"), runtime_dir
 
 
-def test_run_tick_runs_end_to_end_with_default_project_dir():
-    """The installed case: no injected path, only CLAUDE_PROJECT_DIR. run_tick
-    must create/use <that>/.auto-maintainer/ and actually advance the counter
-    end-to-end with the default alone."""
-    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
-    old = os.environ.get("CLAUDE_PROJECT_DIR")
-    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
-    try:
-        signal = rt.run_tick()
-    finally:
-        if old is None:
-            os.environ.pop("CLAUDE_PROJECT_DIR", None)
-        else:
-            os.environ["CLAUDE_PROJECT_DIR"] = old
-    am_dir = os.path.join(project_dir, ".auto-maintainer")
-    assert os.path.isdir(am_dir), am_dir
-    state_path = os.path.join(am_dir, "durable-state.json")
-    assert ds.DurableState(state_path).load()["counter"] == 1
-    assert signal == "refire", signal
-
-
 def test_run_tick_injected_paths_still_win_over_default():
     """Injected paths take precedence over the env/cwd default — the temp-path
-    injection capability that the rest of the suite relies on is preserved."""
+    injection capability the rest of the suite relies on is preserved."""
     runtime_dir, state_path, journal_path = _paths()
     project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
     old = os.environ.get("CLAUDE_PROJECT_DIR")
     os.environ["CLAUDE_PROJECT_DIR"] = project_dir
     try:
         rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
-                    journal_path=journal_path)
+                    journal_path=journal_path, source=_stub_source())
     finally:
         if old is None:
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
         else:
             os.environ["CLAUDE_PROJECT_DIR"] = old
     # The injected state advanced; the default .auto-maintainer dir was NOT used.
-    assert ds.DurableState(state_path).load()["counter"] == 1
+    assert rt.persisted_work_items_count(state_path) == 2
     assert not os.path.exists(os.path.join(project_dir, ".auto-maintainer"))
 
 
 # --------------------------------------------------------------------------
 # Control script: stop.py (#30) — deterministic STOPPED latch, no hand-rolled
-# Python, no non-existent `runtime_dir` import. stop.py owns the state write via
-# the lifecycle-dispositions API and resolves the runtime dir exactly as
-# run_tick does (reusing resolve_runtime_paths).
+# Python. stop.py owns the state write via the lifecycle-dispositions API and
+# resolves the runtime dir exactly as run_tick does.
 # --------------------------------------------------------------------------
 
 def test_stop_latches_stopped_readable_by_lifecycle_api():
-    runtime_dir, state_path, journal_path = _paths()
-    # The control scripts take no injected paths in production; they resolve via
-    # CLAUDE_PROJECT_DIR. Point that at our temp project and assert the marker
-    # the lifecycle API reads back is STOPPED.
     project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
     old = os.environ.get("CLAUDE_PROJECT_DIR")
     os.environ["CLAUDE_PROJECT_DIR"] = project_dir
@@ -465,8 +394,6 @@ def test_stop_latches_stopped_readable_by_lifecycle_api():
 
 
 def test_stop_resolves_runtime_dir_the_same_way_as_run_tick():
-    """stop.py must NOT duplicate path logic: it reuses run_tick's
-    resolve_runtime_paths so the marker it writes is the one a tick reads."""
     project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
     old = os.environ.get("CLAUDE_PROJECT_DIR")
     os.environ["CLAUDE_PROJECT_DIR"] = project_dir
@@ -481,55 +408,57 @@ def test_stop_resolves_runtime_dir_the_same_way_as_run_tick():
     assert ld.read_disposition(runtime_dir) == ld.Disposition.STOPPED
 
 
-def test_stop_then_tick_freezes_counter_end_to_end():
+def test_stop_then_tick_does_not_pull_end_to_end():
     """End-to-end: stop.py latches STOPPED, and a subsequent tick (same runtime
-    dir) halts in GUARD without advancing the counter."""
+    dir) halts in GUARD without pulling."""
     project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
     old = os.environ.get("CLAUDE_PROJECT_DIR")
     os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+
+    def _exploding_source(repo=None):
+        raise AssertionError("PULL must not run while STOPPED is latched")
+
     try:
         sp.stop()
-        signal = rt.run_tick()
-        runtime_dir, state_path, _ = rt.resolve_runtime_paths()
+        signal = rt.run_tick(source=_exploding_source)
+        runtime_dir, _, _ = rt.resolve_runtime_paths()
     finally:
         if old is None:
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
         else:
             os.environ["CLAUDE_PROJECT_DIR"] = old
     assert signal == "halt", signal
-    assert ds.DurableState(state_path).load()["counter"] == 0
     assert ld.read_disposition(runtime_dir) == ld.Disposition.STOPPED
 
 
 # --------------------------------------------------------------------------
 # Control script: status.py (#29) — deterministic, reads the REAL disposition +
-# counter (no hardcoded slice-1 stub). Resolves the runtime dir the same way as
-# run_tick.
+# persisted work_items count (no hardcoded slice-1 stub).
 # --------------------------------------------------------------------------
 
-def test_status_reports_real_disposition_and_counter_after_ticks():
+def test_status_reports_real_disposition_and_work_items_after_ticks():
     project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
     old = os.environ.get("CLAUDE_PROJECT_DIR")
     os.environ["CLAUDE_PROJECT_DIR"] = project_dir
     try:
-        rt.run_tick()  # counter 0 -> 1, disposition RUNNING
-        rt.run_tick()  # counter 1 -> 2
+        rt.run_tick(source=_stub_source())  # pull 2, disposition IDLE
         line = st.status_line()
     finally:
         if old is None:
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
         else:
             os.environ["CLAUDE_PROJECT_DIR"] = old
-    # The status line reports the REAL counter (2) and disposition (RUNNING),
-    # not a stub.
-    assert "2" in line, line
-    assert ld.Disposition.RUNNING in line, line
+    # The status line reports the REAL persisted work_items count (2) and the
+    # disposition (IDLE), not a stub, and no longer the old counter wording.
+    assert "work_items=2" in line, line
+    assert ld.Disposition.IDLE in line, line
     assert "no loop configured" not in line, line
+    assert "counter=" not in line, line
 
 
 def test_status_reports_not_started_when_no_runtime_dir():
     """When the loop was never started (no runtime dir), status reports a sane
-    'not started' state: default IDLE disposition + counter 0, no crash."""
+    'not started' state: default IDLE disposition + work_items 0, no crash."""
     project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
     old = os.environ.get("CLAUDE_PROJECT_DIR")
     os.environ["CLAUDE_PROJECT_DIR"] = project_dir
@@ -541,11 +470,9 @@ def test_status_reports_not_started_when_no_runtime_dir():
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
         else:
             os.environ["CLAUDE_PROJECT_DIR"] = old
-    # No runtime dir was created just by asking for status.
     assert not os.path.isdir(runtime_dir), runtime_dir
-    # Default unset disposition is IDLE; counter defaults to 0.
     assert ld.Disposition.IDLE in line, line
-    assert "0" in line, line
+    assert "work_items=0" in line, line
 
 
 def test_status_reflects_stopped_after_stop():
@@ -554,7 +481,7 @@ def test_status_reflects_stopped_after_stop():
     old = os.environ.get("CLAUDE_PROJECT_DIR")
     os.environ["CLAUDE_PROJECT_DIR"] = project_dir
     try:
-        rt.run_tick()
+        rt.run_tick(source=_stub_source())
         sp.stop()
         line = st.status_line()
     finally:
@@ -583,12 +510,8 @@ def test_status_line_includes_runtime_dir():
 
 # --------------------------------------------------------------------------
 # Self-contained import (#29/#30) — status.py and stop.py must resolve their
-# imports from the shipped `lib/` layout alone, where run_tick.py and the
-# consumed sibling modules (lifecycle_dispositions, durable_state, fsm_contracts,
-# tick_orchestrator) are FLAT SIBLINGS, NOT under a feature `<dep>/src/` tree.
-# This is the installed-plugin layout; if the scripts only resolved via the
-# worktree's feature dirs they would ImportError in production (the #30 root
-# cause class).
+# imports from the shipped flat `lib/` layout alone, where run_tick.py and the
+# consumed sibling modules are FLAT SIBLINGS.
 # --------------------------------------------------------------------------
 
 def _materialize_plugin_lib():
@@ -596,14 +519,13 @@ def _materialize_plugin_lib():
     flat dir, mirroring the installed plugin `lib/` layout."""
     import shutil
     lib = tempfile.mkdtemp(prefix="scheduling-lib-")
-    # scheduling's own scripts.
     for fn in ("run_tick.py", "status.py", "stop.py"):
         shutil.copy(os.path.join(_SRC, fn), os.path.join(lib, fn))
-    # consumed sibling modules, flattened next to them.
     for dep, mod in (("fsm-contracts", "fsm_contracts.py"),
                      ("tick-orchestrator", "tick_orchestrator.py"),
                      ("durable-state", "durable_state.py"),
-                     ("lifecycle-dispositions", "lifecycle_dispositions.py")):
+                     ("lifecycle-dispositions", "lifecycle_dispositions.py"),
+                     ("work-intake", "work_intake.py")):
         shutil.copy(os.path.join(_FEATURES, dep, "src", mod),
                     os.path.join(lib, mod))
     return lib
@@ -623,6 +545,18 @@ def _import_from_lib(lib, modname):
     return module
 
 
+def test_run_tick_imports_self_contained_from_plugin_lib():
+    lib = _materialize_plugin_lib()
+    saved = dict(sys.modules)
+    try:
+        mod = _import_from_lib(lib, "run_tick")
+        assert hasattr(mod, "run_tick")
+    finally:
+        for k in list(sys.modules):
+            if k not in saved:
+                del sys.modules[k]
+
+
 def test_status_imports_self_contained_from_plugin_lib():
     lib = _materialize_plugin_lib()
     saved = dict(sys.modules)
@@ -630,8 +564,6 @@ def test_status_imports_self_contained_from_plugin_lib():
         mod = _import_from_lib(lib, "status")
         assert hasattr(mod, "status_line")
     finally:
-        # Restore module table so the flat-lib copies don't shadow the
-        # worktree-resolved modules for the rest of the suite.
         for k in list(sys.modules):
             if k not in saved:
                 del sys.modules[k]
@@ -663,20 +595,15 @@ def test_status_skill_is_shipped_and_script_backed():
     assert os.path.isfile(status), status
     body = open(status).read()
     assert "auto-maintainer:status" in body, body[:300]
-    # It invokes the status script at its installed path.
     assert _STATUS_INSTALL in body, body
-    # No bare src/ path; no slice-1 stub text.
     assert "src/status.py" not in body, body
     assert "no loop configured" not in body, body
 
 
 def test_stop_skill_invokes_stop_script_not_handrolled_python():
     body = open(_ship_skill("stop")).read()
-    # stop.py latches STOPPED; the skill invokes it at the installed path.
     assert _STOP_INSTALL in body, body
     assert "src/stop.py" not in body, body
-    # No hand-rolled Python: no inline heredoc, no direct write_disposition call,
-    # no ad-hoc durable_state import (the #30 class of bug).
     assert "python3 - <<" not in body, body
     assert "write_disposition(" not in body, body
     assert "import durable_state" not in body, body
@@ -685,8 +612,6 @@ def test_stop_skill_invokes_stop_script_not_handrolled_python():
 
 def test_start_skill_has_no_handrolled_python():
     body = open(_ship_skill("start")).read()
-    # start invokes run_tick at the installed path (already covered) and must
-    # carry NO hand-rolled Python beyond the script invocation + cron scheduling.
     assert "python3 - <<" not in body, body
     assert "import durable_state" not in body, body
     assert "from durable_state" not in body, body
@@ -695,8 +620,5 @@ def test_start_skill_has_no_handrolled_python():
 def test_control_skills_have_no_inline_python_heredoc():
     for name in ("start", "stop", "status"):
         body = open(_ship_skill(name)).read()
-        # The #30 root cause: a skill that asks the model to hand-roll Python
-        # against an API it guesses at. Forbid the heredoc/inline-eval shape in
-        # every control skill.
         assert "python3 - <<" not in body, (name, body)
         assert "<<EOF" not in body, (name, body)
