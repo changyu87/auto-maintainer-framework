@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""SessionStart persona/banner hook for the auto-maintainer plugin.
+
+Injects the dispatcher persona/banner into the session context on
+SessionStart (DESIGN 3.9.2 / 3.10.3). This is the v1 seed of the
+"CLAUDE.md substitute": it proves the plugin loads and gives every
+session a stable persona header.
+
+Reads the SessionStart hook event JSON on stdin (unused for now) and
+emits an additionalContext block on stdout per the Claude Code
+SessionStart hook contract.
+
+Version: 0.1.0
+Owner: rabbit-workflow team
+Deprecation criterion: Superseded when the maintainer loop ships its
+  full persona/config injection and this seed folds into it.
+"""
+
+import json
+import sys
+
+_PERSONA = (
+    "[auto-maintainer] Dispatcher persona active. "
+    "This session is running the auto-maintainer plugin (slice 1: "
+    "packaging skeleton). No maintainer loop is configured yet; run "
+    "/auto-maintainer:status for the current state."
+)
+
+
+def main():
+    # Drain stdin (the hook event payload); not needed for the banner.
+    try:
+        sys.stdin.read()
+    except Exception:
+        pass
+
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": _PERSONA,
+        }
+    }
+    sys.stdout.write(json.dumps(output))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

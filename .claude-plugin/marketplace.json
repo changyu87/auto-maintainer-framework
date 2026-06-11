@@ -1,0 +1,14 @@
+{
+  "name": "auto-maintainer",
+  "owner": {
+    "name": "changyu87"
+  },
+  "plugins": [
+    {
+      "description": "Auto-maintainer: an autonomous repository maintenance loop, shipped as a Claude Code plugin (packaging slice 1).",
+      "name": "auto-maintainer",
+      "source": "./plugins/auto-maintainer",
+      "version": "0.1.0"
+    }
+  ]
+}

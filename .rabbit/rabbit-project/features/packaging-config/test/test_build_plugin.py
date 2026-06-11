@@ -178,6 +178,40 @@ def test_sessionstart_hook_wired():
         hooks = data.get("hooks", data)
         assert "SessionStart" in hooks, \
             "hooks.json must wire a SessionStart handler"
+        # The handler command must run via an explicit interpreter so it does
+        # not depend on the script's exec bit surviving git/copy.
+        cmd = hooks["SessionStart"][0]["hooks"][0]["command"]
+        assert cmd.startswith("python3 "), \
+            f"hook command must invoke python3 explicitly, got {cmd!r}"
+        assert "session-start-persona.py" in cmd
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Spec: the SessionStart persona/banner is a genuine v1 component — running
+# the shipped hook script must emit a valid SessionStart additionalContext.
+# ---------------------------------------------------------------------------
+def test_sessionstart_hook_executes_and_emits_context():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        script = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "hooks", "session-start-persona.py",
+        )
+        proc = subprocess.run(
+            [sys.executable, script],
+            input='{"hook_event_name": "SessionStart"}',
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, f"hook exited {proc.returncode}: {proc.stderr}"
+        payload = json.loads(proc.stdout)
+        out = payload["hookSpecificOutput"]
+        assert out["hookEventName"] == "SessionStart"
+        assert out["additionalContext"], "hook must inject a persona/banner"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
