@@ -21,19 +21,23 @@ Sources:
       .rabbit/rabbit-project/features/scheduling/src/run_tick.py
       .rabbit/rabbit-project/features/scheduling/src/status.py
       .rabbit/rabbit-project/features/scheduling/src/stop.py
-    The four pure libs are copied byte-for-byte; run_tick.py, status.py, and
-    stop.py are normalized so their sibling-lib imports resolve from the
-    co-located lib/ dir alone (the shipped plugin carries only its own dir, so
-    it cannot reach the feature src/ trees the dev copy resolves through).
-    status.py and stop.py import run_tick + the lifecycle/durable libs, so they
-    get the SAME self-path bootstrap run_tick does — generalized here so all
-    three resolve their siblings from lib/.
+      .rabbit/rabbit-project/features/work-intake/src/work_intake.py
+    The four pure libs are copied byte-for-byte; run_tick.py, status.py,
+    stop.py, and work_intake.py are normalized so their sibling-lib imports
+    resolve from the co-located lib/ dir alone (the shipped plugin carries only
+    its own dir, so it cannot reach the feature src/ trees the dev copy resolves
+    through). status.py and stop.py import run_tick + the lifecycle/durable
+    libs, run_tick imports work_intake, and work_intake imports fsm_contracts —
+    so each gets the SAME self-path bootstrap, generalized here so they all
+    resolve their siblings from lib/. work_intake's source does not import os/sys
+    at module top, so its bootstrap variant imports them before the sys.path
+    insert.
 
 The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
 
-Version: 0.2.2
+Version: 0.2.3
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the framework adopts a different
   distribution channel than a self-hosted Claude Code plugin marketplace, or
@@ -52,7 +56,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.2.2"
+_PLUGIN_VERSION = "0.2.3"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -77,28 +81,6 @@ _LIBS = {
     ),
 }
 
-# These libs are normalized rather than copied byte-for-byte: each imports
-# sibling libs that, in the shipped plugin, are flat neighbours in lib/. A
-# self-path bootstrap is inserted right before each one's FIRST sibling import
-# so the shipped copy resolves its siblings from the co-located lib/ dir alone
-# (the shipped plugin carries only its own dir). Maps dest filename -> (source
-# path relative to repo_root, the import-line anchor to insert the bootstrap
-# before).
-_NORMALIZED_LIBS = {
-    "run_tick.py": (
-        os.path.join(_FEATURES_REL, "scheduling", "src", "run_tick.py"),
-        "import fsm_contracts as fc  # noqa: E402",
-    ),
-    "status.py": (
-        os.path.join(_FEATURES_REL, "scheduling", "src", "status.py"),
-        "import run_tick as rt  # noqa: E402",
-    ),
-    "stop.py": (
-        os.path.join(_FEATURES_REL, "scheduling", "src", "stop.py"),
-        "import run_tick as rt  # noqa: E402",
-    ),
-}
-
 # The self-path bootstrap inserted before the anchor: it puts the file's own
 # (co-located) dir on sys.path so sibling imports resolve from lib/ alone.
 _SELF_PATH_BOOTSTRAP = (
@@ -106,6 +88,48 @@ _SELF_PATH_BOOTSTRAP = (
     "# this file's own (co-located) dir so the shipped plugin is self-contained.\n"
     "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\n"
 )
+
+# work_intake's source does not import os/sys at module top (unlike run_tick),
+# so its bootstrap variant imports them before the sys.path insert. Same effect:
+# the file's own (co-located) dir on sys.path so its sibling fsm_contracts
+# import resolves from lib/ alone.
+_SELF_PATH_BOOTSTRAP_WITH_IMPORTS = (
+    "# packaging-config: ship-time normalization — resolve sibling libs from\n"
+    "# this file's own (co-located) dir so the shipped plugin is self-contained.\n"
+    "import os  # noqa: E402\n"
+    "import sys  # noqa: E402\n"
+    "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\n"
+)
+
+# These libs are normalized rather than copied byte-for-byte: each imports
+# sibling libs that, in the shipped plugin, are flat neighbours in lib/. A
+# self-path bootstrap is inserted right before each one's FIRST sibling import
+# so the shipped copy resolves its siblings from the co-located lib/ dir alone
+# (the shipped plugin carries only its own dir). Maps dest filename -> (source
+# path relative to repo_root, the import-line anchor to insert the bootstrap
+# before, the bootstrap snippet to insert).
+_NORMALIZED_LIBS = {
+    "run_tick.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "run_tick.py"),
+        "import fsm_contracts as fc  # noqa: E402",
+        _SELF_PATH_BOOTSTRAP,
+    ),
+    "status.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "status.py"),
+        "import run_tick as rt  # noqa: E402",
+        _SELF_PATH_BOOTSTRAP,
+    ),
+    "stop.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "stop.py"),
+        "import run_tick as rt  # noqa: E402",
+        _SELF_PATH_BOOTSTRAP,
+    ),
+    "work_intake.py": (
+        os.path.join(_FEATURES_REL, "work-intake", "src", "work_intake.py"),
+        "import fsm_contracts as fc",
+        _SELF_PATH_BOOTSTRAP_WITH_IMPORTS,
+    ),
+}
 
 
 def _write_json(path, data):
@@ -130,14 +154,16 @@ def _copy_tree(src, dst):
             )
 
 
-def _normalize_lib(src_path, anchor):
-    """Read a scheduling control lib and return its self-contained variant.
+def _normalize_lib(src_path, anchor, bootstrap):
+    """Read a control lib and return its self-contained variant.
 
     The dev copy resolves its sibling libs via ../<dep>/src on sys.path; the
     shipped copy lives in lib/ alongside those libs, so we insert a self-path
     bootstrap (lib/ on sys.path) right before the FIRST sibling import (the
     given anchor line). Any original ../<dep>/src loop stays harmless: those
-    dirs do not exist in the plugin.
+    dirs do not exist in the plugin. `bootstrap` is the snippet to insert (the
+    plain variant for files that already import os/sys, the with-imports variant
+    for work_intake which does not).
     """
     with open(src_path, "r", encoding="utf-8") as fh:
         body = fh.read()
@@ -147,7 +173,7 @@ def _normalize_lib(src_path, anchor):
         )
     return body.replace(
         anchor,
-        _SELF_PATH_BOOTSTRAP + anchor,
+        bootstrap + anchor,
         1,
     )
 
@@ -198,8 +224,8 @@ def build(repo_root, out_root=None):
     )
 
     # 3. Core libs into lib/. The four pure libs are copied byte-identical;
-    #    run_tick.py, status.py, and stop.py are normalized for self-contained
-    #    sibling imports.
+    #    run_tick.py, status.py, stop.py, and work_intake.py are normalized for
+    #    self-contained sibling imports.
     lib_dir = os.path.join(plugin_root, "lib")
     os.makedirs(lib_dir, exist_ok=True)
     for dst_name, src_rel in sorted(_LIBS.items()):
@@ -207,11 +233,14 @@ def build(repo_root, out_root=None):
             os.path.join(repo_root, src_rel),
             os.path.join(lib_dir, dst_name),
         )
-    for dst_name, (src_rel, anchor) in sorted(_NORMALIZED_LIBS.items()):
+    for dst_name, (src_rel, anchor, bootstrap) in sorted(
+        _NORMALIZED_LIBS.items()
+    ):
         with open(
             os.path.join(lib_dir, dst_name), "w", encoding="utf-8"
         ) as fh:
-            fh.write(_normalize_lib(os.path.join(repo_root, src_rel), anchor))
+            fh.write(_normalize_lib(
+                os.path.join(repo_root, src_rel), anchor, bootstrap))
 
     # 4. Marketplace catalog at <out_root>/.claude-plugin/marketplace.json.
     _write_json(

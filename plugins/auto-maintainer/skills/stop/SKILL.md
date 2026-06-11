@@ -26,7 +26,7 @@ loop does.
    so the script resolves regardless of the session's working directory. The
    script writes the durable `STOPPED` disposition marker via the
    lifecycle-dispositions API: the next tick's GUARD reads `STOPPED`, halts
-   before doing any work, and the counter does not advance. Do not hand-roll any
+   before doing any work, and no issues are pulled. Do not hand-roll any
    Python or write the marker yourself — `stop.py` owns the state write; this
    skill only runs it. Print the confirmation line it emits.
 
