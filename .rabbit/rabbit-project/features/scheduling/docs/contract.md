@@ -13,11 +13,12 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
     "files": [
       "DEFAULT_ROUTE: the shipped read-and-idle spine GUARD->DRAIN->PULL->PERSIST->EXIT as a route.json dict (states/edges/terminal, incl. the DONE/HALTED terminals)",
       "DEFAULT_ADAPTER_MAP: every known port -> 'run_tick:make_<port>' (incl. TRIAGE, resolvable even though the default route omits it)",
-      "built-in adapter factories make_guard/make_exit/make_drain/make_persist/make_pull/make_triage — each factory(runtime) -> (StateManifest, run_callable) wrapping the EXISTING sibling adapter unchanged (the adapter-wiring factory convention)"
+      "built-in adapter factories make_guard/make_exit/make_drain/make_persist/make_pull/make_triage — each factory(runtime) -> (StateManifest, run_callable) wrapping the EXISTING sibling adapter unchanged (the adapter-wiring factory convention)",
+      "route_source(project_dir=None) -> (label, path): the single source of truth for the loaded route's SOURCE — ('override', '<project_dir>/.auto-maintainer/route.json') when that file exists (the SAME path adapter-wiring loads), else ('default', None); route_source_label(...) renders it as the trace/status token 'default' or 'override:<abs path>' (#59)"
     ],
     "scripts": [
-      "src/run_tick.py: deterministic single-tick runner — resolves runtime, calls adapter_wiring.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, start='GUARD', initial=[...]) to load (project-local override else default) -> resolve -> validate -> (route, states), runs tick_orchestrator.run(...), prints a tick trace, persists work_items (+ work_orders when the active route produced them) + the EXIT disposition signal (one invocation = one tick)",
-      "src/start.py / src/stop.py / src/status.py: deterministic control scripts (script-tier) owning all state operations; status.py reports disposition + work_items count (+ work_orders count if present)"
+      "src/run_tick.py: deterministic single-tick runner — resolves runtime, calls adapter_wiring.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, start='GUARD', initial=[...]) to load (project-local override else default) -> resolve -> validate -> (route, states), runs tick_orchestrator.run(...), prints a tick trace (incl. route source — default vs override:<path>, #59), persists work_items (+ work_orders when the active route produced them) + the EXIT disposition signal (one invocation = one tick)",
+      "src/start.py / src/stop.py / src/status.py: deterministic control scripts (script-tier) owning all state operations; status.py reports disposition + work_items count (+ work_orders count if present) + the route source (default vs override:<path>, #59) via run_tick.route_source"
     ],
     "skills": [
       "ship/skills/start/SKILL.md (/auto-maintainer:start): runs tick #1 via start.py then schedules the recurring ~1-min in-session heartbeat re-running run_tick.py",
