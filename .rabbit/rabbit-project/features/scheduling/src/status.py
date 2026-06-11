@@ -42,15 +42,22 @@ import lifecycle_dispositions as ld  # noqa: E402
 def status_line():
     """Build the one-line loop status from REAL on-disk state.
 
-    Reads the disposition marker and the last pull's persisted work_items count
-    from the runtime dir run_tick resolves, WITHOUT creating it. Returns a single
-    human-readable line naming the disposition, work_items count, and runtime dir.
+    Reads the disposition marker, the last tick's persisted work_items count, and
+    — when the active route produced any — the work_orders count, from the runtime
+    dir run_tick resolves, WITHOUT creating it. Returns a single human-readable
+    line naming the disposition, the counts, and the runtime dir. The work_orders
+    field is appended only when the last tick produced orders (e.g. a TRIAGE
+    route), so the default read-and-idle loop's line stays unchanged.
     """
     runtime_dir, state_path, _journal_path = rt.resolve_runtime_paths()
     disposition = ld.read_disposition(runtime_dir)
     work_items = rt.persisted_work_items_count(state_path)
-    return (f"[status] disposition={disposition} work_items={work_items} "
-            f"runtime_dir={runtime_dir}")
+    work_orders = rt.persisted_work_orders_count(state_path)
+    line = (f"[status] disposition={disposition} work_items={work_items} ")
+    if work_orders:
+        line += f"work_orders={work_orders} "
+    line += f"runtime_dir={runtime_dir}"
+    return line
 
 
 if __name__ == "__main__":
