@@ -1,6 +1,6 @@
 {
   "name": "work-intake",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/work-intake/src/**"
@@ -9,5 +9,5 @@
   "deprecation_criterion": "Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version).",
   "tdd_state": "test-green",
   "updated": "2026-06-11",
-  "spec_no_change_reason": "spec seeded in prior scaffold commit; this cycle implements slice 1 unchanged"
+  "spec_no_change_reason": "slice-2 TRIAGE already specced in docs/spec.md (Slice 2 section seeded in prior scaffold); this cycle implements it unchanged"
 }

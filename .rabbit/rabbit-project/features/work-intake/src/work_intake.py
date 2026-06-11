@@ -14,11 +14,20 @@ Public surface (slice 1):
   - gh_issue_source()   — the production source: shells the deterministic gh CLI.
   - Pull                — the PULL state; run(TickContext) -> StateResult.
 
+Public surface (slice 2 — TRIAGE validity gate):
+  - WorkOrder           — the typed, versioned, decision-carrying slot schema.
+  - WORK_ORDERS_SLOT    — the fsm-contracts slot registration descriptor.
+  - TRIAGE_MANIFEST     — the TRIAGE state's {reads, writes, emits} manifest.
+  - TRIAGE_SIGNALS      — the closed signal set TRIAGE may emit (OK | EMPTY).
+  - Triage              — the TRIAGE state; run(TickContext) -> StateResult.
+
 The only non-deterministic edge — the live `gh` call — sits behind an
 INJECTABLE source (Pull(source=...)), so tests drive PULL with a stub over
 fixture issues with no network (spec-rules §1: the failure is locatable to the
-fetch boundary, never a flaky live call). TRIAGE / dedup / decompose / order /
-work_orders are deferred to slice 2.
+fetch boundary, never a flaky live call). TRIAGE applies a pure, deterministic
+validity gate; its only time-dependent edge (staleness) sits behind an
+INJECTABLE reference time (Triage(now=...)). Richer TRIAGE — dedup / decompose /
+order / the WHAT-generation seam — is deferred to slice 3+.
 
 Version: 0.1.0
 Owner: changyu87
@@ -30,6 +39,7 @@ Deprecation criterion: Superseded when the tracker-read model changes
 import json
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 # fsm-contracts is a sibling feature; the consumer registers its own slots and
@@ -187,4 +197,160 @@ class Pull:
         items = self._source(self._repo)
         writes = {"work_items": [item.to_dict() for item in items]}
         signal = "OK" if items else "EMPTY"
+        return fc.StateResult(signal=signal, writes=writes)
+
+
+# ==========================================================================
+# Slice 2 — TRIAGE: the deterministic validity gate (work_items -> work_orders)
+# ==========================================================================
+
+# The versioned WorkOrder schema (machine-first; bumped on a breaking change to
+# the field set). Distinct from both the feature version and WorkItem's version.
+WORK_ORDER_SCHEMA_VERSION = "1.0.0"
+
+
+@dataclass(eq=True)
+class WorkOrder:
+    """A validated, decision-carrying item produced by TRIAGE from a WorkItem.
+
+    `decision` is "accepted" or "rejected"; `reason` records why a rejected item
+    was gated out (empty for accepted). `work_item_id` links back to the source
+    WorkItem.id. `to_dict`/`from_dict` give a machine-first, versioned
+    representation suitable for the `work_orders` blackboard slot.
+    """
+
+    id: str
+    work_item_id: str
+    title: str
+    body: str
+    url: str
+    decision: str
+    reason: str
+    labels: List[str] = field(default_factory=list)
+    created_at: str = ""
+
+    def to_dict(self):
+        return {
+            "schema_version": WORK_ORDER_SCHEMA_VERSION,
+            "id": self.id,
+            "work_item_id": self.work_item_id,
+            "title": self.title,
+            "body": self.body,
+            "url": self.url,
+            "labels": list(self.labels),
+            "decision": self.decision,
+            "reason": self.reason,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            id=d["id"],
+            work_item_id=d["work_item_id"],
+            title=d["title"],
+            body=d["body"],
+            url=d["url"],
+            labels=list(d.get("labels", [])),
+            decision=d["decision"],
+            reason=d.get("reason", ""),
+            created_at=d.get("created_at", ""),
+        )
+
+
+# The fsm-contracts slot descriptor. `work_orders` is an array slot (a list of
+# WorkOrder dicts); the slot version tracks the schema version.
+WORK_ORDERS_SLOT = {
+    "name": "work_orders",
+    "schema": {"type": "array"},
+    "version": WORK_ORDER_SCHEMA_VERSION,
+}
+
+# Closed signal set TRIAGE emits: OK when any item was accepted, else EMPTY.
+TRIAGE_SIGNALS = ["OK", "EMPTY"]
+
+# Per-state manifest (bounded-scope contract): reads work_items, writes
+# work_orders, emits OK | EMPTY.
+TRIAGE_MANIFEST = fc.StateManifest(reads=["work_items"], writes=["work_orders"],
+                                   emits=TRIAGE_SIGNALS)
+
+# The staleness window: an item whose `updated_at` is older than this many days
+# relative to the reference time is gated out as stale. Hardcoded for slice 2;
+# configuration is deferred (#17-style).
+STALE_WINDOW_DAYS = 365
+
+
+def _parse_iso(ts):
+    """Parse a tracker ISO-8601 timestamp (e.g. `2026-05-02T11:30:00Z`) to an
+    aware datetime, returning None when it cannot be parsed."""
+    if not ts:
+        return None
+    text = ts.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+class Triage:
+    """The TRIAGE state. Reads the `work_items` slot, applies a deterministic
+    validity gate to each WorkItem, maps each ACCEPTED item 1:1 to a
+    WorkOrder(decision="accepted"), writes the `work_orders` slot, and emits OK
+    if any were accepted else EMPTY.
+
+    The validity gate (pure rules, no network, no AI):
+      - well-formed: a non-empty title  (else rejected "malformed: no title");
+      - in-scope:    state == "open"    (else rejected "not open");
+      - not-stale:   updated_at within STALE_WINDOW_DAYS of the reference time
+                     (else rejected "stale: ...").
+
+    Staleness is the only time-dependent edge; it keys off an INJECTABLE
+    reference time (`now`, defaulting to the current UTC time) so tests pin
+    staleness deterministically (spec-rules §1).
+    """
+
+    def __init__(self, now=None):
+        self._now = now if now is not None else datetime.now(timezone.utc)
+
+    def classify(self, item):
+        """Apply the validity gate to one WorkItem, returning (decision, reason)
+        where decision is "accepted" or "rejected". Pure and deterministic."""
+        if not (item.title and item.title.strip()):
+            return ("rejected", "malformed: no title")
+        if (item.state or "").lower() != "open":
+            return ("rejected", "not open")
+        updated = _parse_iso(item.updated_at)
+        if updated is None:
+            return ("rejected", "stale: missing or unparseable updated_at")
+        if self._now - updated > timedelta(days=STALE_WINDOW_DAYS):
+            return ("rejected", f"stale: not updated within "
+                                f"{STALE_WINDOW_DAYS} days")
+        return ("accepted", "")
+
+    def run(self, ctx):
+        raw = ctx.read("work_items") or []
+        items = [WorkItem.from_dict(d) for d in raw]
+        accepted = []
+        for item in items:
+            decision, _reason = self.classify(item)
+            if decision != "accepted":
+                continue
+            accepted.append(WorkOrder(
+                id=f"wo-{item.id}",
+                work_item_id=item.id,
+                title=item.title,
+                body=item.body,
+                url=item.url,
+                labels=list(item.labels),
+                decision="accepted",
+                reason="",
+                created_at=item.created_at,
+            ))
+        writes = {"work_orders": [order.to_dict() for order in accepted]}
+        signal = "OK" if accepted else "EMPTY"
         return fc.StateResult(signal=signal, writes=writes)
