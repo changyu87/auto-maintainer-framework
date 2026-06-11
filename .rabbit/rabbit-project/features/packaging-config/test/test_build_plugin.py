@@ -274,14 +274,16 @@ def test_core_libs_copied_byte_identical():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #44, start.py): all NINE control libs ship under lib/ —
-# the four pure libs, scheduling's run_tick.py, scheduling's script-backed
-# status.py + stop.py, work-intake's work_intake.py (the GitHub-Issues PULL
-# adapter run_tick imports), AND scheduling's start.py (the deterministic
-# fresh-start starter the /auto-maintainer:start skill now invokes for tick #1,
-# which clears a latched STOPPED disposition before ticking — fixes #44).
+# Slice 2 spec (re-ship #?, adapter_wiring.py): all TEN control libs ship under
+# lib/ — the four pure libs, scheduling's run_tick.py, scheduling's
+# script-backed status.py + stop.py, work-intake's work_intake.py (the
+# GitHub-Issues PULL adapter run_tick imports), scheduling's start.py (the
+# deterministic fresh-start starter the /auto-maintainer:start skill invokes for
+# tick #1), AND adapter-wiring's adapter_wiring.py (the route-as-data + adapter
+# wiring mechanism run_tick now imports so the installed plugin runs the
+# route-as-data loop self-contained).
 # ---------------------------------------------------------------------------
-def test_all_nine_control_libs_present():
+def test_all_ten_control_libs_present():
     out_root = _build_into_temp()
     try:
         lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
@@ -295,6 +297,7 @@ def test_all_nine_control_libs_present():
             "stop.py",
             "work_intake.py",
             "start.py",
+            "adapter_wiring.py",
         ):
             assert os.path.isfile(os.path.join(lib, fname)), \
                 f"lib/{fname} must ship in the plugin tree"
@@ -304,14 +307,15 @@ def test_all_nine_control_libs_present():
 
 # ---------------------------------------------------------------------------
 # Slice 2 spec (self-containment, critical): the shipped run_tick.py, status.py,
-# stop.py, work_intake.py, and start.py each import sibling libs that must
-# resolve with ONLY the plugin tree on sys.path. Claude copies just the plugin
-# dir into its cache, so the shipped control libs must NOT depend on the feature
-# src/ dirs. work_intake imports fsm_contracts and start imports run_tick +
-# lifecycle_dispositions (all flat siblings in lib/), so each gets the same
-# self-path bootstrap run_tick/status/stop get. Prove each in a subprocess
-# whose sys.path is restricted to the shipped lib/ dir alone (PYTHONPATH
-# cleared, cwd = out_root).
+# stop.py, work_intake.py, start.py, and adapter_wiring.py each import sibling
+# libs that must resolve with ONLY the plugin tree on sys.path. Claude copies
+# just the plugin dir into its cache, so the shipped control libs must NOT depend
+# on the feature src/ dirs. work_intake imports fsm_contracts, start imports
+# run_tick + lifecycle_dispositions, and adapter_wiring imports fsm_contracts +
+# tick_orchestrator (all flat siblings in lib/), so each gets the same self-path
+# bootstrap run_tick/status/stop get. Prove each in a subprocess whose sys.path
+# is restricted to the shipped lib/ dir alone (PYTHONPATH cleared, cwd =
+# out_root).
 # ---------------------------------------------------------------------------
 def test_shipped_control_libs_are_self_contained():
     import subprocess
@@ -324,7 +328,8 @@ def test_shipped_control_libs_are_self_contained():
                           ("status", "status_line"),
                           ("stop", "stop"),
                           ("work_intake", "Pull"),
-                          ("start", "start")):
+                          ("start", "start"),
+                          ("adapter_wiring", "build_loop")):
             probe = (
                 "import sys; "
                 f"sys.path.insert(0, {lib!r}); "
@@ -429,13 +434,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #44): version bumped to 0.2.4 in BOTH plugin.json and
-# marketplace.json, and the two are consistent. The spec permits a patch bump
-# on each re-ship of the plugin tree (0.2.4 re-ships start.py into lib/ so the
-# installed /auto-maintainer:start runs the deterministic starter — clearing a
-# latched STOPPED disposition before tick #1 — instead of hand-rolling Python).
+# Slice 2 spec (re-ship, adapter_wiring): version bumped to 0.2.5 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. The spec permits
+# a patch bump on each re-ship of the plugin tree (0.2.5 re-ships
+# adapter_wiring.py into lib/ so the installed /auto-maintainer:start runs the
+# route-as-data loop self-contained — run_tick now imports adapter_wiring).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_4_and_consistent():
+def test_version_bumped_to_0_2_5_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -447,10 +452,10 @@ def test_version_bumped_to_0_2_4_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.4", \
-            f"plugin.json version must be 0.2.4, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.4", \
-            "marketplace.json plugin entry version must be 0.2.4"
+        assert pdata.get("version") == "0.2.5", \
+            f"plugin.json version must be 0.2.5, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.5", \
+            "marketplace.json plugin entry version must be 0.2.5"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -589,6 +594,27 @@ def test_shipped_start_py_no_source_tree_leak():
         assert ".rabbit" not in body, "shipped start.py leaks .rabbit"
         assert "rabbit-project" not in body, \
             "shipped start.py references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec (re-ship, adapter_wiring): the shipped adapter_wiring.py (another
+# file the build rewrites for self-containment — it imports sibling
+# fsm_contracts + tick_orchestrator) must not leak a path back into the source
+# feature tree — the headline clean-ship invariant applies to it too.
+# ---------------------------------------------------------------------------
+def test_shipped_adapter_wiring_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        aw = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "adapter_wiring.py"
+        )
+        with open(aw, encoding="utf-8") as fh:
+            body = fh.read()
+        assert ".rabbit" not in body, "shipped adapter_wiring leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "shipped adapter_wiring references the source feature tree"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
