@@ -318,3 +318,113 @@ def test_start_and_stop_skills_are_shipped():
     assert "run_tick.py" in start_body, start_body[:400]
     # stop latches STOPPED + cancels the heartbeat.
     assert "STOPPED" in stop_body, stop_body[:400]
+
+
+# --------------------------------------------------------------------------
+# Regression (auto-maintainer-framework#24) — the shipped /start and /stop
+# skills must invoke run_tick at its INSTALLED path. In an installed plugin
+# run_tick lands at lib/run_tick.py and skills run with cwd = the user's
+# project, so a bare `src/run_tick.py` does not resolve and /start fails. Both
+# skills must reference ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py and carry NO bare
+# src/run_tick.py.
+# --------------------------------------------------------------------------
+
+_INSTALL_PATH = "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py"
+
+
+def test_start_skill_references_install_correct_run_tick_path():
+    body = open(_ship_skill("start")).read()
+    assert _INSTALL_PATH in body, body
+    # No bare src/run_tick.py — that path does not exist in an installed plugin.
+    assert "src/run_tick.py" not in body, body
+
+
+def test_stop_skill_has_no_bare_src_run_tick_path():
+    body = open(_ship_skill("stop")).read()
+    # stop need not run the tick-runner, but if it names run_tick at all it must
+    # use the install-correct path, never the bare src/ path.
+    assert "src/run_tick.py" not in body, body
+    if "run_tick.py" in body:
+        assert _INSTALL_PATH in body, body
+
+
+# --------------------------------------------------------------------------
+# Regression (auto-maintainer-framework#24) — run_tick, invoked with NO
+# injected paths (the installed case), must default its durable-state / journal
+# / disposition-marker location to a writable per-project runtime dir:
+# ${CLAUDE_PROJECT_DIR}/.auto-maintainer/ when that env var is set, else
+# .auto-maintainer/ under cwd. Injected paths still win.
+# --------------------------------------------------------------------------
+
+def test_resolve_runtime_paths_prefers_claude_project_dir():
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        runtime_dir, state_path, journal_path = rt.resolve_runtime_paths()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    expected_dir = os.path.join(project_dir, ".auto-maintainer")
+    assert runtime_dir == expected_dir, runtime_dir
+    assert state_path.startswith(expected_dir + os.sep), state_path
+    assert journal_path.startswith(expected_dir + os.sep), journal_path
+
+
+def test_resolve_runtime_paths_falls_back_to_cwd_when_no_project_dir():
+    cwd = tempfile.mkdtemp(prefix="scheduling-cwd-")
+    old_env = os.environ.pop("CLAUDE_PROJECT_DIR", None)
+    old_cwd = os.getcwd()
+    os.chdir(cwd)
+    try:
+        runtime_dir, _, _ = rt.resolve_runtime_paths()
+    finally:
+        os.chdir(old_cwd)
+        if old_env is not None:
+            os.environ["CLAUDE_PROJECT_DIR"] = old_env
+    # cwd fallback: <cwd>/.auto-maintainer (realpath-normalized for macos /tmp).
+    assert runtime_dir == os.path.join(os.path.realpath(cwd), ".auto-maintainer") \
+        or runtime_dir == os.path.join(cwd, ".auto-maintainer"), runtime_dir
+
+
+def test_run_tick_runs_end_to_end_with_default_project_dir():
+    """The installed case: no injected path, only CLAUDE_PROJECT_DIR. run_tick
+    must create/use <that>/.auto-maintainer/ and actually advance the counter
+    end-to-end with the default alone."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        signal = rt.run_tick()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    am_dir = os.path.join(project_dir, ".auto-maintainer")
+    assert os.path.isdir(am_dir), am_dir
+    state_path = os.path.join(am_dir, "durable-state.json")
+    assert ds.DurableState(state_path).load()["counter"] == 1
+    assert signal == "refire", signal
+
+
+def test_run_tick_injected_paths_still_win_over_default():
+    """Injected paths take precedence over the env/cwd default — the temp-path
+    injection capability that the rest of the suite relies on is preserved."""
+    runtime_dir, state_path, journal_path = _paths()
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
+                    journal_path=journal_path)
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    # The injected state advanced; the default .auto-maintainer dir was NOT used.
+    assert ds.DurableState(state_path).load()["counter"] == 1
+    assert not os.path.exists(os.path.join(project_dir, ".auto-maintainer"))
