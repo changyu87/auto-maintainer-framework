@@ -1,27 +1,36 @@
 ---
 name: status
-description: Report the current state of the auto-maintainer plugin and its maintainer loop. Use this whenever the user runs /auto-maintainer:status, or asks what the auto-maintainer is doing, whether a maintainer loop is configured or running, or what the plugin's current state is.
+description: Report the auto-maintainer tick loop's real status — current disposition and persisted counter. Use this whenever the user runs /auto-maintainer:status, or asks how the maintainer loop is doing, whether it's running/idle/stopped, what tick or counter it's at, or to check on the heartbeat / background ticking. This reads the real on-disk loop state, not a guess.
 version: 0.1.0
 owner: rabbit-workflow team
-deprecation_criterion: Superseded when the maintainer loop ships real adapters and this reporter is replaced by a status command that reads live loop state.
+deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the control surface is replaced.
 ---
 
 # auto-maintainer status
 
-Report the plugin's current operating state to the user.
+Report the real status of the in-session maintainer tick loop: its current
+disposition (RUNNING / IDLE / STOPPED / ABORTED / RESTART_NEEDED) and the
+persisted counter.
 
-This is packaging slice 1 — a walking skeleton. The maintainer loop's real
-adapters do not exist yet, so there is no live loop state to read. The plugin
-is installed and loaded, but nothing is being maintained.
+The status is read from durable on-disk state by a deterministic script, so the
+answer is the real loop state rather than something inferred from the
+conversation. If the loop was never started, the script reports a sane "not
+started" view (disposition IDLE, counter 0) without creating any runtime files.
 
-When invoked, report exactly:
+## Steps
 
-```
-auto-maintainer: no loop configured yet (packaging slice 1).
-The plugin is installed and loaded; no maintainer loop adapters are wired.
-```
+1. Run the status script:
 
-Do not fabricate loop activity, tracked repositories, schedules, or budgets —
-none exist at this slice. If the user asks to configure or start a loop,
-explain that adapter wiring and configuration arrive in a later slice and are
-not available yet.
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/lib/status.py
+   ```
+
+   `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the installed plugin's root,
+   so the script resolves regardless of the session's working directory (skills
+   run with cwd = the user's project). The script reads the disposition marker
+   and the durable counter and prints one status line.
+
+2. Report the line it prints to the user verbatim (disposition, counter, and the
+   runtime dir it read from). Do not hand-roll any Python or invent a status:
+   `status.py` owns all state reads, and this skill only runs it and relays the
+   output.
