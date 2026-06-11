@@ -43,6 +43,12 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
 - **Read-and-idle:** with only read stages (no `IMPLEMENT` yet) `EXIT` goes
   **IDLE** after the route runs; it becomes refire/work-driven once an act stage
   lands. The slice-1 `DEMO_WORK` stub stays retired.
+- **Per-tick read products (#64):** `work_items`/`work_orders` are EPHEMERAL —
+  each tick they reflect ONLY what THIS tick's route produced (PULL writes
+  `work_items`; TRIAGE, if routed, writes `work_orders`). They are NOT carried
+  forward across ticks: a route without TRIAGE reports `work_orders=0`, never a
+  stale count from an earlier TRIAGE tick. (Durable state keeps cross-tick facts;
+  the read-product snapshot is overwritten every tick.)
 
 ## Paths governed
 
