@@ -6,7 +6,7 @@ function calls sys.exit, prints, or raises on contract-violation conditions.
 
 Per spec Inv 29.
 
-Version: 1.2.0
+Version: 1.3.0
 Owner: rabbit-workflow team (contract)
 Deprecation criterion: when a native rabbit CLI exposes equivalent bindings.
 """
@@ -343,7 +343,22 @@ _TEMPLATE_METADATA = {"template_version"}
 
 
 def check_template_producer_consistency(template_path: str) -> CheckResult:
-    """Inv 16: template top-level keys are a subset of the live producer field set."""
+    """Inv 16: template top-level keys are a subset of the live producer field set.
+
+    Scope (#1147): the bug-template only lives at the contract feature path, but
+    tdd-step.py runs this check on EVERY feature's test-green transition. When
+    the template file is ABSENT — an unrelated feature's TDD run in a worktree
+    or plugin layout that does not carry contract's template — there is no
+    template to be inconsistent with, so the check is vacuously satisfied. This
+    keeps the check meaningful only where the template actually exists and
+    avoids a spurious 'template-schema-producer consistency check failed'
+    WARNING on unrelated transitions. A template that IS present but malformed
+    is a genuine inconsistency at its source and still fails.
+    """
+    if not os.path.isfile(template_path):
+        return CheckResult(True, [
+            f"OK: no template at {template_path} (vacuous; out of scope)"
+        ])
     try:
         with open(template_path) as f:
             data = json.load(f)
