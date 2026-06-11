@@ -320,10 +320,12 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec: version bumped to 0.2.0 in BOTH plugin.json and
-# marketplace.json, and the two are consistent.
+# Slice 2 spec (re-ship): version bumped to 0.2.1 in BOTH plugin.json and
+# marketplace.json, and the two are consistent. The spec permits a patch bump
+# on each re-ship of the plugin tree (e.g. 0.2.1 after the scheduling #24
+# skill-path fix re-ship).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_0_and_consistent():
+def test_version_bumped_to_0_2_1_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -335,12 +337,38 @@ def test_version_bumped_to_0_2_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.0", \
-            f"plugin.json version must be 0.2.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.0", \
-            "marketplace.json plugin entry version must be 0.2.0"
+        assert pdata.get("version") == "0.2.1", \
+            f"plugin.json version must be 0.2.1, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.1", \
+            "marketplace.json plugin entry version must be 0.2.1"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec (re-ship, scheduling #24 fix): the shipped start skill must
+# reference run_tick via the plugin-root token ${CLAUDE_PLUGIN_ROOT}/lib/
+# run_tick.py and must NOT carry a bare src/run_tick.py reference. The shipped
+# plugin carries only its own dir, so the dev-time bare src/ path would not
+# resolve once installed; the #24 fix anchors it to the plugin root.
+# ---------------------------------------------------------------------------
+def test_shipped_start_skill_uses_plugin_root_run_tick():
+    out_root = _build_into_temp()
+    try:
+        sk = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "start", "SKILL.md",
+        )
+        assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py" in body, \
+            "shipped start skill must reference " \
+            "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py"
+        assert "src/run_tick.py" not in body, \
+            "shipped start skill must not carry a bare src/run_tick.py path"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 

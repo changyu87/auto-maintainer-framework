@@ -13,7 +13,8 @@ Start the in-session durable heartbeat that drives the maintainer tick loop.
 A Claude Code plugin cannot install its own clock, so the heartbeat is
 session-mediated: this skill runs one tick immediately and then asks the
 session to wake roughly every minute to run the next tick. One tick =
-one invocation of the deterministic tick-runner `src/run_tick.py`.
+one invocation of the deterministic tick-runner shipped at
+`${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py`.
 
 ## What a tick does
 
@@ -29,12 +30,17 @@ disposition and releases the mutex. The counter is persisted across ticks.
 1. Run the first tick now:
 
    ```
-   python3 src/run_tick.py
+   python3 ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py
    ```
 
-   Print the tick trace it emits (tick path, counter, resulting disposition).
+   `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the installed plugin's root,
+   so the tick-runner resolves regardless of the session's working directory
+   (skills run with cwd = the user's project, where a bare `src/` path would not
+   exist). Print the tick trace it emits (tick path, counter, resulting
+   disposition).
 
-2. Schedule a recurring heartbeat that re-runs `python3 src/run_tick.py` every
+2. Schedule a recurring heartbeat that re-runs
+   `python3 ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py` every
    ~1 minute. The interval is hardcoded to 1 minute for this slice
    (configurability is deferred — see auto-maintainer-framework#17). Record the
    scheduled heartbeat so `/auto-maintainer:stop` can cancel it
@@ -47,6 +53,6 @@ disposition and releases the mutex. The counter is persisted across ticks.
    - `idle` — the queue is empty; wait for the next heartbeat.
    - `halt` — a latched STOPPED/ABORTED disposition; stop ticking.
 
-Do not advance the loop by any path other than `run_tick.py`: the tick logic is
-deterministic and lives entirely in that script. This skill only runs it and
-schedules the wake.
+Do not advance the loop by any path other than
+`${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py`: the tick logic is deterministic and
+lives entirely in that script. This skill only runs it and schedules the wake.
