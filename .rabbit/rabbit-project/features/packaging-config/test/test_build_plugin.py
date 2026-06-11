@@ -360,13 +360,14 @@ def test_shipped_run_tick_is_self_contained():
     out_root = _build_into_temp()
     try:
         lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
-        # A probe that puts ONLY the shipped lib dir on sys.path (after
-        # clearing the inherited PYTHONPATH) and imports the shipped run_tick.
-        # If run_tick still resolved its deps from the feature src/ dirs the
-        # import would fail here, because those dirs are not on this path.
+        # A probe that adds ONLY the shipped lib dir to sys.path (the stdlib
+        # stays, the feature src/ dirs do NOT — PYTHONPATH is cleared and the
+        # probe runs from the out_root, not a feature dir). If the shipped
+        # run_tick still resolved its sibling libs from the feature src/ dirs
+        # the import would fail, because those dirs are not on this path.
         probe = (
             "import sys; "
-            f"sys.path = [{lib!r}]; "
+            f"sys.path.insert(0, {lib!r}); "
             "import run_tick; "
             "assert hasattr(run_tick, 'run_tick'); "
             "print('OK')"
@@ -375,6 +376,7 @@ def test_shipped_run_tick_is_self_contained():
             [sys.executable, "-c", probe],
             capture_output=True, text=True,
             env={"PYTHONPATH": ""},
+            cwd=out_root,
         )
         assert proc.returncode == 0, \
             f"shipped run_tick not self-contained: {proc.stderr}"
