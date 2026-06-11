@@ -56,7 +56,10 @@ test, not just inspection.
 
 ## Current behaviour
 
-None yet — `tdd_state: spec`.
+Implemented and merged (`tdd_state: test-green`). `DurableState` (atomic
+versioned JSON), the record-before-act `Journal`, and the `DRAIN`/`PERSIST`
+states are in `src/` with 11 passing tests (incl. the truncate→resume
+exactly-once crash-safety test). See `feature.json` / `docs/ROADMAP.md`.
 
 ## Known gaps / deferred
 

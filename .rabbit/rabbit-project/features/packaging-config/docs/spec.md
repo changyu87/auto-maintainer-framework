@@ -148,7 +148,10 @@ is added via git. Updates: `/plugin marketplace update`.
 
 ## Current behaviour
 
-None yet — feature is in `tdd_state: spec`.
+Implemented and merged (`tdd_state: test-green`). The deterministic
+`build_plugin.py` assembly + `ship/` collection produce the committed,
+`.rabbit`-free `plugins/auto-maintainer/` tree + `.claude-plugin/marketplace.json`
+(plugin v0.2.2) with 21 passing tests. See `feature.json` / `docs/ROADMAP.md`.
 
 ## Known gaps / deferred (explicit boundaries)
 

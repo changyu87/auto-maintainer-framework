@@ -58,7 +58,10 @@ formal anchor-invariant validation may be a follow-up.
 
 ## Current behaviour
 
-None yet — `tdd_state: spec`.
+Implemented and merged (`tdd_state: test-green`). The `Disposition` set + durable
+marker, the single-writer mutex with stale detection, and the `GUARD`/`EXIT`
+anchors are in `src/` with 20 passing tests. See `feature.json` /
+`docs/ROADMAP.md`.
 
 ## Known gaps / deferred
 

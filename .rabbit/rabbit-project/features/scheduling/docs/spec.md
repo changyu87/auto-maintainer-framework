@@ -94,7 +94,11 @@ exactly once (no double-count).
 
 ## Current behaviour
 
-None yet — `tdd_state: spec`.
+Implemented and merged (`tdd_state: test-green`). The tick-runner + `DEMO_WORK`,
+the script-backed `status.py`/`stop.py`, and the
+`/auto-maintainer:start`/`:stop`/`:status` ship skills are in `src/`/`ship/` with
+32 passing tests. Live-validated in an installed plugin session. See
+`feature.json` / `docs/ROADMAP.md`.
 
 ## Known gaps / deferred
 

@@ -65,7 +65,11 @@ B) is explicitly rejected.
 
 ## Current behaviour
 
-None yet — feature is in `tdd_state: spec`. Schemas not authored.
+Implemented and merged (`tdd_state: test-green`). The contract layer —
+`TickContext`, `StateResult`, `SignalVocabulary`, `StateManifest`, the
+`route.json` schema + `validate_route` — is authored in `src/` with 22 passing
+conformance tests (incl. the domain-free PING/PONG e2e). See `feature.json` /
+`docs/ROADMAP.md` for status.
 
 ## Known gaps / deferred (explicit boundaries)
 
@@ -86,13 +90,12 @@ None yet — feature is in `tdd_state: spec`. Schemas not authored.
 - **Slot versioning / migration policy** (§3.2.1 versioned durable state) —
   deferred.
 
-## Open questions
+## Resolved during implementation
 
-- Encoding of slot type declarations: JSON Schema per slot vs. a lighter typed
-  registry? (Leaning JSON Schema for machine-first validation.)
-- Does the per-state manifest live alongside each state's code or inside
-  `route.json`? (Leaning: declared by the state, aggregated by the router for
-  validation.)
+- Slot type declarations use JSON-Schema-style dicts with a `type` key (see
+  `src/fsm_contracts.py`).
+- The per-state manifest is declared by the state (`StateManifest`) and
+  aggregated by the router for validation — it is not stored inside `route.json`.
 
 ## Relationship to `tick-orchestrator` (first milestone)
 
