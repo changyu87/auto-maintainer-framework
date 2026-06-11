@@ -19,22 +19,30 @@ into a self-restarting ~1-minute loop you can watch in an installed session.
 > (heartbeat bootstrap, user-authorized), §3.3.3 (immediate-refire + at-most-one
 > dedup), §3.3.4 (restart-and-resume), §3.10.4 (run UX).
 
-## The real loop (slice 2: real PULL work)
+## The real loop (slice 3: route-as-data)
 
-Each tick runs this route through the existing `tick-orchestrator`:
+The route is now **data**, loaded + validated + resolved by `adapter-wiring`
+(§3.4.3) — no longer hardcoded. The shipped **default route** is the read-and-idle
+spine:
 
 ```
 GUARD → DRAIN → PULL → PERSIST → EXIT
 ```
 
-- `GUARD`, `EXIT` from `lifecycle-dispositions`; `DRAIN`, `PERSIST` from
-  `durable-state`; `PULL` from `work-intake` (the GitHub-Issues adapter).
-- The slice-1 `DEMO_WORK` stub is **retired** — `PULL` is real work: each tick
-  fetches the repo's open issues into the `work_items` slot (persisted).
-- **Read-and-idle:** with only a read stage (no `IMPLEMENT` yet), `EXIT` goes
-  **IDLE** after the pull rather than `refire` — otherwise the loop would
-  busy-loop re-pulling the same issues forever. EXIT's refire/idle becomes
-  work-driven again once an act stage lands.
+- Built-in adapters are wired via the factory convention
+  (`factory(runtime) -> (manifest, run)`): scheduling provides factories for
+  `GUARD`/`EXIT` (lifecycle-dispositions), `DRAIN`/`PERSIST` (durable-state),
+  `PULL`/`TRIAGE` (work-intake). The **default adapter-map** maps every known port
+  (incl. `TRIAGE`) to its factory, even though the default route uses a subset.
+- **Override by config, not code:** a project-local
+  `${CLAUDE_PROJECT_DIR}/.auto-maintainer/route.json` (and optional
+  `adapters.json`) overrides the defaults. Inserting `TRIAGE` between PULL and
+  PERSIST is a pure route.json edit — `adapter-wiring` resolves it from the map
+  and `validate_wiring` checks it at load. This is the ports-and-adapters promise
+  made real at runtime.
+- **Read-and-idle:** with only read stages (no `IMPLEMENT` yet) `EXIT` goes
+  **IDLE** after the route runs; it becomes refire/work-driven once an act stage
+  lands. The slice-1 `DEMO_WORK` stub stays retired.
 
 ## Paths governed
 
@@ -45,13 +53,15 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 ## Public surface
 
 1. **Tick-runner script** (`src/run_tick.py`, deterministic, script-tier) —
-   assembles `route` = `GUARD→DRAIN→PULL→PERSIST→EXIT` and the `states` map
-   (GUARD/EXIT from lifecycle-dispositions, DRAIN/PERSIST from durable-state,
-   `PULL` from work-intake), runs `tick_orchestrator.run(...)` over a
-   `TickContext` seeded from durable state, prints a tick trace (tick number,
-   state path, `work_items` count, resulting disposition), and returns/persists
-   the outcome. One invocation = one tick. `PULL`'s issue source is the live `gh`
-   CLI in production but **injectable** so tests pass a stub (no network).
+   defines the built-in adapter **factories** + the embedded `DEFAULT_ROUTE` and
+   `DEFAULT_ADAPTER_MAP`, then calls `adapter_wiring.build_loop(DEFAULT_ROUTE,
+   DEFAULT_ADAPTER_MAP, runtime, …)` to load (project-local override else default)
+   → resolve → validate → `(route, states)`, runs `tick_orchestrator.run(...)`
+   over a `TickContext` seeded from durable state, prints a tick trace (tick
+   number, state path, `work_items`/`work_orders` counts, resulting disposition),
+   and returns/persists the outcome. One invocation = one tick. `PULL`'s issue
+   source is the live `gh` CLI in production but **injectable** so tests pass a
+   stub (no network).
 2. **PULL integration (read-and-idle)** — the route uses work-intake's `PULL`
    state (writes `work_items`). After PULL + PERSIST, `EXIT` selects **IDLE** (no
    act stage yet), so the heartbeat re-pulls next interval rather than the loop
