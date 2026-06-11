@@ -2,7 +2,7 @@
   "name": "durable-state",
   "version": "0.1.0",
   "owner": "changyu87",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "paths": [
     "rabbit-project/features/durable-state/src/**"
   ],
