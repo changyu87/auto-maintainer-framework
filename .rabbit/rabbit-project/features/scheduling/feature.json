@@ -1,8 +1,14 @@
 {
   "name": "scheduling",
   "version": "0.1.0",
-  "owner": "cyxu",
-  "paths": [],
+  "owner": "changyu87",
+  "paths": [
+    "rabbit-project/features/scheduling/src/**",
+    "rabbit-project/features/scheduling/ship/**"
+  ],
   "created": "2026-06-11T04:09:05Z",
-  "deprecation_criterion": null
+  "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
+  "tdd_state": "test-green",
+  "updated": "2026-06-11",
+  "spec_no_change_reason": "seeded spec is complete and unchanged; this integration cycle implements it"
 }
