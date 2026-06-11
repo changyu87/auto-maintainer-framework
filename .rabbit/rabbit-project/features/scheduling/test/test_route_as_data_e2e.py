@@ -418,3 +418,87 @@ def test_stopped_latch_still_halts_under_route_as_data():
                          return_run_result=True)
     assert "PULL" not in result.path, result.path
     assert ld.read_disposition(runtime_dir) == ld.Disposition.STOPPED
+
+
+# --------------------------------------------------------------------------
+# #64 — per-tick EPHEMERAL read products: work_items/work_orders reported and
+# persisted by a tick reflect ONLY what THIS tick's route produced. They are
+# NOT carried forward across ticks. A route without TRIAGE persists work_orders
+# empty; a route without PULL would persist work_items empty (symmetric).
+# Durable CROSS-TICK facts (counter/journal/disposition) survive the reset.
+# --------------------------------------------------------------------------
+
+def test_triage_then_default_tick_does_not_carry_stale_work_orders():
+    """HEADLINE #64 repro: a TRIAGE-route tick persists work_orders=N; a later
+    DEFAULT-route tick in the SAME runtime dir must report work_orders=0 (NOT the
+    stale N), while work_items stays fresh from PULL."""
+    # One runtime dir reused across BOTH ticks (the #64 carry-forward surface).
+    project_dir = tempfile.mkdtemp(prefix="sched-64repro-")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+
+    # Tick 1: a project-local TRIAGE route -> work_orders persisted (count N>0).
+    _write_project_route(project_dir, _TRIAGE_ROUTE)
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source())
+    n_orders = rt.persisted_work_orders_count(state_path)
+    assert n_orders == 2, n_orders
+
+    # Tick 2: remove the override so the DEFAULT route (no TRIAGE) runs in the
+    # SAME runtime dir. work_orders MUST reset to 0 — not the stale N.
+    os.remove(os.path.join(project_dir, ".auto-maintainer", "route.json"))
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source())
+    assert rt.persisted_work_orders_count(state_path) == 0, \
+        "default-route tick must NOT carry forward the TRIAGE tick's work_orders"
+    # work_items is fine: PULL re-runs each tick.
+    assert rt.persisted_work_items_count(state_path) == 2
+
+
+def test_pure_default_run_never_persists_work_orders():
+    """A run that NEVER routes TRIAGE persists work_orders=0 (empty list)."""
+    runtime_dir, state_path, journal_path = _paths()
+    rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
+                journal_path=journal_path, source=_stub_source())
+    assert rt.persisted_work_orders(state_path) == []
+    assert rt.persisted_work_orders_count(state_path) == 0
+
+
+def test_read_product_reset_preserves_cross_tick_durable_facts():
+    """Resetting the per-tick read-product snapshot must NOT clobber durable
+    cross-tick facts: schema_version + counter survive across the TRIAGE-then-
+    default reset, and the disposition marker is untouched by the read-product
+    reset."""
+    import durable_state as ds
+
+    project_dir = tempfile.mkdtemp(prefix="sched-64facts-")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+
+    # Seed a non-default durable counter (a cross-tick fact) before any tick.
+    os.makedirs(runtime_dir, exist_ok=True)
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 7})
+
+    _write_project_route(project_dir, _TRIAGE_ROUTE)
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source())
+    os.remove(os.path.join(project_dir, ".auto-maintainer", "route.json"))
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source())
+
+    doc = ds.DurableState(state_path).load()
+    # Cross-tick facts survive the read-product reset.
+    assert doc["counter"] == 7, doc
+    assert doc["schema_version"] == ds.SCHEMA_VERSION, doc
+    # The read-product snapshot reflects only THIS (default) tick.
+    assert doc.get("work_orders", []) == [], doc
+    assert len(doc.get("work_items", [])) == 2, doc
+    # Disposition is governed by EXIT, not the read-product reset.
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.IDLE

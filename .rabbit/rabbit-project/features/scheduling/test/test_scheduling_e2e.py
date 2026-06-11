@@ -38,6 +38,7 @@ does NOT edit or fork them.
 Owner: changyu87
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -474,6 +475,63 @@ def test_status_reports_not_started_when_no_runtime_dir():
     assert not os.path.isdir(runtime_dir), runtime_dir
     assert ld.Disposition.IDLE in line, line
     assert "work_items=0" in line, line
+
+
+# A project-local route inserting TRIAGE between PULL and PERSIST (used by the
+# #64 status regression below: a TRIAGE tick then a default tick).
+_TRIAGE_ROUTE_FOR_STATUS = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "PULL", "TRIAGE", "PERSIST", "EXIT",
+               "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "TRIAGE"},
+        {"state": "PULL", "signal": "EMPTY", "next": "TRIAGE"},
+        {"state": "TRIAGE", "signal": "OK", "next": "PERSIST"},
+        {"state": "TRIAGE", "signal": "EMPTY", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+
+def test_status_reports_current_tick_work_orders_not_stale():
+    """#64: status.py reports the CURRENT tick's read products. After a TRIAGE
+    tick (work_orders>0) followed by a DEFAULT tick (no TRIAGE) in the same
+    runtime dir, status must NOT show the stale TRIAGE work_orders — the
+    read-product snapshot reflects only the last (default) tick."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-status64-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        cfg = os.path.join(project_dir, ".auto-maintainer")
+        os.makedirs(cfg, exist_ok=True)
+        route_file = os.path.join(cfg, "route.json")
+        # Tick 1: TRIAGE route -> work_orders persisted.
+        with open(route_file, "w") as f:
+            json.dump(_TRIAGE_ROUTE_FOR_STATUS, f)
+        rt.run_tick(source=_stub_source())
+        _rt_dir, state_path, _j = rt.resolve_runtime_paths()
+        assert rt.persisted_work_orders_count(state_path) == 2
+        # Tick 2: default route (override removed) -> work_orders reset to 0.
+        os.remove(route_file)
+        rt.run_tick(source=_stub_source())
+        line = st.status_line()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    # status omits work_orders when count is 0, so the stale field must be ABSENT.
+    assert "work_orders=" not in line, line
+    assert "work_items=2" in line, line
 
 
 def test_status_reflects_stopped_after_stop():
