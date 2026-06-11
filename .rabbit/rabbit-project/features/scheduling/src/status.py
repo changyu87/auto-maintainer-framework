@@ -9,13 +9,14 @@ state so the skill only invokes it and relays the output.
 
 It resolves the runtime dir the SAME way ``run_tick`` does — by reusing
 ``run_tick.resolve_runtime_paths`` (no duplicated path logic) — then reads the
-disposition marker (lifecycle-dispositions API) and the durable-state counter
-(durable-state API). Reading is non-mutating: asking for status never creates
-the runtime dir. When the loop was never started (no marker, no state file) the
-defaults surface a sane "not started" view: disposition IDLE, counter 0.
+disposition marker (lifecycle-dispositions API) and the last pull's persisted
+``work_items`` count (via run_tick's durable-state helper). Reading is
+non-mutating: asking for status never creates the runtime dir. When the loop was
+never started (no marker, no state file) the defaults surface a sane "not
+started" view: disposition IDLE, work_items 0.
 
-scheduling CONSUMES run_tick + lifecycle-dispositions + durable-state UNCHANGED;
-it never edits or forks them.
+scheduling CONSUMES run_tick + lifecycle-dispositions UNCHANGED; it never edits
+or forks them.
 
 Version: 0.1.0
 Owner: changyu87
@@ -36,20 +37,19 @@ if _SRC not in sys.path:
 
 import run_tick as rt  # noqa: E402
 import lifecycle_dispositions as ld  # noqa: E402
-import durable_state as ds  # noqa: E402
 
 
 def status_line():
     """Build the one-line loop status from REAL on-disk state.
 
-    Reads the disposition marker and the durable counter from the runtime dir
-    run_tick resolves, WITHOUT creating it. Returns a single human-readable
-    line naming the disposition, counter, and runtime dir.
+    Reads the disposition marker and the last pull's persisted work_items count
+    from the runtime dir run_tick resolves, WITHOUT creating it. Returns a single
+    human-readable line naming the disposition, work_items count, and runtime dir.
     """
     runtime_dir, state_path, _journal_path = rt.resolve_runtime_paths()
     disposition = ld.read_disposition(runtime_dir)
-    counter = ds.DurableState(state_path).load()["counter"]
-    return (f"[status] disposition={disposition} counter={counter} "
+    work_items = rt.persisted_work_items_count(state_path)
+    return (f"[status] disposition={disposition} work_items={work_items} "
             f"runtime_dir={runtime_dir}")
 
 
