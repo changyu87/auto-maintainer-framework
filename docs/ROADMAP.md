@@ -37,7 +37,7 @@ decomposition. Update the **Status** column as features progress.
 | 9 | `safety-governance` | §3.8.1–§3.8.5, §3.11.5 | Guardrails, trust ladder (dry-run/propose/gated-merge), no-AskUserQuestion→ABORTED, budget caps, backoff/circuit-breaker, loopback/provenance guard. | planned |
 | 10 | `outbound-report` | §1.3, §2.5, §3.11.1–§3.11.4, §3.11.6, §3.11.7 | `REPORT` port + `DiscoveredIssue`/`ReportResult` schemas, default GitHub filing adapter, durable IMPLEMENT-discovery filing, idempotent journaled filing, project-vs-self routing. | planned |
 | 11 | `observability` | §3.9.1–§3.9.3, §3.10.3 | Structured event log, SessionStart banner + dispatcher-persona injection, issue-comment escalation. | planned |
-| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | `userConfig` at enable, project-local config (port→adapter wiring), override/routing mechanism, `plugin.json` + marketplace layout + install UX, rabbit dogfood. | planned |
+| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slice 1:** clean plugin assembly (no `.rabbit/`) + `plugin.json` + `marketplace.json` + SessionStart persona hook + `/auto-maintainer:status` (§3.10.4, §3.9.2/§3.10.3). Later slices: `userConfig`, port→adapter wiring, configure/run UX, dogfood. | **slice 1 implemented** (PR #13; 12 tests) |
 
 > Note: `lifecycle-core` from the first-pass decomposition was split into #2
 > `tick-orchestrator` (router) and #3 `lifecycle-dispositions` (cross-tick state)
@@ -56,7 +56,12 @@ Bit-by-bit, verifying each before the next:
 3. `work-intake` → `implement` → `verify-integrate` — the adapter spine over the
    real maintainer slots.
 4. `safety-governance`, `outbound-report`, `observability` — cross-cutting.
-5. `packaging-config` — plugin packaging + dogfood.
+5. `packaging-config` — **slice 1 DONE, pulled forward** (PR #13): clean plugin
+   assembly + marketplace so the GitHub `/plugin install` flow is testable now
+   (`/plugin marketplace add changyu87/auto-maintainer-framework` →
+   `/plugin install auto-maintainer@auto-maintainer`). Remaining slices
+   (`userConfig`, port→adapter wiring, configure/run UX, dogfood) follow once the
+   adapter features exist.
 
 ## Deferred (NOT in the v1 feature set)
 
