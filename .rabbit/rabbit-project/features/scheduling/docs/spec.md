@@ -19,19 +19,22 @@ into a self-restarting ~1-minute loop you can watch in an installed session.
 > (heartbeat bootstrap, user-authorized), §3.3.3 (immediate-refire + at-most-one
 > dedup), §3.3.4 (restart-and-resume), §3.10.4 (run UX).
 
-## The real loop (slice 1)
+## The real loop (slice 2: real PULL work)
 
 Each tick runs this route through the existing `tick-orchestrator`:
 
 ```
-GUARD → DRAIN → DEMO_WORK → PERSIST → EXIT
+GUARD → DRAIN → PULL → PERSIST → EXIT
 ```
 
 - `GUARD`, `EXIT` from `lifecycle-dispositions`; `DRAIN`, `PERSIST` from
-  `durable-state`; `DEMO_WORK` owned here.
-- The loop mechanics are REAL (mutex, journal, durable persisted state,
-  disposition transitions, DRAIN crash-recovery). Only the *work* is stubbed:
-  `DEMO_WORK` increments a persisted `counter` slot.
+  `durable-state`; `PULL` from `work-intake` (the GitHub-Issues adapter).
+- The slice-1 `DEMO_WORK` stub is **retired** — `PULL` is real work: each tick
+  fetches the repo's open issues into the `work_items` slot (persisted).
+- **Read-and-idle:** with only a read stage (no `IMPLEMENT` yet), `EXIT` goes
+  **IDLE** after the pull rather than `refire` — otherwise the loop would
+  busy-loop re-pulling the same issues forever. EXIT's refire/idle becomes
+  work-driven again once an act stage lands.
 
 ## Paths governed
 
@@ -42,20 +45,22 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 ## Public surface
 
 1. **Tick-runner script** (`src/run_tick.py`, deterministic, script-tier) —
-   assembles `route` = `GUARD→DRAIN→DEMO_WORK→PERSIST→EXIT` and the `states` map
-   (importing GUARD/EXIT from lifecycle-dispositions, DRAIN/PERSIST from
-   durable-state, DEMO_WORK local), runs `tick_orchestrator.run(...)` over a
+   assembles `route` = `GUARD→DRAIN→PULL→PERSIST→EXIT` and the `states` map
+   (GUARD/EXIT from lifecycle-dispositions, DRAIN/PERSIST from durable-state,
+   `PULL` from work-intake), runs `tick_orchestrator.run(...)` over a
    `TickContext` seeded from durable state, prints a tick trace (tick number,
-   state path, counter, resulting disposition), and returns/persists the EXIT
-   disposition signal. One invocation = one tick.
-2. **`DEMO_WORK` state** — `run(TickContext) -> StateResult`: reads `counter`,
-   writes `counter+1`, journals the intent (record-before-act, via durable-state),
-   emits `OK` while `counter < THRESHOLD` (hardcoded, e.g. 5) else `EMPTY`
-   (signals queue-empty → idle).
+   state path, `work_items` count, resulting disposition), and returns/persists
+   the outcome. One invocation = one tick. `PULL`'s issue source is the live `gh`
+   CLI in production but **injectable** so tests pass a stub (no network).
+2. **PULL integration (read-and-idle)** — the route uses work-intake's `PULL`
+   state (writes `work_items`). After PULL + PERSIST, `EXIT` selects **IDLE** (no
+   act stage yet), so the heartbeat re-pulls next interval rather than the loop
+   busy-firing. The slice-1 `DEMO_WORK` stub is removed.
 3. **Control scripts** (deterministic, script-tier — spec-rules §1; this is the
    fix for #29/#30 where prompt-tier skills drifted/broke):
-   - `src/status.py` — reads the disposition marker + durable-state counter (via
-     `run_tick`'s `resolve_runtime_paths`) and prints the real loop status.
+   - `src/status.py` — reads the disposition marker + the persisted `work_items`
+     count (via `run_tick`'s `resolve_runtime_paths`) and prints the real loop
+     status.
    - `src/stop.py` — writes disposition `STOPPED` (via the lifecycle-dispositions
      API) using the same runtime-path resolution. Owns the state write.
    These own ALL state operations so the skills never hand-roll Python.
@@ -69,7 +74,8 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    - `/auto-maintainer:stop` — invokes `stop.py` (latch STOPPED) then cancels the
      heartbeat (CronDelete).
    - `/auto-maintainer:status` — invokes `status.py` and reports the real
-     disposition + counter (replaces packaging-config's slice-1 stub).
+     disposition + last-pull `work_items` count (replaces packaging-config's
+     slice-1 stub).
    Only the heartbeat scheduling (CronCreate/CronDelete) is agent-mediated (no
    plugin-level cron API); every state operation is a script.
 5. **Scheduler detection (§3.3.1)** — slice 1 uses the in-session durable
@@ -86,26 +92,27 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 
 ## What you'll see (installed plugin)
 
-`/auto-maintainer:start` → tick #1 trace (counter 0→1, disposition RUNNING→refire)
-→ every ~1 min the counter advances (**persisted across ticks**) until THRESHOLD →
-EXIT idle. `/auto-maintainer:status` shows disposition + counter. `/stop` latches
-STOPPED + cancels. Kill mid-tick + restart → DRAIN finishes the owed increment
-exactly once (no double-count).
+`/auto-maintainer:start` → tick #1 pulls the repo's open issues into `work_items`
+(trace shows the count), PERSISTs them, and EXITs **IDLE**. Every ~1 min the
+heartbeat re-pulls the current open issues. `/auto-maintainer:status` shows the
+disposition + last-pull count. `/stop` latches STOPPED + cancels the heartbeat.
 
 ## Current behaviour
 
-Implemented and merged (`tdd_state: test-green`). The tick-runner + `DEMO_WORK`,
-the script-backed `status.py`/`stop.py`, and the
-`/auto-maintainer:start`/`:stop`/`:status` ship skills are in `src/`/`ship/` with
-32 passing tests. Live-validated in an installed plugin session. See
-`feature.json` / `docs/ROADMAP.md`.
+Implemented and merged (`tdd_state: test-green`). The tick-runner runs the real
+route `GUARD→DRAIN→PULL→PERSIST→EXIT` (read-and-idle); the script-backed
+`status.py`/`stop.py` and the `/auto-maintainer:start`/`:stop`/`:status` ship
+skills compose work-intake's PULL with the loop core. Live-validated in an
+installed plugin session. See `feature.json` / `docs/ROADMAP.md`.
 
 ## Known gaps / deferred
 
 - Configurable interval + route (config feature) — interval hardcoded to 1 min
   (auto-maintainer-framework#17).
 - System-cron scheduler backend (§3.3.1) — slice 1 is in-session heartbeat only.
-- Real adapter work (PULL/TRIAGE/IMPLEMENT) replacing DEMO_WORK — later features.
+- TRIAGE/IMPLEMENT/VERIFY/INTEGRATE — the loop now PULLs (read-and-idle); acting
+  on `work_items` lands with later features, at which point EXIT becomes
+  work-driven (refire while actionable work remains).
 - Full RESTART_NEEDED→SessionStart auto-resume (§3.3.4) — follow-up.
 
 ## Interfaces (composition)
