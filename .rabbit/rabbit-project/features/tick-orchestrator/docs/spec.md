@@ -70,7 +70,9 @@ are **never promoted to features**.
 
 ## Current behaviour
 
-None yet — feature is in `tdd_state: spec`.
+Implemented and merged (`tdd_state: test-green`). `resolve_next`, the run loop,
+and the structural validators (`validate_signals`, `validate_data_readiness`) are
+in `src/` with 13 passing tests. See `feature.json` / `docs/ROADMAP.md`.
 
 ## Known gaps / deferred (explicit boundaries)
 
