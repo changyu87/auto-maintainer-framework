@@ -9,3 +9,12 @@
 
 # auto-maintainer loop runtime state (created by /auto-maintainer:start)
 .auto-maintainer/
+
+# Python bytecode caches (regenerated whenever the plugin's modules run)
+__pycache__/
+*.pyc
+
+# Claude Code project-local state at the repo root (settings.local.json, scheduler
+# lock). Root-anchored (leading /) so it does NOT match the tracked vendored
+# .rabbit/.claude/ tooling (Strategy D).
+/.claude/
