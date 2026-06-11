@@ -11,7 +11,7 @@
 #     [--max-iterations N]
 #
 # Output: assembled prompt to stdout. Caller: Agent(model: opus, prompt: stdout).
-# Version: 4.7.0
+# Version: 4.8.0
 # Owner: rabbit-workflow team (tdd-subagent)
 # Deprecation criterion: when TDD cycle is natively supported by rabbit CLI.
 
@@ -473,11 +473,35 @@ def main(argv):
         _tdd_report_path(repo_root, feature_name), repo_root)
     if args.worktree:
         wt = os.path.abspath(args.worktree)
-        slot_repo_root = wt
-        slot_feature_dir = os.path.join(wt, rel_feature_dir)
-        slot_tdd_step_py = os.path.join(wt, rel_tdd_step_py)
-        slot_scope_marker = os.path.join(wt, rel_scope_marker)
-        slot_tdd_report = os.path.join(wt, rel_tdd_report)
+        # Issue #1146: the re-root ANCHOR must share `repo_root`'s base so the
+        # relativized slots (computed relative to `repo_root`) re-root onto the
+        # SAME tree the worktree exposes. The two modes differ:
+        #   - standalone: `repo_root` IS the git toplevel and `--worktree` is
+        #     that same operating root, so the anchor is `wt` and the slots
+        #     re-root directly under it.
+        #   - vendored (Strategy D): `repo_root` is `RABBIT_ROOT` = the
+        #     `<host>/.rabbit/` install dir (Inv 47), while `--worktree` is the
+        #     HOST repo root, where `.rabbit/` is a SUBDIRECTORY. The slots are
+        #     `.rabbit/`-relative, so re-rooting them onto the bare worktree
+        #     root would DROP the `.rabbit/` segment — the subagent's anchor and
+        #     the embedded paths would diverge by one level and a literal
+        #     consumer could not find the spec / scope marker / tdd-step.py
+        #     (the #1146 bug). Re-root onto `<worktree>/.rabbit/` so the bases
+        #     agree.
+        # Detection mirrors `_rabbit_runtime_root` / scope-guard: a vendored
+        # install is the one whose `repo_root` basename is `.rabbit`. When it
+        # is, the worktree-relative anchor regains that `.rabbit/` segment.
+        repo_root_base = os.path.basename(os.path.normpath(repo_root))
+        slot_anchor = (
+            os.path.join(wt, repo_root_base)
+            if repo_root_base == ".rabbit"
+            else wt
+        )
+        slot_repo_root = slot_anchor
+        slot_feature_dir = os.path.join(slot_anchor, rel_feature_dir)
+        slot_tdd_step_py = os.path.join(slot_anchor, rel_tdd_step_py)
+        slot_scope_marker = os.path.join(slot_anchor, rel_scope_marker)
+        slot_tdd_report = os.path.join(slot_anchor, rel_tdd_report)
     else:
         slot_repo_root = "."
         slot_feature_dir = rel_feature_dir
