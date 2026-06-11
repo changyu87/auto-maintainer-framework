@@ -28,16 +28,16 @@ decomposition. Update the **Status** column as features progress.
 |---|---------|----------------|---------------------|--------|
 | 1 | `fsm-contracts` | §1.1.1, §2.6, §2.7, §3.4.1 | Blackboard slot schema, `StateResult`, signal vocabulary, per-state manifest, `route.json` schema. Pure data. | **implemented** (PR #8, merged; 22 tests) |
 | 2 | `tick-orchestrator` | §1.1.1, §3.1.1, §2.7 | External router: `resolve_next`, run loop to terminal, structural validators (signal-validity, data-readiness). | **implemented** (PR #9, merged; 13 tests) |
-| 3 | `lifecycle-dispositions` | §1.2, §3.1.2, §3.1.3, §3.1.4 | Disposition machine (`RUNNING`/`IDLE`/`STOPPED`/`ABORTED`/`RESTART_NEEDED`), single-writer mutex, host-agnostic resumption. | planned |
-| 4 | `durable-state` | §3.2.1–§3.2.4 | Versioned state schema, per-tick record-before-act journal, DRAIN owed-work step, idempotency/dedup-key convention. | planned |
-| 5 | `scheduling` | §3.3.1–§3.3.4 | Scheduler detection, heartbeat bootstrap, immediate-refire dedup, restart-and-resume. | planned |
+| 3 | `lifecycle-dispositions` | §1.2, §3.1.2, §3.1.3, §3.1.4 | Disposition machine (`RUNNING`/`IDLE`/`STOPPED`/`ABORTED`/`RESTART_NEEDED`), single-writer mutex + stale detection, GUARD/EXIT anchors, host-agnostic resumption. | **implemented** (PR #20; 20 tests) |
+| 4 | `durable-state` | §3.2.1–§3.2.4 | Versioned state schema, per-tick record-before-act journal, DRAIN owed-work step, PERSIST, idempotency/dedup-key. | **implemented** (PR #19; 11 tests, incl. truncate→resume exactly-once) |
+| 5 | `scheduling` | §3.3.1–§3.3.4 | **Slice 1:** in-session heartbeat + `/auto-maintainer:start`/`:stop` + demo route (GUARD→DRAIN→DEMO_WORK→PERSIST→EXIT), 1-min hardcoded (#17). System-cron backend deferred. | **implemented** (PRs #21, #25; 19 tests) |
 | 6 | `work-intake` | §3.4.2 (PULL), §3.5.1–§3.5.3, §3.5.5, §3.5.7, §3.5.8 | GitHub-Issues `PULL` + `TRIAGE` pipeline (normalize, validity, dedup-vs-closed, 1-level decompose, ordering, WHAT-gen seam). | planned |
 | 7 | `implement` | §3.6.1–§3.6.5 | `Handoff` schema, mandatory worktree isolation (direct L1 dispatch), default implement-then-PR, optional TDD adapter, long-run handling. | planned |
 | 8 | `verify-integrate` | §3.7.1–§3.7.4 | `VERIFY` gate `{ok,reasons[]}` (CI+test), `INTEGRATE` VCS hook (merge/release/cleanup), `CLEANUP`, idempotent release. | planned |
 | 9 | `safety-governance` | §3.8.1–§3.8.5, §3.11.5 | Guardrails, trust ladder (dry-run/propose/gated-merge), no-AskUserQuestion→ABORTED, budget caps, backoff/circuit-breaker, loopback/provenance guard. | planned |
 | 10 | `outbound-report` | §1.3, §2.5, §3.11.1–§3.11.4, §3.11.6, §3.11.7 | `REPORT` port + `DiscoveredIssue`/`ReportResult` schemas, default GitHub filing adapter, durable IMPLEMENT-discovery filing, idempotent journaled filing, project-vs-self routing. | planned |
 | 11 | `observability` | §3.9.1–§3.9.3, §3.10.3 | Structured event log, SessionStart banner + dispatcher-persona injection, issue-comment escalation. | planned |
-| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slice 1:** clean plugin assembly (no `.rabbit/`) + `plugin.json` + `marketplace.json` + SessionStart persona hook + `/auto-maintainer:status` (§3.10.4, §3.9.2/§3.10.3). Later slices: `userConfig`, port→adapter wiring, configure/run UX, dogfood. | **slice 1 implemented** (PR #13; 12 tests) |
+| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slices 1–2:** clean plugin assembly (no `.rabbit/`) + `marketplace.json` + `ship/` collection + 5 loop libs + `/auto-maintainer:start`/`:stop`/`:status` + SessionStart persona. Later: `userConfig`, port→adapter wiring, dogfood. | **slice 2 implemented** (PRs #13/#23/#27; v0.2.1; 18 tests) |
 
 > Note: `lifecycle-core` from the first-pass decomposition was split into #2
 > `tick-orchestrator` (router) and #3 `lifecycle-dispositions` (cross-tick state)
@@ -51,17 +51,23 @@ Bit-by-bit, verifying each before the next:
    Proven by the generic, domain-free PING/PONG two-state transition test
    (fsm-contracts 22 tests; tick-orchestrator 13 tests) — FSM mechanism
    validated in isolation, zero maintainer-domain coupling.
-2. `durable-state` + `lifecycle-dispositions` ← *next milestone.* Make a tick
-   crash-safe and resumable; wire the disposition outcomes.
+2. `durable-state` + `lifecycle-dispositions` + `scheduling` — **DONE** (PRs
+   #19/#20/#21, +#25 fix). The real loop core: a disposition-driven, journaled,
+   single-writer-guarded, crash-safe, resumable tick loop driven by a 1-min
+   in-session heartbeat; demo route GUARD→DRAIN→DEMO_WORK→PERSIST→EXIT with a
+   persisted counter. Loop mechanics real; the *work* (DEMO_WORK) still stubbed.
 3. `work-intake` → `implement` → `verify-integrate` — the adapter spine over the
    real maintainer slots.
 4. `safety-governance`, `outbound-report`, `observability` — cross-cutting.
-5. `packaging-config` — **slice 1 DONE, pulled forward** (PR #13): clean plugin
-   assembly + marketplace so the GitHub `/plugin install` flow is testable now
-   (`/plugin marketplace add changyu87/auto-maintainer-framework` →
-   `/plugin install auto-maintainer@auto-maintainer`). Remaining slices
-   (`userConfig`, port→adapter wiring, configure/run UX, dogfood) follow once the
-   adapter features exist.
+5. `packaging-config` — **slices 1–2 DONE** (PRs #13/#23/#27, v0.2.1): clean
+   plugin + marketplace + `ship/` collection now ships the loop core
+   (`/auto-maintainer:start`/`:stop`/`:status`). Install/update via the GitHub
+   flow. Remaining slices (`userConfig`, port→adapter wiring, dogfood) follow
+   once the adapter features exist.
+
+The real adapter spine (`work-intake` → `implement` → `verify-integrate`) and the
+cross-cutting features remain the next real work — they replace DEMO_WORK with
+genuine maintainer ticks.
 
 ## Deferred (NOT in the v1 feature set)
 
