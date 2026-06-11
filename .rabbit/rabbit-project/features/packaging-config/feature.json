@@ -7,5 +7,5 @@
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-11",
-  "spec_no_change_reason": "Spec slice-2 already mandates the installed plugin run the loop self-contained and permits a 0.2.x patch bump on re-ship; this cycle ships adapter_wiring.py into lib/ (run_tick already imports it) and bumps 0.2.4->0.2.5, no spec text change."
+  "spec_no_change_reason": "Spec slice-2 already permits a 0.2.x patch bump on each re-ship of the plugin tree; this cycle re-ships run_tick.py + status.py so the installed plugin reports the loaded route source (#59) and bumps 0.2.5->0.2.6, no spec text change."
 }
