@@ -52,15 +52,26 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    writes `counter+1`, journals the intent (record-before-act, via durable-state),
    emits `OK` while `counter < THRESHOLD` (hardcoded, e.g. 5) else `EMPTY`
    (signals queue-empty → idle).
-3. **`/auto-maintainer:start` skill** (shipped) — runs tick #1 via the tick-runner,
-   then schedules a **recurring ~1-minute heartbeat** (the in-session durable
-   scheduler) that re-runs the tick-runner each minute; honors EXIT's signal:
-   `refire` may trigger an immediate next tick with **at-most-one-refire dedup**
-   (§3.3.3); `idle` waits for the next heartbeat; `halt` stops. **Interval is
-   hardcoded to 1 min** (see auto-maintainer-framework#17 — larger default +
-   configurability deferred to the configuration feature).
-4. **`/auto-maintainer:stop` skill** (shipped) — sets disposition `STOPPED`
-   (lifecycle-dispositions) and cancels the scheduled heartbeat.
+3. **Control scripts** (deterministic, script-tier — spec-rules §1; this is the
+   fix for #29/#30 where prompt-tier skills drifted/broke):
+   - `src/status.py` — reads the disposition marker + durable-state counter (via
+     `run_tick`'s `resolve_runtime_paths`) and prints the real loop status.
+   - `src/stop.py` — writes disposition `STOPPED` (via the lifecycle-dispositions
+     API) using the same runtime-path resolution. Owns the state write.
+   These own ALL state operations so the skills never hand-roll Python.
+4. **Shipped control skills** (`ship/skills/{start,stop,status}`):
+   - `/auto-maintainer:start` — invokes `run_tick.py` for tick #1, then schedules
+     a recurring ~1-min heartbeat (CronCreate) that re-runs `run_tick.py`; honors
+     EXIT's signal — `refire` → one immediate extra tick with **at-most-one-refire
+     dedup** (§3.3.3); `idle` → wait; `halt` → stop. **Interval hardcoded to 1 min**
+     (#17). Heartbeat is **session-only** for slice 1 (durable + restart-resume
+     deferred, #31).
+   - `/auto-maintainer:stop` — invokes `stop.py` (latch STOPPED) then cancels the
+     heartbeat (CronDelete).
+   - `/auto-maintainer:status` — invokes `status.py` and reports the real
+     disposition + counter (replaces packaging-config's slice-1 stub).
+   Only the heartbeat scheduling (CronCreate/CronDelete) is agent-mediated (no
+   plugin-level cron API); every state operation is a script.
 5. **Scheduler detection (§3.3.1)** — slice 1 uses the in-session durable
    heartbeat; system-cron detection is stubbed/deferred.
 6. **Restart-resume wiring (§3.3.4)** — on restart, the next tick's DRAIN +
@@ -99,6 +110,9 @@ None yet — `tdd_state: spec`.
   (DRAIN/PERSIST/journal/state), `lifecycle-dispositions` (GUARD/EXIT/disposition).
 - Declares shippable components under `ship/` for `packaging-config` to assemble
   into `plugins/auto-maintainer/`.
+- Owns the `/auto-maintainer:status` skill (script-backed via `status.py`);
+  `packaging-config` no longer ships a status stub. Host projects should gitignore
+  the runtime dir `.auto-maintainer/`.
 
 ## Open questions
 
