@@ -104,7 +104,9 @@ real loop reaches the installed plugin:
 - **Shipped control skills** — `scheduling`'s `ship/skills/start` and
   `ship/skills/stop` land as `plugins/auto-maintainer/skills/{start,stop}`
   (`/auto-maintainer:start`, `/auto-maintainer:stop`).
-- **Version bump** — `plugin.json` + `marketplace.json` `version` → `0.2.0`.
+- **Version bump** — `plugin.json` + `marketplace.json` `version` → `0.2.0`
+  (slice 2); bump the **patch** on each re-ship of the plugin tree (e.g. `0.2.1`
+  after the scheduling #24 skill-path fix re-ship).
 
 Added invariants (TDD targets): the built tree contains the start/stop skills and
 all five loop libs; still **no `.rabbit` leak**; still idempotent; the shipped
