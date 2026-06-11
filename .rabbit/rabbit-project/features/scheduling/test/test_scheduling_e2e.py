@@ -24,6 +24,12 @@ an e2e test here:
      loop continues correctly.
   5. HEADLINE STOPPED latches — after stop, GUARD halts and the tick does not
      advance the counter.
+  6. Control scripts (#29/#30) — status.py reads the REAL disposition + counter
+     (no slice-1 stub) and reports a sane "not started" state when no runtime
+     dir exists; stop.py latches STOPPED via the lifecycle-dispositions API
+     using run_tick's runtime-path resolution; both import self-contained from
+     the flat shipped lib/ layout. The shipped start/stop/status skills invoke
+     ${CLAUDE_PLUGIN_ROOT}/lib/{run_tick,stop,status}.py and hand-roll NO Python.
 
 scheduling CONSUMES fsm-contracts, tick-orchestrator, durable-state, and
 lifecycle-dispositions UNCHANGED (imported via sys.path). It does NOT edit or
@@ -54,6 +60,8 @@ import fsm_contracts as fc  # noqa: E402
 import durable_state as ds  # noqa: E402
 import lifecycle_dispositions as ld  # noqa: E402
 import run_tick as rt  # noqa: E402
+import status as st  # noqa: E402
+import stop as sp  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -428,3 +436,267 @@ def test_run_tick_injected_paths_still_win_over_default():
     # The injected state advanced; the default .auto-maintainer dir was NOT used.
     assert ds.DurableState(state_path).load()["counter"] == 1
     assert not os.path.exists(os.path.join(project_dir, ".auto-maintainer"))
+
+
+# --------------------------------------------------------------------------
+# Control script: stop.py (#30) — deterministic STOPPED latch, no hand-rolled
+# Python, no non-existent `runtime_dir` import. stop.py owns the state write via
+# the lifecycle-dispositions API and resolves the runtime dir exactly as
+# run_tick does (reusing resolve_runtime_paths).
+# --------------------------------------------------------------------------
+
+def test_stop_latches_stopped_readable_by_lifecycle_api():
+    runtime_dir, state_path, journal_path = _paths()
+    # The control scripts take no injected paths in production; they resolve via
+    # CLAUDE_PROJECT_DIR. Point that at our temp project and assert the marker
+    # the lifecycle API reads back is STOPPED.
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        sp.stop()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    am_dir = os.path.join(project_dir, ".auto-maintainer")
+    assert ld.read_disposition(am_dir) == ld.Disposition.STOPPED
+
+
+def test_stop_resolves_runtime_dir_the_same_way_as_run_tick():
+    """stop.py must NOT duplicate path logic: it reuses run_tick's
+    resolve_runtime_paths so the marker it writes is the one a tick reads."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        sp.stop()
+        runtime_dir, _, _ = rt.resolve_runtime_paths()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.STOPPED
+
+
+def test_stop_then_tick_freezes_counter_end_to_end():
+    """End-to-end: stop.py latches STOPPED, and a subsequent tick (same runtime
+    dir) halts in GUARD without advancing the counter."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        sp.stop()
+        signal = rt.run_tick()
+        runtime_dir, state_path, _ = rt.resolve_runtime_paths()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    assert signal == "halt", signal
+    assert ds.DurableState(state_path).load()["counter"] == 0
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.STOPPED
+
+
+# --------------------------------------------------------------------------
+# Control script: status.py (#29) — deterministic, reads the REAL disposition +
+# counter (no hardcoded slice-1 stub). Resolves the runtime dir the same way as
+# run_tick.
+# --------------------------------------------------------------------------
+
+def test_status_reports_real_disposition_and_counter_after_ticks(capsys=None):
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        rt.run_tick()  # counter 0 -> 1, disposition RUNNING
+        rt.run_tick()  # counter 1 -> 2
+        line = st.status_line()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    # The status line reports the REAL counter (2) and disposition (RUNNING),
+    # not a stub.
+    assert "2" in line, line
+    assert ld.Disposition.RUNNING in line, line
+    assert "no loop configured" not in line, line
+
+
+def test_status_reports_not_started_when_no_runtime_dir():
+    """When the loop was never started (no runtime dir), status reports a sane
+    'not started' state: default IDLE disposition + counter 0, no crash."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        line = st.status_line()
+        runtime_dir, _, _ = rt.resolve_runtime_paths()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    # No runtime dir was created just by asking for status.
+    assert not os.path.isdir(runtime_dir), runtime_dir
+    # Default unset disposition is IDLE; counter defaults to 0.
+    assert ld.Disposition.IDLE in line, line
+    assert "0" in line, line
+
+
+def test_status_reflects_stopped_after_stop():
+    """status.py reads the marker stop.py wrote: STOPPED is reported."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        rt.run_tick()
+        sp.stop()
+        line = st.status_line()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    assert ld.Disposition.STOPPED in line, line
+
+
+def test_status_line_includes_runtime_dir():
+    """The status line names the runtime dir it read from, for operator clarity."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        line = st.status_line()
+        runtime_dir, _, _ = rt.resolve_runtime_paths()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    assert runtime_dir in line, (runtime_dir, line)
+
+
+# --------------------------------------------------------------------------
+# Self-contained import (#29/#30) — status.py and stop.py must resolve their
+# imports from the shipped `lib/` layout alone, where run_tick.py and the
+# consumed sibling modules (lifecycle_dispositions, durable_state, fsm_contracts,
+# tick_orchestrator) are FLAT SIBLINGS, NOT under a feature `<dep>/src/` tree.
+# This is the installed-plugin layout; if the scripts only resolved via the
+# worktree's feature dirs they would ImportError in production (the #30 root
+# cause class).
+# --------------------------------------------------------------------------
+
+def _materialize_plugin_lib():
+    """Copy the scheduling scripts + every consumed sibling module into a single
+    flat dir, mirroring the installed plugin `lib/` layout."""
+    import shutil
+    lib = tempfile.mkdtemp(prefix="scheduling-lib-")
+    # scheduling's own scripts.
+    for fn in ("run_tick.py", "status.py", "stop.py"):
+        shutil.copy(os.path.join(_SRC, fn), os.path.join(lib, fn))
+    # consumed sibling modules, flattened next to them.
+    for dep, mod in (("fsm-contracts", "fsm_contracts.py"),
+                     ("tick-orchestrator", "tick_orchestrator.py"),
+                     ("durable-state", "durable_state.py"),
+                     ("lifecycle-dispositions", "lifecycle_dispositions.py")):
+        shutil.copy(os.path.join(_FEATURES, dep, "src", mod),
+                    os.path.join(lib, mod))
+    return lib
+
+
+def _import_from_lib(lib, modname):
+    import importlib.util
+    path = os.path.join(lib, modname + ".py")
+    spec = importlib.util.spec_from_file_location("libtest_" + modname, path)
+    module = importlib.util.module_from_spec(spec)
+    saved = list(sys.path)
+    sys.path.insert(0, lib)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = saved
+    return module
+
+
+def test_status_imports_self_contained_from_plugin_lib():
+    lib = _materialize_plugin_lib()
+    saved = dict(sys.modules)
+    try:
+        mod = _import_from_lib(lib, "status")
+        assert hasattr(mod, "status_line")
+    finally:
+        # Restore module table so the flat-lib copies don't shadow the
+        # worktree-resolved modules for the rest of the suite.
+        for k in list(sys.modules):
+            if k not in saved:
+                del sys.modules[k]
+
+
+def test_stop_imports_self_contained_from_plugin_lib():
+    lib = _materialize_plugin_lib()
+    saved = dict(sys.modules)
+    try:
+        mod = _import_from_lib(lib, "stop")
+        assert hasattr(mod, "stop")
+    finally:
+        for k in list(sys.modules):
+            if k not in saved:
+                del sys.modules[k]
+
+
+# --------------------------------------------------------------------------
+# Shipped control skills are script-backed (#29/#30): start/stop/status invoke
+# ${CLAUDE_PLUGIN_ROOT}/lib/{run_tick,stop,status}.py and hand-roll NO Python.
+# --------------------------------------------------------------------------
+
+_STATUS_INSTALL = "${CLAUDE_PLUGIN_ROOT}/lib/status.py"
+_STOP_INSTALL = "${CLAUDE_PLUGIN_ROOT}/lib/stop.py"
+
+
+def test_status_skill_is_shipped_and_script_backed():
+    status = _ship_skill("status")
+    assert os.path.isfile(status), status
+    body = open(status).read()
+    assert "auto-maintainer:status" in body, body[:300]
+    # It invokes the status script at its installed path.
+    assert _STATUS_INSTALL in body, body
+    # No bare src/ path; no slice-1 stub text.
+    assert "src/status.py" not in body, body
+    assert "no loop configured" not in body, body
+
+
+def test_stop_skill_invokes_stop_script_not_handrolled_python():
+    body = open(_ship_skill("stop")).read()
+    # stop.py latches STOPPED; the skill invokes it at the installed path.
+    assert _STOP_INSTALL in body, body
+    assert "src/stop.py" not in body, body
+    # No hand-rolled Python: no inline heredoc, no direct write_disposition call,
+    # no ad-hoc durable_state import (the #30 class of bug).
+    assert "python3 - <<" not in body, body
+    assert "write_disposition(" not in body, body
+    assert "import durable_state" not in body, body
+    assert "from durable_state" not in body, body
+
+
+def test_start_skill_has_no_handrolled_python():
+    body = open(_ship_skill("start")).read()
+    # start invokes run_tick at the installed path (already covered) and must
+    # carry NO hand-rolled Python beyond the script invocation + cron scheduling.
+    assert "python3 - <<" not in body, body
+    assert "import durable_state" not in body, body
+    assert "from durable_state" not in body, body
+
+
+def test_control_skills_have_no_inline_python_heredoc():
+    for name in ("start", "stop", "status"):
+        body = open(_ship_skill(name)).read()
+        # The #30 root cause: a skill that asks the model to hand-roll Python
+        # against an API it guesses at. Forbid the heredoc/inline-eval shape in
+        # every control skill.
+        assert "python3 - <<" not in body, (name, body)
+        assert "<<EOF" not in body, (name, body)
