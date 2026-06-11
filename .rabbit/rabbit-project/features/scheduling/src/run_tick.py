@@ -178,7 +178,26 @@ def _seed_context(state_path, journal_path):
     return ctx
 
 
-def run_tick(runtime_dir, state_path, journal_path, return_run_result=False):
+def resolve_runtime_paths():
+    """Resolve the default runtime paths for an INVOCATION WITH NO INJECTED
+    PATHS — the installed-plugin case where the skill runs run_tick with cwd =
+    the user's project and no temp dir is wired in.
+
+    The durable-state / journal / disposition+lock markers default to a writable
+    per-project runtime dir: ``${CLAUDE_PROJECT_DIR}/.auto-maintainer/`` when
+    that env var is set, else ``.auto-maintainer/`` under cwd. Tests inject a
+    temp dir instead, so this default is used only when nothing is injected.
+    Returns ``(runtime_dir, state_path, journal_path)``.
+    """
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+    return runtime_dir, state_path, journal_path
+
+
+def run_tick(runtime_dir=None, state_path=None, journal_path=None,
+             return_run_result=False):
     """Run exactly ONE tick of the real loop and return the EXIT disposition
     signal (or the raw RunResult when return_run_result=True).
 
@@ -188,8 +207,18 @@ def run_tick(runtime_dir, state_path, journal_path, return_run_result=False):
     returned. On the GUARD short-circuit path the run halts at HALTED with the
     latched disposition untouched and "halt" is returned.
 
+    Injected paths win: when any of runtime_dir/state_path/journal_path is None
+    (the installed case, where the skill invokes run_tick with no wiring) the
+    missing ones fall back to resolve_runtime_paths(). Tests still inject a temp
+    dir, which takes precedence over the env/cwd default.
+
     Prints a one-line tick trace (state path, counter, resulting disposition).
     """
+    if runtime_dir is None or state_path is None or journal_path is None:
+        _rt, _state, _journal = resolve_runtime_paths()
+        runtime_dir = runtime_dir if runtime_dir is not None else _rt
+        state_path = state_path if state_path is not None else _state
+        journal_path = journal_path if journal_path is not None else _journal
     ctx = _seed_context(state_path, journal_path)
     states = _build_states(runtime_dir)
     result = to.run(ROUTE, states, ctx, _VOCAB, start="GUARD")
@@ -214,13 +243,9 @@ def run_tick(runtime_dir, state_path, journal_path, return_run_result=False):
 
 
 if __name__ == "__main__":
-    # Production entrypoint: the project runtime dir + durable file locations.
-    # The scheduling skills invoke this once per tick.
-    _RUNTIME = os.environ.get(
-        "RABBIT_RUNTIME_DIR",
-        os.path.join(_FEATURE_DIR, ".runtime"))
-    _STATE = os.environ.get(
-        "RABBIT_STATE_PATH", os.path.join(_RUNTIME, "durable-state.json"))
-    _JOURNAL = os.environ.get(
-        "RABBIT_JOURNAL_PATH", os.path.join(_RUNTIME, "tick-journal.jsonl"))
-    run_tick(runtime_dir=_RUNTIME, state_path=_STATE, journal_path=_JOURNAL)
+    # Production entrypoint: the scheduling skills invoke this once per tick from
+    # the installed plugin with no path wiring. run_tick defaults its durable
+    # file locations to the writable per-project runtime dir
+    # (${CLAUDE_PROJECT_DIR}/.auto-maintainer/ else .auto-maintainer/ under cwd)
+    # via resolve_runtime_paths().
+    run_tick()
