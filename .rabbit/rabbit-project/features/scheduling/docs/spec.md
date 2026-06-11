@@ -56,8 +56,13 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    state (writes `work_items`). After PULL + PERSIST, `EXIT` selects **IDLE** (no
    act stage yet), so the heartbeat re-pulls next interval rather than the loop
    busy-firing. The slice-1 `DEMO_WORK` stub is removed.
-3. **Control scripts** (deterministic, script-tier — spec-rules §1; this is the
-   fix for #29/#30 where prompt-tier skills drifted/broke):
+3. **Control scripts** (deterministic, script-tier — spec-rules §1; the fix for
+   #29/#30/#44 where prompt-tier skills drifted/broke):
+   - `src/start.py` — prepares a fresh start, then runs tick #1: if the
+     disposition is `STOPPED` it clears the latch to a runnable state (start IS
+     the §1.2 human resume); if `ABORTED` it REFUSES and tells the user to
+     investigate (never silently clears a fault); otherwise proceeds. Reuses
+     `run_tick`'s path resolution + the lifecycle API.
    - `src/status.py` — reads the disposition marker + the persisted `work_items`
      count (via `run_tick`'s `resolve_runtime_paths`) and prints the real loop
      status.
@@ -65,12 +70,13 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      API) using the same runtime-path resolution. Owns the state write.
    These own ALL state operations so the skills never hand-roll Python.
 4. **Shipped control skills** (`ship/skills/{start,stop,status}`):
-   - `/auto-maintainer:start` — invokes `run_tick.py` for tick #1, then schedules
-     a recurring ~1-min heartbeat (CronCreate) that re-runs `run_tick.py`; honors
-     EXIT's signal — `refire` → one immediate extra tick with **at-most-one-refire
-     dedup** (§3.3.3); `idle` → wait; `halt` → stop. **Interval hardcoded to 1 min**
-     (#17). Heartbeat is **session-only** for slice 1 (durable + restart-resume
-     deferred, #31).
+   - `/auto-maintainer:start` — invokes `start.py` for tick #1 (which first clears
+     a latched `STOPPED`, or refuses on `ABORTED`), then schedules a recurring
+     ~1-min heartbeat (CronCreate) that re-runs `run_tick.py` (not `start.py` — no
+     reset per tick); honors EXIT's signal — `refire` → one immediate extra tick
+     with **at-most-one-refire dedup** (§3.3.3); `idle` → wait; `halt` → stop.
+     **Interval hardcoded to 1 min** (#17). Heartbeat is **session-only** for
+     slice 1 (durable + restart-resume deferred, #31).
    - `/auto-maintainer:stop` — invokes `stop.py` (latch STOPPED) then cancels the
      heartbeat (CronDelete).
    - `/auto-maintainer:status` — invokes `status.py` and reports the real
