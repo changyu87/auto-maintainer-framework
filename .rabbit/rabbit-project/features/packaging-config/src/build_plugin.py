@@ -21,23 +21,25 @@ Sources:
       .rabbit/rabbit-project/features/scheduling/src/run_tick.py
       .rabbit/rabbit-project/features/scheduling/src/status.py
       .rabbit/rabbit-project/features/scheduling/src/stop.py
+      .rabbit/rabbit-project/features/scheduling/src/start.py
       .rabbit/rabbit-project/features/work-intake/src/work_intake.py
     The four pure libs are copied byte-for-byte; run_tick.py, status.py,
-    stop.py, and work_intake.py are normalized so their sibling-lib imports
-    resolve from the co-located lib/ dir alone (the shipped plugin carries only
-    its own dir, so it cannot reach the feature src/ trees the dev copy resolves
-    through). status.py and stop.py import run_tick + the lifecycle/durable
-    libs, run_tick imports work_intake, and work_intake imports fsm_contracts —
-    so each gets the SAME self-path bootstrap, generalized here so they all
-    resolve their siblings from lib/. work_intake's source does not import os/sys
-    at module top, so its bootstrap variant imports them before the sys.path
-    insert.
+    stop.py, start.py, and work_intake.py are normalized so their sibling-lib
+    imports resolve from the co-located lib/ dir alone (the shipped plugin
+    carries only its own dir, so it cannot reach the feature src/ trees the dev
+    copy resolves through). status.py and stop.py import run_tick + the
+    lifecycle/durable libs, start.py imports run_tick + lifecycle_dispositions,
+    run_tick imports work_intake, and work_intake imports fsm_contracts — so
+    each gets the SAME self-path bootstrap, generalized here so they all resolve
+    their siblings from lib/. work_intake's source does not import os/sys at
+    module top, so its bootstrap variant imports them before the sys.path
+    insert; start.py already imports os/sys at top so it uses the plain variant.
 
 The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
 
-Version: 0.2.3
+Version: 0.2.4
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the framework adopts a different
   distribution channel than a self-hosted Claude Code plugin marketplace, or
@@ -56,7 +58,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.2.3"
+_PLUGIN_VERSION = "0.2.4"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -121,6 +123,11 @@ _NORMALIZED_LIBS = {
     ),
     "stop.py": (
         os.path.join(_FEATURES_REL, "scheduling", "src", "stop.py"),
+        "import run_tick as rt  # noqa: E402",
+        _SELF_PATH_BOOTSTRAP,
+    ),
+    "start.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "start.py"),
         "import run_tick as rt  # noqa: E402",
         _SELF_PATH_BOOTSTRAP,
     ),
