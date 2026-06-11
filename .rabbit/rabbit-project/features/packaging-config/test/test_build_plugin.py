@@ -434,13 +434,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship, adapter_wiring): version bumped to 0.2.5 in BOTH
+# Slice 2 spec (re-ship #59, route source): version bumped to 0.2.6 in BOTH
 # plugin.json and marketplace.json, and the two are consistent. The spec permits
-# a patch bump on each re-ship of the plugin tree (0.2.5 re-ships
-# adapter_wiring.py into lib/ so the installed /auto-maintainer:start runs the
-# route-as-data loop self-contained — run_tick now imports adapter_wiring).
+# a patch bump on each re-ship of the plugin tree (0.2.6 re-ships run_tick.py +
+# status.py so the installed plugin reports the loaded route source — default vs
+# override — in the tick trace and status line, the #59 fix).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_5_and_consistent():
+def test_version_bumped_to_0_2_6_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -452,12 +452,44 @@ def test_version_bumped_to_0_2_5_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.5", \
-            f"plugin.json version must be 0.2.5, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.5", \
-            "marketplace.json plugin entry version must be 0.2.5"
+        assert pdata.get("version") == "0.2.6", \
+            f"plugin.json version must be 0.2.6, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.6", \
+            "marketplace.json plugin entry version must be 0.2.6"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec (re-ship #59, route source): the whole point of the 0.2.6
+# re-ship is that the installed plugin reports the loaded route source. The
+# shipped run_tick.py emits `route=<src>` in the tick trace and the shipped
+# status.py emits `route=<src>` in the status line, both via run_tick's
+# route_source helper. Assert the shipped (rebuilt) libs carry that reporting —
+# without it the re-ship would silently NOT deliver the #59 fix.
+# ---------------------------------------------------------------------------
+def test_shipped_libs_report_route_source():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        rt = os.path.join(lib, "run_tick.py")
+        st = os.path.join(lib, "status.py")
+        with open(rt, encoding="utf-8") as fh:
+            rt_body = fh.read()
+        with open(st, encoding="utf-8") as fh:
+            st_body = fh.read()
+        # run_tick exposes the route_source helper and emits route= in the trace
+        assert "def route_source(" in rt_body, \
+            "shipped run_tick must define the route_source helper (#59)"
+        assert "route=" in rt_body, \
+            "shipped run_tick must emit route= in the tick trace (#59)"
+        # status reuses run_tick's route source and emits route= in its line
+        assert "route_source_label" in st_body, \
+            "shipped status must reuse run_tick.route_source_label (#59)"
+        assert "route=" in st_body, \
+            "shipped status must emit route= in the status line (#59)"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
