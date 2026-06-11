@@ -274,10 +274,12 @@ def test_core_libs_copied_byte_identical():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec: all FIVE loop-core libs ship under lib/ — the four pure libs
-# plus scheduling's run_tick.py.
+# Slice 2 spec (re-ship #29/#30): all SEVEN control libs ship under lib/ —
+# the four pure libs, scheduling's run_tick.py, and scheduling's script-backed
+# status.py + stop.py (the control surface the shipped /auto-maintainer:status
+# and :stop skills invoke via ${CLAUDE_PLUGIN_ROOT}/lib/).
 # ---------------------------------------------------------------------------
-def test_all_five_loop_libs_present():
+def test_all_seven_control_libs_present():
     out_root = _build_into_temp()
     try:
         lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
@@ -287,9 +289,107 @@ def test_all_five_loop_libs_present():
             "durable_state.py",
             "lifecycle_dispositions.py",
             "run_tick.py",
+            "status.py",
+            "stop.py",
         ):
             assert os.path.isfile(os.path.join(lib, fname)), \
                 f"lib/{fname} must ship in the plugin tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec (self-containment, critical): the shipped status.py and stop.py
+# import run_tick / lifecycle_dispositions / durable_state, which must resolve
+# with ONLY the plugin tree on sys.path. Claude copies just the plugin dir into
+# its cache, so the shipped control libs must NOT depend on the feature src/
+# dirs. Prove it by importing each in a subprocess whose sys.path is restricted
+# to the shipped lib/ dir alone (PYTHONPATH cleared, cwd = out_root).
+# ---------------------------------------------------------------------------
+def test_shipped_control_libs_are_self_contained():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        for mod, attr in (("run_tick", "run_tick"),
+                          ("status", "status_line"),
+                          ("stop", "stop")):
+            probe = (
+                "import sys; "
+                f"sys.path.insert(0, {lib!r}); "
+                f"import {mod}; "
+                f"assert hasattr({mod}, {attr!r}); "
+                "print('OK')"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", probe],
+                capture_output=True, text=True,
+                env={"PYTHONPATH": ""},
+                cwd=out_root,
+            )
+            assert proc.returncode == 0, \
+                f"shipped {mod} not self-contained: {proc.stderr}"
+            assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec (re-ship #29/#30): the shipped status skill is scheduling's
+# script-backed one — it references ${CLAUDE_PLUGIN_ROOT}/lib/status.py and
+# carries NONE of the slice-1 packaging-config stub text. The packaging-config
+# slice-1 status STUB is dropped; scheduling now owns the status skill.
+# ---------------------------------------------------------------------------
+def test_shipped_status_skill_is_script_backed_not_stub():
+    out_root = _build_into_temp()
+    try:
+        sk = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "status", "SKILL.md",
+        )
+        assert os.path.isfile(sk), "skills/status/SKILL.md must ship"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "${CLAUDE_PLUGIN_ROOT}/lib/status.py" in body, \
+            "shipped status skill must reference " \
+            "${CLAUDE_PLUGIN_ROOT}/lib/status.py"
+        assert "no loop configured" not in body, \
+            "shipped status skill must not carry the slice-1 stub text"
+        assert "packaging slice 1" not in body, \
+            "shipped status skill must not carry the slice-1 stub text"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec (re-ship #29/#30): exactly ONE skills/status/SKILL.md ships —
+# packaging-config no longer contributes its own status stub, so there is no
+# collision/duplicate and the single shipped one is scheduling's.
+# ---------------------------------------------------------------------------
+def test_exactly_one_status_skill_and_control_skills_present():
+    out_root = _build_into_temp()
+    try:
+        skills = os.path.join(
+            out_root, "plugins", "auto-maintainer", "skills"
+        )
+        status_md = [
+            p for p in _walk_paths(skills)
+            if os.path.basename(p) == "SKILL.md"
+            and os.path.basename(os.path.dirname(p)) == "status"
+        ]
+        assert len(status_md) == 1, \
+            f"exactly one status SKILL.md must ship, found {status_md}"
+        for name in ("start", "stop", "status"):
+            assert os.path.isfile(
+                os.path.join(skills, name, "SKILL.md")
+            ), f"skills/{name}/SKILL.md must ship"
+        # packaging-config no longer ships a status stub of its own.
+        assert not os.path.isdir(
+            os.path.join(_FEATURE_DIR, "src", "plugin_assets", "skills",
+                         "status")
+        ), "packaging-config must drop its slice-1 status stub asset"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
@@ -311,21 +411,22 @@ def test_ship_collection_start_stop_skills_present():
             with open(sk, encoding="utf-8") as fh:
                 assert fh.read().lstrip().startswith("---"), \
                     f"skills/{name}/SKILL.md must carry YAML frontmatter"
-        # the slice-1 status skill must still ship alongside them
+        # the status skill (now scheduling's, #29/#30) must ship alongside them
         assert os.path.isfile(
             os.path.join(skills, "status", "SKILL.md")
-        ), "slice-1 status skill must remain"
+        ), "status skill must ship alongside start/stop"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship): version bumped to 0.2.1 in BOTH plugin.json and
+# Slice 2 spec (re-ship): version bumped to 0.2.2 in BOTH plugin.json and
 # marketplace.json, and the two are consistent. The spec permits a patch bump
-# on each re-ship of the plugin tree (e.g. 0.2.1 after the scheduling #24
-# skill-path fix re-ship).
+# on each re-ship of the plugin tree (0.2.2 re-ships the scheduling #29/#30
+# script-backed control surface — status.py/stop.py libs + the script-backed
+# status skill — into the installed plugin).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_1_and_consistent():
+def test_version_bumped_to_0_2_2_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -337,10 +438,10 @@ def test_version_bumped_to_0_2_1_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.1", \
-            f"plugin.json version must be 0.2.1, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.1", \
-            "marketplace.json plugin entry version must be 0.2.1"
+        assert pdata.get("version") == "0.2.2", \
+            f"plugin.json version must be 0.2.2, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.2", \
+            "marketplace.json plugin entry version must be 0.2.2"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:

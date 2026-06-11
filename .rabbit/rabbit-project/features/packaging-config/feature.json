@@ -7,5 +7,5 @@
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-11",
-  "spec_no_change_reason": "Spec slice-2 already permits a 0.2.x patch bump on re-ship; this cycle re-ships the plugin tree with scheduling #24-fixed control skills and bumps 0.2.0->0.2.1 per the existing spec."
+  "spec_no_change_reason": "Spec slice-2 already mandates the script-backed status (drop the stub) and permits a 0.2.x patch bump on re-ship; this cycle re-ships status.py/stop.py libs + scheduling's status skill and bumps 0.2.1->0.2.2, no spec text change."
 }

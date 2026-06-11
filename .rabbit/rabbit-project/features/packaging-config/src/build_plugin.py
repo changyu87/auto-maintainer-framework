@@ -19,16 +19,21 @@ Sources:
       .rabbit/rabbit-project/features/durable-state/src/durable_state.py
       .rabbit/rabbit-project/features/lifecycle-dispositions/src/lifecycle_dispositions.py
       .rabbit/rabbit-project/features/scheduling/src/run_tick.py
-    The four pure libs are copied byte-for-byte; run_tick.py is normalized so
-    its sibling-lib imports resolve from the co-located lib/ dir alone (the
-    shipped plugin carries only its own dir, so it cannot reach the feature
-    src/ trees the dev copy resolves through).
+      .rabbit/rabbit-project/features/scheduling/src/status.py
+      .rabbit/rabbit-project/features/scheduling/src/stop.py
+    The four pure libs are copied byte-for-byte; run_tick.py, status.py, and
+    stop.py are normalized so their sibling-lib imports resolve from the
+    co-located lib/ dir alone (the shipped plugin carries only its own dir, so
+    it cannot reach the feature src/ trees the dev copy resolves through).
+    status.py and stop.py import run_tick + the lifecycle/durable libs, so they
+    get the SAME self-path bootstrap run_tick does — generalized here so all
+    three resolve their siblings from lib/.
 
 The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
 
-Version: 0.2.1
+Version: 0.2.2
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the framework adopts a different
   distribution channel than a self-hosted Claude Code plugin marketplace, or
@@ -47,7 +52,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.2.1"
+_PLUGIN_VERSION = "0.2.2"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -72,15 +77,31 @@ _LIBS = {
     ),
 }
 
-# run_tick.py is normalized rather than copied byte-for-byte: its sibling-lib
-# imports must resolve from the co-located lib/ dir alone. Source path relative
-# to repo_root.
-_RUN_TICK_REL = os.path.join(_FEATURES_REL, "scheduling", "src", "run_tick.py")
+# These libs are normalized rather than copied byte-for-byte: each imports
+# sibling libs that, in the shipped plugin, are flat neighbours in lib/. A
+# self-path bootstrap is inserted right before each one's FIRST sibling import
+# so the shipped copy resolves its siblings from the co-located lib/ dir alone
+# (the shipped plugin carries only its own dir). Maps dest filename -> (source
+# path relative to repo_root, the import-line anchor to insert the bootstrap
+# before).
+_NORMALIZED_LIBS = {
+    "run_tick.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "run_tick.py"),
+        "import fsm_contracts as fc  # noqa: E402",
+    ),
+    "status.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "status.py"),
+        "import run_tick as rt  # noqa: E402",
+    ),
+    "stop.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "stop.py"),
+        "import run_tick as rt  # noqa: E402",
+    ),
+}
 
-# Marker the normalization inserts a self-path bootstrap BEFORE, so the shipped
-# run_tick puts its own dir (lib/) on sys.path ahead of importing its siblings.
-_RUN_TICK_IMPORT_ANCHOR = "import fsm_contracts as fc  # noqa: E402"
-_RUN_TICK_SELF_PATH = (
+# The self-path bootstrap inserted before the anchor: it puts the file's own
+# (co-located) dir on sys.path so sibling imports resolve from lib/ alone.
+_SELF_PATH_BOOTSTRAP = (
     "# packaging-config: ship-time normalization — resolve sibling libs from\n"
     "# this file's own (co-located) dir so the shipped plugin is self-contained.\n"
     "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\n"
@@ -109,23 +130,24 @@ def _copy_tree(src, dst):
             )
 
 
-def _normalize_run_tick(src_path):
-    """Read scheduling's run_tick.py and return its self-contained variant.
+def _normalize_lib(src_path, anchor):
+    """Read a scheduling control lib and return its self-contained variant.
 
     The dev copy resolves its sibling libs via ../<dep>/src on sys.path; the
     shipped copy lives in lib/ alongside those libs, so we insert a self-path
-    bootstrap (lib/ on sys.path) right before the sibling imports. The original
-    ../<dep>/src loop stays harmless: those dirs do not exist in the plugin.
+    bootstrap (lib/ on sys.path) right before the FIRST sibling import (the
+    given anchor line). Any original ../<dep>/src loop stays harmless: those
+    dirs do not exist in the plugin.
     """
     with open(src_path, "r", encoding="utf-8") as fh:
         body = fh.read()
-    if _RUN_TICK_IMPORT_ANCHOR not in body:
+    if anchor not in body:
         raise RuntimeError(
-            f"run_tick.py normalization anchor not found in {src_path}"
+            f"normalization anchor {anchor!r} not found in {src_path}"
         )
     return body.replace(
-        _RUN_TICK_IMPORT_ANCHOR,
-        _RUN_TICK_SELF_PATH + _RUN_TICK_IMPORT_ANCHOR,
+        anchor,
+        _SELF_PATH_BOOTSTRAP + anchor,
         1,
     )
 
@@ -176,7 +198,8 @@ def build(repo_root, out_root=None):
     )
 
     # 3. Core libs into lib/. The four pure libs are copied byte-identical;
-    #    run_tick.py is normalized for self-contained sibling imports.
+    #    run_tick.py, status.py, and stop.py are normalized for self-contained
+    #    sibling imports.
     lib_dir = os.path.join(plugin_root, "lib")
     os.makedirs(lib_dir, exist_ok=True)
     for dst_name, src_rel in sorted(_LIBS.items()):
@@ -184,10 +207,11 @@ def build(repo_root, out_root=None):
             os.path.join(repo_root, src_rel),
             os.path.join(lib_dir, dst_name),
         )
-    with open(
-        os.path.join(lib_dir, "run_tick.py"), "w", encoding="utf-8"
-    ) as fh:
-        fh.write(_normalize_run_tick(os.path.join(repo_root, _RUN_TICK_REL)))
+    for dst_name, (src_rel, anchor) in sorted(_NORMALIZED_LIBS.items()):
+        with open(
+            os.path.join(lib_dir, dst_name), "w", encoding="utf-8"
+        ) as fh:
+            fh.write(_normalize_lib(os.path.join(repo_root, src_rel), anchor))
 
     # 4. Marketplace catalog at <out_root>/.claude-plugin/marketplace.json.
     _write_json(
