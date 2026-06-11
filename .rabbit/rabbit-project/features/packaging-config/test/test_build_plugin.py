@@ -274,13 +274,14 @@ def test_core_libs_copied_byte_identical():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #41, real PULL route): all EIGHT control libs ship
-# under lib/ — the four pure libs, scheduling's run_tick.py, scheduling's
-# script-backed status.py + stop.py, AND work-intake's work_intake.py (the
-# GitHub-Issues PULL adapter run_tick now imports). The shipped run_tick pulls
-# real open issues, so work_intake must travel in the plugin alongside it.
+# Slice 2 spec (re-ship #44, start.py): all NINE control libs ship under lib/ —
+# the four pure libs, scheduling's run_tick.py, scheduling's script-backed
+# status.py + stop.py, work-intake's work_intake.py (the GitHub-Issues PULL
+# adapter run_tick imports), AND scheduling's start.py (the deterministic
+# fresh-start starter the /auto-maintainer:start skill now invokes for tick #1,
+# which clears a latched STOPPED disposition before ticking — fixes #44).
 # ---------------------------------------------------------------------------
-def test_all_eight_control_libs_present():
+def test_all_nine_control_libs_present():
     out_root = _build_into_temp()
     try:
         lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
@@ -293,6 +294,7 @@ def test_all_eight_control_libs_present():
             "status.py",
             "stop.py",
             "work_intake.py",
+            "start.py",
         ):
             assert os.path.isfile(os.path.join(lib, fname)), \
                 f"lib/{fname} must ship in the plugin tree"
@@ -302,11 +304,12 @@ def test_all_eight_control_libs_present():
 
 # ---------------------------------------------------------------------------
 # Slice 2 spec (self-containment, critical): the shipped run_tick.py, status.py,
-# stop.py, and work_intake.py each import sibling libs that must resolve with
-# ONLY the plugin tree on sys.path. Claude copies just the plugin dir into its
-# cache, so the shipped control libs must NOT depend on the feature src/ dirs.
-# work_intake imports fsm_contracts (a flat sibling in lib/), so it gets the
-# same self-path bootstrap run_tick/status/stop get. Prove each in a subprocess
+# stop.py, work_intake.py, and start.py each import sibling libs that must
+# resolve with ONLY the plugin tree on sys.path. Claude copies just the plugin
+# dir into its cache, so the shipped control libs must NOT depend on the feature
+# src/ dirs. work_intake imports fsm_contracts and start imports run_tick +
+# lifecycle_dispositions (all flat siblings in lib/), so each gets the same
+# self-path bootstrap run_tick/status/stop get. Prove each in a subprocess
 # whose sys.path is restricted to the shipped lib/ dir alone (PYTHONPATH
 # cleared, cwd = out_root).
 # ---------------------------------------------------------------------------
@@ -320,7 +323,8 @@ def test_shipped_control_libs_are_self_contained():
         for mod, attr in (("run_tick", "run_tick"),
                           ("status", "status_line"),
                           ("stop", "stop"),
-                          ("work_intake", "Pull")):
+                          ("work_intake", "Pull"),
+                          ("start", "start")):
             probe = (
                 "import sys; "
                 f"sys.path.insert(0, {lib!r}); "
@@ -425,13 +429,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #41): version bumped to 0.2.3 in BOTH plugin.json and
+# Slice 2 spec (re-ship #44): version bumped to 0.2.4 in BOTH plugin.json and
 # marketplace.json, and the two are consistent. The spec permits a patch bump
-# on each re-ship of the plugin tree (0.2.3 re-ships the real PULL route —
-# work_intake.py lib + the run_tick/status that import it — so the installed
-# loop runs the genuine GitHub-Issues PULL adapter, not the DEMO_WORK stub).
+# on each re-ship of the plugin tree (0.2.4 re-ships start.py into lib/ so the
+# installed /auto-maintainer:start runs the deterministic starter — clearing a
+# latched STOPPED disposition before tick #1 — instead of hand-rolling Python).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_3_and_consistent():
+def test_version_bumped_to_0_2_4_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -443,10 +447,10 @@ def test_version_bumped_to_0_2_3_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.3", \
-            f"plugin.json version must be 0.2.3, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.3", \
-            "marketplace.json plugin entry version must be 0.2.3"
+        assert pdata.get("version") == "0.2.4", \
+            f"plugin.json version must be 0.2.4, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.4", \
+            "marketplace.json plugin entry version must be 0.2.4"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -475,6 +479,36 @@ def test_shipped_start_skill_uses_plugin_root_run_tick():
             "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py"
         assert "src/run_tick.py" not in body, \
             "shipped start skill must not carry a bare src/run_tick.py path"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec (re-ship #44): the shipped start skill invokes start.py via the
+# plugin-root token ${CLAUDE_PLUGIN_ROOT}/lib/start.py (the deterministic
+# starter that clears a latched STOPPED before tick #1) and carries NO inline
+# python — disposition handling is never prompt-tier (spec-rules §1). The
+# shipped plugin carries only its own dir, so the path must be plugin-root
+# anchored, never a bare src/ path.
+# ---------------------------------------------------------------------------
+def test_shipped_start_skill_invokes_start_py_no_inline_python():
+    out_root = _build_into_temp()
+    try:
+        sk = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "start", "SKILL.md",
+        )
+        assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "${CLAUDE_PLUGIN_ROOT}/lib/start.py" in body, \
+            "shipped start skill must reference " \
+            "${CLAUDE_PLUGIN_ROOT}/lib/start.py"
+        assert "src/start.py" not in body, \
+            "shipped start skill must not carry a bare src/start.py path"
+        # no inline python -c blocks: the starter owns the latch-clear decision
+        assert "python3 -c" not in body and "python -c" not in body, \
+            "shipped start skill must not hand-roll inline python"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
@@ -535,6 +569,26 @@ def test_shipped_run_tick_no_source_tree_leak():
         assert ".rabbit" not in body, "shipped run_tick leaks .rabbit"
         assert "rabbit-project" not in body, \
             "shipped run_tick references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 spec (re-ship #44): the shipped start.py (another file the build
+# rewrites for self-containment) must not leak a path back into the source
+# feature tree — the headline clean-ship invariant applies to it too.
+# ---------------------------------------------------------------------------
+def test_shipped_start_py_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        st = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "start.py"
+        )
+        with open(st, encoding="utf-8") as fh:
+            body = fh.read()
+        assert ".rabbit" not in body, "shipped start.py leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "shipped start.py references the source feature tree"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
