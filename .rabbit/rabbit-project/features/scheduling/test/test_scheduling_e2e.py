@@ -51,7 +51,7 @@ if _SRC not in sys.path:
 # other feature tests do. Do NOT edit/fork any of them.
 _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
-             "lifecycle-dispositions", "work-intake"):
+             "lifecycle-dispositions", "work-intake", "adapter-wiring"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
@@ -526,7 +526,8 @@ def _materialize_plugin_lib():
                      ("tick-orchestrator", "tick_orchestrator.py"),
                      ("durable-state", "durable_state.py"),
                      ("lifecycle-dispositions", "lifecycle_dispositions.py"),
-                     ("work-intake", "work_intake.py")):
+                     ("work-intake", "work_intake.py"),
+                     ("adapter-wiring", "adapter_wiring.py")):
         shutil.copy(os.path.join(_FEATURES, dep, "src", mod),
                     os.path.join(lib, mod))
     return lib
