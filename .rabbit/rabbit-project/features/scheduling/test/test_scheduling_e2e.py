@@ -507,7 +507,7 @@ def test_stop_then_tick_freezes_counter_end_to_end():
 # run_tick.
 # --------------------------------------------------------------------------
 
-def test_status_reports_real_disposition_and_counter_after_ticks(capsys=None):
+def test_status_reports_real_disposition_and_counter_after_ticks():
     project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
     old = os.environ.get("CLAUDE_PROJECT_DIR")
     os.environ["CLAUDE_PROJECT_DIR"] = project_dir
