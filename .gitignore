@@ -6,3 +6,6 @@
 # Claude Code scheduler state (cron jobs) — runtime, not part of the vendored tool
 .rabbit/.claude/scheduled_tasks.json
 .rabbit/.claude/scheduled_tasks.lock
+
+# auto-maintainer loop runtime state (created by /auto-maintainer:start)
+.auto-maintainer/

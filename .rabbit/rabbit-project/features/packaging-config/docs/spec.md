@@ -101,9 +101,11 @@ real loop reaches the installed plugin:
   `scheduling`'s `run_tick.py` into `plugins/auto-maintainer/lib/` (alongside the
   existing `fsm_contracts.py` and `tick_orchestrator.py`), so the shipped
   `/auto-maintainer:start` can run a real tick self-contained.
-- **Shipped control skills** — `scheduling`'s `ship/skills/start` and
-  `ship/skills/stop` land as `plugins/auto-maintainer/skills/{start,stop}`
-  (`/auto-maintainer:start`, `/auto-maintainer:stop`).
+- **Shipped control skills** — `scheduling`'s `ship/skills/{start,stop,status}`
+  land as `plugins/auto-maintainer/skills/{start,stop,status}`. The slice-1
+  packaging-config status STUB is REMOVED (scheduling now owns a script-backed
+  `status`, #29/#30); packaging-config still ships only the SessionStart persona
+  hook from its own assets.
 - **Version bump** — `plugin.json` + `marketplace.json` `version` → `0.2.0`
   (slice 2); bump the **patch** on each re-ship of the plugin tree (e.g. `0.2.1`
   after the scheduling #24 skill-path fix re-ship).
