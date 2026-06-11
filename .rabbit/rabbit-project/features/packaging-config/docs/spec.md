@@ -88,6 +88,29 @@ auto-maintainer-framework/
 The built `plugins/auto-maintainer/` tree is **committed** (so a GitHub clone
 includes it — required by the install flow below).
 
+## Slice 2 — ship the loop core (the `ship/` collection convention)
+
+Slice 1 hardcoded what to ship. Slice 2 makes the assembly **extensible** so the
+real loop reaches the installed plugin:
+
+- **`ship/` collection** — `build_plugin.py` scans `rabbit-project/features/*/ship/`
+  and copies each feature's `ship/` contents into `plugins/auto-maintainer/` at
+  the plugin root (`skills/`, `hooks/`, …). Each feature owns the components it
+  ships; the assembly just collects them.
+- **Loop-core libs** — copy `durable_state.py`, `lifecycle_dispositions.py`, and
+  `scheduling`'s `run_tick.py` into `plugins/auto-maintainer/lib/` (alongside the
+  existing `fsm_contracts.py` and `tick_orchestrator.py`), so the shipped
+  `/auto-maintainer:start` can run a real tick self-contained.
+- **Shipped control skills** — `scheduling`'s `ship/skills/start` and
+  `ship/skills/stop` land as `plugins/auto-maintainer/skills/{start,stop}`
+  (`/auto-maintainer:start`, `/auto-maintainer:stop`).
+- **Version bump** — `plugin.json` + `marketplace.json` `version` → `0.2.0`.
+
+Added invariants (TDD targets): the built tree contains the start/stop skills and
+all five loop libs; still **no `.rabbit` leak**; still idempotent; the shipped
+`/auto-maintainer:start`'s `run_tick` import path resolves entirely within the
+plugin (self-contained — Claude copies only the plugin dir).
+
 ## Distribution & test flow — GitHub only
 
 Testing/distribution uses the **GitHub marketplace flow exclusively** — never
