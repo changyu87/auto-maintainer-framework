@@ -274,12 +274,13 @@ def test_core_libs_copied_byte_identical():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #29/#30): all SEVEN control libs ship under lib/ —
-# the four pure libs, scheduling's run_tick.py, and scheduling's script-backed
-# status.py + stop.py (the control surface the shipped /auto-maintainer:status
-# and :stop skills invoke via ${CLAUDE_PLUGIN_ROOT}/lib/).
+# Slice 2 spec (re-ship #41, real PULL route): all EIGHT control libs ship
+# under lib/ — the four pure libs, scheduling's run_tick.py, scheduling's
+# script-backed status.py + stop.py, AND work-intake's work_intake.py (the
+# GitHub-Issues PULL adapter run_tick now imports). The shipped run_tick pulls
+# real open issues, so work_intake must travel in the plugin alongside it.
 # ---------------------------------------------------------------------------
-def test_all_seven_control_libs_present():
+def test_all_eight_control_libs_present():
     out_root = _build_into_temp()
     try:
         lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
@@ -291,6 +292,7 @@ def test_all_seven_control_libs_present():
             "run_tick.py",
             "status.py",
             "stop.py",
+            "work_intake.py",
         ):
             assert os.path.isfile(os.path.join(lib, fname)), \
                 f"lib/{fname} must ship in the plugin tree"
@@ -299,12 +301,14 @@ def test_all_seven_control_libs_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (self-containment, critical): the shipped status.py and stop.py
-# import run_tick / lifecycle_dispositions / durable_state, which must resolve
-# with ONLY the plugin tree on sys.path. Claude copies just the plugin dir into
-# its cache, so the shipped control libs must NOT depend on the feature src/
-# dirs. Prove it by importing each in a subprocess whose sys.path is restricted
-# to the shipped lib/ dir alone (PYTHONPATH cleared, cwd = out_root).
+# Slice 2 spec (self-containment, critical): the shipped run_tick.py, status.py,
+# stop.py, and work_intake.py each import sibling libs that must resolve with
+# ONLY the plugin tree on sys.path. Claude copies just the plugin dir into its
+# cache, so the shipped control libs must NOT depend on the feature src/ dirs.
+# work_intake imports fsm_contracts (a flat sibling in lib/), so it gets the
+# same self-path bootstrap run_tick/status/stop get. Prove each in a subprocess
+# whose sys.path is restricted to the shipped lib/ dir alone (PYTHONPATH
+# cleared, cwd = out_root).
 # ---------------------------------------------------------------------------
 def test_shipped_control_libs_are_self_contained():
     import subprocess
@@ -315,7 +319,8 @@ def test_shipped_control_libs_are_self_contained():
         lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
         for mod, attr in (("run_tick", "run_tick"),
                           ("status", "status_line"),
-                          ("stop", "stop")):
+                          ("stop", "stop"),
+                          ("work_intake", "Pull")):
             probe = (
                 "import sys; "
                 f"sys.path.insert(0, {lib!r}); "
@@ -420,13 +425,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship): version bumped to 0.2.2 in BOTH plugin.json and
+# Slice 2 spec (re-ship #41): version bumped to 0.2.3 in BOTH plugin.json and
 # marketplace.json, and the two are consistent. The spec permits a patch bump
-# on each re-ship of the plugin tree (0.2.2 re-ships the scheduling #29/#30
-# script-backed control surface — status.py/stop.py libs + the script-backed
-# status skill — into the installed plugin).
+# on each re-ship of the plugin tree (0.2.3 re-ships the real PULL route —
+# work_intake.py lib + the run_tick/status that import it — so the installed
+# loop runs the genuine GitHub-Issues PULL adapter, not the DEMO_WORK stub).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_2_and_consistent():
+def test_version_bumped_to_0_2_3_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -438,10 +443,10 @@ def test_version_bumped_to_0_2_2_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.2", \
-            f"plugin.json version must be 0.2.2, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.2", \
-            "marketplace.json plugin entry version must be 0.2.2"
+        assert pdata.get("version") == "0.2.3", \
+            f"plugin.json version must be 0.2.3, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.3", \
+            "marketplace.json plugin entry version must be 0.2.3"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
