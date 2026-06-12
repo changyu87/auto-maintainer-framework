@@ -1,8 +1,13 @@
 {
   "name": "implement",
   "version": "0.1.0",
-  "owner": "cyxu",
-  "paths": [],
+  "owner": "changyu87",
+  "paths": [
+    "rabbit-project/features/implement/src/**"
+  ],
   "created": "2026-06-12T06:10:37Z",
-  "deprecation_criterion": null
+  "deprecation_criterion": "Superseded when the model-backed implement-then-PR doer (DESIGN \u00a73.6.2/\u00a73.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.",
+  "tdd_state": "impl",
+  "updated": "2026-06-12",
+  "spec_no_change_reason": "greenfield: spec.md seeded by scaffold in prior decomposition; this cycle implements it unchanged"
 }
