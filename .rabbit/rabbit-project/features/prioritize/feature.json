@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-12T06:02:16Z",
   "deprecation_criterion": "Superseded when ordering ceases to be deterministic (e.g. a model-backed prioritizer adapter replaces the default), or when the ExecutionPlan schema reaches a breaking major version.",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-12",
   "spec_no_change_reason": "greenfield: spec.md seeded by scaffold in prior decomposition; this cycle implements it unchanged"
 }
