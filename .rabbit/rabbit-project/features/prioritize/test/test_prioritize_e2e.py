@@ -62,11 +62,11 @@ def _order(oid, decision="accepted", reason=""):
 
 def _fresh_ctx(work_orders=None):
     ctx = fc.TickContext()
-    ctx.register_slot(
-        pr.WORK_ORDERS_SLOT["name"],
-        pr.WORK_ORDERS_SLOT["schema"],
-        version=pr.WORK_ORDERS_SLOT["version"],
-    )
+    # `work_orders` is the upstream slot work-intake's TRIAGE owns; PRIORITIZE
+    # only reads it. The test registers it as the array slot tick-orchestrator
+    # would, with no cross-feature import (PRIORITIZE consumes only the dict
+    # `id` + `decision` fields, not work-intake's WorkOrder type).
+    ctx.register_slot("work_orders", {"type": "array"}, version="1.0.0")
     ctx.register_slot(
         pr.EXECUTION_PLAN_SLOT["name"],
         pr.EXECUTION_PLAN_SLOT["schema"],
