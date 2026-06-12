@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.1.0
+version: 0.1.1
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -18,7 +18,7 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
     ],
     "scripts": [
       "src/run_tick.py: deterministic single-tick runner — resolves runtime, calls adapter_wiring.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, start='GUARD', initial=[...]) to load (project-local override else default) -> resolve -> validate -> (route, states), runs tick_orchestrator.run(...), prints a tick trace (incl. route source — default vs override:<path>, #59), persists work_items (+ work_orders when the active route produced them) + the EXIT disposition signal (one invocation = one tick)",
-      "src/start.py / src/stop.py / src/status.py: deterministic control scripts (script-tier) owning all state operations; status.py reports disposition + work_items count (+ work_orders count if present) + the route source (default vs override:<path>, #59) via run_tick.route_source"
+      "src/start.py / src/stop.py / src/status.py: deterministic control scripts (script-tier) owning all state operations; status.py reports disposition + work_items count + work_orders count (always reported, including 0, matching the tick trace, #69) + the route source (default vs override:<path>, #59) via run_tick.route_source"
     ],
     "skills": [
       "ship/skills/start/SKILL.md (/auto-maintainer:start): runs tick #1 via start.py then schedules the recurring ~1-min in-session heartbeat re-running run_tick.py",

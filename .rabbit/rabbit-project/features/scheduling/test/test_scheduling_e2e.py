@@ -503,10 +503,13 @@ _TRIAGE_ROUTE_FOR_STATUS = {
 
 
 def test_status_reports_current_tick_work_orders_not_stale():
-    """#64: status.py reports the CURRENT tick's read products. After a TRIAGE
-    tick (work_orders>0) followed by a DEFAULT tick (no TRIAGE) in the same
-    runtime dir, status must NOT show the stale TRIAGE work_orders — the
-    read-product snapshot reflects only the last (default) tick."""
+    """#64 + #69: status.py reports the CURRENT tick's read products. After a
+    TRIAGE tick (work_orders>0) followed by a DEFAULT tick (no TRIAGE) in the
+    same runtime dir, status must show the CURRENT tick's work_orders=0 — not
+    the stale TRIAGE count (#64), and not by OMITTING the field (#69). status
+    ALWAYS reports work_orders, including 0, so a reader can distinguish 'no
+    TRIAGE routed' from 'TRIAGE ran, found nothing' and status never diverges
+    from the tick trace, which always prints work_orders=N."""
     project_dir = tempfile.mkdtemp(prefix="scheduling-status64-")
     old = os.environ.get("CLAUDE_PROJECT_DIR")
     os.environ["CLAUDE_PROJECT_DIR"] = project_dir
@@ -529,9 +532,83 @@ def test_status_reports_current_tick_work_orders_not_stale():
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
         else:
             os.environ["CLAUDE_PROJECT_DIR"] = old
-    # status omits work_orders when count is 0, so the stale field must be ABSENT.
-    assert "work_orders=" not in line, line
+    # status ALWAYS reports work_orders (#69); after the default tick the value
+    # is the CURRENT tick's 0 (#64), not the stale TRIAGE count of 2.
+    assert "work_orders=0" in line, line
+    assert "work_orders=2" not in line, line
     assert "work_items=2" in line, line
+
+
+def test_status_shows_work_orders_zero_after_default_tick():
+    """#69 repro: after a DEFAULT-route tick (no TRIAGE) persists work_orders=0,
+    status MUST report work_orders=0 explicitly — never drop the field. Dropping
+    it (the old conditional) made status diverge from the tick trace, which
+    always prints work_orders=N, so a reader could not tell 'no TRIAGE routed'
+    from 'TRIAGE ran, found nothing'."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-status69-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        rt.run_tick(source=_stub_source())  # default route: no TRIAGE
+        _rt, state_path, _j = rt.resolve_runtime_paths()
+        assert rt.persisted_work_orders_count(state_path) == 0
+        line = st.status_line()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    assert "work_orders=0" in line, line
+    assert "work_items=2" in line, line
+
+
+def test_status_shows_work_orders_count_after_triage_tick():
+    """#69: after a TRIAGE-route tick persists work_orders=N (N>0), status shows
+    work_orders=N — the same count the tick trace prints."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-status69-triage-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        cfg = os.path.join(project_dir, ".auto-maintainer")
+        os.makedirs(cfg, exist_ok=True)
+        with open(os.path.join(cfg, "route.json"), "w") as f:
+            json.dump(_TRIAGE_ROUTE_FOR_STATUS, f)
+        rt.run_tick(source=_stub_source())  # TRIAGE route: work_orders > 0
+        _rt, state_path, _j = rt.resolve_runtime_paths()
+        n = rt.persisted_work_orders_count(state_path)
+        assert n > 0
+        line = st.status_line()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    assert f"work_orders={n}" in line, (n, line)
+
+
+def test_status_field_order_matches_tick_trace_convention():
+    """#69: status field presence + order matches the tick-trace convention —
+    disposition, then work_items, then work_orders, then route, then
+    runtime_dir — so status and the trace never diverge. work_orders is
+    UNCONDITIONAL (the field is always present, even at 0)."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-status-order-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        rt.run_tick(source=_stub_source())  # default route -> work_orders=0
+        line = st.status_line()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    for field in ("disposition=", "work_items=", "work_orders=", "route=",
+                  "runtime_dir="):
+        assert field in line, (field, line)
+    # Order: disposition < work_items < work_orders < route < runtime_dir.
+    assert (line.index("disposition=") < line.index("work_items=")
+            < line.index("work_orders=") < line.index("route=")
+            < line.index("runtime_dir=")), line
 
 
 def test_status_reflects_stopped_after_stop():
