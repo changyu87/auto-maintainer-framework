@@ -67,7 +67,8 @@ if _SRC not in sys.path:
 _FEATURE_DIR = os.path.dirname(_SRC)
 _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
-             "lifecycle-dispositions", "work-intake", "adapter-wiring"):
+             "lifecycle-dispositions", "work-intake", "adapter-wiring",
+             "prioritize", "implement"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if os.path.isdir(_dep_src) and _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
@@ -82,6 +83,8 @@ import durable_state as ds  # noqa: E402
 import lifecycle_dispositions as ld  # noqa: E402
 import work_intake as wi  # noqa: E402
 import adapter_wiring as aw  # noqa: E402
+import prioritize as pr  # noqa: E402
+import implement as im  # noqa: E402
 
 
 # The production PULL issue source: work-intake's live `gh` CLI adapter. Tests
@@ -94,6 +97,8 @@ DEFAULT_PULL_SOURCE = wi.gh_issue_source
 # so status.py can report the counts without re-running the loop.
 WORK_ITEMS_KEY = "work_items"
 WORK_ORDERS_KEY = "work_orders"
+EXECUTION_PLAN_KEY = "execution_plan"
+HANDOFFS_KEY = "handoffs"
 
 # DONE is the true terminal: tick-orchestrator HALTS the moment it reaches a
 # terminal state and NEVER run()s it, so EXIT must be a NON-terminal state that
@@ -156,6 +161,20 @@ def make_triage(runtime):
     return wi.TRIAGE_MANIFEST, triage.run
 
 
+def make_prioritize(runtime):  # noqa: ARG001 - PRIORITIZE binds no runtime config
+    """PRIORITIZE adapter (prioritize): the deterministic ordering gate mapping
+    work_orders -> execution_plan. Binds no runtime config, so `runtime` is
+    unused; returns the sibling manifest + run callable unchanged."""
+    return pr.PRIORITIZE_MANIFEST, pr.run
+
+
+def make_implement(runtime):  # noqa: ARG001 - IMPLEMENT binds no runtime config
+    """IMPLEMENT adapter (implement, dry-run): the deterministic, INERT act
+    state mapping execution_plan -> handoffs. Binds no runtime config, so
+    `runtime` is unused; returns the sibling manifest + run callable unchanged."""
+    return im.IMPLEMENT_MANIFEST, im.run
+
+
 # --------------------------------------------------------------------------
 # The shipped DEFAULT_ROUTE + DEFAULT_ADAPTER_MAP (route-as-data).
 #
@@ -185,8 +204,9 @@ DEFAULT_ROUTE = {
     "terminal": [_DONE, _HALTED],
 }
 
-# Every known port -> its built-in factory address. TRIAGE is included even
-# though DEFAULT_ROUTE omits it (the ports-and-adapters promise: insert by data).
+# Every known port -> its built-in factory address. TRIAGE, PRIORITIZE, and
+# IMPLEMENT are included even though DEFAULT_ROUTE omits them (the
+# ports-and-adapters promise: insert the act chain by data, no code change).
 # The terminals are addressed too so adapter-wiring can resolve every state in a
 # route (terminals never run(), but their manifests must resolve for validation).
 DEFAULT_ADAPTER_MAP = {
@@ -194,6 +214,8 @@ DEFAULT_ADAPTER_MAP = {
     "DRAIN": "run_tick:make_drain",
     "PULL": "run_tick:make_pull",
     "TRIAGE": "run_tick:make_triage",
+    "PRIORITIZE": "run_tick:make_prioritize",
+    "IMPLEMENT": "run_tick:make_implement",
     "PERSIST": "run_tick:make_persist",
     "EXIT": "run_tick:make_exit",
     _DONE: "run_tick:make_terminal",
@@ -216,7 +238,7 @@ def make_terminal(runtime):  # noqa: ARG001 - terminals never run()
 # The closed signal vocabulary spanning every state in the route. It is a
 # superset covering both the default spine and TRIAGE's OK/EMPTY signals.
 _VOCAB = fc.SignalVocabulary([
-    "OK", "EMPTY", "HALT_REQUESTED", "RESTART_REQUIRED",
+    "OK", "EMPTY", "BLOCKED", "HALT_REQUESTED", "RESTART_REQUIRED",
     "refire", "idle", "break", "halt",
 ])
 
@@ -231,9 +253,11 @@ def _seed_context(state_path, journal_path, route):
 
     Registers the durable-state plumbing slots (counter/state_path/journal_path)
     that DRAIN/PERSIST read, the work_items slot PULL writes, the tick_outcome
-    slot EXIT reads, and — when the active route includes TRIAGE — the
-    work_orders slot TRIAGE writes. tick_outcome is seeded "empty" so EXIT
-    selects IDLE after the read stages (read-and-idle).
+    slot EXIT reads, and — when the active route includes them — the work_orders
+    slot TRIAGE writes, the execution_plan slot PRIORITIZE writes, and the
+    handoffs slot IMPLEMENT writes. tick_outcome is seeded "empty" so EXIT
+    selects IDLE after the read stages (read-and-idle): the dry-run IMPLEMENT is
+    INERT, so even an act-path tick leaves no remaining work and still idles.
     """
     ctx = fc.TickContext()
     ctx.register_slot("counter", {"type": "integer"}, version="1.0.0")
@@ -247,6 +271,14 @@ def _seed_context(state_path, journal_path, route):
         ctx.register_slot(
             wi.WORK_ORDERS_SLOT["name"], wi.WORK_ORDERS_SLOT["schema"],
             version=wi.WORK_ORDERS_SLOT["version"])
+    if "PRIORITIZE" in route["states"]:
+        ctx.register_slot(
+            pr.EXECUTION_PLAN_SLOT["name"], pr.EXECUTION_PLAN_SLOT["schema"],
+            version=pr.EXECUTION_PLAN_SLOT["version"])
+    if "IMPLEMENT" in route["states"]:
+        ctx.register_slot(
+            im.HANDOFFS_SLOT["name"], im.HANDOFFS_SLOT["schema"],
+            version=im.HANDOFFS_SLOT["version"])
     ctx.write("state_path", state_path)
     ctx.write("journal_path", journal_path)
     ctx.write("counter", ds.DurableState(state_path).load()["counter"])
@@ -343,6 +375,34 @@ def persisted_work_orders_count(state_path):
     return len(persisted_work_orders(state_path))
 
 
+def persisted_execution_plan(state_path):
+    """The last tick's execution_plan snapshot persisted in durable state (an
+    object {ordered, status}), or {} when the active route produced none (e.g.
+    the default route has no PRIORITIZE)."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(EXECUTION_PLAN_KEY, {})
+
+
+def persisted_execution_plan_count(state_path):
+    """The count of ordered entries in the last tick's execution_plan, from
+    durable state (len of the plan's `ordered` list; 0 when absent or empty)."""
+    plan = persisted_execution_plan(state_path)
+    return len(plan.get("ordered", []))
+
+
+def persisted_handoffs(state_path):
+    """The last tick's handoffs snapshot persisted in durable state (a list of
+    Handoff dicts), or [] when the active route produced none (e.g. the default
+    route has no IMPLEMENT)."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(HANDOFFS_KEY, [])
+
+
+def persisted_handoffs_count(state_path):
+    """The count of handoffs the last tick produced, from durable state."""
+    return len(persisted_handoffs(state_path))
+
+
 def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              project_dir=None, source=None, now=None, return_run_result=False):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
@@ -405,13 +465,15 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     if result.final_state == _DONE:
         # EXIT ran and emitted the disposition-selecting signal last. Persist the
         # CURRENT tick's read-product snapshot, OVERWRITING any prior values
-        # (#64): work_items/work_orders are EPHEMERAL — each tick they reflect
-        # ONLY what THIS tick's route produced (PULL writes work_items; TRIAGE,
-        # when routed, writes work_orders). A route without TRIAGE persists
-        # work_orders empty (NOT a stale count carried forward from an earlier
-        # TRIAGE tick); the principle is symmetric for a route without PULL. The
-        # durable CROSS-TICK facts (counter/journal/disposition/schema_version)
-        # are left untouched — only the read-product snapshot resets per tick.
+        # (#64): work_items/work_orders/execution_plan/handoffs are EPHEMERAL —
+        # each tick they reflect ONLY what THIS tick's route produced (PULL writes
+        # work_items; TRIAGE, when routed, writes work_orders; PRIORITIZE, when
+        # routed, writes execution_plan; IMPLEMENT, when routed, writes handoffs).
+        # A route without a producing stage persists that product empty (NOT a
+        # stale value carried forward from an earlier act-path tick); the
+        # principle is symmetric across all four products. The durable CROSS-TICK
+        # facts (counter/journal/disposition/schema_version) are left untouched —
+        # only the read-product snapshot resets per tick.
         signal = result.signals[-1]
         doc = ds.DurableState(state_path).load()
         doc[WORK_ITEMS_KEY] = (
@@ -420,6 +482,12 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         doc[WORK_ORDERS_KEY] = (
             ctx.read(wi.WORK_ORDERS_SLOT["name"])
             if "TRIAGE" in route["states"] else [])
+        doc[EXECUTION_PLAN_KEY] = (
+            ctx.read(pr.EXECUTION_PLAN_SLOT["name"])
+            if "PRIORITIZE" in route["states"] else {})
+        doc[HANDOFFS_KEY] = (
+            ctx.read(im.HANDOFFS_SLOT["name"])
+            if "IMPLEMENT" in route["states"] else [])
         ds.DurableState(state_path).save(doc)
     else:
         # GUARD short-circuited (STOPPED/ABORTED/RESTART_NEEDED): the tick did no
@@ -429,13 +497,17 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     disposition = ld.read_disposition(runtime_dir)
     work_items_count = persisted_work_items_count(state_path)
     work_orders_count = persisted_work_orders_count(state_path)
+    execution_plan_count = persisted_execution_plan_count(state_path)
+    handoffs_count = persisted_handoffs_count(state_path)
     # The route source (#59): default vs the project-local override path, so a
     # misplaced/absent route.json is visible in the trace, not silently ignored.
     # Resolved from the SAME project_dir build_loop loaded the route from.
     route_src = route_source_label(project_dir)
     sys.stdout.write(
         f"[tick] path={'->'.join(result.path)} work_items={work_items_count} "
-        f"work_orders={work_orders_count} disposition={disposition} "
+        f"work_orders={work_orders_count} "
+        f"execution_plan={execution_plan_count} handoffs={handoffs_count} "
+        f"disposition={disposition} "
         f"signal={signal} route={route_src}\n")
 
     if return_run_result:

@@ -24,26 +24,30 @@ Sources:
       .rabbit/rabbit-project/features/scheduling/src/start.py
       .rabbit/rabbit-project/features/work-intake/src/work_intake.py
       .rabbit/rabbit-project/features/adapter-wiring/src/adapter_wiring.py
+      .rabbit/rabbit-project/features/prioritize/src/prioritize.py
+      .rabbit/rabbit-project/features/implement/src/implement.py
     The four pure libs are copied byte-for-byte; run_tick.py, status.py,
-    stop.py, start.py, work_intake.py, and adapter_wiring.py are normalized so
-    their sibling-lib imports resolve from the co-located lib/ dir alone (the
-    shipped plugin carries only its own dir, so it cannot reach the feature src/
-    trees the dev copy resolves through). status.py and stop.py import run_tick +
-    the lifecycle/durable libs, start.py imports run_tick + lifecycle_dispositions,
-    run_tick imports work_intake + adapter_wiring, work_intake imports
-    fsm_contracts, and adapter_wiring imports fsm_contracts + tick_orchestrator —
-    so each gets the SAME self-path bootstrap, generalized here so they all
-    resolve their siblings from lib/. work_intake's source does not import os/sys
-    at module top, so its bootstrap variant imports them before the sys.path
-    insert; adapter_wiring imports os but not sys, so it uses the same
-    with-imports variant (re-importing os is harmless); start.py already imports
-    os/sys at top so it uses the plain variant.
+    stop.py, start.py, work_intake.py, adapter_wiring.py, prioritize.py, and
+    implement.py are normalized so their sibling-lib imports resolve from the
+    co-located lib/ dir alone (the shipped plugin carries only its own dir, so it
+    cannot reach the feature src/ trees the dev copy resolves through). status.py
+    and stop.py import run_tick + the lifecycle/durable libs, start.py imports
+    run_tick + lifecycle_dispositions, run_tick imports work_intake +
+    adapter_wiring + prioritize + implement, work_intake imports fsm_contracts,
+    adapter_wiring imports fsm_contracts + tick_orchestrator, and prioritize +
+    implement each import fsm_contracts — so each gets the SAME self-path
+    bootstrap, generalized here so they all resolve their siblings from lib/.
+    work_intake, prioritize, and implement do not import os/sys at module top, so
+    their bootstrap variant imports them before the sys.path insert; adapter_wiring
+    imports os but not sys, so it uses the same with-imports variant (re-importing
+    os is harmless); start.py already imports os/sys at top so it uses the plain
+    variant.
 
 The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
 
-Version: 0.2.8
+Version: 0.2.9
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the framework adopts a different
   distribution channel than a self-hosted Claude Code plugin marketplace, or
@@ -62,7 +66,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.2.8"
+_PLUGIN_VERSION = "0.2.9"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -144,6 +148,16 @@ _NORMALIZED_LIBS = {
         os.path.join(
             _FEATURES_REL, "adapter-wiring", "src", "adapter_wiring.py"
         ),
+        "import fsm_contracts as fc",
+        _SELF_PATH_BOOTSTRAP_WITH_IMPORTS,
+    ),
+    "prioritize.py": (
+        os.path.join(_FEATURES_REL, "prioritize", "src", "prioritize.py"),
+        "import fsm_contracts as fc",
+        _SELF_PATH_BOOTSTRAP_WITH_IMPORTS,
+    ),
+    "implement.py": (
+        os.path.join(_FEATURES_REL, "implement", "src", "implement.py"),
         "import fsm_contracts as fc",
         _SELF_PATH_BOOTSTRAP_WITH_IMPORTS,
     ),

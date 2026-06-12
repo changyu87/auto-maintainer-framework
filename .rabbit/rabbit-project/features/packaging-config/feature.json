@@ -6,6 +6,6 @@
   "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-06-11",
-  "spec_no_change_reason": "Spec slice-2 already permits a 0.2.x patch bump on each re-ship; this cycle re-ships status.py so the installed plugin carries the merged #69 fix (status always reports work_orders, including 0) and bumps 0.2.7->0.2.8, no spec text change."
+  "updated": "2026-06-12",
+  "spec_no_change_reason": "Spec slice-2 already permits a 0.2.x patch bump on each re-ship; this cycle ships the two new deterministic adapter libs (prioritize.py, implement.py) that run_tick imports and bumps 0.2.8->0.2.9, no spec text change."
 }
