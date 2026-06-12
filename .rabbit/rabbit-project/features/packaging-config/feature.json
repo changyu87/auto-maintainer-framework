@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-12",
