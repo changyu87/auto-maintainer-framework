@@ -37,7 +37,7 @@ decomposition. Update the **Status** column as features progress.
 | 9 | `safety-governance` | §3.8.1–§3.8.5, §3.11.5 | Guardrails, trust ladder (dry-run/propose/gated-merge), no-AskUserQuestion→ABORTED, budget caps, backoff/circuit-breaker, loopback/provenance guard. | planned |
 | 10 | `outbound-report` | §1.3, §2.5, §3.11.1–§3.11.4, §3.11.6, §3.11.7 | `REPORT` port + `DiscoveredIssue`/`ReportResult` schemas, default GitHub filing adapter, durable IMPLEMENT-discovery filing, idempotent journaled filing, project-vs-self routing. | planned |
 | 11 | `observability` | §3.9.1–§3.9.3, §3.10.3 | Structured event log, SessionStart banner + dispatcher-persona injection, issue-comment escalation. | planned |
-| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slices 1–2:** clean plugin assembly (no `.rabbit/`) + `marketplace.json` + `ship/` collection + 5 loop libs + `/auto-maintainer:start`/`:stop`/`:status` + SessionStart persona. Later: `userConfig`, port→adapter wiring, dogfood. | **slice 2 implemented** (PRs #13/#23/#27/#34/#42/#47/#57/#62; **v0.2.6**; 25 tests; ships route-as-data loop + route-source reporting, 10 libs) |
+| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slices 1–2:** clean plugin assembly (no `.rabbit/`) + `marketplace.json` + `ship/` collection + 5 loop libs + `/auto-maintainer:start`/`:stop`/`:status` + SessionStart persona. Later: `userConfig`, port→adapter wiring, dogfood. | **slice 2 implemented** (PRs #13/#23/#27/#34/#42/#47/#57/#62/#67; **v0.2.7**; 26 tests; ships route-as-data loop + route-source reporting + per-tick read products #64, 10 libs) |
 | 13 | `adapter-wiring` | §2.4, §3.4.1, §3.4.3, §3.10.2 | Route-as-data: load `route.json` + `port→adapter` map (project-local override), resolve adapters via the `factory(runtime)→(manifest,run)` convention, validate wiring at load (signals + data-readiness + anchors), `build_loop`. The ports-and-adapters mechanism (added post-decomposition). | **implemented** (PRs #54/#56; 19 tests; live — TRIAGE wireable by config) |
 
 > Note: `lifecycle-core` from the first-pass decomposition was split into #2
@@ -74,6 +74,9 @@ Bit-by-bit, verifying each before the next:
    *at runtime*: route + adapters are data; a project-local `route.json` wires/
    reorders/swaps adapter states with no code (proven live — TRIAGE inserted by
    config produces `work_orders`). Load-time validation rejects bad wiring.
+**Read products are per-tick ephemeral** (#64, PRs #65/#66/#67, v0.2.7): a tick
+reports only what THIS tick's route produced — a route without TRIAGE reports
+`work_orders=0`, never a stale count carried from an earlier TRIAGE tick.
 
 **Re-prioritized next steps** (the wiring is the keystone; per the §2.1
 implement-heavy thesis + §3.4.4's "battle-test contracts first"):
