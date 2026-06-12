@@ -30,14 +30,15 @@ decomposition. Update the **Status** column as features progress.
 | 2 | `tick-orchestrator` | §1.1.1, §3.1.1, §2.7 | External router: `resolve_next`, run loop to terminal, structural validators (signal-validity, data-readiness). | **implemented** (PR #9, merged; 13 tests) |
 | 3 | `lifecycle-dispositions` | §1.2, §3.1.2, §3.1.3, §3.1.4 | Disposition machine (`RUNNING`/`IDLE`/`STOPPED`/`ABORTED`/`RESTART_NEEDED`), single-writer mutex + stale detection, GUARD/EXIT anchors, host-agnostic resumption. | **implemented** (PR #20; 20 tests) |
 | 4 | `durable-state` | §3.2.1–§3.2.4 | Versioned state schema, per-tick record-before-act journal, DRAIN owed-work step, PERSIST, idempotency/dedup-key. | **implemented** (PR #19; 11 tests, incl. truncate→resume exactly-once) |
-| 5 | `scheduling` | §3.3.1–§3.3.4 | In-session heartbeat + script-backed `/auto-maintainer:start`/`:stop`/`:status`; route now **GUARD→DRAIN→PULL→PERSIST→EXIT** (read-and-idle, real work-intake PULL). Route is **data** (default + project-local `route.json` override via adapter-wiring §3.4.3). 1-min hardcoded (#17); system-cron + durable heartbeat deferred (#31); `/start` clears a latched STOPPED (#44); trace + status report `route=default`/`route=override:<path>` (#59). | **implemented** (PRs #21/#25/#33/#41/#46/#56/#61; 65 tests) |
+| 5 | `scheduling` | §3.3.1–§3.3.4 | In-session heartbeat + script-backed `/auto-maintainer:start`/`:stop`/`:status`; route now **GUARD→DRAIN→PULL→PERSIST→EXIT** (read-and-idle, real work-intake PULL). Route is **data** (default + project-local `route.json` override via adapter-wiring §3.4.3). 1-min hardcoded (#17); system-cron + durable heartbeat deferred (#31); `/start` clears a latched STOPPED (#44); trace + status report `route=default`/`route=override:<path>` (#59). PRIORITIZE+IMPLEMENT now in `DEFAULT_ADAPTER_MAP`; `execution_plan`/`handoffs` surfaced as per-tick ephemeral read products in trace+status (PR #77). | **implemented** (PRs #21/#25/#33/#41/#46/#56/#61/#77; 87 tests) |
 | 6 | `work-intake` | §3.4.2 (PULL), §3.5.1–§3.5.3, §3.5.5, §3.5.7, §3.5.8 | **Slice 1 (PULL):** GitHub-Issues PULL → `work_items` (gh CLI behind injectable seam). **Slice 2 (TRIAGE):** deterministic validity gate → `work_orders` (dedup-vs-closed/decompose/ordering/WHAT-gen seam = slice 3+). | **slices 1–2 implemented** (PRs #38/#41/#50; 21 tests; PULL live; TRIAGE wireable via route.json, #56) |
-| 7 | `implement` | §3.6.1–§3.6.5 | `Handoff` schema, mandatory worktree isolation (direct L1 dispatch), default implement-then-PR, optional TDD adapter, long-run handling. | planned |
+| 6b | `prioritize` | §1.1, §2.6 | `PRIORITIZE` adapter: deterministic `work_orders → execution_plan` (identity/FIFO order + `pending` status backfill, in-slot only). Owns `ExecutionPlan` schema. No groups (v2), no severity key (none on WorkOrder), no tracker write (deferred to safety-governance). | **implemented** (PR #74; 10 tests; wired live PR #77) |
+| 7 | `implement` | §3.6.1–§3.6.5 | **Dry-run slice (trust-ladder `dry-run` rung):** `Handoff` schema + inert deterministic `execution_plan → handoffs` (status=`planned`, artifact=`none`, no model/diff/PR/cap; reads `execution_plan` only, not `workspace`). **Deferred:** model-backed implement-then-PR doer (§3.6.2/§3.6.3, `propose` rung, reads `workspace`), TDD adapter (§3.6.4), trust-ladder mode + budget gating (§3.8). | **dry-run slice implemented** (PR #76; 13 tests; wired live PR #77) |
 | 8 | `verify-integrate` | §3.7.1–§3.7.4 | `VERIFY` gate `{ok,reasons[]}` (CI+test), `INTEGRATE` VCS hook (merge/release/cleanup), `CLEANUP`, idempotent release. | planned |
 | 9 | `safety-governance` | §3.8.1–§3.8.5, §3.11.5 | Guardrails, trust ladder (dry-run/propose/gated-merge), no-AskUserQuestion→ABORTED, budget caps, backoff/circuit-breaker, loopback/provenance guard. | planned |
 | 10 | `outbound-report` | §1.3, §2.5, §3.11.1–§3.11.4, §3.11.6, §3.11.7 | `REPORT` port + `DiscoveredIssue`/`ReportResult` schemas, default GitHub filing adapter, durable IMPLEMENT-discovery filing, idempotent journaled filing, project-vs-self routing. | planned |
 | 11 | `observability` | §3.9.1–§3.9.3, §3.10.3 | Structured event log, SessionStart banner + dispatcher-persona injection, issue-comment escalation. | planned |
-| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slices 1–2:** clean plugin assembly (no `.rabbit/`) + `marketplace.json` + `ship/` collection + 5 loop libs + `/auto-maintainer:start`/`:stop`/`:status` + SessionStart persona. Later: `userConfig`, port→adapter wiring, dogfood. | **slice 2 implemented** (PRs #13/#23/#27/#34/#42/#47/#57/#62/#67/#71; **v0.2.8**; 27 tests; ships route-as-data loop + route-source + per-tick read products #64 + status work_orders always-shown #69, 10 libs) |
+| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slices 1–2:** clean plugin assembly (no `.rabbit/`) + `marketplace.json` + `ship/` collection + 5 loop libs + `/auto-maintainer:start`/`:stop`/`:status` + SessionStart persona. Later: `userConfig`, port→adapter wiring, dogfood. | **slice 2 implemented** (PRs #13/#23/#27/#34/#42/#47/#57/#62/#67/#71/#78; **v0.2.9**; 30 tests; ships route-as-data loop + route-source + per-tick read products #64 + status work_orders always-shown #69 + PRIORITIZE/IMPLEMENT act-path libs, 12 libs) |
 | 13 | `adapter-wiring` | §2.4, §3.4.1, §3.4.3, §3.10.2 | Route-as-data: load `route.json` + `port→adapter` map (project-local override), resolve adapters via the `factory(runtime)→(manifest,run)` convention, validate wiring at load (signals + data-readiness + anchors), `build_loop`. The ports-and-adapters mechanism (added post-decomposition). | **implemented** (PRs #54/#56; 19 tests; live — TRIAGE wireable by config) |
 
 > Note: `lifecycle-core` from the first-pass decomposition was split into #2
@@ -78,14 +79,26 @@ Bit-by-bit, verifying each before the next:
 reports only what THIS tick's route produced — a route without TRIAGE reports
 `work_orders=0`, never a stale count carried from an earlier TRIAGE tick.
 
-**Re-prioritized next steps** (the wiring is the keystone; per the §2.1
-implement-heavy thesis + §3.4.4's "battle-test contracts first"):
-1. **Reference `IMPLEMENT`** (propose-only + a budget cap) — the first stage that
-   *acts*, and the canonical act-side adapter exemplar.
-2. **Adapter scaffold/authoring tool** (§3.4.4, #52) — now informed by read + act
-   adapters; makes BYO-adapter a *checked, scaffolded* operation.
-3. Then `verify-integrate` + cross-cutting (safety-governance, outbound-report,
-   observability).
+7. **Act-side seam (`prioritize` + dry-run `implement`) — DONE** (PRs
+   #74/#76/#77, shipped v0.2.9). The pipeline now reaches
+   `work_orders → PRIORITIZE → execution_plan → IMPLEMENT → handoffs`, all
+   deterministic. IMPLEMENT is the trust-ladder **`dry-run`** rung (spec-faithful:
+   `propose` actually opens PRs, §2.3): inert handoffs, no model/diff/PR, `git`
+   stays clean. An override route `TRIAGE→PRIORITIZE→IMPLEMENT` activates it with
+   no code change; default route stays read-and-idle. Budget was correctly
+   removed from IMPLEMENT — the real budget is a **token ceiling** (§3.8.4) owned
+   by safety-governance, not a per-task cap.
+
+**Re-prioritized next steps:**
+1. **`safety-governance` (§3.8)** — the governance layer that must exist BEFORE
+   the model-backed doer can safely act: trust-ladder mode selection
+   (`dry-run`/`propose`/`gated-merge`), guardrails (§3.8.1), token-ceiling budget
+   (§3.8.4), backoff (§3.8.5), no-AskUserQuestion→ABORTED (§3.8.3).
+2. **Model-backed `implement` doer** (§3.6.2/§3.6.3, `propose` rung) — dispatches
+   an isolated worktree subagent, writes code, opens a PR (never auto-merges);
+   reads `workspace`; gated by the governance from step 1.
+3. Then `verify-integrate`, `outbound-report`, `observability`, and the adapter
+   scaffold/authoring tool (§3.4.4, #52).
 
 ## Deferred (NOT in the v1 feature set)
 
