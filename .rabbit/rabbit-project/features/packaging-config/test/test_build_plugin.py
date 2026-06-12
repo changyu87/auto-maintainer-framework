@@ -434,14 +434,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #64, ephemeral per-tick read products): version bumped
-# to 0.2.7 in BOTH plugin.json and marketplace.json, and the two are
+# Slice 2 spec (re-ship #69, status always reports work_orders): version bumped
+# to 0.2.8 in BOTH plugin.json and marketplace.json, and the two are
 # consistent. The spec permits a patch bump on each re-ship of the plugin tree
-# (0.2.7 re-ships run_tick.py so the installed plugin carries the #64 fix —
-# work_items/work_orders are EPHEMERAL per tick, reset to reflect only what THIS
-# tick's route produced rather than carrying stale counts forward).
+# (0.2.8 re-ships status.py so the installed plugin carries the #69 fix —
+# status.py ALWAYS reports work_orders, including work_orders=0, matching the
+# tick trace rather than omitting the field when TRIAGE was not routed).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_7_and_consistent():
+def test_version_bumped_to_0_2_8_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -453,10 +453,10 @@ def test_version_bumped_to_0_2_7_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.7", \
-            f"plugin.json version must be 0.2.7, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.7", \
-            "marketplace.json plugin entry version must be 0.2.7"
+        assert pdata.get("version") == "0.2.8", \
+            f"plugin.json version must be 0.2.8, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.8", \
+            "marketplace.json plugin entry version must be 0.2.8"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -650,6 +650,48 @@ def test_shipped_run_tick_carries_64_ephemeral_fix():
         expected = mod._normalize_lib(src, anchor, bootstrap)
         assert shipped == expected, \
             "shipped run_tick is not the normalized scheduling source bytes"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship #69 (status always reports work_orders): the whole point of the 0.2.8
+# re-ship is that the installed plugin's status.py carries the #69 fix —
+# work_orders is ALWAYS reported in the status line (including work_orders=0),
+# matching the tick trace's unconditional work_orders=N field rather than
+# omitting it when TRIAGE was not routed. Prove the SHIPPED status.py carries the
+# fixed logic AND is byte-identical to the build's own normalization of the
+# scheduling source — so the rebuilt tree genuinely ships the merged fix.
+# Without this, the version bump could land while the shipped status.py still
+# carried the OLD logic.
+# ---------------------------------------------------------------------------
+def test_shipped_status_carries_69_workorders_fix():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        st = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "status.py"
+        )
+        with open(st, encoding="utf-8") as fh:
+            shipped = fh.read()
+        # The #69 fix reads work_orders and emits it unconditionally in the line.
+        assert "#69" in shipped, \
+            "shipped status must carry the #69 always-report-work_orders fix"
+        assert "persisted_work_orders_count" in shipped, \
+            "shipped status must read the persisted work_orders count (#69)"
+        assert "work_orders=" in shipped, \
+            "shipped status must emit work_orders= in the status line (#69)"
+        # And it must be byte-identical to the build's own normalization of the
+        # CURRENT scheduling source — proving the merged fix actually shipped.
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "scheduling", "src", "status.py",
+        )
+        _dst_name, (_src_rel, anchor, bootstrap) = "status.py", \
+            mod._NORMALIZED_LIBS["status.py"]
+        expected = mod._normalize_lib(src, anchor, bootstrap)
+        assert shipped == expected, \
+            "shipped status is not the normalized scheduling source bytes"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
