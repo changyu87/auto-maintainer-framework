@@ -274,16 +274,17 @@ def test_core_libs_copied_byte_identical():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #?, adapter_wiring.py): all TEN control libs ship under
-# lib/ — the four pure libs, scheduling's run_tick.py, scheduling's
-# script-backed status.py + stop.py, work-intake's work_intake.py (the
-# GitHub-Issues PULL adapter run_tick imports), scheduling's start.py (the
+# Slice 2 spec (re-ship #?, prioritize.py + implement.py): all TWELVE control
+# libs ship under lib/ — the four pure libs, scheduling's run_tick.py,
+# scheduling's script-backed status.py + stop.py, work-intake's work_intake.py
+# (the GitHub-Issues PULL adapter run_tick imports), scheduling's start.py (the
 # deterministic fresh-start starter the /auto-maintainer:start skill invokes for
-# tick #1), AND adapter-wiring's adapter_wiring.py (the route-as-data + adapter
-# wiring mechanism run_tick now imports so the installed plugin runs the
-# route-as-data loop self-contained).
+# tick #1), adapter-wiring's adapter_wiring.py (the route-as-data + adapter
+# wiring mechanism run_tick imports), AND prioritize.py + implement.py (the two
+# new deterministic adapter libs run_tick now imports so the installed plugin
+# runs the PRIORITIZE/IMPLEMENT adapters self-contained).
 # ---------------------------------------------------------------------------
-def test_all_ten_control_libs_present():
+def test_all_twelve_control_libs_present():
     out_root = _build_into_temp()
     try:
         lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
@@ -298,6 +299,8 @@ def test_all_ten_control_libs_present():
             "work_intake.py",
             "start.py",
             "adapter_wiring.py",
+            "prioritize.py",
+            "implement.py",
         ):
             assert os.path.isfile(os.path.join(lib, fname)), \
                 f"lib/{fname} must ship in the plugin tree"
@@ -329,7 +332,9 @@ def test_shipped_control_libs_are_self_contained():
                           ("stop", "stop"),
                           ("work_intake", "Pull"),
                           ("start", "start"),
-                          ("adapter_wiring", "build_loop")):
+                          ("adapter_wiring", "build_loop"),
+                          ("prioritize", "PRIORITIZE_MANIFEST"),
+                          ("implement", "IMPLEMENT_MANIFEST")):
             probe = (
                 "import sys; "
                 f"sys.path.insert(0, {lib!r}); "
@@ -434,14 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #69, status always reports work_orders): version bumped
-# to 0.2.8 in BOTH plugin.json and marketplace.json, and the two are
-# consistent. The spec permits a patch bump on each re-ship of the plugin tree
-# (0.2.8 re-ships status.py so the installed plugin carries the #69 fix —
-# status.py ALWAYS reports work_orders, including work_orders=0, matching the
-# tick trace rather than omitting the field when TRIAGE was not routed).
+# Slice 2 spec (re-ship, prioritize.py + implement.py): version bumped to 0.2.9
+# in BOTH plugin.json and marketplace.json, and the two are consistent. The spec
+# permits a patch bump on each re-ship of the plugin tree (0.2.9 ships the two
+# new deterministic adapter libs prioritize.py + implement.py that run_tick now
+# imports, so the installed plugin's run_tick resolves them from lib/ alone).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_8_and_consistent():
+def test_version_bumped_to_0_2_9_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -453,10 +457,10 @@ def test_version_bumped_to_0_2_8_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.8", \
-            f"plugin.json version must be 0.2.8, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.8", \
-            "marketplace.json plugin entry version must be 0.2.8"
+        assert pdata.get("version") == "0.2.9", \
+            f"plugin.json version must be 0.2.9, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.9", \
+            "marketplace.json plugin entry version must be 0.2.9"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -733,6 +737,105 @@ def test_shipped_adapter_wiring_no_source_tree_leak():
         assert ".rabbit" not in body, "shipped adapter_wiring leaks .rabbit"
         assert "rabbit-project" not in body, \
             "shipped adapter_wiring references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (prioritize.py + implement.py): the shipped prioritize.py and
+# implement.py must be byte-identical to the build's OWN normalization of their
+# scheduling-sibling sources. Each imports `import fsm_contracts as fc` and does
+# NOT import os/sys at module top (identical shape to work_intake.py), so each
+# is normalized via the work_intake-style with-imports bootstrap. Prove the
+# rebuilt tree genuinely ships the normalized source bytes — mirroring the
+# run_tick/status normalization-equality assertions.
+# ---------------------------------------------------------------------------
+def test_shipped_prioritize_implement_are_normalized_source_bytes():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        mapping = {
+            "prioritize.py": os.path.join(
+                _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+                "prioritize", "src", "prioritize.py",
+            ),
+            "implement.py": os.path.join(
+                _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+                "implement", "src", "implement.py",
+            ),
+        }
+        for fname, src in mapping.items():
+            dst = os.path.join(lib, fname)
+            assert os.path.isfile(dst), f"missing shipped lib: {dst}"
+            with open(dst, encoding="utf-8") as fh:
+                shipped = fh.read()
+            _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS[fname]
+            expected = mod._normalize_lib(src, anchor, bootstrap)
+            assert shipped == expected, \
+                f"shipped {fname} is not the normalized source bytes"
+            # the with-imports bootstrap must be present (the file imports no
+            # os/sys at top, so the bootstrap supplies them before the insert)
+            assert "import os  # noqa: E402" in shipped, \
+                f"shipped {fname} must carry the with-imports bootstrap"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (prioritize.py + implement.py): the two newly-shipped, build-rewritten
+# libs must not leak a path back into the source feature tree — the headline
+# clean-ship invariant applies to them too.
+# ---------------------------------------------------------------------------
+def test_shipped_prioritize_implement_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        for fname in ("prioritize.py", "implement.py"):
+            with open(os.path.join(lib, fname), encoding="utf-8") as fh:
+                body = fh.read()
+            assert ".rabbit" not in body, f"shipped {fname} leaks .rabbit"
+            assert "rabbit-project" not in body, \
+                f"shipped {fname} references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (prioritize.py + implement.py), critical self-containment: the shipped
+# run_tick.py imports `import prioritize as pr` and `import implement as im`, so
+# importing the shipped run_tick with ONLY the plugin lib/ on sys.path must
+# resolve those two new siblings (and their fsm_contracts sibling) from lib/
+# alone. Claude copies just the plugin dir into its cache, so a shipped run_tick
+# that could not find prioritize/implement in lib/ would fail to import once
+# installed. Prove it by importing the shipped run_tick in a subprocess whose
+# sys.path is restricted to the shipped lib/ dir alone, with NOTHING else.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_imports_prioritize_implement_from_lib_alone():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        probe = (
+            "import sys; "
+            f"sys.path.insert(0, {lib!r}); "
+            "import run_tick; "
+            "import prioritize, implement; "
+            "assert run_tick.pr is prioritize; "
+            "assert run_tick.im is implement; "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped run_tick cannot resolve prioritize/implement: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
