@@ -46,24 +46,27 @@ import lifecycle_dispositions as ld  # noqa: E402
 def status_line():
     """Build the one-line loop status from REAL on-disk state.
 
-    Reads the disposition marker, the last tick's persisted work_items count, and
-    the work_orders count, from the runtime dir run_tick resolves, WITHOUT
-    creating it. Returns a single human-readable line naming the disposition, the
-    counts, the route source, and the runtime dir. The work_orders field is ALWAYS
-    reported, including work_orders=0 (#69), matching the tick trace's
-    unconditional work_orders=N field — so a reader can distinguish "no TRIAGE
-    routed" from "TRIAGE ran, found nothing", and status never diverges from the
-    trace. The route source (#59) reuses run_tick.route_source — the SAME helper
-    the trace uses — so status and the trace never diverge on whether an override
-    is active.
+    Reads the disposition marker and the last tick's persisted read-product
+    counts (work_items, work_orders, execution_plan, handoffs) from the runtime
+    dir run_tick resolves, WITHOUT creating it. Returns a single human-readable
+    line naming the disposition, the four counts, the route source, and the
+    runtime dir. ALL four count fields are ALWAYS reported, including 0 (#69),
+    matching the tick trace's unconditional fields — so a reader can distinguish
+    "stage not routed" from "stage ran, produced nothing", and status never
+    diverges from the trace. The route source (#59) reuses run_tick.route_source
+    — the SAME helper the trace uses — so status and the trace never diverge on
+    whether an override is active.
     """
     runtime_dir, state_path, _journal_path = rt.resolve_runtime_paths()
     disposition = ld.read_disposition(runtime_dir)
     work_items = rt.persisted_work_items_count(state_path)
     work_orders = rt.persisted_work_orders_count(state_path)
+    execution_plan = rt.persisted_execution_plan_count(state_path)
+    handoffs = rt.persisted_handoffs_count(state_path)
     route_src = rt.route_source_label()
     line = (f"[status] disposition={disposition} work_items={work_items} "
             f"work_orders={work_orders} "
+            f"execution_plan={execution_plan} handoffs={handoffs} "
             f"route={route_src} runtime_dir={runtime_dir}")
     return line
 
