@@ -32,23 +32,38 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
 - Built-in adapters are wired via the factory convention
   (`factory(runtime) -> (manifest, run)`): scheduling provides factories for
   `GUARD`/`EXIT` (lifecycle-dispositions), `DRAIN`/`PERSIST` (durable-state),
-  `PULL`/`TRIAGE` (work-intake). The **default adapter-map** maps every known port
-  (incl. `TRIAGE`) to its factory, even though the default route uses a subset.
+  `PULL`/`TRIAGE` (work-intake), `PRIORITIZE` (prioritize), and `IMPLEMENT`
+  (implement). The **default adapter-map** maps every known port (incl. `TRIAGE`,
+  `PRIORITIZE`, and `IMPLEMENT`) to its factory, even though the default route
+  uses a subset.
 - **Override by config, not code:** a project-local
   `${CLAUDE_PROJECT_DIR}/.auto-maintainer/route.json` (and optional
   `adapters.json`) overrides the defaults. Inserting `TRIAGE` between PULL and
-  PERSIST is a pure route.json edit — `adapter-wiring` resolves it from the map
-  and `validate_wiring` checks it at load. This is the ports-and-adapters promise
-  made real at runtime.
+  PERSIST — or the full act-side chain
+  `TRIAGE → PRIORITIZE → IMPLEMENT` (PRIORITIZE reads `work_orders` and writes
+  `execution_plan`; the dry-run IMPLEMENT reads `execution_plan` and writes
+  `handoffs`) — is a pure route.json edit. `adapter-wiring` resolves each port
+  from the map and `validate_wiring` checks it at load. This is the
+  ports-and-adapters promise made real at runtime: the
+  `TRIAGE → PRIORITIZE → IMPLEMENT` route wires with NO code change because all
+  three ports are pre-mapped in `DEFAULT_ADAPTER_MAP`. The dry-run IMPLEMENT is
+  INERT (no VCS / filesystem effect), so the act-path tick still idles
+  (read-and-idle): it produces `handoffs` but leaves no remaining work, so there
+  is no busy disposition to select.
 - **Read-and-idle:** with only read stages (no `IMPLEMENT` yet) `EXIT` goes
   **IDLE** after the route runs; it becomes refire/work-driven once an act stage
   lands. The slice-1 `DEMO_WORK` stub stays retired.
-- **Per-tick read products (#64):** `work_items`/`work_orders` are EPHEMERAL —
-  each tick they reflect ONLY what THIS tick's route produced (PULL writes
-  `work_items`; TRIAGE, if routed, writes `work_orders`). They are NOT carried
-  forward across ticks: a route without TRIAGE reports `work_orders=0`, never a
-  stale count from an earlier TRIAGE tick. (Durable state keeps cross-tick facts;
-  the read-product snapshot is overwritten every tick.)
+- **Per-tick read products (#64):** the four read products
+  `work_items`/`work_orders`/`execution_plan`/`handoffs` are EPHEMERAL — each tick
+  they reflect ONLY what THIS tick's route produced (PULL writes `work_items`;
+  TRIAGE, if routed, writes `work_orders`; PRIORITIZE, if routed, writes
+  `execution_plan`; IMPLEMENT, if routed, writes `handoffs`). They are NOT carried
+  forward across ticks: a route without TRIAGE reports `work_orders=0`, and a
+  route without PRIORITIZE/IMPLEMENT reports `execution_plan=0 handoffs=0`, never a
+  stale count from an earlier act-path tick. All four are surfaced in the tick
+  trace and in `status.py` (always shown, including 0, #69), in the order
+  `work_items work_orders execution_plan handoffs`. (Durable state keeps cross-tick
+  facts; the read-product snapshot is overwritten every tick.)
 
 ## Paths governed
 

@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.1.1
+version: 0.1.2
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -12,13 +12,14 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
   "provides": {
     "files": [
       "DEFAULT_ROUTE: the shipped read-and-idle spine GUARD->DRAIN->PULL->PERSIST->EXIT as a route.json dict (states/edges/terminal, incl. the DONE/HALTED terminals)",
-      "DEFAULT_ADAPTER_MAP: every known port -> 'run_tick:make_<port>' (incl. TRIAGE, resolvable even though the default route omits it)",
-      "built-in adapter factories make_guard/make_exit/make_drain/make_persist/make_pull/make_triage — each factory(runtime) -> (StateManifest, run_callable) wrapping the EXISTING sibling adapter unchanged (the adapter-wiring factory convention)",
+      "DEFAULT_ADAPTER_MAP: every known port -> 'run_tick:make_<port>' (incl. TRIAGE, PRIORITIZE, IMPLEMENT, resolvable even though the default route omits them)",
+      "built-in adapter factories make_guard/make_exit/make_drain/make_persist/make_pull/make_triage/make_prioritize/make_implement — each factory(runtime) -> (StateManifest, run_callable) wrapping the EXISTING sibling adapter unchanged (the adapter-wiring factory convention)",
+      "persisted-read-product helpers persisted_work_items/_count, persisted_work_orders/_count, persisted_execution_plan/_count, persisted_handoffs/_count — read the per-tick ephemeral read products from durable state for status reporting",
       "route_source(project_dir=None) -> (label, path): the single source of truth for the loaded route's SOURCE — ('override', '<project_dir>/.auto-maintainer/route.json') when that file exists (the SAME path adapter-wiring loads), else ('default', None); route_source_label(...) renders it as the trace/status token 'default' or 'override:<abs path>' (#59)"
     ],
     "scripts": [
-      "src/run_tick.py: deterministic single-tick runner — resolves runtime, calls adapter_wiring.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, start='GUARD', initial=[...]) to load (project-local override else default) -> resolve -> validate -> (route, states), runs tick_orchestrator.run(...), prints a tick trace (incl. route source — default vs override:<path>, #59), persists work_items (+ work_orders when the active route produced them) + the EXIT disposition signal (one invocation = one tick)",
-      "src/start.py / src/stop.py / src/status.py: deterministic control scripts (script-tier) owning all state operations; status.py reports disposition + work_items count + work_orders count (always reported, including 0, matching the tick trace, #69) + the route source (default vs override:<path>, #59) via run_tick.route_source"
+      "src/run_tick.py: deterministic single-tick runner — resolves runtime, calls adapter_wiring.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, start='GUARD', initial=[...]) to load (project-local override else default) -> resolve -> validate -> (route, states), runs tick_orchestrator.run(...), prints a tick trace (incl. route source — default vs override:<path>, #59), persists the per-tick ephemeral read products work_items + work_orders + execution_plan + handoffs (each when the active route produced it, else empty) + the EXIT disposition signal (one invocation = one tick)",
+      "src/start.py / src/stop.py / src/status.py: deterministic control scripts (script-tier) owning all state operations; status.py reports disposition + the four read-product counts work_items/work_orders/execution_plan/handoffs (always reported, including 0, matching the tick trace, #69) + the route source (default vs override:<path>, #59) via run_tick.route_source"
     ],
     "skills": [
       "ship/skills/start/SKILL.md (/auto-maintainer:start): runs tick #1 via start.py then schedules the recurring ~1-min in-session heartbeat re-running run_tick.py",
@@ -39,6 +40,8 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
       "durable-state: DRAIN/PERSIST states, DRAIN/PERSIST manifests, DurableState, Journal, SCHEMA_VERSION",
       "lifecycle-dispositions: Guard, Exit, Disposition, read_disposition/write_disposition, lock helpers",
       "work-intake: Pull, PULL_MANIFEST, Triage, TRIAGE_MANIFEST, WORK_ITEMS_SLOT, WORK_ORDERS_SLOT, gh_issue_source, parse_gh_issues",
+      "prioritize: PRIORITIZE_MANIFEST, EXECUTION_PLAN_SLOT, run (PRIORITIZE reads work_orders, writes execution_plan)",
+      "implement: IMPLEMENT_MANIFEST, HANDOFFS_SLOT, run (dry-run IMPLEMENT reads execution_plan, writes handoffs; INERT)",
       "adapter-wiring: build_loop, WiringError (load + resolve + validate route-as-data against DEFAULT_ROUTE/DEFAULT_ADAPTER_MAP)"
     ]
   },
@@ -48,7 +51,7 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
     "agents": []
   },
   "never": [
-    "edits or forks fsm-contracts, tick-orchestrator, durable-state, lifecycle-dispositions, work-intake, or adapter-wiring (consumed unchanged)",
+    "edits or forks fsm-contracts, tick-orchestrator, durable-state, lifecycle-dispositions, work-intake, prioritize, implement, or adapter-wiring (consumed unchanged)",
     "re-implements the run loop / transition resolution (owned by tick-orchestrator)",
     "re-implements DRAIN/PERSIST/journal/durable persistence (owned by durable-state)",
     "re-implements GUARD/EXIT/disposition/mutex (owned by lifecycle-dispositions)",
