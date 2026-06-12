@@ -404,13 +404,22 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
 
     if result.final_state == _DONE:
         # EXIT ran and emitted the disposition-selecting signal last. Persist the
-        # pulled work_items (and work_orders, when the active route produced
-        # them) so status can report the counts.
+        # CURRENT tick's read-product snapshot, OVERWRITING any prior values
+        # (#64): work_items/work_orders are EPHEMERAL — each tick they reflect
+        # ONLY what THIS tick's route produced (PULL writes work_items; TRIAGE,
+        # when routed, writes work_orders). A route without TRIAGE persists
+        # work_orders empty (NOT a stale count carried forward from an earlier
+        # TRIAGE tick); the principle is symmetric for a route without PULL. The
+        # durable CROSS-TICK facts (counter/journal/disposition/schema_version)
+        # are left untouched — only the read-product snapshot resets per tick.
         signal = result.signals[-1]
         doc = ds.DurableState(state_path).load()
-        doc[WORK_ITEMS_KEY] = ctx.read(wi.WORK_ITEMS_SLOT["name"])
-        if "TRIAGE" in route["states"]:
-            doc[WORK_ORDERS_KEY] = ctx.read(wi.WORK_ORDERS_SLOT["name"])
+        doc[WORK_ITEMS_KEY] = (
+            ctx.read(wi.WORK_ITEMS_SLOT["name"])
+            if "PULL" in route["states"] else [])
+        doc[WORK_ORDERS_KEY] = (
+            ctx.read(wi.WORK_ORDERS_SLOT["name"])
+            if "TRIAGE" in route["states"] else [])
         ds.DurableState(state_path).save(doc)
     else:
         # GUARD short-circuited (STOPPED/ABORTED/RESTART_NEEDED): the tick did no

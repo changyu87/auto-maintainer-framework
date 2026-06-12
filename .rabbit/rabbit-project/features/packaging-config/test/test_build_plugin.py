@@ -434,13 +434,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #59, route source): version bumped to 0.2.6 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. The spec permits
-# a patch bump on each re-ship of the plugin tree (0.2.6 re-ships run_tick.py +
-# status.py so the installed plugin reports the loaded route source — default vs
-# override — in the tick trace and status line, the #59 fix).
+# Slice 2 spec (re-ship #64, ephemeral per-tick read products): version bumped
+# to 0.2.7 in BOTH plugin.json and marketplace.json, and the two are
+# consistent. The spec permits a patch bump on each re-ship of the plugin tree
+# (0.2.7 re-ships run_tick.py so the installed plugin carries the #64 fix —
+# work_items/work_orders are EPHEMERAL per tick, reset to reflect only what THIS
+# tick's route produced rather than carrying stale counts forward).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_6_and_consistent():
+def test_version_bumped_to_0_2_7_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -452,10 +453,10 @@ def test_version_bumped_to_0_2_6_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.6", \
-            f"plugin.json version must be 0.2.6, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.6", \
-            "marketplace.json plugin entry version must be 0.2.6"
+        assert pdata.get("version") == "0.2.7", \
+            f"plugin.json version must be 0.2.7, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.7", \
+            "marketplace.json plugin entry version must be 0.2.7"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -606,6 +607,49 @@ def test_shipped_run_tick_no_source_tree_leak():
         assert ".rabbit" not in body, "shipped run_tick leaks .rabbit"
         assert "rabbit-project" not in body, \
             "shipped run_tick references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship #64 (ephemeral per-tick read products): the whole point of the 0.2.7
+# re-ship is that the installed plugin's run_tick carries the #64 fix —
+# work_items/work_orders are EPHEMERAL per tick, reset to reflect only what THIS
+# tick's route produced (PULL writes work_items; TRIAGE writes work_orders) and
+# NOT a stale count carried forward. Prove the SHIPPED run_tick carries the
+# fixed logic AND is byte-identical to the build's own normalization of the
+# scheduling source — so the rebuilt tree genuinely ships the merged fix.
+# Without this, the version bump could land while the shipped run_tick still
+# carried the OLD logic.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_carries_64_ephemeral_fix():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            shipped = fh.read()
+        # The #64 fix gates each read-product on its producing state being in
+        # the route, resetting to [] otherwise (ephemeral per tick).
+        assert "#64" in shipped, \
+            "shipped run_tick must carry the #64 ephemeral read-product fix"
+        assert 'if "PULL" in route["states"] else []' in shipped, \
+            "shipped run_tick must reset work_items to [] when PULL not routed"
+        assert 'if "TRIAGE" in route["states"] else []' in shipped, \
+            "shipped run_tick must reset work_orders to [] when TRIAGE not routed"
+        # And it must be byte-identical to the build's own normalization of the
+        # CURRENT scheduling source — proving the merged fix actually shipped.
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "scheduling", "src", "run_tick.py",
+        )
+        dst_name, (src_rel, anchor, bootstrap) = "run_tick.py", \
+            mod._NORMALIZED_LIBS["run_tick.py"]
+        expected = mod._normalize_lib(src, anchor, bootstrap)
+        assert shipped == expected, \
+            "shipped run_tick is not the normalized scheduling source bytes"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
