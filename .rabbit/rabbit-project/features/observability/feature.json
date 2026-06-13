@@ -1,8 +1,14 @@
 {
   "name": "observability",
   "version": "0.1.0",
-  "owner": "cyxu",
-  "paths": [],
+  "owner": "changyu87",
+  "paths": [
+    "rabbit-project/features/observability/src/**"
+  ],
   "created": "2026-06-13T13:07:10Z",
-  "deprecation_criterion": null
+  "deprecation_criterion": "Superseded when the event-log schema or escalation contract reaches a breaking major version, or when surfacing moves to a different sink than a local JSONL log + tracker issue-comment.",
+  "manifest": [],
+  "tdd_state": "impl",
+  "updated": "2026-06-13",
+  "spec_no_change_reason": "greenfield: spec.md seeded by scaffold in prior decomposition; this cycle implements it unchanged"
 }
