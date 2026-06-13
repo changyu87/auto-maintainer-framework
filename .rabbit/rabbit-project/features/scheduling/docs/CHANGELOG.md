@@ -1,5 +1,22 @@
 # scheduling — Changelog
 
+## contract 0.4.0 — 2026-06-10
+
+- `start.py` gains a **`--clear-only`** mode that performs ONLY the disposition
+  decision — clear a latched `STOPPED` → `IDLE` (announce it), REFUSE on
+  `ABORTED` (exit non-zero), or no-op on `RUNNING`/`IDLE`/absent — and does
+  **NOT** run tick #1. Exits 0 on the cleared/no-op cases, non-zero on the
+  `ABORTED` refusal.
+- This separates the FRESH-start latch-clear from tick #1, which the
+  **in-session executor model** (DESIGN §2.8) needs: tick #1 of an AGENT route
+  must go through the executor skill (which presses the `Agent` button), not
+  start.py's in-process `run_tick` (which would just pause).
+- The clear-or-refuse decision is factored into ONE helper shared by both
+  `--clear-only` and the default clear+tick mode — not duplicated or forked.
+  DEFAULT behaviour (no flag) is unchanged (clear/refuse + run tick #1), so
+  existing callers and tests are backward-compatible.
+- scheduling consumes `run_tick` + `lifecycle-dispositions` UNCHANGED.
+
 ## contract 0.3.0 — 2026-06-10
 
 - `run_tick` now emits a **structured event log** (observability §3.9.1) to

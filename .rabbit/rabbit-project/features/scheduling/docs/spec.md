@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.3.0
+version: 0.4.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -131,7 +131,17 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      disposition is `STOPPED` it clears the latch to a runnable state (start IS
      the §1.2 human resume); if `ABORTED` it REFUSES and tells the user to
      investigate (never silently clears a fault); otherwise proceeds. Reuses
-     `run_tick`'s path resolution + the lifecycle API.
+     `run_tick`'s path resolution + the lifecycle API. A `--clear-only` mode
+     performs ONLY the disposition decision — clear a latched `STOPPED` → `IDLE`
+     (announce it), or REFUSE on `ABORTED` (exit non-zero), or no-op on
+     `RUNNING`/`IDLE`/absent — and does NOT run tick #1; it exits 0 on the
+     cleared/no-op cases and non-zero on the `ABORTED` refusal. This separates
+     the FRESH-start latch-clear from tick #1, which the **in-session executor
+     model** (DESIGN §2.8) needs: tick #1 of an AGENT route must go through the
+     executor skill (which presses the `Agent` button), not start.py's
+     in-process `run_tick` (which would just pause). The clear-or-refuse decision
+     lives in ONE place shared by both modes (clear-only and the default
+     clear+tick) — it is never duplicated or forked.
    - `src/status.py` — reads the disposition marker + the persisted `work_items`
      count (via `run_tick`'s `resolve_runtime_paths`), the **route source**
      (`default` vs the project-local `route.json` override path, #59), and the real loop
