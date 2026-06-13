@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.1.0
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -181,8 +181,68 @@ route `GUARD→DRAIN→PULL→PERSIST→EXIT` (read-and-idle); the script-backed
 skills compose work-intake's PULL with the loop core. Live-validated in an
 installed plugin session. See `feature.json` / `docs/ROADMAP.md`.
 
+## Agent yield/resume seam (slice: agent-adapter executor protocol)
+
+This slice gives `run_tick` a **yield/resume seam** (DESIGN §2.8 executor
+protocol) so a route that contains **agent-states** pauses at each agent-state
+(emitting a rendered dispatch request) and resumes when given the dispatch
+result. It consumes `agent-dispatch` and `adapter-wiring` UNCHANGED. Pure-script
+routes behave EXACTLY as before — byte-for-byte the same trace, same return.
+
+- **Backward-compatible split.** After `adapter_wiring.build_loop` resolves the
+  route, `run_tick` inspects the resolved `states`: if EVERY `states[name][1]`
+  is a run callable (no agent-states) the route runs via `tick_orchestrator.run`
+  exactly as today and returns the EXIT disposition signal STRING. If the route
+  has >=1 agent-state (`isinstance(second, adapter_wiring.AgentState)`) the
+  pausable driver below runs instead.
+- **Pausable driver.** A stepping loop mirroring `to.run` but agent-aware: walk
+  from the current position; for a SCRIPT state run `impl(ctx)` +
+  `fc.apply_result` + `resolve_next` (as `to.run` does); at an AGENT state build
+  the dispatch request with agent-dispatch
+  (`ad.build_envelopes(entry, slot_values, {"tick_id", "mode"}, state=<name>)`,
+  each rendered with `ad.render`), journal the pending dispatch
+  (record-before-act) and **checkpoint** to durable state, then return a PAUSED
+  result. `run_tick` NEVER calls the Agent tool — that is the executor's job
+  (a later slice).
+- **Durable checkpoint** under `TICK_CHECKPOINT_KEY = "tick_checkpoint"`:
+  `{next_state, slots (a full snapshot of the live TickContext slot values),
+  path, signals, pending: {state, writes, schema_ref, signal_rule,
+  cardinality}}`. The checkpoint is the SOLE source of truth for the paused
+  dispatch (crash-safety).
+- **PAUSED return contract** (a structured dict): `{"status": "paused",
+  "state": <agent-state name>, "dispatches": [ {"subagent_type", "prompt"
+  (rendered markdown), "writes", "schema_ref", "signal_rule", "cardinality",
+  "item"? } ... ]}`. A `once` dispatch yields one dispatch with no `item`; a
+  `{per_item: <path>}` dispatch yields one dispatch per resolved element, each
+  carrying its `item`.
+- **Resume.** `run_tick(resume_dispatch=<list of raw subagent output strings
+  for the paused agent-state>)` loads the checkpoint, restores the TickContext
+  slots + position, then for the paused agent-state validates each output with
+  `ad.validate_output(output_text, slot_schema)` (the registered schema of the
+  `writes` slot, from the known SLOT descriptors). On a validation failure it
+  returns `{"status": "invalid_output", "state": <name>, "reason": <str>}` and
+  leaves the checkpoint intact (re-dispatchable) — it never crashes. On success
+  it `collect_outputs(...)` -> the slot value, writes it to the ctx slot,
+  `compute_signal(signal_rule, slot_value)` -> the signal, `resolve_next` from
+  the agent-state, and continues the driver until the next pause or the terminal.
+- **Terminal.** On reaching DONE it clears `TICK_CHECKPOINT_KEY`, persists the
+  per-tick ephemeral read products (#64 — only what the route produced, never a
+  stale carry-forward), prints the existing one-line trace stitched across all
+  segments (path/signals/work_items/work_orders/execution_plan/handoffs/mode/
+  budget/route), and returns the disposition signal (a string), exactly as a
+  pure-script tick does.
+- **Crash-safety.** A fresh `run_tick` invocation that finds an existing
+  `tick_checkpoint` (and no `resume_dispatch`) re-emits the SAME PAUSED dispatch
+  request from the checkpoint (idempotent — the journal/checkpoint is the truth).
+- The budget readiness gate (safety-governance) is evaluated at FRESH tick start
+  only, NOT on resume. Read products stay #64 per-tick ephemeral; the budget
+  stays a durable cross-tick fact.
+
 ## Known gaps / deferred
 
+- The executor (the session-side actor that performs the Agent dispatch and
+  feeds `resume_dispatch` back to `run_tick`) — a later slice; this slice only
+  emits the dispatch requests and applies provided results.
 - Configurable interval + route (config feature) — interval hardcoded to 1 min
   (auto-maintainer-framework#17).
 - System-cron scheduler backend (§3.3.1) — slice 1 is in-session heartbeat only.

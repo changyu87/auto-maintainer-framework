@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.1.3
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -18,10 +18,13 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
       "route_source(project_dir=None) -> (label, path): the single source of truth for the loaded route's SOURCE — ('override', '<project_dir>/.auto-maintainer/route.json') when that file exists (the SAME path adapter-wiring loads), else ('default', None); route_source_label(...) renders it as the trace/status token 'default' or 'override:<abs path>' (#59)",
       "BUDGET_KEY = 'budget': the durable-state key under which the cross-tick budget window {window_key, spent_tokens} is persisted (a durable cross-tick fact like the counter, NOT a per-tick ephemeral read product)",
       "persisted_budget_state(state_path) -> {window_key, spent_tokens}: reads the durable budget window from durable state (default {} when never written), for status reporting",
-      "governance threading: run_tick loads sg.load_governance(project_dir) once per tick and threads it into the factory runtime dict under a 'governance' key (so future acting adapters can consult permits/budget); the existing runtime keys project_dir/runtime_dir/source/now are preserved"
+      "governance threading: run_tick loads sg.load_governance(project_dir) once per tick and threads it into the factory runtime dict under a 'governance' key (so future acting adapters can consult permits/budget); the existing runtime keys project_dir/runtime_dir/source/now are preserved",
+      "TICK_CHECKPOINT_KEY = 'tick_checkpoint': the durable-state key under which the agent yield/resume checkpoint is persisted while a tick is PAUSED at an agent-state ({next_state, slots, path, signals, pending:{state, writes, schema_ref, signal_rule, cardinality}}); the SOLE source of truth for the paused dispatch (crash-safety). Cleared on reaching the terminal",
+      "persisted_tick_checkpoint(state_path) -> {} | checkpoint: reads the durable PAUSED checkpoint (default {} when no tick is paused)",
+      "run_tick agent yield/resume contract (DESIGN §2.8): when the resolved route contains >=1 agent-state, run_tick PAUSES at each agent-state and returns a PAUSED dict {status:'paused', state:<name>, dispatches:[{subagent_type, prompt (rendered markdown), writes, schema_ref, signal_rule, cardinality, item?}...]} after durably checkpointing (it NEVER calls the Agent tool). run_tick(resume_dispatch=[<raw subagent output strings>]) validates + applies the outputs and continues to the next pause or terminal; a validation failure returns {status:'invalid_output', state:<name>, reason:<str>} with the checkpoint left intact (re-dispatchable). A fresh run_tick with no resume_dispatch that finds an existing checkpoint re-emits the SAME PAUSED dispatch (crash-safety, idempotent). A pure-script route is UNCHANGED (runs via tick_orchestrator.run, returns the disposition signal string)"
     ],
     "scripts": [
-      "src/run_tick.py: deterministic single-tick runner — resolves runtime, loads governance via sg.load_governance(project_dir) and threads it into the runtime dict, calls adapter_wiring.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, start='GUARD', initial=[...]) to load (project-local override else default) -> resolve -> validate -> (route, states), runs tick_orchestrator.run(...), evaluates + persists the durable cross-tick budget window via sg.evaluate_budget(gov, prior_budget_state, now, tick_spend), prints a tick trace (incl. route source #59, plus mode + a compact budget=<spent>/<ceiling-or-none> win=<window_key> field and a budget_paused=<reason> indicator when blocked), persists the per-tick ephemeral read products work_items + work_orders + execution_plan + handoffs (each when the active route produced it, else empty) + the EXIT disposition signal (one invocation = one tick). run_tick(...) accepts injectable now (tz-aware budget clock; defaults to the host local-aware now) + tick_spend (default 0; no model spender yet, tests inject it)",
+      "src/run_tick.py: deterministic single-tick runner — resolves runtime, loads governance via sg.load_governance(project_dir) and threads it into the runtime dict, calls adapter_wiring.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, start='GUARD', initial=[...]) to load (project-local override else default) -> resolve -> validate -> (route, states), runs tick_orchestrator.run(...), evaluates + persists the durable cross-tick budget window via sg.evaluate_budget(gov, prior_budget_state, now, tick_spend), prints a tick trace (incl. route source #59, plus mode + a compact budget=<spent>/<ceiling-or-none> win=<window_key> field and a budget_paused=<reason> indicator when blocked), persists the per-tick ephemeral read products work_items + work_orders + execution_plan + handoffs (each when the active route produced it, else empty) + the EXIT disposition signal (one invocation = one tick). run_tick(...) accepts injectable now (tz-aware budget clock; defaults to the host local-aware now) + tick_spend (default 0; no model spender yet, tests inject it) + resume_dispatch (default None; the executor feeds back the paused agent-state's raw subagent outputs). When the route contains agent-states run_tick runs the pausable driver (yield/resume seam) instead of tick_orchestrator.run, checkpointing under TICK_CHECKPOINT_KEY and returning the PAUSED/invalid_output dict; the budget readiness gate is evaluated at FRESH tick start only, not on resume",
       "src/start.py / src/stop.py / src/status.py: deterministic control scripts (script-tier) owning all state operations; status.py reports disposition + the four read-product counts work_items/work_orders/execution_plan/handoffs (always reported, including 0, matching the tick trace, #69) + the route source (default vs override:<path>, #59) via run_tick.route_source + the governance mode + the compact budget field (budget=<spent>/<ceiling-or-none> win=<window_key>) + a budget_paused=<reason> indicator when the durable budget is exhausted"
     ],
     "skills": [
@@ -48,7 +51,8 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
       "prioritize: PRIORITIZE_MANIFEST, EXECUTION_PLAN_SLOT, run (PRIORITIZE reads work_orders, writes execution_plan)",
       "implement: IMPLEMENT_MANIFEST, HANDOFFS_SLOT, run (dry-run IMPLEMENT reads execution_plan, writes handoffs; INERT)",
       "adapter-wiring: build_loop, WiringError (load + resolve + validate route-as-data against DEFAULT_ROUTE/DEFAULT_ADAPTER_MAP)",
-      "safety-governance: load_governance, evaluate_budget (and the threaded config; consumed UNCHANGED — load governance + the durable budget window's window_key/spent_tokens)"
+      "safety-governance: load_governance, evaluate_budget (and the threaded config; consumed UNCHANGED — load governance + the durable budget window's window_key/spent_tokens)",
+      "agent-dispatch: build_envelopes, render, validate_output, collect_outputs, compute_signal (consumed UNCHANGED — the deterministic helpers around an in-session agent dispatch; run_tick emits the dispatch request and applies provided results, never dispatching itself)"
     ]
   },
   "invokes": {
@@ -57,7 +61,8 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
     "agents": []
   },
   "never": [
-    "edits or forks fsm-contracts, tick-orchestrator, durable-state, lifecycle-dispositions, work-intake, prioritize, implement, adapter-wiring, or safety-governance (consumed unchanged)",
+    "edits or forks fsm-contracts, tick-orchestrator, durable-state, lifecycle-dispositions, work-intake, prioritize, implement, adapter-wiring, safety-governance, or agent-dispatch (consumed unchanged)",
+    "calls the Agent tool / any model / subprocess from run_tick (the yield/resume seam only EMITS dispatch requests and applies provided results; the executor that performs the Agent dispatch is a later slice)",
     "enforces act-skip on a budget-blocked tick (deferred to the acting doer next milestone; this slice only loads + surfaces + persists governance state)",
     "re-implements the run loop / transition resolution (owned by tick-orchestrator)",
     "re-implements DRAIN/PERSIST/journal/durable persistence (owned by durable-state)",
