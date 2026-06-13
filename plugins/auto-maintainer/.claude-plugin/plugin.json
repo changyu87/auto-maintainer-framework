@@ -4,5 +4,5 @@
   },
   "description": "Auto-maintainer: an autonomous repository maintenance loop, shipped as a Claude Code plugin.",
   "name": "auto-maintainer",
-  "version": "0.2.13"
+  "version": "0.2.14"
 }
