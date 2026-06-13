@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.2.2
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -308,6 +308,48 @@ the plugin tree with NO build change.
   end-to-end through `run_tick`'s yield/resume seam (the canned echo output applied
   on resume advances the tick past TRIAGE). No code change is required to wire it.
 
+## Structured event log (slice: observability event emission)
+
+`run_tick` now emits a **structured event log** (observability §3.9.1) to
+`${runtime_dir}/events.jsonl` each tick — the machine-first record of "what the
+loop did". It CONSUMES the `observability` lib UNCHANGED
+(`observability.EventLog` + the closed `EVENT_KINDS` vocabulary): the EventLog
+opens at `${runtime_dir}/events.jsonl` (the same `runtime_dir` the tick already
+resolves; injectable for tests) and `append`s one JSON object per line. The
+event `ts` reuses the tick's already-resolved tz-aware budget `now` (the injected
+`now`), so the log is DETERMINISTIC — never an implicit wall clock; `seq` is
+monotonic (observability assigns it via the file's line count, so a multi-
+invocation agent tick keeps a single monotonic sequence).
+
+Event emission is **purely additive**: it changes NO existing behaviour — the
+one-line trace, signals, disposition, slot persistence, #64 read-product
+ephemerality, the durable budget window, and all existing scheduling tests stay
+green. The log is written ALONGSIDE the existing trace, never instead of it.
+
+Events emitted (all members of `observability.EVENT_KINDS` — run_tick emits no
+kind outside the closed vocabulary):
+
+- **`tick_start`** — at the start of a FRESH tick (a `--step` with no checkpoint /
+  not a resume). `detail` carries the route `source` (default vs
+  `override:<path>`) + the trust `mode`.
+- **`state_run` + `signal`** — one pair per visited non-terminal state, in order.
+  For the **pure-script path** (`to.run`) they are derived from the returned
+  `RunResult.path` + `RunResult.signals` after the run (one `state_run`/`signal`
+  per visited non-terminal state). For the **agent-driver path** they are emitted
+  inline as each SCRIPT state runs.
+- **`pause` + `dispatch`** — when the tick pauses at an agent-state: one `pause`
+  for the state, and a `dispatch` per dispatch entry (the `subagent_type` +
+  `writes` in `detail`).
+- **`resume`** — on a `--resume` invocation, naming the agent-state resumed.
+- **`disposition`** — the resulting disposition (with the EXIT signal).
+- **`tick_end`** — at the terminal/done, with the final signal + the four
+  read-product counts (`work_items`/`work_orders`/`execution_plan`/`handoffs`) in
+  `detail`.
+
+Events are written in BOTH the pure-script done path and the agent-driver
+done/pause paths. The budget readiness gate, slot persistence, and the trace are
+untouched — only event emission is added alongside.
+
 ## Known gaps / deferred
 
 - The executor (the session-side actor that performs the Agent dispatch and
@@ -326,6 +368,8 @@ the plugin tree with NO build change.
 
 - Depends on `tick-orchestrator` (run loop + resolve_next), `durable-state`
   (DRAIN/PERSIST/journal/state), `lifecycle-dispositions` (GUARD/EXIT/disposition).
+- Consumes `observability` UNCHANGED (`EventLog` + `EVENT_KINDS`) to emit the
+  per-tick structured event log to `${runtime_dir}/events.jsonl`.
 - Declares shippable components under `ship/` for `packaging-config` to assemble
   into `plugins/auto-maintainer/`.
 - Owns the `/auto-maintainer:status` skill (script-backed via `status.py`);

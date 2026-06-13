@@ -1,5 +1,37 @@
 # scheduling — Changelog
 
+## contract 0.3.0 — 2026-06-10
+
+- `run_tick` now emits a **structured event log** (observability §3.9.1) to
+  `${runtime_dir}/events.jsonl` each tick, consuming the `observability` lib
+  UNCHANGED (`observability.EventLog` + the closed `EVENT_KINDS` vocabulary). The
+  EventLog opens at the same `runtime_dir` the tick already resolves (injectable
+  for tests). Each tick appends, in order:
+  - `tick_start` (detail: route `source` + trust `mode`) at a FRESH tick start;
+  - `state_run` + `signal` per visited non-terminal state — the pure-script path
+    derives them from the returned `RunResult.path`/`RunResult.signals`; the
+    agent-driver path emits them inline as each SCRIPT state runs;
+  - `pause` + `dispatch` (detail: `subagent_type` + `writes`) when pausing at an
+    agent-state;
+  - `resume` on a `--resume` invocation (naming the resumed agent-state);
+  - `disposition` (the resulting disposition + EXIT signal);
+  - `tick_end` (detail: the four read-product counts
+    `work_items`/`work_orders`/`execution_plan`/`handoffs` + the final signal).
+- The event `ts` reuses the tick's already-resolved tz-aware budget `now` (the
+  injected `now`; never an implicit wall clock), so the log is DETERMINISTIC; `seq`
+  is monotonic across a multi-invocation agent tick (observability assigns it via
+  the file's line count, so `step → resume → done` all append to one
+  `events.jsonl`).
+- Event emission is purely **ADDITIVE**: it changes NO existing behaviour — the
+  one-line trace, signals, disposition, slot persistence, #64 read-product
+  ephemerality, the durable budget window, and every existing scheduling test stay
+  green. `run_tick` emits no kind outside `EVENT_KINDS`. Added the consumed-
+  unchanged `observability` dependency to the contract's `reads.external` +
+  `never` (edits) lists.
+- Added an e2e test suite (`test/test_events_e2e.py`) proving the ordered event
+  sequence for a default tick, the step→resume single-log monotonic seq for an
+  agent route, deterministic `ts`, and the closed-vocabulary guard.
+
 ## contract 0.2.2 — 2026-06-13
 
 - Shipped two plugin assets into `ship/` (collected verbatim by the build's
