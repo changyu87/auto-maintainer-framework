@@ -144,6 +144,19 @@ reports only what THIS tick's route produced — a route without TRIAGE reports
     *Escalation channel is built but its live trigger (a would-block on a
     specific work order) lands with the doer.*
 
+12. **Protocol-free subagents + file-based context isolation — DONE** (PRs
+    #113/#114/#115/#116/#117, shipped **v0.2.15**; #100/#109 closed). DESIGN §3.4.6
+    now mandates: **subagent definitions are interface-free** (role + capability
+    only); the **rendered prompt is the complete, self-contained handoff
+    contract** — embedded output schema + `output_path` + one-line ack. The
+    subagent **writes its own output file**; the executor reads it on `--resume`
+    (no arg) — so subagent output **never passes through the orchestrator
+    context** (isolation). Echo agent rewritten protocol-free (`tools:[Write]`);
+    tick skill stops marshalling content; agent-adapter entries carry
+    `output_schema`. Heartbeat hardcoded to **3 min** (testability). Also fixed
+    #109 (agent-tick journal intent crashing DRAIN) — 3 consecutive heartbeat
+    ticks proven clean live.
+
 **Next:**
 6. **Real IMPLEMENT doer + `userConfig`** — swap the dry-run/echo for a genuine
    `propose`-rung implementer subagent (writes code + opens a PR, worktree
