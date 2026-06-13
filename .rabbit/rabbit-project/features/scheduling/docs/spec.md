@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.5.1
+version: 0.6.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -228,27 +228,44 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   and is never confirmed, so it survived into the NEXT tick's DRAIN and crashed
   it with `KeyError: 'target_counter'` (auto-maintainer-framework#109). The agent
   driver therefore writes ONLY the checkpoint, never a journal intent.
+- **File-based context isolation (DESIGN §3.4.6).** The subagent's output is a
+  WRITTEN FILE, never marshalled back through the orchestrator. `run_tick`
+  resolves `output_dir = ${runtime_dir}/dispatch-out/` (created `mkdir -p`) and
+  passes it to `ad.build_envelopes(entry, slot_values, {tick_id, mode},
+  state=<name>, output_dir=output_dir)`. Each envelope carries an
+  `output_contract{slot, schema, output_path}` and its rendered `## Handoff`
+  section names the `output_path` and mandates writing the JSON output there. The
+  orchestrator marshals NO content; the file is the sole handoff.
+- **At pause: delete any stale output file.** Before returning the PAUSE,
+  `run_tick` DELETES any pre-existing file at each dispatch's `output_path`. A
+  stale file from a prior tick must never be misread on resume — a missing fresh
+  write surfaces as `invalid_output`, never a stale read.
 - **Durable checkpoint** under `TICK_CHECKPOINT_KEY = "tick_checkpoint"`:
   `{next_state, slots (a full snapshot of the live TickContext slot values),
-  path, signals, pending: {state, writes, schema_ref, signal_rule,
-  cardinality}}`. The checkpoint is the SOLE source of truth for the paused
-  dispatch (crash-safety).
+  path, signals, output_dir, pending: {state, writes, signal_rule, cardinality,
+  dispatches: [{output_path, schema}...]}}`. `output_dir` and the per-dispatch
+  `output_path` are persisted so a crash-safety re-emit produces the
+  byte-identical `output_path`, and so resume knows which files to read. The
+  checkpoint is the SOLE source of truth for the paused dispatch (crash-safety).
 - **PAUSED return contract** (a structured dict): `{"status": "paused",
   "state": <agent-state name>, "dispatches": [ {"subagent_type", "prompt"
-  (rendered markdown), "writes", "schema_ref", "signal_rule", "cardinality",
+  (rendered markdown), "writes", "output_path", "signal_rule", "cardinality",
   "item"? } ... ]}`. A `once` dispatch yields one dispatch with no `item`; a
   `{per_item: <path>}` dispatch yields one dispatch per resolved element, each
-  carrying its `item`.
-- **Resume.** `run_tick(resume_dispatch=<list of raw subagent output strings
-  for the paused agent-state>)` loads the checkpoint, restores the TickContext
-  slots + position, then for the paused agent-state validates each output with
-  `ad.validate_output(output_text, slot_schema)` (the registered schema of the
-  `writes` slot, from the known SLOT descriptors). On a validation failure it
-  returns `{"status": "invalid_output", "state": <name>, "reason": <str>}` and
-  leaves the checkpoint intact (re-dispatchable) — it never crashes. On success
-  it `collect_outputs(...)` -> the slot value, writes it to the ctx slot,
-  `compute_signal(signal_rule, slot_value)` -> the signal, `resolve_next` from
-  the agent-state, and continues the driver until the next pause or the terminal.
+  carrying its `item` and its own distinct `output_path`.
+- **Resume reads files, not a blob.** `run_tick(resume=True)` loads the
+  checkpoint, restores the TickContext slots + position, then for each pending
+  dispatch READS the file at its `output_path`. A MISSING output file returns
+  `{"status": "invalid_output", "state": <name>, "reason": "missing output file:
+  <path>"}` (re-dispatchable; checkpoint intact; never a crash). Otherwise the
+  file content is validated with `ad.validate_output(content, schema)`; on invalid
+  it returns the same `invalid_output` shape. On all valid it
+  `collect_outputs(...)` -> the slot value, writes it to the ctx slot, persists
+  the read product (#64), `compute_signal(signal_rule, slot_value)` -> the signal,
+  `resolve_next` from the agent-state, and continues the driver until the next
+  pause or the terminal. There is NO orchestrator-marshalled
+  `dispatch-result.json` / `resume_dispatch` list input — it is superseded by
+  file-reading.
 - **Terminal.** On reaching DONE it clears `TICK_CHECKPOINT_KEY`, persists the
   per-tick ephemeral read products (#64 — only what the route produced, never a
   stale carry-forward), prints the existing one-line trace stitched across all
@@ -256,8 +273,9 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   budget/route), and returns the disposition signal (a string), exactly as a
   pure-script tick does.
 - **Crash-safety.** A fresh `run_tick` invocation that finds an existing
-  `tick_checkpoint` (and no `resume_dispatch`) re-emits the SAME PAUSED dispatch
-  request from the checkpoint (idempotent — the journal/checkpoint is the truth).
+  `tick_checkpoint` (and no `resume`) re-emits the SAME PAUSED dispatch request
+  (byte-identical `output_path`) from the checkpoint (idempotent — the checkpoint
+  is the truth).
 - The budget readiness gate (safety-governance) is evaluated at FRESH tick start
   only, NOT on resume. Read products stay #64 per-tick ephemeral; the budget
   stays a durable cross-tick fact.
@@ -280,20 +298,21 @@ tick logic.
   - done → `{"status":"done","signal":"<idle|halt|...>","trace":"<the one-line
     trace string>"}`
   - paused → `{"status":"paused","state":"<name>","dispatches":[{subagent_type,
-    prompt,writes,schema_ref,signal_rule,cardinality,item?}...]}`
+    prompt,writes,output_path,signal_rule,cardinality,item?}...]}`
   - invalid_output → `{"status":"invalid_output","state":...,"reason":...}`
-- **`--resume <file>`** reads the paused agent-state's dispatch outputs from
-  `<file>` (a JSON array of raw subagent output strings, in dispatch order),
-  calls `run_tick(resume_dispatch=<that list>)`, and prints the SAME envelope
-  shape (paused again, done, or invalid_output).
+- **`--resume`** takes **NO file argument** — it calls `run_tick(resume=True)`,
+  which reads each paused dispatch's subagent-WRITTEN output FILE at the
+  checkpoint's `output_path`, and prints the SAME envelope shape (paused again,
+  done, or invalid_output). The executor relays the rendered prompt to the
+  subagent (which writes the JSON to `output_path`), then steps `--resume`.
 - **stdout is PURE JSON** in `--step`/`--resume` mode (the skill parses stdout):
   the human trace line that `run_tick` writes to stdout is captured into the JSON
   `trace` field (and NOT leaked raw onto stdout). A pause emits no trace, so the
   paused/invalid_output envelopes carry no `trace` field.
 - **Exit codes** (documented): `done`/`paused` → `0`; `invalid_output` (a bad
-  agent output OR a malformed/missing `--resume` file) → `1`. A malformed/missing
-  resume file is surfaced as an `invalid_output` envelope (no crash/traceback),
-  never a Python exception.
+  agent output OR a missing output file) → `1`. A missing/invalid output file is
+  surfaced as an `invalid_output` envelope (no crash/traceback), never a Python
+  exception.
 - **Runtime injection:** the path flags `--runtime-dir`/`--state`/`--journal`/
   `--project-dir` let tests point the CLI at a temp runtime; when omitted the CLI
   uses the production defaults (`resolve_runtime_paths`) exactly like bare mode.
