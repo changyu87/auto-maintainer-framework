@@ -1,7 +1,7 @@
 ---
 name: start
-description: Start (or resume) the auto-maintainer's in-session tick loop. Use this whenever the user runs /auto-maintainer:start, or asks to start, launch, run, kick off, restart, or resume the maintainer loop / heartbeat / background ticking — including resuming after a prior /auto-maintainer:stop. It clears a latched STOPPED disposition, runs the first tick now through the executor (dispatching any agent-states), and schedules a recurring ~1-minute prompt-heartbeat that keeps ticking until stopped; a latched ABORTED fault is refused, not cleared.
-version: 0.2.0
+description: Start (or resume) the auto-maintainer's in-session tick loop. Use this whenever the user runs /auto-maintainer:start, or asks to start, launch, run, kick off, restart, or resume the maintainer loop / heartbeat / background ticking — including resuming after a prior /auto-maintainer:stop. It clears a latched STOPPED disposition, runs the first tick now through the executor (dispatching any agent-states), and schedules a recurring ~3-minute prompt-heartbeat that keeps ticking until stopped; a latched ABORTED fault is refused, not cleared.
+version: 0.2.1
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoded 1-min heartbeat is removed.
 ---
@@ -11,7 +11,7 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
 Start the in-session loop that drives the maintainer tick. A Claude Code plugin
 cannot install its own clock, so the heartbeat is session-mediated: this skill
 clears any stop latch, runs one tick now, and then asks the session to wake
-roughly every minute to run the next tick.
+roughly every 3 minutes to run the next tick.
 
 Crucially, a tick can contain **agent-states** (states that need a model, e.g. a
 TRIAGE/IMPLEMENT subagent). A bare script can't dispatch the `Agent` tool, so
@@ -58,12 +58,12 @@ The latch is cleared ONCE at start; the recurring heartbeat does NOT re-clear it
    contains agent-states. Report the tick's final trace.
 
 3. Schedule the recurring heartbeat as a **prompt** (so the session is present to
-   fulfill any agent dispatches), firing the executor every ~1 minute:
+   fulfill any agent dispatches), firing the executor every ~3 minutes:
 
-   schedule a recurring ~1-minute job whose prompt is:
+   schedule a recurring ~3-minute job whose prompt is:
    `"Run one auto-maintainer tick now by invoking the /auto-maintainer:tick skill."`
 
-   The interval is hardcoded to ~1 minute for this slice (configurability is
+   The interval is hardcoded to ~3 minutes for this slice (configurability is
    deferred — auto-maintainer-framework#17). Record the scheduled job so
    `/auto-maintainer:stop` can cancel it deterministically. Use a recurring
    schedule; a bare script command will NOT do here, because a script-launched

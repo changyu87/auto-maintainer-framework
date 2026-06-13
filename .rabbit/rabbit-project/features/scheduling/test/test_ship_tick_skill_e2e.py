@@ -103,6 +103,30 @@ def test_ship_echo_agent_exists_and_names_auto_maintainer_echo():
     assert fields.get("name") == "auto-maintainer-echo", fields
 
 
+def test_ship_echo_agent_version_2_0_0_and_tools_includes_write():
+    """The reworked echo agent (v2.0.0) is interface-protocol-free: it follows
+    the handoff contract carried in the rendered prompt and WRITES its output to
+    the file the prompt names, so its frontmatter declares the `Write` tool."""
+    fields = _parse_frontmatter(_ECHO_AGENT)
+    assert fields.get("version") == "2.0.0", fields
+    assert "Write" in fields.get("tools", ""), fields
+
+
+def test_ship_echo_agent_body_is_protocol_free():
+    """DESIGN §3.4.6: the rendered prompt is the complete handoff contract. The
+    echo agent .md is role-only — it must NOT bake in any schema/JSON shape, the
+    orchestrator marshalling file, or an output path; those live in the prompt."""
+    body = _read_text(_ECHO_AGENT)
+    assert "dispatch-result.json" not in body, \
+        "echo agent must not name the (removed) orchestrator-marshalling file"
+    assert "schema_version" not in body, \
+        "echo agent must not bake in a JSON/schema shape (protocol-free)"
+    assert "work-intake:WORK_ORDERS" not in body, \
+        "echo agent must not name a slot schema (protocol-free)"
+    assert "output_path" not in body, \
+        "echo agent must not bake in an output path token (protocol-free)"
+
+
 def test_ship_assets_carry_lifecycle_metadata():
     """Lifecycle rules: each shipped skill/agent declares version + owner +
     deprecation_criterion in its frontmatter."""
@@ -122,11 +146,11 @@ def _read_text(path):
 # prompt-cron heartbeat, consuming start.py --clear-only for the latch-clear.
 # --------------------------------------------------------------------------
 
-def test_ship_start_skill_exists_and_names_start_v020():
+def test_ship_start_skill_exists_and_names_start_v021():
     assert os.path.isfile(_START_SKILL), _START_SKILL
     fields = _parse_frontmatter(_START_SKILL)
     assert fields.get("name") == "start", fields
-    assert fields.get("version") == "0.2.0", fields
+    assert fields.get("version") == "0.2.1", fields
 
 
 def test_ship_start_skill_carries_lifecycle_metadata():
@@ -150,28 +174,40 @@ def test_ship_start_skill_body_drives_executor_and_clear_only_and_heartbeat():
     assert "recurring" in body.lower(), "start skill must schedule a recurring heartbeat"
 
 
+def test_ship_start_skill_heartbeat_is_three_minutes():
+    """v0.2.1: the heartbeat interval is now ~3 minutes (testability)."""
+    body = _read_text(_START_SKILL)
+    assert "3-minute" in body or "3 minute" in body or "3 min" in body, \
+        "start skill must schedule a ~3-minute heartbeat"
+
+
 # --------------------------------------------------------------------------
-# Behaviour — the HARDENED tick skill (v0.1.1, #100): the resume step mandates
-# the Write tool writing to the ABSOLUTE dispatch-result.json path.
+# Behaviour — the REWORKED tick skill (v0.2.0, #100 fully closed): the subagent
+# writes its own output file; the skill marshals NO content and `--resume` takes
+# no file argument.
 # --------------------------------------------------------------------------
 
-def test_ship_tick_skill_version_is_0_1_1():
+def test_ship_tick_skill_version_is_0_2_0():
     fields = _parse_frontmatter(_TICK_SKILL)
-    assert fields.get("version") == "0.1.1", fields
+    assert fields.get("version") == "0.2.0", fields
 
 
-def test_ship_tick_skill_resume_step_mandates_write_tool_and_absolute_path():
-    """#100 hardening: the resume step must use the `Write` tool with the
-    absolute ${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json path,
-    not an improvised python -c, so large/quoted/newline subagent outputs
-    serialize faithfully."""
+def test_ship_tick_skill_resume_takes_no_arg_and_subagent_writes_own_file():
+    """#100 fully closed: the runner reads the subagent-WRITTEN output file on
+    resume, so `run_tick.py --resume` takes NO file argument and the skill says
+    the subagent writes its own output file. The skill marshals NO content."""
     body = _read_text(_TICK_SKILL)
-    assert "`Write` tool" in body or "Write tool" in body, \
-        "tick skill resume step must reference the Write tool"
-    assert "${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json" in body, \
-        "tick skill must reference the absolute dispatch-result.json path"
-    # The hardening calls out the absolute path explicitly.
-    assert "absolute" in body.lower(), "tick skill must call out the absolute path"
+    # --resume is referenced with no file argument appended.
+    assert "run_tick.py --resume" in body, \
+        "tick skill must reference run_tick.py --resume"
+    assert "${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json" not in body, \
+        "tick skill must NOT reference the (removed) dispatch-result.json file"
+    # The skill no longer hand-writes the subagent output content.
+    assert "Write(" not in body, \
+        "tick skill must not Write( the subagent output content itself"
+    # The subagent writes its own output file (the new contract).
+    assert "writes its own" in body.lower() or "writes its own output" in body.lower(), \
+        "tick skill must say the subagent writes its own output file"
 
 
 # --------------------------------------------------------------------------
