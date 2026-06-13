@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-13",
-  "spec_no_change_reason": "Spec slice-2 already permits a 0.2.x patch bump on each re-ship; this cycle re-normalizes the updated safety_governance.py (default per_day_tokens now null/no-limit) and bumps 0.2.10->0.2.11, no spec text change."
+  "spec_no_change_reason": "Plugin version is decoupled from feature version; re-ship of merged agent-adapter milestone (agent_dispatch lib + updated run_tick/adapter_wiring + tick skill/echo agent) needs no spec change."
 }
