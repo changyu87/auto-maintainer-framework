@@ -3,19 +3,23 @@
 
 agent-dispatch owns the agent-adapter schema and every deterministic step around
 an in-session subagent dispatch: classify an adapter-map entry, validate the
-agent-adapter schema, build invocation envelopes (once / per_item fan-out),
-render an envelope to a structured-markdown prompt (inputs as a derivative view,
-output contract as a schema), validate a subagent's returned text against the
-target slot schema, collect dispatch outputs into the target slot value, and
-compute the closed-vocabulary route signal.
+agent-adapter schema, build invocation envelopes (once / per_item fan-out) that
+carry a deterministic per-dispatch output_path, render an envelope to a
+structured-markdown prompt whose `## Handoff` section is the SELF-CONTAINED
+contract (embedded schema + write-to-file + one-line ack), validate the JSON
+CONTENT a subagent wrote to its output file against the target schema, collect
+dispatch outputs into the target slot value, and compute the closed-vocabulary
+route signal.
 
-It dispatches NOTHING and is pure, deterministic, effect-free: no Agent call, no
-model, no network, no filesystem, no wall clock. The tests assert that surface
-AND the determinism / closed-vocabulary invariants.
+It dispatches NOTHING and writes NOTHING: it only computes envelopes / paths /
+strings and validates content passed to it. The output_path is a computed string;
+the FILE is written by the subagent and read by the executor (run_tick), never by
+this library. The tests assert that surface AND the determinism / closed-
+vocabulary invariants.
 
 The e2e tests drive the helpers exactly as the (deferred) executor will — a full
-adapter → envelopes → render → validate_output → collect_outputs → compute_signal
-pass over a realistic per_item fan-out adapter.
+adapter -> envelopes -> render -> validate_output -> collect_outputs ->
+compute_signal pass over a realistic per_item fan-out adapter.
 
 Owner: changyu87
 """
@@ -61,7 +65,8 @@ def _per_item_adapter():
 
 
 def _once_adapter():
-    """A valid once adapter: a single dispatch over the whole input."""
+    """A valid once adapter: a single dispatch over the whole input. No
+    output_schema -> schema falls back to a coarse {"type": ...}."""
     return {
         "kind": "agent",
         "manifest": {
@@ -84,6 +89,9 @@ def _once_adapter():
 
 def _tick_context():
     return {"tick_id": "tick-42", "mode": "live"}
+
+
+_OUT_DIR = "/tmp/rabbit-tick-outputs"
 
 
 # ==========================================================================
@@ -126,6 +134,30 @@ def test_validate_accepts_valid_once_adapter():
 
 def test_validate_accepts_valid_per_item_adapter():
     ad.validate_agent_adapter(_per_item_adapter())
+
+
+# ==========================================================================
+# Behaviour: validate_agent_adapter — output_schema is OPTIONAL. An entry WITH
+# output_schema validates; an entry WITHOUT it still validates.
+# ==========================================================================
+
+def test_validate_accepts_entry_with_output_schema():
+    a = _per_item_adapter()
+    assert "output_schema" in a["dispatch"][0]
+    ad.validate_agent_adapter(a)  # must not raise
+
+
+def test_validate_accepts_entry_without_output_schema():
+    a = _once_adapter()
+    assert "output_schema" not in a["dispatch"][0]
+    ad.validate_agent_adapter(a)  # must not raise
+
+
+def test_validate_accepts_output_schema_as_example_shape():
+    # output_schema may be a concrete example shape, not just a schema dict.
+    a = _once_adapter()
+    a["dispatch"][0]["output_schema"] = [{"id": "x"}]
+    ad.validate_agent_adapter(a)  # must not raise
 
 
 # ==========================================================================
@@ -251,14 +283,17 @@ def test_validate_rejects_missing_signal():
 
 # ==========================================================================
 # E2E Behaviour: build_envelopes — `once` yields ONE envelope per dispatch
-# entry with correct inputs / output_contract / context and NO `item` key.
+# entry with correct inputs / output_contract / context, a deterministic
+# output_path == <output_dir>/<state>-0-0.json, and NO `item` key. An entry
+# WITHOUT output_schema gets a coarse {"type": ...} fallback schema.
 # ==========================================================================
 
 def test_build_envelopes_once_single_envelope_no_item():
     adapter = _once_adapter()
     slot_values = {"work_orders": [{"id": "wo-1"}, {"id": "wo-2"}]}
     envelopes = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="TRIAGE")
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)
 
     assert len(envelopes) == 1
     env = envelopes[0]
@@ -266,8 +301,12 @@ def test_build_envelopes_once_single_envelope_no_item():
     assert env["task"] == "Summarize the orders."
     assert env["inputs"] == {"work_orders": slot_values["work_orders"]}
     assert "item" not in env
-    assert env["output_contract"] == {
-        "slot": "summary", "schema_ref": "summary"}
+    oc = env["output_contract"]
+    assert oc["slot"] == "summary"
+    # No output_schema on the entry -> coarse fallback {"type": ...}.
+    assert isinstance(oc["schema"], dict)
+    assert "type" in oc["schema"]
+    assert oc["output_path"] == os.path.join(_OUT_DIR, "TRIAGE-0-0.json")
     assert env["context"] == {"tick_id": "tick-42", "mode": "live"}
 
 
@@ -275,14 +314,29 @@ def test_build_envelopes_once_empty_task_when_absent():
     adapter = _once_adapter()
     del adapter["dispatch"][0]["task"]
     envelopes = ad.build_envelopes(
-        adapter, {"work_orders": []}, _tick_context(), state="TRIAGE")
+        adapter, {"work_orders": []}, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)
     assert envelopes[0]["task"] == ""
+
+
+def test_build_envelopes_once_no_output_schema_coarse_fallback():
+    # work_orders -> writes "summary"; with no output_schema the fallback is a
+    # coarse {"type": ...}; still a valid dict the schema block can render.
+    adapter = _once_adapter()
+    envelopes = ad.build_envelopes(
+        adapter, {"work_orders": []}, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)
+    schema = envelopes[0]["output_contract"]["schema"]
+    assert schema == {"type": schema["type"]}
+    assert schema["type"] in ("array", "object", "string", "number",
+                              "boolean", "null")
 
 
 # ==========================================================================
 # E2E Behaviour: build_envelopes — `{per_item: path}` fans out one envelope
-# per element of the resolved collection, each carrying its `item`, in order.
-# Dotted-path resolution ("execution_plan.ordered") is correct.
+# per element of the resolved collection, each carrying its `item`, in order,
+# with a per-item output_path <state>-0-0.json / -0-1 / -0-2 and the entry's
+# explicit output_schema carried verbatim as output_contract.schema.
 # ==========================================================================
 
 def test_build_envelopes_per_item_fans_out_in_order_with_item():
@@ -292,21 +346,27 @@ def test_build_envelopes_per_item_fans_out_in_order_with_item():
         "policy": {"max_retries": 2},
     }
     envelopes = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="IMPLEMENT")
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)
 
     assert len(envelopes) == 3
     assert [e["item"] for e in envelopes] == ["wo-3", "wo-1", "wo-2"]
+    expected_paths = [
+        os.path.join(_OUT_DIR, "IMPLEMENT-0-0.json"),
+        os.path.join(_OUT_DIR, "IMPLEMENT-0-1.json"),
+        os.path.join(_OUT_DIR, "IMPLEMENT-0-2.json"),
+    ]
+    assert [e["output_contract"]["output_path"] for e in envelopes] \
+        == expected_paths
     for env in envelopes:
         assert env["state"] == "IMPLEMENT"
         assert env["inputs"] == {
             "execution_plan": slot_values["execution_plan"],
             "policy": slot_values["policy"],
         }
-        # output_schema present -> schema_ref is that schema, not the slot name.
-        assert env["output_contract"] == {
-            "slot": "implement_results",
-            "schema_ref": {"type": "object"},
-        }
+        # output_schema present -> schema is that schema verbatim.
+        assert env["output_contract"]["slot"] == "implement_results"
+        assert env["output_contract"]["schema"] == {"type": "object"}
         assert env["context"] == {"tick_id": "tick-42", "mode": "live"}
 
 
@@ -314,21 +374,48 @@ def test_build_envelopes_per_item_empty_collection_yields_no_envelopes():
     adapter = _per_item_adapter()
     slot_values = {"execution_plan": {"ordered": []}, "policy": {}}
     envelopes = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="IMPLEMENT")
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)
     assert envelopes == []
 
 
+def test_build_envelopes_output_paths_are_unique_per_dispatch():
+    # Two dispatch entries, each `once`, must get distinct dispatch_index in
+    # the output_path so files never collide.
+    adapter = _once_adapter()
+    adapter["dispatch"].append({
+        "subagent_type": "rabbit-other",
+        "task": "Other.",
+        "inputs": ["work_orders"],
+        "cardinality": "once",
+        "writes": "summary",
+    })
+    envelopes = ad.build_envelopes(
+        adapter, {"work_orders": []}, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)
+    paths = [e["output_contract"]["output_path"] for e in envelopes]
+    assert paths == [
+        os.path.join(_OUT_DIR, "TRIAGE-0-0.json"),
+        os.path.join(_OUT_DIR, "TRIAGE-1-0.json"),
+    ]
+    assert len(set(paths)) == len(paths)
+
+
 # ==========================================================================
-# E2E Behaviour: render — structured markdown with Task / Inputs / Return
+# E2E Behaviour: render — structured markdown with Task / Inputs / Handoff
 # sections; header carries state + mode + tick_id; inputs contain NO raw JSON;
-# free-text body fenced/block-quoted; Return names the schema_ref; determinism.
+# free-text body fenced/block-quoted. The `## Handoff` section is the SELF-
+# CONTAINED contract: the embedded schema (pretty JSON of the shape), the
+# exact output_path, the "use your file-writing tool" instruction, and the
+# one-line-ack / "do not include the JSON" instruction. Determinism holds.
 # ==========================================================================
 
 def test_render_contains_sections_and_header():
     adapter = _once_adapter()
     slot_values = {"work_orders": [{"id": "wo-1", "title": "Fix the bug"}]}
     env = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="TRIAGE")[0]
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
     text = ad.render(env)
 
     assert "TRIAGE" in text
@@ -337,19 +424,21 @@ def test_render_contains_sections_and_header():
     assert "## Task" in text
     assert "Summarize the orders." in text
     assert "## Inputs" in text
-    assert "## Return" in text
+    assert "## Handoff" in text
+    assert "## Return" not in text  # old section name is gone
 
 
 def test_render_inputs_have_no_raw_json():
     adapter = _once_adapter()
     slot_values = {"work_orders": [{"id": "wo-1", "title": "Fix the bug"}]}
     env = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="TRIAGE")[0]
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
     text = ad.render(env)
 
-    # Split out the Return section (which legitimately shows the schema as
-    # text) and assert the Inputs section carries no json-object dump.
-    inputs_section = text.split("## Return")[0]
+    # Split out the Handoff section (which legitimately shows the schema as
+    # JSON) and assert the Inputs section carries no json-object dump.
+    inputs_section = text.split("## Handoff")[0]
     assert '{"' not in inputs_section
     assert '":' not in inputs_section.split("## Inputs")[1]
 
@@ -359,7 +448,8 @@ def test_render_free_text_body_is_fenced_or_blockquoted():
     long_body = "Line one of the issue.\nLine two with ## a heading-looking line."
     slot_values = {"work_orders": [{"id": "wo-1", "body": long_body}]}
     env = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="TRIAGE")[0]
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
     text = ad.render(env)
 
     # The free-text body must be fenced (```) or block-quoted (> ) so its own
@@ -370,19 +460,46 @@ def test_render_free_text_body_is_fenced_or_blockquoted():
     assert fenced or blockquoted
 
 
-def test_render_return_section_names_schema_ref():
+def test_render_handoff_embeds_schema_path_write_and_ack():
     adapter = _per_item_adapter()
     slot_values = {
         "execution_plan": {"ordered": ["wo-1"]},
         "policy": {},
     }
     env = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="IMPLEMENT")[0]
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)[0]
     text = ad.render(env)
-    return_section = text.split("## Return")[1]
-    assert "implement_results" in return_section
-    # schema_ref shown as text in Return (the one place structure is shown).
-    assert "object" in return_section
+    handoff = text.split("## Handoff")[1]
+
+    # 1. The embedded schema — pretty JSON of the actual shape.
+    schema = env["output_contract"]["schema"]
+    pretty = json.dumps(schema, indent=2, sort_keys=True)
+    assert pretty in handoff
+
+    # 2. write-to-file: the exact output_path + a file-writing-tool instruction.
+    path = env["output_contract"]["output_path"]
+    assert path in handoff
+    assert "file-writing tool" in handoff
+    assert "Write a single JSON value" in handoff
+
+    # 3. ack: one-line acknowledgement, do NOT include the JSON in the reply.
+    assert "one-line acknowledgement" in handoff
+    assert "Do NOT include the JSON" in handoff
+
+
+def test_render_handoff_schema_fallback_shape_when_no_output_schema():
+    # A once adapter with no output_schema -> the coarse {"type": ...} fallback
+    # is the embedded schema shown in `## Handoff`.
+    adapter = _once_adapter()
+    env = ad.build_envelopes(
+        adapter, {"work_orders": []}, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
+    text = ad.render(env)
+    handoff = text.split("## Handoff")[1]
+    schema = env["output_contract"]["schema"]
+    pretty = json.dumps(schema, indent=2, sort_keys=True)
+    assert pretty in handoff
 
 
 def test_render_renders_item_when_present():
@@ -392,7 +509,8 @@ def test_render_renders_item_when_present():
         "policy": {},
     }
     env = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="IMPLEMENT")[0]
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)[0]
     text = ad.render(env)
     assert "wo-99" in text
 
@@ -404,14 +522,16 @@ def test_render_is_deterministic_byte_identical():
         "policy": {"a": 1, "b": 2},
     }
     env = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="IMPLEMENT")[0]
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)[0]
     assert ad.render(env) == ad.render(env)
 
 
 # ==========================================================================
-# E2E Behaviour: validate_output — good JSON matching the declared top-level
-# type returns (True, parsed); code fences are tolerated; wrong type or
-# unparseable returns (False, reason) WITHOUT raising.
+# E2E Behaviour: validate_output — good JSON content matching the declared
+# top-level type returns (True, parsed); code fences are tolerated; wrong type
+# or unparseable returns (False, reason) WITHOUT raising. A rich EXAMPLE schema
+# (list / dict) derives the expected top-level type (array / object).
 # ==========================================================================
 
 def test_validate_output_good_object():
@@ -452,6 +572,26 @@ def test_validate_output_unparseable_returns_false_no_raise():
     assert ok is False
     assert isinstance(err, str)
     assert err
+
+
+def test_validate_output_example_schema_list_means_array():
+    # A rich example shape (a list) -> expected top-level type is array.
+    ok, parsed = ad.validate_output('[{"id": "x"}]', [{"id": "example"}])
+    assert ok is True
+    assert parsed == [{"id": "x"}]
+    ok2, err = ad.validate_output('{"a": 1}', [{"id": "example"}])
+    assert ok2 is False
+    assert isinstance(err, str)
+
+
+def test_validate_output_example_schema_dict_means_object():
+    # A rich example shape (a dict) -> expected top-level type is object.
+    ok, parsed = ad.validate_output('{"id": "x"}', {"id": "example"})
+    assert ok is True
+    assert parsed == {"id": "x"}
+    ok2, err = ad.validate_output('[1, 2]', {"id": "example"})
+    assert ok2 is False
+    assert isinstance(err, str)
 
 
 # ==========================================================================
@@ -511,8 +651,9 @@ def test_compute_signal_unknown_rule_raises():
 
 # ==========================================================================
 # E2E Behaviour: the full deterministic pass an executor performs —
-# adapter -> build_envelopes -> render -> validate_output -> collect_outputs
-# -> compute_signal, over a per_item fan-out. End-to-end wiring of the helpers.
+# adapter -> build_envelopes -> render -> validate_output (of file content) ->
+# collect_outputs -> compute_signal, over a per_item fan-out. End-to-end wiring
+# of the helpers, including the self-contained `## Handoff` contract.
 # ==========================================================================
 
 def test_e2e_full_per_item_pipeline_blocked():
@@ -524,23 +665,27 @@ def test_e2e_full_per_item_pipeline_blocked():
         "policy": {"max_retries": 1},
     }
     envelopes = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="IMPLEMENT")
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)
     assert len(envelopes) == 2
 
-    # Each envelope renders to a deterministic prompt.
+    # Each envelope renders to a deterministic, self-contained Handoff prompt
+    # carrying its own output_path.
     for env in envelopes:
         prompt = ad.render(env)
-        assert "## Return" in prompt
+        assert "## Handoff" in prompt
+        assert env["output_contract"]["output_path"] in prompt
 
-    # Simulate two subagent returns (one blocked), validated against the schema.
-    returns = [
+    # Simulate the JSON CONTENT two subagents wrote to their output files (one
+    # blocked), validated against the schema.
+    file_contents = [
         '{"id": "wo-1", "status": "done"}',
         '```json\n{"id": "wo-2", "status": "blocked"}\n```',
     ]
     schema = adapter["dispatch"][0]["output_schema"]
     parsed = []
-    for txt in returns:
-        ok, val = ad.validate_output(txt, schema)
+    for content in file_contents:
+        ok, val = ad.validate_output(content, schema)
         assert ok is True
         parsed.append(val)
 
@@ -557,10 +702,12 @@ def test_e2e_full_once_pipeline_ok():
 
     slot_values = {"work_orders": [{"id": "wo-1", "title": "t"}]}
     envelopes = ad.build_envelopes(
-        adapter, slot_values, _tick_context(), state="TRIAGE")
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)
     assert len(envelopes) == 1
 
-    ok, parsed = ad.validate_output('{"text": "a summary"}', {"type": "object"})
+    schema = envelopes[0]["output_contract"]["schema"]
+    ok, parsed = ad.validate_output('{"text": "a summary"}', schema)
     assert ok is True
 
     slot_value = ad.collect_outputs(adapter["dispatch"][0], [parsed])
@@ -571,8 +718,11 @@ def test_e2e_full_once_pipeline_ok():
 
 
 # ==========================================================================
-# Invariant: the module is effect-free — it imports no effectful stdlib
-# (subprocess, os, time, random, socket) and no Agent mechanism.
+# Invariant: the module is effect-free at runtime — it dispatches no Agent,
+# calls no model/network, and does not actually touch the filesystem. `os` is
+# permitted: os.path.join is pure string manipulation (it computes output_path
+# strings; the FILE is written by the subagent, not this library). The forbidden
+# set is the genuinely effectful stdlib.
 # ==========================================================================
 
 def test_module_imports_no_effectful_modules():
@@ -580,15 +730,18 @@ def test_module_imports_no_effectful_modules():
     with open(src_path) as f:
         source = f.read()
     forbidden = ["import subprocess", "import socket", "import random",
-                 "import time", "import os", "from os ", "import urllib",
-                 "import requests"]
+                 "import time", "import urllib", "import requests"]
     for token in forbidden:
         assert token not in source, f"forbidden import found: {token!r}"
+    # The library must not actually read/write/dispatch even though it imports
+    # os for os.path.join — assert no effectful os calls appear.
+    for effectful in ["os.system", "os.popen", "open(", "os.remove",
+                      "os.makedirs", "os.mkdir", "os.write", "os.read"]:
+        assert effectful not in source, \
+            f"effectful os usage found: {effectful!r}"
 
 
-def test_module_does_not_import_json_at_module_top_for_effects():
-    # json is permitted (parsing returned text is pure); this asserts the
-    # module exposes the declared public surface and nothing dispatches.
+def test_module_exposes_public_surface():
     for name in ("AGENT_ADAPTER_SCHEMA_VERSION", "is_agent_entry",
                  "validate_agent_adapter", "build_envelopes", "render",
                  "validate_output", "collect_outputs", "compute_signal"):
