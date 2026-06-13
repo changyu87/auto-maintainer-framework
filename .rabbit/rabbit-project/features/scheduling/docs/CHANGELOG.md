@@ -1,5 +1,44 @@
 # scheduling — Changelog
 
+## contract 0.2.0 — 2026-06-13
+
+- Gave `run_tick` a **yield/resume seam** (DESIGN §2.8 executor protocol) so a
+  route containing **agent-states** pauses at each agent-state (emitting a
+  rendered dispatch request) and resumes when given the dispatch result.
+  Consumes `agent-dispatch` + `adapter-wiring` UNCHANGED. Pure-script routes are
+  byte-for-byte unchanged (still run via `tick_orchestrator.run`, return the
+  disposition signal string; all prior scheduling tests stay green).
+- Backward-compatible split: after `adapter_wiring.build_loop`, `run_tick`
+  inspects the resolved `states`; a route with no agent-states runs the legacy
+  path, a route with >=1 `adapter_wiring.AgentState` runs the new pausable
+  driver.
+- New durable key `TICK_CHECKPOINT_KEY = "tick_checkpoint"` storing the PAUSED
+  tick (`{next_state, slots (full live TickContext slot snapshot), path,
+  signals, pending:{state, writes, schema_ref, signal_rule, cardinality}}`) —
+  the SOLE source of truth for the paused dispatch (crash-safety). Cleared on
+  reaching the terminal. Added `persisted_tick_checkpoint(state_path)`.
+- New `run_tick(..., resume_dispatch=None)` parameter. The PAUSED return
+  contract: `{"status":"paused", "state":<name>, "dispatches":[{subagent_type,
+  prompt (rendered markdown via agent_dispatch.render), writes, schema_ref,
+  signal_rule, cardinality, item?}...]}`. A `once` dispatch yields one record
+  (no `item`); a `{per_item: <path>}` dispatch yields one record per resolved
+  element, each carrying its `item`. On resume each output is validated via
+  `agent_dispatch.validate_output` (the `writes`-slot schema for `once`, a
+  generic element parse for `per_item`); a validation failure returns
+  `{"status":"invalid_output", "state":<name>, "reason":<str>}` with the
+  checkpoint left intact (re-dispatchable) — never a crash. On success the
+  collected slot value is applied, the signal computed via
+  `agent_dispatch.compute_signal`, and the driver continues to the next pause or
+  the terminal.
+- Crash-safety: a fresh `run_tick` with no `resume_dispatch` that finds an
+  existing checkpoint re-emits the SAME PAUSED dispatch (idempotent — rendered
+  from the durable checkpoint so the bytes match the first emission).
+- `run_tick` NEVER calls the Agent tool / a model / a subprocess; it only emits
+  dispatch requests and applies provided results (deterministic given injected
+  `resume_dispatch`). The budget readiness gate is evaluated at FRESH tick start
+  only, not on resume. Read products stay #64 per-tick ephemeral; the budget
+  stays a durable cross-tick fact.
+
 ## contract 0.1.3 — 2026-06-10
 
 - Wired `safety-governance` into the tick loop (slice 1: load + surface +
