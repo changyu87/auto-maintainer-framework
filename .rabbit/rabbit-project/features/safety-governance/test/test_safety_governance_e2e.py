@@ -74,7 +74,9 @@ def test_schema_version_and_defaults():
     d = sg.DEFAULT_GOVERNANCE
     assert d["mode"] == "propose"
     assert d["budget"]["per_tick_tokens"] is None
-    assert d["budget"]["per_day_tokens"] == 200000
+    # Default per_day is NO LIMIT (null) per explicit user decision; a finite
+    # ceiling is opt-in via governance.json.
+    assert d["budget"]["per_day_tokens"] is None
     assert d["budget"]["window_tz"] == "local"
 
 
@@ -86,7 +88,8 @@ def test_load_governance_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_governance(project_dir)
         assert config["mode"] == "propose"
-        assert config["budget"]["per_day_tokens"] == 200000
+        # Default per_day is null (NO LIMIT); a finite ceiling is opt-in.
+        assert config["budget"]["per_day_tokens"] is None
         assert config["budget"]["per_tick_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
 
@@ -123,8 +126,7 @@ def test_load_governance_preserves_explicit_null_ceiling():
             json.dump({"budget": {"per_day_tokens": None}}, f)
 
         config = sg.load_governance(project_dir)
-        # Explicit null per_day must survive as null (NO LIMIT), not get
-        # overwritten by the finite default.
+        # Explicit null per_day must survive backfill as null (NO LIMIT).
         assert config["budget"]["per_day_tokens"] is None
         # Untouched keys still backfill.
         assert config["budget"]["window_tz"] == "local"
@@ -185,7 +187,15 @@ def test_window_key_is_injected_now_local_date():
 # ==========================================================================
 
 def test_evaluate_budget_per_day_exhaustion_blocks():
-    config = sg.DEFAULT_GOVERNANCE  # per_day=200000, per_tick=None
+    # An EXPLICIT finite per_day ceiling (opt-in via governance.json); the
+    # default is null (NO LIMIT), so exhaustion is exercised with a finite
+    # config built locally, not by relying on the default.
+    config = {
+        "schema_version": "1.0.0",
+        "mode": "propose",
+        "budget": {"per_tick_tokens": None, "per_day_tokens": 200000,
+                   "window_tz": "local"},
+    }
     # Below ceiling within today's window -> allowed.
     state = {"window_key": "2026-05-01", "spent_tokens": 100000}
     out = sg.evaluate_budget(config, state, _DAY1_MORNING)
@@ -208,7 +218,14 @@ def test_evaluate_budget_per_day_exhaustion_blocks():
 # ==========================================================================
 
 def test_evaluate_budget_window_rollover_resets_and_resumes():
-    config = sg.DEFAULT_GOVERNANCE
+    # Explicit finite per_day ceiling (the default is null/NO LIMIT, which
+    # would never block, so rollover-after-exhaustion needs a finite config).
+    config = {
+        "schema_version": "1.0.0",
+        "mode": "propose",
+        "budget": {"per_tick_tokens": None, "per_day_tokens": 200000,
+                   "window_tz": "local"},
+    }
     # Exhausted on day 1.
     state = {"window_key": "2026-05-01", "spent_tokens": 200000}
     blocked = sg.evaluate_budget(config, state, _DAY1_EVENING)
@@ -264,8 +281,22 @@ def test_evaluate_budget_null_ceilings_never_block():
 
 
 # ==========================================================================
+# Behaviour: the DEFAULT config ships per_day=null (NO LIMIT, per explicit user
+# decision), so evaluate_budget NEVER blocks on per_day regardless of how much
+# spend is injected. A finite ceiling is opt-in, not the default.
+# ==========================================================================
+
+def test_default_config_never_blocks_on_per_day():
+    config = sg.DEFAULT_GOVERNANCE
+    state = {"window_key": "2026-05-01", "spent_tokens": 10 ** 12}
+    out = sg.evaluate_budget(config, state, _DAY1_MORNING)
+    assert out["allowed"] is True
+    assert out["reason"] == "ok"
+
+
+# ==========================================================================
 # Behaviour: evaluate_budget on a fresh/empty budget state seeds the window
-# and reports allowed (no prior spend, finite default per_day).
+# and reports allowed (no prior spend; the default per_day is null/NO LIMIT).
 # ==========================================================================
 
 def test_evaluate_budget_fresh_state_seeds_window():
@@ -383,7 +414,12 @@ def test_abort_on_would_block_no_escalate_is_noop():
 # ==========================================================================
 
 def test_evaluate_budget_does_not_mutate_input_state():
-    config = sg.DEFAULT_GOVERNANCE
+    config = {
+        "schema_version": "1.0.0",
+        "mode": "propose",
+        "budget": {"per_tick_tokens": None, "per_day_tokens": 200000,
+                   "window_tz": "local"},
+    }
     state = {"window_key": "2026-05-01", "spent_tokens": 200000}
     sg.evaluate_budget(config, state, _DAY2_MORNING)
     # The original durable state object is unchanged; the rolled-over state is

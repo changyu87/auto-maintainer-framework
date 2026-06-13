@@ -33,7 +33,7 @@ Machine-first, versioned; project-local at
   "mode": "propose",
   "budget": {
     "per_tick_tokens": null,
-    "per_day_tokens": 200000,
+    "per_day_tokens": null,
     "window_tz": "local"
   }
 }
@@ -42,9 +42,12 @@ Machine-first, versioned; project-local at
 - `mode` — `dry-run` | `propose` | `gated-merge`. **Default `propose`** (§2.3).
 - `budget.per_tick_tokens` / `budget.per_day_tokens` — integer ceilings, or
   **`null`/omitted = NO LIMIT** (unbounded; the gate is a no-op for that
-  dimension). A finite `per_day_tokens` default is shipped per §3.8.4's "a real
-  ceiling, not judgment"; it is overridable to `null`. The concrete values are
-  later prompted by `userConfig` (§3.10.1, deferred).
+  dimension). Both default to **`null` (NO LIMIT)** per an explicit user
+  decision; a finite ceiling is **opt-in** (set in `governance.json`, later
+  prompted by `userConfig` §3.10.1). §3.8.4's "a real ceiling, not judgment"
+  intent is therefore satisfied by configuration, not by the default — a
+  ceiling SHOULD be set when enabling the model-backed implement doer (the
+  real token spender).
 - `budget.window_tz` — the day-boundary basis for the per-day window;
   **`local` (the host's local timezone) by default**, the deterministic
   alternative being a fixed tz string.
