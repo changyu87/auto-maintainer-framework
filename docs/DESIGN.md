@@ -421,24 +421,44 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
   - `signal`: a deterministic rule over the written slot(s), computed by the
     executor **after** dispatch — the model never selects control flow.
 
-  **Invocation envelope + render** (the per-dispatch prompt):
+  **Subagents are interface-protocol-free; the prompt is the whole contract.**
+  A `subagent_type` (including any user-supplied BYO subagent) is named only for
+  its **role/competency**; its definition carries **zero** knowledge of the
+  handoff plumbing — no slot schema, no output location, no ack format, nothing
+  about this framework. *Everything* the subagent must do to hand off correctly
+  is mandated by the rendered **prompt**, which must be **self-contained**: a
+  protocol-naive subagent complies from the prompt alone. This is why the
+  invocation envelope is the load-bearing contract — not the subagent file.
+
+  **Invocation envelope + render** (the per-dispatch prompt = the complete
+  handoff contract):
   - The session builds a machine-first **invocation envelope**
-    `{ state, task, inputs, item?, output_contract{slot, schema_ref},
+    `{ state, task, inputs, item?, output_contract{slot, schema, output_path},
     context{tick_id, mode} }` and renders it deterministically into the `Agent`
     `prompt` (the only per-invocation channel; `subagent_type` carries only the
     role).
-  - Render format is **structured markdown**: `inputs` are rendered as a
-    readable **derivative view** of the machine-first slots (free-text fields
-    fenced to preserve boundaries) — no raw JSON for inputs; the **return
-    contract** is shown as the target slot schema, because the output is the
-    machine-first artifact the next state consumes (the Machine-First split,
-    section philosophy 1: derivative view in, canonical artifact out).
-  - The executor **validates** the returned output against the slot schema and
-    **re-dispatches on mismatch** (script-tier validation; the model cannot hand
-    back malformed data unchecked).
+  - Render format is **structured markdown**. `inputs` are a readable
+    **derivative view** of the machine-first slots (free-text fields fenced) —
+    no raw JSON for inputs. The **`## Handoff`** section is the self-contained
+    output contract and mandates all three of:
+    1. the **embedded output schema** — the *resolved schema shape itself*
+       (not a bare `schema_ref` the subagent can't resolve), so the subagent
+       knows exactly what to produce;
+    2. **where to write it** — "write the JSON output to `<output_path>` using
+       your file-writing tool"; the subagent writes the artifact to disk
+       directly, so the (potentially large) output **never passes through the
+       orchestrator's context** (context isolation);
+    3. **how to signal done** — "reply with only a one-line ack; do not include
+       the output in your reply".
+  - The executor reads each dispatch's `output_path` file, **validates** it
+    against the slot schema, and **re-dispatches on mismatch** (script-tier
+    validation; a missing/mangled file is rejected, never trusted). The
+    orchestrator marshals no output content — it only triggers the read.
   - Subagents run one level below the orchestrator (L0 session → L1); a
     dispatched subagent never dispatches another (the 2-level nesting cap,
-    section 3.6.2).
+    section 3.6.2). A subagent needs a file-writing *capability* (a tool) to
+    write its `output_path`; that is a capability, not protocol — the path and
+    schema still come only from the prompt.
 
 ### 3.5 TRIAGE Pipeline
 - **3.5.1** Intake / normalize to a canonical WorkItem. **[v1]**
