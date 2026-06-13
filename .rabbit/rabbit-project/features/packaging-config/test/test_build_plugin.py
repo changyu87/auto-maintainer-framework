@@ -439,13 +439,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (#109 DRAIN-crash fix): version bumped to 0.2.14 in BOTH plugin.json
-# and marketplace.json, and the two are consistent. The spec permits a patch
-# bump on each re-ship of the plugin tree (0.2.14 re-normalizes scheduling's
-# run_tick.py to carry the #109 fix — the agent-dispatch pause no longer
-# journals a counter-less intent that poisoned the next tick's DRAIN).
+# Re-ship (protocol-free-subagent + file-based-handoff context isolation):
+# version bumped to 0.2.15 in BOTH plugin.json and marketplace.json, and the two
+# are consistent. The spec permits a patch bump on each re-ship of the plugin
+# tree (0.2.15 re-ships the reworked echo agent / tick skill / start skill and
+# re-normalizes scheduling's run_tick.py so resume reads subagent-written output
+# files).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_14_and_consistent():
+def test_version_bumped_to_0_2_15_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +458,10 @@ def test_version_bumped_to_0_2_14_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.14", \
-            f"plugin.json version must be 0.2.14, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.14", \
-            "marketplace.json plugin entry version must be 0.2.14"
+        assert pdata.get("version") == "0.2.15", \
+            f"plugin.json version must be 0.2.15, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.15", \
+            "marketplace.json plugin entry version must be 0.2.15"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1163,11 +1164,15 @@ def test_ship_collection_tick_skill_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (agent-adapter milestone): the auto-maintainer-echo subagent ships at
-# agents/auto-maintainer-echo.md via the ship/ collection convention (it lives
-# in scheduling's ship/agents/). It is the executor-proof triager the tick skill
-# dispatches at the TRIAGE agent-state. Assert it ships and its frontmatter name
-# is `auto-maintainer-echo`.
+# Re-ship (protocol-free-subagent context isolation): the auto-maintainer-echo
+# subagent ships at agents/auto-maintainer-echo.md via the ship/ collection
+# convention (it lives in scheduling's ship/agents/). It is the executor-proof
+# triager the tick skill dispatches at the TRIAGE agent-state. The reworked
+# v2.0.0 agent is PROTOCOL-FREE: it carries no baked-in output schema or
+# output_path (the invocation-envelope prompt's ## Handoff is the sole source),
+# and it has a `Write` tool so it writes its own output file. Assert it ships,
+# its name is `auto-maintainer-echo`, its version is 2.0.0, its tools include
+# Write, and it carries no baked-in schema/output_path.
 # ---------------------------------------------------------------------------
 def test_ship_collection_echo_agent_present():
     out_root = _build_into_temp()
@@ -1184,6 +1189,14 @@ def test_ship_collection_echo_agent_present():
             "agents/auto-maintainer-echo.md must carry YAML frontmatter"
         assert "\nname: auto-maintainer-echo\n" in body, \
             "echo agent frontmatter name must be `auto-maintainer-echo`"
+        assert "\nversion: 2.0.0\n" in body, \
+            "echo agent frontmatter version must be 2.0.0"
+        assert "Write" in body, \
+            "echo agent tools must include Write (it writes its own output file)"
+        # protocol-free: the prompt's ## Handoff is the sole source of the schema
+        # and the output path, so the agent body bakes in neither.
+        assert "output_path" not in body, \
+            "protocol-free echo agent must not bake in an output_path"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
@@ -1363,13 +1376,13 @@ def test_shipped_run_tick_imports_observability_from_lib_alone():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (observability milestone): the reworked start skill (scheduling v0.2.0,
-# collected via ship/) ships at skills/start/SKILL.md. Assert its frontmatter
-# version is 0.2.0 and the body references the deterministic latch-clear flag
-# `--clear-only` and drives the first tick through the executor
-# `/auto-maintainer:tick`.
+# Re-ship (file-based-handoff context isolation): the reworked start skill
+# (scheduling v0.2.1, collected via ship/) ships at skills/start/SKILL.md. Assert
+# its frontmatter version is 0.2.1, the body references the deterministic
+# latch-clear flag `--clear-only`, drives the first tick through the executor
+# `/auto-maintainer:tick`, and schedules a ~3-minute heartbeat.
 # ---------------------------------------------------------------------------
-def test_shipped_start_skill_is_v0_2_0_clear_only_and_executor():
+def test_shipped_start_skill_is_v0_2_1_clear_only_executor_3min():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1379,24 +1392,28 @@ def test_shipped_start_skill_is_v0_2_0_clear_only_and_executor():
         assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.2.0\n" in body, \
-            "shipped start skill frontmatter version must be 0.2.0"
+        assert "\nversion: 0.2.1\n" in body, \
+            "shipped start skill frontmatter version must be 0.2.1"
         assert "--clear-only" in body, \
             "shipped start skill must reference the --clear-only latch-clear flag"
         assert "/auto-maintainer:tick" in body, \
             "shipped start skill must drive the first tick through the executor"
+        assert "3-minute" in body or "3 minutes" in body, \
+            "shipped start skill must schedule a ~3-minute heartbeat"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (observability milestone): the hardened tick skill (scheduling v0.1.1,
-# collected via ship/) ships at skills/tick/SKILL.md. Assert its frontmatter
-# version is 0.1.1 and the body instructs writing the dispatch result with the
-# `Write` tool to the ABSOLUTE dispatch-result.json path under
-# ${CLAUDE_PROJECT_DIR}/.auto-maintainer/.
+# Re-ship (file-based-handoff context isolation): the reworked tick skill
+# (scheduling v0.2.0, collected via ship/) ships at skills/tick/SKILL.md. The
+# dispatched subagent now writes its OWN output file (the prompt's ## Handoff
+# names the path); the executor never marshals the dispatch result. So the skill
+# references `run_tick.py --resume` with NO file argument (the runner reads the
+# subagent-written files from its checkpoint), and it does NOT reference the old
+# dispatch-result.json marshalling path.
 # ---------------------------------------------------------------------------
-def test_shipped_tick_skill_is_v0_1_1_write_tool_absolute_path():
+def test_shipped_tick_skill_is_v0_2_0_resume_no_file_arg():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1406,12 +1423,12 @@ def test_shipped_tick_skill_is_v0_1_1_write_tool_absolute_path():
         assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.1.1\n" in body, \
-            "shipped tick skill frontmatter version must be 0.1.1"
-        assert "`Write` tool" in body, \
-            "shipped tick skill must instruct using the `Write` tool"
-        assert "${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json" \
-            in body, \
-            "shipped tick skill must reference the absolute dispatch-result path"
+        assert "\nversion: 0.2.0\n" in body, \
+            "shipped tick skill frontmatter version must be 0.2.0"
+        assert "run_tick.py --resume" in body, \
+            "shipped tick skill must reference run_tick.py --resume"
+        assert "dispatch-result.json" not in body, \
+            "shipped tick skill must NOT reference the old dispatch-result.json " \
+            "marshalling path (the subagent writes its own output file)"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)

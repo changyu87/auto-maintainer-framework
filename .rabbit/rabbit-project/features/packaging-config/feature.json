@@ -7,5 +7,5 @@
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-13",
-  "spec_no_change_reason": "Re-ship only: rebuild plugin to v0.2.14 re-normalizing scheduling run_tick.py to carry the #109 DRAIN-crash fix; no packaging-config spec behaviour changes."
+  "spec_no_change_reason": "Patch re-ship: plugin version bump 0.2.14->0.2.15 to ship the protocol-free echo agent (v2.0.0), reworked tick skill (v0.2.0, file-based resume), and 3-min start skill (v0.2.1) plus re-normalized run_tick/agent_dispatch; spec already documents the packaging + ship/-collection behavior and per-reship patch-bump convention."
 }
