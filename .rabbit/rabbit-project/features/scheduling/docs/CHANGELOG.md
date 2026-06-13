@@ -1,5 +1,29 @@
 # scheduling — Changelog
 
+## contract 0.2.2 — 2026-06-13
+
+- Shipped two plugin assets into `ship/` (collected verbatim by the build's
+  `_copy_tree(ship_dir, plugin_root)`, NO build change):
+  - `ship/skills/tick/SKILL.md` (`/auto-maintainer:tick`) — the **executor
+    skill** that drives `run_tick.py --step`/`--resume` and presses the `Agent`
+    button at agent-states: it steps the runner, and at each PAUSE dispatches the
+    runner's named subagent(s) with the rendered prompt and feeds the outputs back
+    via `${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json` until the
+    tick completes. All tick logic stays in `run_tick.py`; the skill only relays.
+  - `ship/agents/auto-maintainer-echo.md` (`auto-maintainer-echo`) — the
+    domain-free **proof triager** subagent: echoes each input `work_item` into one
+    accepted `work_order` and returns ONLY the `work_orders` JSON array
+    (`work-intake:WORK_ORDERS`).
+- Added an e2e test (`test/test_ship_tick_skill_e2e.py`) proving the shipped
+  wiring is real: both ship files exist + parse (`name: tick`,
+  `name: auto-maintainer-echo`, lifecycle metadata present), the echo-TRIAGE
+  agent-adapter entry VALIDATES via `adapter_wiring.build_loop` (TRIAGE resolves
+  to an `AgentState` dispatching `auto-maintainer-echo`), and a TRIAGE-agent route
+  runs end-to-end through `run_tick`'s yield/resume seam with a canned echo output
+  (advances past TRIAGE). No `run_tick.py` / `status.py` logic changed; siblings
+  consumed unchanged. Additive: new shipped assets + a `provides.agents` block;
+  no existing return contract or typed schema field altered.
+
 ## contract 0.2.1 — 2026-06-13
 
 - Added a JSON **tick CLI** to `run_tick.py` (`run_tick.main(argv)`, also the

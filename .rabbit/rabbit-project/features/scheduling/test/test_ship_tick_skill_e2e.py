@@ -288,9 +288,9 @@ def test_echo_triage_route_pauses_at_triage_for_echo_subagent():
 def test_echo_triage_resume_advances_past_triage():
     """Reusing the proven injected resume path (no real Agent): feeding the
     shipped echo subagent's canned work_orders output back advances the tick PAST
-    TRIAGE — PRIORITIZE (script) runs and the loop pauses at the next agent-state
-    (IMPLEMENT, an agent in the default map). Proves the shipped echo adapter is
-    executable end-to-end via the engine."""
+    TRIAGE. PRIORITIZE + the dry-run IMPLEMENT are SCRIPT factories in the default
+    map, so the route then runs to terminal and idles (read-and-idle). This proves
+    the shipped echo adapter is wired AND executable end-to-end via the engine."""
     project_dir, runtime_dir, state_path, journal_path = _setup_echo_project()
     rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                 state_path=state_path, journal_path=journal_path,
@@ -299,14 +299,9 @@ def test_echo_triage_resume_advances_past_triage():
                          state_path=state_path, journal_path=journal_path,
                          source=_stub_source(),
                          resume_dispatch=[_CANNED_ECHO_WORK_ORDERS])
-    # The route advanced past TRIAGE: with the default-map IMPLEMENT being a
-    # SCRIPT factory, the tick runs to terminal and idles; if IMPLEMENT were an
-    # agent it would pause there. Either way it is NOT still paused at TRIAGE.
-    if isinstance(result, dict):
-        assert result.get("state") != "TRIAGE", result
-    else:
-        assert result == "idle", result
-    # The echo work_orders the shipped subagent produced were applied (#64).
-    assert rt.persisted_work_orders_count(state_path) == 2 or \
-        rt.persisted_tick_checkpoint(state_path).get("slots", {}).get(
-            "work_orders") is not None
+    # Advanced past TRIAGE all the way to the terminal -> disposition signal STRING
+    # (NOT still paused at TRIAGE, which would be a dict).
+    assert result == "idle", result
+    # The echo work_orders the shipped subagent produced were applied + persisted
+    # (#64): one accepted work_order per input work_item.
+    assert rt.persisted_work_orders_count(state_path) == 2
