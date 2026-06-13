@@ -439,13 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (observability milestone): version bumped to 0.2.13 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. The spec permits
-# a patch bump on each re-ship of the plugin tree (0.2.13 ships the new
-# observability.py lib, the event-emitting run_tick that imports it, start.py's
-# --clear-only flag, and the reworked start + hardened tick skills).
+# Re-ship (#109 DRAIN-crash fix): version bumped to 0.2.14 in BOTH plugin.json
+# and marketplace.json, and the two are consistent. The spec permits a patch
+# bump on each re-ship of the plugin tree (0.2.14 re-normalizes scheduling's
+# run_tick.py to carry the #109 fix — the agent-dispatch pause no longer
+# journals a counter-less intent that poisoned the next tick's DRAIN).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_13_and_consistent():
+def test_version_bumped_to_0_2_14_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +457,10 @@ def test_version_bumped_to_0_2_13_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.13", \
-            f"plugin.json version must be 0.2.13, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.13", \
-            "marketplace.json plugin entry version must be 0.2.13"
+        assert pdata.get("version") == "0.2.14", \
+            f"plugin.json version must be 0.2.14, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.14", \
+            "marketplace.json plugin entry version must be 0.2.14"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -662,6 +662,46 @@ def test_shipped_run_tick_carries_64_ephemeral_fix():
             "scheduling", "src", "run_tick.py",
         )
         dst_name, (src_rel, anchor, bootstrap) = "run_tick.py", \
+            mod._NORMALIZED_LIBS["run_tick.py"]
+        expected = mod._normalize_lib(src, anchor, bootstrap)
+        assert shipped == expected, \
+            "shipped run_tick is not the normalized scheduling source bytes"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship #109 (DRAIN-crash fix): the whole point of the 0.2.14 re-ship is that
+# the installed plugin's run_tick carries the #109 fix — the agent-dispatch
+# PAUSE is deliberately NOT journaled (a counter-less agent-dispatch intent would
+# poison the NEXT tick's DRAIN with KeyError 'target_counter'). Prove the SHIPPED
+# run_tick carries the fixed pause logic (the #109 marker, and NO journal.record
+# in the agent-state pause branch) AND is byte-identical to the build's own
+# normalization of the CURRENT scheduling source — so the rebuilt tree genuinely
+# ships the merged fix rather than the old crashing logic.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_carries_109_drain_crash_fix():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            shipped = fh.read()
+        # The #109 fix is carried by the source's pause-branch comment explaining
+        # why the agent dispatch is NOT journaled.
+        assert "(#109)" in shipped, \
+            "shipped run_tick must carry the #109 DRAIN-crash fix"
+        assert "The pause is deliberately NOT" in shipped, \
+            "shipped run_tick pause must document the no-journal #109 fix"
+        # And it must be byte-identical to the build's own normalization of the
+        # CURRENT scheduling source — proving the merged fix actually shipped.
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "scheduling", "src", "run_tick.py",
+        )
+        _dst_name, (_src_rel, anchor, bootstrap) = "run_tick.py", \
             mod._NORMALIZED_LIBS["run_tick.py"]
         expected = mod._normalize_lib(src, anchor, bootstrap)
         assert shipped == expected, \

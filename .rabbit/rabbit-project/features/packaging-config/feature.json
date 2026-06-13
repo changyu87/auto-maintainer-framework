@@ -7,5 +7,5 @@
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-13",
-  "spec_no_change_reason": "Re-ship only: packaging the observability milestone (new observability lib byte-for-byte, event-emitting run_tick, --clear-only start.py, reworked start/tick skills) and bumping plugin to 0.2.13; no packaging-config spec behaviour changes."
+  "spec_no_change_reason": "Re-ship only: rebuild plugin to v0.2.14 re-normalizing scheduling run_tick.py to carry the #109 DRAIN-crash fix; no packaging-config spec behaviour changes."
 }
