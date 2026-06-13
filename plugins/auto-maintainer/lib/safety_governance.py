@@ -79,15 +79,16 @@ import lifecycle_dispositions as ld
 GOVERNANCE_SCHEMA_VERSION = "1.0.0"
 
 # The documented defaults (spec "Governance config schema"). Trust default is
-# `propose` (§2.3). per_tick_tokens defaults null (unbounded); per_day_tokens
-# ships a finite ceiling per §3.8.4 ("a real ceiling, not judgment"), override
-# able to null. window_tz `local` is the host's local timezone.
+# `propose` (§2.3). Both per_tick_tokens and per_day_tokens default null (NO
+# LIMIT) per an explicit user decision; a finite ceiling is opt-in via
+# governance.json (§3.8.4's "a real ceiling" intent is satisfied by config, not
+# by the default). window_tz `local` is the host's local timezone.
 DEFAULT_GOVERNANCE = {
     "schema_version": GOVERNANCE_SCHEMA_VERSION,
     "mode": "propose",
     "budget": {
         "per_tick_tokens": None,
-        "per_day_tokens": 200000,
+        "per_day_tokens": None,
         "window_tz": "local",
     },
 }
@@ -101,7 +102,7 @@ def load_governance(project_dir):
     Reads ${project_dir}/.auto-maintainer/governance.json when present; an
     absent file yields the documented defaults. Any missing top-level or
     budget key is filled from DEFAULT_GOVERNANCE. An explicit `null` ceiling
-    in the file is PRESERVED (NO LIMIT), not overwritten by the finite default.
+    in the file is PRESERVED (NO LIMIT); a finite ceiling is opt-in.
     """
     path = os.path.join(project_dir, _GOVERNANCE_RELPATH)
     if not os.path.isfile(path):
