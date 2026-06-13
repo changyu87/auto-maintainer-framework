@@ -1,6 +1,6 @@
 ---
 feature: adapter-wiring
-version: 0.1.0
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it (see feature.json / docs/spec.md).
 ---
@@ -15,6 +15,11 @@ at LOAD time, and returns a ready `(route, states)` pair for
 route or the built-in adapters, and it resolves adapters dynamically by string
 so it has no static coupling to any concrete adapter feature.
 
+An adapter-map entry is EITHER a `"module:factory"` script address OR an
+agent-adapter object; the latter is classified + validated via the
+`agent-dispatch` helper lib (consumed UNCHANGED) and resolved to an
+`AgentState`. Agent entries are resolved + validated here but NOT executed.
+
 ## The adapter factory convention (the bring-your-own contract)
 
 An adapter is addressed as `"module:factory"`, where:
@@ -28,17 +33,22 @@ StateResult`. `runtime` carries the resolved runtime dir (`project_dir`) plus
 any injected config a factory needs. This factory signature is the entire
 contract a third-party adapter implements.
 
+An adapter-map value may instead be an **agent-adapter object** (a dict whose
+schema is owned by `agent-dispatch`). adapter-wiring resolves it to
+`(StateManifest, AgentState)` — validated via agent-dispatch, NOT executed here.
+
 ```json
 {
   "provides": {
     "files": [],
     "scripts": [
       "load_route(default_route, project_dir) -> route",
-      "load_adapter_map(default_map, project_dir) -> map",
-      "resolve_states(route, adapter_map, runtime) -> states",
+      "load_adapter_map(default_map, project_dir) -> map  # values: 'module:factory' string OR agent-adapter object",
+      "resolve_states(route, adapter_map, runtime) -> states  # {state: (manifest, run_callable | AgentState)}",
       "validate_wiring(route, manifests, start, initial) -> CheckResult",
       "build_loop(default_route, default_map, runtime, start, initial) -> (route, states)",
-      "the adapter factory convention: 'module:factory', factory(runtime) -> (StateManifest, run_callable)"
+      "the adapter factory convention: 'module:factory', factory(runtime) -> (StateManifest, run_callable)",
+      "AgentState(manifest, dispatch, signal, entry): the resolved form of an agent-adapter object entry"
     ],
     "skills": []
   },
@@ -49,12 +59,14 @@ contract a third-party adapter implements.
     ],
     "external": [
       "fsm-contracts (validate_route, StateManifest, CheckResult)",
-      "tick-orchestrator (validate_signals, validate_data_readiness)"
+      "tick-orchestrator (validate_signals, validate_data_readiness)",
+      "agent-dispatch (is_agent_entry, validate_agent_adapter, AGENT_ADAPTER_SCHEMA_VERSION)"
     ]
   },
   "invokes": {
     "scripts": [
-      "importlib.import_module on each configured adapter module, then its factory(runtime)"
+      "importlib.import_module on each configured script adapter module, then its factory(runtime)",
+      "agent_dispatch.is_agent_entry + agent_dispatch.validate_agent_adapter on each agent-adapter object entry"
     ],
     "agents": []
   },
@@ -62,6 +74,7 @@ contract a third-party adapter implements.
     "defines the maintainer default route or the default adapter-map",
     "defines or ships the built-in adapter factories (scheduling owns those)",
     "imports specific adapters statically (scheduling/durable-state/lifecycle-dispositions/work-intake) — resolution is dynamic by 'module:factory' string",
+    "imports scheduling, or executes/dispatches an agent-adapter (execution is a later slice; adapter-wiring only resolves + validates)",
     "performs network I/O or runs AI",
     "executes the route (tick-orchestrator owns the run loop)"
   ]

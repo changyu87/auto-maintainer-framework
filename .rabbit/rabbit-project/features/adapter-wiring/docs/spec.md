@@ -1,6 +1,6 @@
 ---
 feature: adapter-wiring
-version: 0.1.0
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it.
 ---
@@ -32,7 +32,13 @@ it does NOT define the maintainer's default route or the built-in adapters
 (scheduling supplies those); it loads/resolves/validates whatever paths it is
 given.
 
-## The adapter factory convention (the BYO contract)
+## Adapter-map entry kinds
+
+An adapter-map value is EITHER a **script factory address** (a string) OR an
+**agent-adapter object** (a dict). Both resolve to a uniform `(manifest, second)`
+pair the orchestrator consumes; only the `second` element differs.
+
+### Script entry (`"module:factory"`, the BYO contract)
 
 An adapter is addressed in the map as **`"module:factory"`**, where `factory` is a
 callable:
@@ -47,7 +53,46 @@ factory needs (e.g. PULL's issue source). **This factory signature is the entire
 contract a third-party adapter implements** — write a `factory`, point the map at
 it. Core anchors (`GUARD/DRAIN/PERSIST/EXIT`) are also addressed this way but are
 **fixed** (the validator enforces their anchor invariants; they are not
-project-overridable per §1.1).
+project-overridable per §1.1). A script entry resolves to `(manifest,
+run_callable)`.
+
+### Agent entry (the agent-adapter object, DESIGN §2.8 / §3.4.6)
+
+An adapter-map value may instead be an **agent-adapter object** — a dict whose
+schema is owned by the `agent-dispatch` feature:
+
+```json
+{
+  "kind": "agent",
+  "manifest": {"reads": [...], "writes": [...], "emits": [...]},
+  "dispatch": [{"subagent_type": "...", "inputs": [...],
+                "cardinality": "once" | {"per_item": "<path>"},
+                "writes": "<slot>", "task": "..."}],
+  "signal": {"rule": "nonempty_else_empty" | "blocked_if_any" | "always_ok"}
+}
+```
+
+adapter-wiring CONSUMES `agent-dispatch` unchanged: it classifies an entry with
+`agent_dispatch.is_agent_entry(entry)` and deep-validates it with
+`agent_dispatch.validate_agent_adapter(entry)`. A malformed agent entry (bad or
+missing manifest, empty dispatch, bad cardinality, bad signal rule) is a
+**locatable `WiringError` naming the port** (the underlying `ValueError` from
+agent-dispatch is re-raised as a `WiringError`). An agent entry resolves to
+`(manifest, AgentState)`.
+
+Agent entries are **resolved and validated at LOAD here, but NOT executed** — no
+`Agent` dispatch happens in adapter-wiring; execution is a later slice. adapter-
+wiring does NOT import scheduling.
+
+### The resolved `AgentState`
+
+`AgentState` is the resolved form of an agent entry — a small record carrying
+`manifest`, `dispatch`, `signal`, and the raw `entry`. The executor (a later
+slice) consumes it to build + dispatch invocation envelopes. Because
+`resolve_states` returns `(manifest, second)` uniformly — `second` is a
+`run_callable` for a script state or an `AgentState` for an agent state —
+`validate_wiring` / `build_loop` are unchanged: they operate only on the
+`manifest` (the first element), which both kinds populate.
 
 ## Public surface
 
@@ -56,11 +101,19 @@ project-overridable per §1.1).
    (supplied by the caller). Validate the loaded object against fsm-contracts'
    `route.json` schema (`validate_route`); a malformed route is a locatable error.
 2. **`load_adapter_map(default_map, project_dir) -> map`** — same override logic for
-   the `port → "module:factory"` map.
+   the `port → adapter` map. Each value is EITHER a `str` (script factory address)
+   OR a `dict` (agent-adapter object); any other type is a locatable `WiringError`
+   naming the port. The agent dict is NOT deep-validated here — that is
+   `resolve_states`' job via agent-dispatch.
 3. **`resolve_states(route, adapter_map, runtime) -> states`** — for each state in
-   the route, import `module`, get `factory`, call `factory(runtime)` →
-   `(manifest, run)`; build the `states` map the orchestrator consumes. An
-   unknown port (no map entry), unimportable module, or missing factory is a
+   the route: a **string** entry imports `module`, gets `factory`, calls
+   `factory(runtime)` → `(manifest, run)`; an **agent** entry
+   (`agent_dispatch.is_agent_entry` is True) is validated via
+   `agent_dispatch.validate_agent_adapter` and resolved to
+   `(manifest, AgentState)`, where the manifest mirrors the entry's
+   `manifest.{reads,writes,emits}`. Build the `states` map the orchestrator
+   consumes: each value is uniformly `(manifest, second)`. An unknown port (no map
+   entry), unimportable module, missing factory, or malformed agent entry is a
    **locatable error** naming the port (determinism, spec-rules §1).
 4. **`validate_wiring(route, manifests, start, initial) -> CheckResult`** — run, at
    LOAD time, `tick-orchestrator`'s `validate_signals` + `validate_data_readiness`
@@ -80,7 +133,12 @@ locatable to the port/module that is wrong.
 
 ## Current behaviour
 
-None yet — `tdd_state: spec` (seeded spec; implementation follows this cycle).
+Implemented: `load_route` / `load_adapter_map` (project-local override + schema
+validation), `resolve_states` (script `"module:factory"` AND agent-adapter object
+entries → uniform `(manifest, second)`), `validate_wiring` (signals +
+data-readiness + anchor invariants over the resolved manifests), and `build_loop`
+(load + resolve + validate). Agent entries are resolved + validated here but NOT
+executed (execution is a later slice).
 
 ## Known gaps / deferred
 
@@ -94,8 +152,10 @@ None yet — `tdd_state: spec` (seeded spec; implementation follows this cycle).
 
 ## Interfaces (composition)
 
-- Consumes `fsm-contracts` (route.json schema, `validate_route`, `StateManifest`)
-  and `tick-orchestrator` (`validate_signals`, `validate_data_readiness`).
+- Consumes `fsm-contracts` (route.json schema, `validate_route`, `StateManifest`),
+  `tick-orchestrator` (`validate_signals`, `validate_data_readiness`), and
+  `agent-dispatch` (`is_agent_entry`, `validate_agent_adapter`,
+  `AGENT_ADAPTER_SCHEMA_VERSION`) — all UNCHANGED.
 - Consumed by `scheduling`: `run_tick` calls `build_loop(...)` (passing
   scheduling's default route/map + the resolved runtime) instead of hardcoding,
   then feeds the result to `tick_orchestrator.run`.
