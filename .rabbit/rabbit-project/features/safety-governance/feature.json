@@ -1,8 +1,13 @@
 {
   "name": "safety-governance",
   "version": "0.1.0",
-  "owner": "cyxu",
-  "paths": [],
+  "owner": "changyu87",
+  "paths": [
+    "rabbit-project/features/safety-governance/src/**"
+  ],
   "created": "2026-06-13T03:57:44Z",
-  "deprecation_criterion": null
+  "deprecation_criterion": "Superseded when the governance config schema reaches a breaking major version, or when trust-ladder / budget enforcement moves into a different layer than a project-local governance config consulted at tick entry.",
+  "tdd_state": "test-green",
+  "updated": "2026-06-13",
+  "spec_no_change_reason": "greenfield: spec.md + contract.md seeded by scaffold in prior decomposition; this cycle implements them unchanged"
 }
