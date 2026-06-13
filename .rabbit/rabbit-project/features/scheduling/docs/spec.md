@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.2.0
+version: 0.2.1
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -237,6 +237,44 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
 - The budget readiness gate (safety-governance) is evaluated at FRESH tick start
   only, NOT on resume. Read products stay #64 per-tick ephemeral; the budget
   stays a durable cross-tick fact.
+
+## JSON tick CLI (slice: --step / --resume executor seam)
+
+`run_tick.py` exposes a **JSON tick CLI** (`run_tick.main(argv)`, also the
+`__main__` entrypoint) so the (later) executor skill can drive the yield/resume
+loop deterministically. It is a THIN deterministic wrapper around the EXISTING
+`run_tick(...)` structured returns (the yield/resume seam above) — it adds NO new
+tick logic.
+
+- **Bare invocation** (`python run_tick.py`, no `--step`/`--resume`) is
+  UNCHANGED: it calls `run_tick()` and prints the one-line HUMAN trace to stdout,
+  so existing pure-script bash callers keep working. The path flags
+  (`--runtime-dir`/`--state`/`--journal`/`--project-dir`) are honored in bare
+  mode too, but the output is the human trace, not JSON.
+- **`--step`** runs the tick until the next pause or terminal and prints a SINGLE
+  JSON object to stdout (nothing else on stdout):
+  - done → `{"status":"done","signal":"<idle|halt|...>","trace":"<the one-line
+    trace string>"}`
+  - paused → `{"status":"paused","state":"<name>","dispatches":[{subagent_type,
+    prompt,writes,schema_ref,signal_rule,cardinality,item?}...]}`
+  - invalid_output → `{"status":"invalid_output","state":...,"reason":...}`
+- **`--resume <file>`** reads the paused agent-state's dispatch outputs from
+  `<file>` (a JSON array of raw subagent output strings, in dispatch order),
+  calls `run_tick(resume_dispatch=<that list>)`, and prints the SAME envelope
+  shape (paused again, done, or invalid_output).
+- **stdout is PURE JSON** in `--step`/`--resume` mode (the skill parses stdout):
+  the human trace line that `run_tick` writes to stdout is captured into the JSON
+  `trace` field (and NOT leaked raw onto stdout). A pause emits no trace, so the
+  paused/invalid_output envelopes carry no `trace` field.
+- **Exit codes** (documented): `done`/`paused` → `0`; `invalid_output` (a bad
+  agent output OR a malformed/missing `--resume` file) → `1`. A malformed/missing
+  resume file is surfaced as an `invalid_output` envelope (no crash/traceback),
+  never a Python exception.
+- **Runtime injection:** the path flags `--runtime-dir`/`--state`/`--journal`/
+  `--project-dir` let tests point the CLI at a temp runtime; when omitted the CLI
+  uses the production defaults (`resolve_runtime_paths`) exactly like bare mode.
+  The PULL source stays the live `gh` CLI by default (`DEFAULT_PULL_SOURCE`) and
+  is not a CLI flag; tests stub it by overriding `DEFAULT_PULL_SOURCE`.
 
 ## Known gaps / deferred
 
