@@ -337,6 +337,16 @@ def _setup_agent_project():
     return project_dir, runtime_dir, state_path, journal_path
 
 
+def _write_outputs(paused, contents):
+    """Simulate the subagent: WRITE each content string to the matching
+    paused dispatch's output_path file (the file-based resume handoff)."""
+    for d, content in zip(paused["dispatches"], contents):
+        path = d["output_path"]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+
+
 def test_agent_route_step_emits_tick_start_pause_and_dispatch():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
     rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
@@ -360,15 +370,17 @@ def test_agent_route_step_emits_tick_start_pause_and_dispatch():
 def test_agent_route_step_then_resume_appends_to_one_log_monotonic_seq():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
     # Step: pauses at TRIAGE.
-    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
-                state_path=state_path, journal_path=journal_path,
-                source=_stub_source(), now=_NOW)
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source(), now=_NOW)
     n_after_step = len(_events(runtime_dir))
-    # Resume: applies work_orders, runs PERSIST/EXIT, reaches tick_end.
+    # Simulate the subagent: WRITE work_orders to the TRIAGE output_path, THEN
+    # resume (file-based). Resume applies work_orders, runs PERSIST/EXIT, reaches
+    # tick_end.
+    _write_outputs(paused, [_CANNED_WORK_ORDERS])
     rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                 state_path=state_path, journal_path=journal_path,
-                source=_stub_source(), now=_NOW,
-                resume_dispatch=[_CANNED_WORK_ORDERS])
+                source=_stub_source(), now=_NOW, resume=True)
     events = _events(runtime_dir)
     kinds = _kinds(events)
     # The whole step->resume sequence is ONE append-only log.

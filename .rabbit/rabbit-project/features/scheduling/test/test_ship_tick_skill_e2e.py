@@ -349,19 +349,23 @@ def test_echo_triage_route_pauses_at_triage_for_echo_subagent():
 # --------------------------------------------------------------------------
 
 def test_echo_triage_resume_advances_past_triage():
-    """Reusing the proven injected resume path (no real Agent): feeding the
-    shipped echo subagent's canned work_orders output back advances the tick PAST
-    TRIAGE. PRIORITIZE + the dry-run IMPLEMENT are SCRIPT factories in the default
-    map, so the route then runs to terminal and idles (read-and-idle). This proves
-    the shipped echo adapter is wired AND executable end-to-end via the engine."""
+    """Reusing the proven file-based resume path (no real Agent): writing the
+    shipped echo subagent's canned work_orders output to the TRIAGE output_path
+    and resuming advances the tick PAST TRIAGE. PRIORITIZE + the dry-run IMPLEMENT
+    are SCRIPT factories in the default map, so the route then runs to terminal and
+    idles (read-and-idle). This proves the shipped echo adapter is wired AND
+    executable end-to-end via the engine."""
     project_dir, runtime_dir, state_path, journal_path = _setup_echo_project()
-    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
-                state_path=state_path, journal_path=journal_path,
-                source=_stub_source())
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source())
+    out_path = paused["dispatches"][0]["output_path"]
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        f.write(_CANNED_ECHO_WORK_ORDERS)
     result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                          state_path=state_path, journal_path=journal_path,
-                         source=_stub_source(),
-                         resume_dispatch=[_CANNED_ECHO_WORK_ORDERS])
+                         source=_stub_source(), resume=True)
     # Advanced past TRIAGE all the way to the terminal -> disposition signal STRING
     # (NOT still paused at TRIAGE, which would be a dict).
     assert result == "idle", result
