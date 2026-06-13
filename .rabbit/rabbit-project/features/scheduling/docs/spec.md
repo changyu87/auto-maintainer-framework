@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.2.1
+version: 0.2.2
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -276,11 +276,44 @@ tick logic.
   The PULL source stays the live `gh` CLI by default (`DEFAULT_PULL_SOURCE`) and
   is not a CLI flag; tests stub it by overriding `DEFAULT_PULL_SOURCE`.
 
+## Shipped executor skill + echo proof subagent (slice: ship the tick executor)
+
+scheduling now ships the two plugin assets that turn the agent yield/resume seam
+into a usable, drop-in executor (DESIGN §3.4.6 / §2.8). The build's
+`_copy_tree(ship_dir, plugin_root)` collects `ship/` verbatim, so these land in
+the plugin tree with NO build change.
+
+- **`ship/skills/tick/SKILL.md`** (`/auto-maintainer:tick`, the `tick` executor
+  skill) — drives `run_tick.py --step`/`--resume` and presses the `Agent` button
+  at each agent-state: it steps the runner, and whenever the runner PAUSES at an
+  agent-state, dispatches the named subagent(s) with the runner's rendered prompt
+  and feeds the output back via the fixed resume file
+  (`${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json`) until the tick
+  completes. The skill decides nothing about the route — all tick logic (route,
+  validation, slot writes, signal selection, crash-safe checkpointing) lives in
+  `run_tick.py`; the skill only relays dispatch requests and results.
+- **`ship/agents/auto-maintainer-echo.md`** (the `auto-maintainer-echo` subagent)
+  — the domain-free PROOF triager: dispatched by `subagent_type` at the TRIAGE
+  agent-state, it echoes each input `work_item` back as one accepted `work_order`
+  and returns ONLY the `work_orders` JSON array (`work-intake:WORK_ORDERS`). It
+  performs no real triage judgment — it exists to prove the agent-adapter executor
+  end-to-end.
+- **The echo-TRIAGE wiring is valid drop-in config.** A project-local
+  `adapter-map.json` mapping `TRIAGE` to an agent-adapter entry that dispatches
+  `subagent_type=auto-maintainer-echo` (`reads work_items`, `writes work_orders`,
+  `signal nonempty_else_empty`, `cardinality once`), plus a route
+  `GUARD→DRAIN→PULL→TRIAGE→PRIORITIZE→IMPLEMENT→PERSIST→EXIT` (TRIAGE agent;
+  PRIORITIZE/IMPLEMENT script as today), is ACCEPTED by `adapter_wiring.build_loop`
+  — TRIAGE resolves to an `AgentState` and data-readiness is satisfied — and runs
+  end-to-end through `run_tick`'s yield/resume seam (the canned echo output applied
+  on resume advances the tick past TRIAGE). No code change is required to wire it.
+
 ## Known gaps / deferred
 
 - The executor (the session-side actor that performs the Agent dispatch and
-  feeds `resume_dispatch` back to `run_tick`) — a later slice; this slice only
-  emits the dispatch requests and applies provided results.
+  feeds `resume_dispatch` back to `run_tick`) now ships as the `tick` skill
+  (`ship/skills/tick/SKILL.md`); `run_tick` itself still only emits the dispatch
+  requests and applies provided results (it never calls the Agent tool).
 - Configurable interval + route (config feature) — interval hardcoded to 1 min
   (auto-maintainer-framework#17).
 - System-cron scheduler backend (§3.3.1) — slice 1 is in-session heartbeat only.

@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.2.1
+version: 0.2.2
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -31,7 +31,11 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
     "skills": [
       "ship/skills/start/SKILL.md (/auto-maintainer:start): runs tick #1 via start.py then schedules the recurring ~1-min in-session heartbeat re-running run_tick.py",
       "ship/skills/stop/SKILL.md (/auto-maintainer:stop): invokes stop.py (latch STOPPED) and cancels the heartbeat",
-      "ship/skills/status/SKILL.md (/auto-maintainer:status): invokes status.py and reports the real disposition + last-pull work_items count"
+      "ship/skills/status/SKILL.md (/auto-maintainer:status): invokes status.py and reports the real disposition + last-pull work_items count",
+      "ship/skills/tick/SKILL.md (/auto-maintainer:tick): the executor skill — drives run_tick.py --step/--resume and presses the Agent button at agent-states (dispatches the runner's named subagent(s) with the rendered prompt, feeds outputs back via ${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json) until the tick completes; all tick logic stays in run_tick.py (the skill only relays dispatch requests + results)"
+    ],
+    "agents": [
+      "ship/agents/auto-maintainer-echo.md (auto-maintainer-echo): the domain-free PROOF triager subagent — dispatched by subagent_type at the TRIAGE agent-state, echoes each input work_item back as one accepted work_order and returns ONLY the work_orders JSON array (work-intake:WORK_ORDERS). The echo-TRIAGE adapter-map entry (kind=agent, reads work_items, writes work_orders, dispatch subagent_type=auto-maintainer-echo cardinality once, signal nonempty_else_empty) is valid drop-in config: adapter_wiring.build_loop ACCEPTS it (TRIAGE resolves to an AgentState) and run_tick runs it end-to-end via the yield/resume seam"
     ]
   },
   "reads": {
