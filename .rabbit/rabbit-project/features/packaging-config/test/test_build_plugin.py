@@ -439,13 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (agent-adapter milestone): version bumped to 0.2.12 in BOTH
+# Re-ship (observability milestone): version bumped to 0.2.13 in BOTH
 # plugin.json and marketplace.json, and the two are consistent. The spec permits
-# a patch bump on each re-ship of the plugin tree (0.2.12 ships the new
-# agent_dispatch.py lib, the updated run_tick/adapter_wiring that import it, and
-# the tick executor skill + auto-maintainer-echo subagent).
+# a patch bump on each re-ship of the plugin tree (0.2.13 ships the new
+# observability.py lib, the event-emitting run_tick that imports it, start.py's
+# --clear-only flag, and the reworked start + hardened tick skills).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_12_and_consistent():
+def test_version_bumped_to_0_2_13_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +457,10 @@ def test_version_bumped_to_0_2_12_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.12", \
-            f"plugin.json version must be 0.2.12, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.12", \
-            "marketplace.json plugin entry version must be 0.2.12"
+        assert pdata.get("version") == "0.2.13", \
+            f"plugin.json version must be 0.2.13, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.13", \
+            "marketplace.json plugin entry version must be 0.2.13"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -500,26 +500,38 @@ def test_shipped_libs_report_route_source():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship, scheduling #24 fix): the shipped start skill must
-# reference run_tick via the plugin-root token ${CLAUDE_PLUGIN_ROOT}/lib/
-# run_tick.py and must NOT carry a bare src/run_tick.py reference. The shipped
-# plugin carries only its own dir, so the dev-time bare src/ path would not
-# resolve once installed; the #24 fix anchors it to the plugin root.
+# Re-ship (observability milestone, scheduling start rework v0.2.0): the #24
+# plugin-root anchoring of run_tick now lives in the EXECUTOR (the tick skill),
+# which owns the run_tick invocation. The reworked start skill (v0.2.0) no longer
+# calls run_tick directly — it delegates the first tick to /auto-maintainer:tick
+# — so the tick skill must reference run_tick via ${CLAUDE_PLUGIN_ROOT}/lib/
+# run_tick.py and carry no bare src/run_tick.py path; the start skill must carry
+# no bare src/run_tick.py path either. The shipped plugin carries only its own
+# dir, so the dev-time bare src/ path would not resolve once installed.
 # ---------------------------------------------------------------------------
-def test_shipped_start_skill_uses_plugin_root_run_tick():
+def test_shipped_executor_uses_plugin_root_run_tick():
     out_root = _build_into_temp()
     try:
-        sk = os.path.join(
+        tick = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "tick", "SKILL.md",
+        )
+        start = os.path.join(
             out_root, "plugins", "auto-maintainer",
             "skills", "start", "SKILL.md",
         )
-        assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
-        with open(sk, encoding="utf-8") as fh:
-            body = fh.read()
-        assert "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py" in body, \
-            "shipped start skill must reference " \
+        assert os.path.isfile(tick), "skills/tick/SKILL.md must ship"
+        assert os.path.isfile(start), "skills/start/SKILL.md must ship"
+        with open(tick, encoding="utf-8") as fh:
+            tick_body = fh.read()
+        with open(start, encoding="utf-8") as fh:
+            start_body = fh.read()
+        assert "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py" in tick_body, \
+            "shipped tick skill must reference " \
             "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py"
-        assert "src/run_tick.py" not in body, \
+        assert "src/run_tick.py" not in tick_body, \
+            "shipped tick skill must not carry a bare src/run_tick.py path"
+        assert "src/run_tick.py" not in start_body, \
             "shipped start skill must not carry a bare src/run_tick.py path"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
@@ -1220,5 +1232,146 @@ def test_plugin_structurally_valid():
         with open(mk, encoding="utf-8") as fh:
             mkdata = json.load(fh)
         assert mkdata["plugins"][0]["name"] == data["name"]
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (observability milestone): the new observability.py lib ships under
+# lib/. It is PURE stdlib (imports only json + os, no sibling libs), so it is
+# copied byte-for-byte (like the other pure libs) — NOT normalized. run_tick now
+# imports it (`import observability as ob`) and emits structured tick events, so
+# the installed plugin must carry it alongside the other control libs.
+# ---------------------------------------------------------------------------
+def test_observability_lib_present_and_byte_identical():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        dst = os.path.join(lib, "observability.py")
+        assert os.path.isfile(dst), \
+            "lib/observability.py must ship in the plugin tree"
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "observability", "src", "observability.py",
+        )
+        with open(src, "rb") as a, open(dst, "rb") as b:
+            assert a.read() == b.read(), \
+                "observability.py is not byte-identical to its source"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (observability milestone): the newly-shipped observability.py must not
+# leak a path back into the source feature tree — the headline clean-ship
+# invariant applies to it too (it is pure stdlib, so this is a sanity guard).
+# ---------------------------------------------------------------------------
+def test_shipped_observability_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        with open(
+            os.path.join(lib, "observability.py"), encoding="utf-8"
+        ) as fh:
+            body = fh.read()
+        assert ".rabbit" not in body, "shipped observability leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "shipped observability references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (observability milestone), critical self-containment: the shipped
+# run_tick.py imports `import observability as ob` (alongside agent_dispatch +
+# adapter_wiring), so importing the shipped run_tick with ONLY the plugin lib/ on
+# sys.path must resolve observability + agent_dispatch + adapter_wiring from lib/
+# alone. Claude copies just the plugin dir into its cache, so a shipped run_tick
+# that could not find observability in lib/ would fail to import once installed.
+# Prove it in a subprocess whose sys.path is restricted to the shipped lib/ dir
+# alone, with NOTHING else.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_imports_observability_from_lib_alone():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        probe = (
+            "import sys; "
+            f"sys.path.insert(0, {lib!r}); "
+            "import run_tick; "
+            "import observability, agent_dispatch, adapter_wiring; "
+            "assert run_tick.ob is observability; "
+            "assert run_tick.ad is agent_dispatch; "
+            "assert run_tick.aw is adapter_wiring; "
+            "assert hasattr(observability, 'EventLog'); "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped run_tick cannot resolve observability: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (observability milestone): the reworked start skill (scheduling v0.2.0,
+# collected via ship/) ships at skills/start/SKILL.md. Assert its frontmatter
+# version is 0.2.0 and the body references the deterministic latch-clear flag
+# `--clear-only` and drives the first tick through the executor
+# `/auto-maintainer:tick`.
+# ---------------------------------------------------------------------------
+def test_shipped_start_skill_is_v0_2_0_clear_only_and_executor():
+    out_root = _build_into_temp()
+    try:
+        sk = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "start", "SKILL.md",
+        )
+        assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "\nversion: 0.2.0\n" in body, \
+            "shipped start skill frontmatter version must be 0.2.0"
+        assert "--clear-only" in body, \
+            "shipped start skill must reference the --clear-only latch-clear flag"
+        assert "/auto-maintainer:tick" in body, \
+            "shipped start skill must drive the first tick through the executor"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (observability milestone): the hardened tick skill (scheduling v0.1.1,
+# collected via ship/) ships at skills/tick/SKILL.md. Assert its frontmatter
+# version is 0.1.1 and the body instructs writing the dispatch result with the
+# `Write` tool to the ABSOLUTE dispatch-result.json path under
+# ${CLAUDE_PROJECT_DIR}/.auto-maintainer/.
+# ---------------------------------------------------------------------------
+def test_shipped_tick_skill_is_v0_1_1_write_tool_absolute_path():
+    out_root = _build_into_temp()
+    try:
+        sk = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "tick", "SKILL.md",
+        )
+        assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "\nversion: 0.1.1\n" in body, \
+            "shipped tick skill frontmatter version must be 0.1.1"
+        assert "`Write` tool" in body, \
+            "shipped tick skill must instruct using the `Write` tool"
+        assert "${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json" \
+            in body, \
+            "shipped tick skill must reference the absolute dispatch-result path"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)

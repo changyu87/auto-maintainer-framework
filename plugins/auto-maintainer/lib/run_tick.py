@@ -43,10 +43,13 @@ Runtime paths (durable state, journal, disposition + lock markers) are injected
 so tests use a temp dir and the on-disk files are the only source of truth.
 
 scheduling CONSUMES fsm-contracts, tick-orchestrator, durable-state,
-lifecycle-dispositions, work-intake, and adapter-wiring UNCHANGED; it never edits
-or forks them.
+lifecycle-dispositions, work-intake, adapter-wiring, and observability UNCHANGED;
+it never edits or forks them. Each tick run_tick also emits a structured event log
+to ${runtime_dir}/events.jsonl via observability.EventLog (the machine-first
+record of "what the loop did"), written ALONGSIDE the existing one-line trace —
+purely additive, no existing behaviour changes.
 
-Version: 0.1.0
+Version: 0.2.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the tick interval becomes
@@ -73,7 +76,8 @@ _FEATURE_DIR = os.path.dirname(_SRC)
 _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
              "lifecycle-dispositions", "work-intake", "adapter-wiring",
-             "prioritize", "implement", "safety-governance", "agent-dispatch"):
+             "prioritize", "implement", "safety-governance", "agent-dispatch",
+             "observability"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if os.path.isdir(_dep_src) and _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
@@ -92,6 +96,7 @@ import prioritize as pr  # noqa: E402
 import implement as im  # noqa: E402
 import safety_governance as sg  # noqa: E402
 import agent_dispatch as ad  # noqa: E402
+import observability as ob  # noqa: E402
 
 
 # The production PULL issue source: work-intake's live `gh` CLI adapter. Tests
@@ -123,6 +128,13 @@ BUDGET_KEY = "budget"
 # the moment the driver reaches the terminal. Unlike the read products it is a
 # transient cross-invocation handoff, NOT a #64 read product.
 TICK_CHECKPOINT_KEY = "tick_checkpoint"
+
+# The structured event-log filename (observability §3.9.1). run_tick opens an
+# observability.EventLog at ${runtime_dir}/<EVENTS_FILENAME> and appends one
+# structured event per tick milestone. The log is the machine-first record of
+# "what the loop did"; it is written ALONGSIDE the existing one-line trace (purely
+# additive — no existing behaviour changes). observability is consumed UNCHANGED.
+EVENTS_FILENAME = "events.jsonl"
 
 # DONE is the true terminal: tick-orchestrator HALTS the moment it reaches a
 # terminal state and NEVER run()s it, so EXIT must be a NON-terminal state that
@@ -512,6 +524,35 @@ def _clock_for_window(window_key):
 
 
 # --------------------------------------------------------------------------
+# Structured event log (observability §3.9.1).
+#
+# A thin per-tick emitter bound to an observability.EventLog, the injected
+# tz-aware `now` (the SAME clock the budget window keys off — never an implicit
+# wall clock), and the durable counter as the tick_id. It append()s one
+# structured event per tick milestone. observability owns the schema, the closed
+# EVENT_KINDS vocabulary, and the monotonic seq (the file's line count, so a
+# multi-invocation agent tick step->resume->done keeps one monotonic sequence).
+# --------------------------------------------------------------------------
+
+class _EventEmitter:
+    """Appends structured tick events to an observability.EventLog.
+
+    `now` is the tz-aware budget clock (the injected `now`), reused so the event
+    `ts` is deterministic. `tick_id` is the durable counter. Every emitted `kind`
+    is a member of observability.EVENT_KINDS — run_tick emits no kind outside it.
+    """
+
+    def __init__(self, runtime_dir, now, tick_id):
+        self.log = ob.EventLog(os.path.join(runtime_dir, EVENTS_FILENAME))
+        self.now = now
+        self.tick_id = tick_id
+
+    def emit(self, kind, *, state=None, signal=None, detail=None):
+        self.log.append(kind, self.tick_id, state=state, signal=signal,
+                        detail=detail, now=self.now)
+
+
+# --------------------------------------------------------------------------
 # Agent yield/resume seam (DESIGN §2.8 executor protocol).
 #
 # A route that contains agent-states pauses at each agent-state (emitting a
@@ -640,7 +681,8 @@ def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
 
 
 def _drive_agent_tick(route, states, ctx, journal_path, state_path,
-                      current, mode, tick_id, agentstates, path, signals):
+                      current, mode, tick_id, agentstates, path, signals,
+                      events=None):
     """Walk the route from `current` SCRIPT-state-by-SCRIPT-state, pausing at the
     first AGENT state with a durable checkpoint. SCRIPT states run inline exactly
     as tick_orchestrator.run does (impl(ctx) + fc.apply_result + resolve_next).
@@ -649,6 +691,12 @@ def _drive_agent_tick(route, states, ctx, journal_path, state_path,
     in prior invocations); they are extended in place. Returns (PAUSED dict,
     None) when it pauses at an agent-state, or (None, RunResult) when it reaches
     the terminal with no agent-state ahead.
+
+    `events`, when given, is the structured-event emitter: a `state_run`+`signal`
+    pair is emitted inline as each SCRIPT state runs, and a `pause`+`dispatch`
+    pair when the driver pauses at an agent-state (the dispatch carries the
+    subagent_type + writes in its detail). Event emission is purely additive — it
+    never changes the walk, the signals, or the checkpoint.
     """
     terminal = set(route["terminal"])
     journal = ds.Journal(journal_path)
@@ -668,12 +716,22 @@ def _drive_agent_tick(route, states, ctx, journal_path, state_path,
             # Render the PAUSE from the just-written checkpoint so a fresh PAUSE
             # and a crash-safety re-emit are byte-identical (both round-trip the
             # slots through the durable store).
-            return _emit_pause_from_checkpoint(
-                state_path, agentstates, tick_id, mode), None
+            paused = _emit_pause_from_checkpoint(
+                state_path, agentstates, tick_id, mode)
+            if events is not None:
+                events.emit("pause", state=current)
+                for d in paused["dispatches"]:
+                    events.emit("dispatch", state=current, detail={
+                        "subagent_type": d["subagent_type"],
+                        "writes": d["writes"]})
+            return paused, None
         manifest = states[current][0]
         result = second(ctx)
         fc.apply_result(ctx, manifest, result, _VOCAB)
         signals.append(result.signal)
+        if events is not None:
+            events.emit("state_run", state=current)
+            events.emit("signal", state=current, signal=result.signal)
         current = to.resolve_next(route, current, result.signal)
         path.append(current)
 
@@ -720,7 +778,8 @@ def _resume_agent_state(route, states, ctx, checkpoint, resume_dispatch,
 
 
 def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
-                    journal_path, resume_dispatch, mode):
+                    journal_path, resume_dispatch, mode, events=None,
+                    route_src=None):
     """Drive a tick over a route that contains agent-states (DESIGN §2.8).
 
     Three cases, all keyed off the durable checkpoint (the source of truth):
@@ -753,23 +812,30 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
             route, states, ctx, checkpoint, resume_dispatch, agentstates)
         if early is not None:
             return early, None, None
+        if events is not None:
+            events.emit("resume", state=checkpoint["pending"]["state"])
         path = list(checkpoint["path"]) + [next_state]
         signals = list(checkpoint["signals"])
         return _drive_agent_tick(
             route, states, ctx, journal_path, state_path, next_state, mode,
-            tick_id, agentstates, path, signals) + (ctx,)
+            tick_id, agentstates, path, signals, events=events) + (ctx,)
 
     if checkpoint:
         # CRASH-SAFETY RE-EMIT: re-issue the SAME PAUSED dispatch idempotently
-        # from the durable checkpoint (the source of truth).
+        # from the durable checkpoint (the source of truth). A crash-safety
+        # re-emit is NOT a fresh tick — no tick_start; the pause/dispatch were
+        # already logged on the original PAUSE.
         return _emit_pause_from_checkpoint(
             state_path, agentstates, tick_id, mode), None, None
 
-    # FRESH: drive from GUARD.
+    # FRESH: drive from GUARD. Log tick_start (route source + mode) before the
+    # walk.
+    if events is not None:
+        events.emit("tick_start", detail={"source": route_src, "mode": mode})
     ctx = ctx_seed()
     return _drive_agent_tick(
         route, states, ctx, journal_path, state_path, "GUARD", mode, tick_id,
-        agentstates, ["GUARD"], []) + (ctx,)
+        agentstates, ["GUARD"], [], events=events) + (ctx,)
 
 
 def run_tick(runtime_dir=None, state_path=None, journal_path=None,
@@ -879,12 +945,24 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     agentstates = {name: second for name, (m, second) in states.items()
                    if isinstance(second, aw.AgentState)}
 
+    # The structured event log (observability §3.9.1), opened at
+    # ${runtime_dir}/events.jsonl. The event `ts` reuses the tz-aware budget
+    # clock (the injected `now`), so the log is deterministic; the tick_id is the
+    # durable counter. Event emission is purely additive — it writes ALONGSIDE the
+    # tick, never altering the walk/signals/disposition/persistence/trace.
+    event_now = _budget_clock(now)
+    event_tick_id = ds.DurableState(state_path).load().get("counter", 0)
+    events = _EventEmitter(runtime_dir, event_now, event_tick_id)
+    mode = gov.get("mode", "")
+    route_src = route_source_label(project_dir)
+
     if agentstates:
         agent_outcome = _run_agent_tick(
             route, states, agentstates, ctx_seed=lambda: _seed_context(
                 state_path, journal_path, route),
             state_path=state_path, journal_path=journal_path,
-            resume_dispatch=resume_dispatch, mode=gov.get("mode", ""))
+            resume_dispatch=resume_dispatch, mode=mode, events=events,
+            route_src=route_src)
         if agent_outcome[0] is not None:
             # PAUSED or invalid_output: return the structured dict directly. The
             # executor re-invokes run_tick with resume_dispatch to continue.
@@ -896,6 +974,14 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     else:
         ctx = _seed_context(state_path, journal_path, route)
         result = to.run(route, states, ctx, _VOCAB, start="GUARD")
+        # Pure-script path: derive the per-state events from the RunResult after
+        # the run (one state_run/signal per visited non-terminal state, in order).
+        # result.path ends at the terminal (DONE/HALTED), so path[:-1] are the
+        # visited non-terminal states and signals[i] is path[i]'s emitted signal.
+        events.emit("tick_start", detail={"source": route_src, "mode": mode})
+        for visited, sig in zip(result.path[:-1], result.signals):
+            events.emit("state_run", state=visited)
+            events.emit("signal", state=visited, signal=sig)
 
     if result.final_state == _DONE:
         # EXIT ran and emitted the disposition-selecting signal last. Persist the
@@ -942,13 +1028,11 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     work_orders_count = persisted_work_orders_count(state_path)
     execution_plan_count = persisted_execution_plan_count(state_path)
     handoffs_count = persisted_handoffs_count(state_path)
-    # The route source (#59): default vs the project-local override path, so a
-    # misplaced/absent route.json is visible in the trace, not silently ignored.
-    # Resolved from the SAME project_dir build_loop loaded the route from.
-    route_src = route_source_label(project_dir)
     # Governance surface (#69 style — always shown): the trust mode + a compact
     # budget field, plus a budget_paused indicator when the budget is exhausted.
     # Placed after the existing fields; all current fields/order are preserved.
+    # `route_src` (#59) was resolved above from the SAME project_dir build_loop
+    # loaded the route from, and reused for both the trace and the event log.
     gov_fields = governance_fields(gov, new_budget_state, budget)
     sys.stdout.write(
         f"[tick] path={'->'.join(result.path)} work_items={work_items_count} "
@@ -956,6 +1040,17 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         f"execution_plan={execution_plan_count} handoffs={handoffs_count} "
         f"disposition={disposition} "
         f"signal={signal} route={route_src} {gov_fields}\n")
+
+    # Terminal events (observability §3.9.1): the resulting disposition, then the
+    # tick_end carrying the final signal + the four read-product counts. Emitted
+    # ALONGSIDE the trace at the terminal of BOTH the pure-script and the
+    # agent-driver done paths (the agent PAUSE path returned early, above).
+    events.emit("disposition", signal=signal, detail={"disposition": disposition})
+    events.emit("tick_end", signal=signal, detail={
+        "work_items": work_items_count,
+        "work_orders": work_orders_count,
+        "execution_plan": execution_plan_count,
+        "handoffs": handoffs_count})
 
     if return_run_result:
         return result

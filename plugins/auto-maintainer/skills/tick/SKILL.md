@@ -1,7 +1,7 @@
 ---
 name: tick
 description: Run exactly one auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute one tick or step the maintainer loop once, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) and feeds their output back until the tick completes.
-version: 0.1.0
+version: 0.1.1
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when Claude Code can dispatch subagents from within a script (removing the need for a session-mediated executor), or when the tick CLI's --step/--resume protocol reaches a breaking major version.
 ---
@@ -51,16 +51,27 @@ dispatch the named subagent(s) and resume it, until the tick is done.
 
    Collect each subagent's final message as a string, in dispatch order.
 
-4. Write the collected outputs as a JSON array of strings to the fixed resume
-   file, then resume the runner pointing at it:
+4. Write the collected outputs to the resume file, then resume the runner
+   pointing at it.
+
+   Use the **`Write` tool** (not a hand-rolled `python -c`) to write a JSON
+   array of strings — one entry per dispatch, in order, each the subagent's
+   **full final message verbatim** — to the **absolute** path
+   `${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json`. This matters:
+   subagent outputs can be large and contain code fences, quotes, and newlines;
+   the `Write` tool with the absolute path serializes them faithfully, whereas an
+   improvised `python -c` tends to truncate or mis-escape, and a relative path
+   resolves against the wrong directory. Do **not** truncate, summarize, or
+   re-format any subagent output — the runner validates it against the slot
+   schema and will reject a mangled payload.
+
+   Then resume:
 
    ```
    python3 ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py --resume ${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json
    ```
 
-   (Write the array to `${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json`
-   first; that path is fixed, not assembled.) Parse the JSON it prints and go
-   back to step 2 with the new result.
+   Parse the JSON it prints and go back to step 2 with the new result.
 
 5. If `status` is `"invalid_output"`: re-dispatch the same state — go back to
    step 1 (the runner re-emits the same pause from its checkpoint, since the
