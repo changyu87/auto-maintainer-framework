@@ -39,7 +39,8 @@ decomposition. Update the **Status** column as features progress.
 | 10 | `outbound-report` | §1.3, §2.5, §3.11.1–§3.11.4, §3.11.6, §3.11.7 | `REPORT` port + `DiscoveredIssue`/`ReportResult` schemas, default GitHub filing adapter, durable IMPLEMENT-discovery filing, idempotent journaled filing, project-vs-self routing. | planned |
 | 11 | `observability` | §3.9.1–§3.9.3, §3.10.3 | Structured event log, SessionStart banner + dispatcher-persona injection, issue-comment escalation. | planned |
 | 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slices 1–2:** clean plugin assembly (no `.rabbit/`) + `marketplace.json` + `ship/` collection + 5 loop libs + `/auto-maintainer:start`/`:stop`/`:status` + SessionStart persona. Later: `userConfig`, port→adapter wiring, dogfood. | **slice 2 implemented** (PRs #13/#23/#27/#34/#42/#47/#57/#62/#67/#71/#78/#83/#90; **v0.2.11**; 35 tests; ships route-as-data loop + route-source + per-tick read products #64 + status work_orders #69 + PRIORITIZE/IMPLEMENT act-path + safety_governance no-limit default, 13 libs) |
-| 13 | `adapter-wiring` | §2.4, §3.4.1, §3.4.3, §3.10.2 | Route-as-data: load `route.json` + `port→adapter` map (project-local override), resolve adapters via the `factory(runtime)→(manifest,run)` convention, validate wiring at load (signals + data-readiness + anchors), `build_loop`. The ports-and-adapters mechanism (added post-decomposition). | **implemented** (PRs #54/#56; 19 tests; live — TRIAGE wireable by config) |
+| 13 | `adapter-wiring` | §2.4, §3.4.1, §3.4.3, §3.10.2, §3.4.6 | Route-as-data: load `route.json` + `port→adapter` map (project-local override), resolve adapters via the `factory(runtime)→(manifest,run)` convention, validate wiring at load (signals + data-readiness + anchors), `build_loop`. Now also resolves/validates **agent-adapter** object entries → `(manifest, AgentState)` (PR #94). | **implemented** (PRs #54/#56/#94; 27 tests; TRIAGE wireable by config; agent entries supported) |
+| 14 | `agent-dispatch` | §2.8, §3.4.6 | Deterministic helpers for the agent-adapter mechanism: schema + `is_agent_entry`/`validate_agent_adapter`, `build_envelopes`, `render` (envelope→structured markdown), `validate_output`, `collect_outputs`, `compute_signal`. Dispatches nothing (executor's job). | **implemented** (PR #93; 52 tests) |
 
 > Note: `lifecycle-core` from the first-pass decomposition was split into #2
 > `tick-orchestrator` (router) and #3 `lifecycle-dispositions` (cross-tick state)
@@ -114,15 +115,16 @@ reports only what THIS tick's route produced — a route without TRIAGE reports
     by default; a finite ceiling is opt-in (`governance.json`, later `userConfig`
     §3.10.1). Default tick renders `budget=0/none`.
 
-**Re-prioritized next steps — the agent-adapter mechanism (§3.4.6), then real agents:**
-1. **`agent-dispatch` feature** (new) — deterministic helpers: agent-adapter schema,
-   `render()` (envelope → structured markdown), output-validation-vs-slot-schema. *TDD.*
-2. **`adapter-wiring`** — recognize/validate agent-adapter object entries. *TDD.*
-3. **`scheduling` run_tick yield/resume seam** — emit envelope + journal + yield at an
-   agent-state; resume with the dispatch result. *TDD with injected results.*
-4. **Executor skill + prompt-cron + domain-free proof** — the tick skill that presses
-   the `Agent` button on yields; heartbeat enqueues a prompt; prove the mechanism live
-   with a trivial subagent + a domain-free agent-state (PING/PONG-style). *Live; packaging.*
+**Agent-adapter mechanism (§3.4.6) — deterministic engine DONE:**
+1. **`agent-dispatch` feature — DONE** (PR #93, 52 tests): schema + render() + validate + envelopes + signal.
+2. **`adapter-wiring` agent entries — DONE** (PR #94, 27 tests): resolves/validates agent objects → `(manifest, AgentState)`.
+3. **`scheduling` run_tick yield/resume seam — DONE** (PR #95, 111 tests): agent route → PAUSED{dispatches} + checkpoint; `resume_dispatch` validates+applies+continues; crash-safe; pure-script routes unchanged.
+
+**Next:**
+4. **Executor skill + prompt-cron + domain-free proof** — the tick skill that presses the
+   `Agent` button on each PAUSE and feeds results back via `resume_dispatch`; heartbeat
+   enqueues a prompt; prove the mechanism **live** with a trivial subagent + a domain-free
+   agent-state (PING/PONG-style). *Live; model-driven skill (skill-creator, spec-rules §4); packaging.*
 5. **Wire real TRIAGE / IMPLEMENT as agent-adapters** + ship default triager/implementer
    subagents (the `propose` rung). Then `verify-integrate` (guardrails §3.8.1 + backoff
    §3.8.5), `outbound-report` (loopback §3.11.5), `observability` (escalation §3.9.3).
