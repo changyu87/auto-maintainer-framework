@@ -120,12 +120,25 @@ reports only what THIS tick's route produced — a route without TRIAGE reports
 2. **`adapter-wiring` agent entries — DONE** (PR #94, 27 tests): resolves/validates agent objects → `(manifest, AgentState)`.
 3. **`scheduling` run_tick yield/resume seam — DONE** (PR #95, 111 tests): agent route → PAUSED{dispatches} + checkpoint; `resume_dispatch` validates+applies+continues; crash-safe; pure-script routes unchanged.
 
+4. **Executor skill + domain-free proof — DONE & LIVE-PROVEN** (PRs #97/#98/#99,
+   shipped **v0.2.12**). `scheduling` tick CLI (`--step/--resume` JSON, PR #97);
+   the `/auto-maintainer:tick` executor skill + `auto-maintainer-echo` proof
+   subagent shipped (PR #98, skill-creator-validated); packaging v0.2.12 (PR #99).
+   **Live proof:** a tick paused at an agent-state TRIAGE, the session dispatched
+   `auto-maintainer:auto-maintainer-echo` (a real subagent), its output was
+   validated against the `work_orders` slot schema and written, and the script
+   resumed to `done` — `work_orders=4` produced by a subagent, `git` clean. The
+   §2.8 executor protocol is proven end-to-end in a real install. (Plugin agents
+   are namespaced: `subagent_type` must be `auto-maintainer:<name>`.)
+
+**Agent-adapter mechanism (§3.4.6) — COMPLETE & live-proven (v0.2.12).**
+
 **Next:**
-4. **Executor skill + prompt-cron + domain-free proof** — the tick skill that presses the
-   `Agent` button on each PAUSE and feeds results back via `resume_dispatch`; heartbeat
-   enqueues a prompt; prove the mechanism **live** with a trivial subagent + a domain-free
-   agent-state (PING/PONG-style). *Live; model-driven skill (skill-creator, spec-rules §4); packaging.*
-5. **Wire real TRIAGE / IMPLEMENT as agent-adapters** + ship default triager/implementer
+5. **Heartbeat automation follow-up** — rework `/start` + the heartbeat to a
+   **prompt-cron** firing `/auto-maintainer:tick` (so the loop runs the executor
+   automatically, not just a manual `/tick`); + harden the tick skill's
+   resume-marshalling (#100, script-backed not hand-rolled python).
+6. **Wire real TRIAGE / IMPLEMENT as agent-adapters** + ship default triager/implementer
    subagents (the `propose` rung). Then `verify-integrate` (guardrails §3.8.1 + backoff
    §3.8.5), `outbound-report` (loopback §3.11.5), `observability` (escalation §3.9.3).
 
