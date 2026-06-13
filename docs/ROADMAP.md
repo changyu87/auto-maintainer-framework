@@ -35,10 +35,10 @@ decomposition. Update the **Status** column as features progress.
 | 6b | `prioritize` | §1.1, §2.6 | `PRIORITIZE` adapter: deterministic `work_orders → execution_plan` (identity/FIFO order + `pending` status backfill, in-slot only). Owns `ExecutionPlan` schema. No groups (v2), no severity key (none on WorkOrder), no tracker write (deferred to safety-governance). | **implemented** (PR #74; 10 tests; wired live PR #77) |
 | 7 | `implement` | §3.6.1–§3.6.5 | **Dry-run slice (trust-ladder `dry-run` rung):** `Handoff` schema + inert deterministic `execution_plan → handoffs` (status=`planned`, artifact=`none`, no model/diff/PR/cap; reads `execution_plan` only, not `workspace`). **Deferred:** model-backed implement-then-PR doer (§3.6.2/§3.6.3, `propose` rung, reads `workspace`), TDD adapter (§3.6.4), trust-ladder mode + budget gating (§3.8). | **dry-run slice implemented** (PR #76; 13 tests; wired live PR #77) |
 | 8 | `verify-integrate` | §3.7.1–§3.7.4 | `VERIFY` gate `{ok,reasons[]}` (CI+test), `INTEGRATE` VCS hook (merge/release/cleanup), `CLEANUP`, idempotent release. | planned |
-| 9 | `safety-governance` | §3.8.1–§3.8.5, §3.11.5 | **Slice 1:** governance config (project-local `governance.json`, machine-first), trust-ladder gate `permits()` (dry-run/propose/gated-merge, default propose), **auto-resuming budget readiness gate** (per-tick/per-day token ceiling, local-tz day window, `null`=no limit, window rollover = auto-resume, never latches), no-AskUserQuestion→ABORTED helper. **Deferred:** guardrails §3.8.1 + backoff §3.8.5 → verify-integrate; loopback §3.11.5 → outbound-report; blast-radius §3.8.6 → v2. | **slice 1 implemented** (PRs #81/#82; 20 tests; wired into scheduling — mode+budget surfaced in trace/status) |
+| 9 | `safety-governance` | §3.8.1–§3.8.5, §3.11.5 | **Slice 1:** governance config (project-local `governance.json`, machine-first), trust-ladder gate `permits()` (dry-run/propose/gated-merge, default propose), **auto-resuming budget readiness gate** (per-tick/per-day token ceiling, local-tz day window, `null`=no limit, window rollover = auto-resume, never latches), no-AskUserQuestion→ABORTED helper. **Deferred:** guardrails §3.8.1 + backoff §3.8.5 → verify-integrate; loopback §3.11.5 → outbound-report; blast-radius §3.8.6 → v2. | **slice 1 implemented** (PRs #81/#82/#88; 21 tests; wired into scheduling — mode+budget surfaced; **default daily budget = no limit** per user, finite ceiling opt-in) |
 | 10 | `outbound-report` | §1.3, §2.5, §3.11.1–§3.11.4, §3.11.6, §3.11.7 | `REPORT` port + `DiscoveredIssue`/`ReportResult` schemas, default GitHub filing adapter, durable IMPLEMENT-discovery filing, idempotent journaled filing, project-vs-self routing. | planned |
 | 11 | `observability` | §3.9.1–§3.9.3, §3.10.3 | Structured event log, SessionStart banner + dispatcher-persona injection, issue-comment escalation. | planned |
-| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slices 1–2:** clean plugin assembly (no `.rabbit/`) + `marketplace.json` + `ship/` collection + 5 loop libs + `/auto-maintainer:start`/`:stop`/`:status` + SessionStart persona. Later: `userConfig`, port→adapter wiring, dogfood. | **slice 2 implemented** (PRs #13/#23/#27/#34/#42/#47/#57/#62/#67/#71/#78/#83; **v0.2.10**; 34 tests; ships route-as-data loop + route-source + per-tick read products #64 + status work_orders #69 + PRIORITIZE/IMPLEMENT act-path + safety_governance, 13 libs) |
+| 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slices 1–2:** clean plugin assembly (no `.rabbit/`) + `marketplace.json` + `ship/` collection + 5 loop libs + `/auto-maintainer:start`/`:stop`/`:status` + SessionStart persona. Later: `userConfig`, port→adapter wiring, dogfood. | **slice 2 implemented** (PRs #13/#23/#27/#34/#42/#47/#57/#62/#67/#71/#78/#83/#90; **v0.2.11**; 35 tests; ships route-as-data loop + route-source + per-tick read products #64 + status work_orders #69 + PRIORITIZE/IMPLEMENT act-path + safety_governance no-limit default, 13 libs) |
 | 13 | `adapter-wiring` | §2.4, §3.4.1, §3.4.3, §3.10.2 | Route-as-data: load `route.json` + `port→adapter` map (project-local override), resolve adapters via the `factory(runtime)→(manifest,run)` convention, validate wiring at load (signals + data-readiness + anchors), `build_loop`. The ports-and-adapters mechanism (added post-decomposition). | **implemented** (PRs #54/#56; 19 tests; live — TRIAGE wireable by config) |
 
 > Note: `lifecycle-core` from the first-pass decomposition was split into #2
@@ -98,14 +98,34 @@ reports only what THIS tick's route produced — a route without TRIAGE reports
    the doer. Guardrails/backoff deferred to verify-integrate; loopback to
    outbound-report.
 
-**Re-prioritized next steps:**
-1. **Model-backed `implement` doer** (§3.6.2/§3.6.3, `propose` rung) — dispatches
-   an isolated worktree subagent, writes code, opens a PR (never auto-merges);
-   reads `workspace`; consults `safety_governance.permits()` + the budget gate
-   (the real token-spend source) so it is born governed.
-2. Then `verify-integrate` (brings guardrails §3.8.1 + backoff §3.8.5 home),
-   `outbound-report` (brings the loopback guard §3.11.5 home), `observability`
-   (the real escalation sink §3.9.3), and the adapter scaffold tool (§3.4.4, #52).
+9. **Execution-model pivot — DESIGN §2.8 + §3.4.6** (PRs #85/#86/#87). Settled how
+   LLM states run: the loop is **in-session, script-driven** (warm-only; supersedes
+   the headless §3.1.4 / system-cron §3.3.1 ambition). States are two kinds —
+   **script-states** (`run(ctx)`) and **agent-states** (a model is needed). The
+   script drives the route; at an agent-state it emits a rendered invocation
+   envelope and **yields**; the session presses the `Agent` button (decides
+   nothing), output is validated against the slot schema and written back, the
+   script resumes (journal = pause/resume). Serial composition = **chain states**
+   (reuse the slot handoff); an agent-adapter only adds "one subagent or a parallel
+   set." This **replaces** the earlier subprocess/`claude -p` doer idea.
+
+10. **Budget default = no limit — DONE** (PRs #88/#89/#90, shipped v0.2.11). Per
+    user decision, `DEFAULT_GOVERNANCE.budget.per_day_tokens` is `null` (no limit)
+    by default; a finite ceiling is opt-in (`governance.json`, later `userConfig`
+    §3.10.1). Default tick renders `budget=0/none`.
+
+**Re-prioritized next steps — the agent-adapter mechanism (§3.4.6), then real agents:**
+1. **`agent-dispatch` feature** (new) — deterministic helpers: agent-adapter schema,
+   `render()` (envelope → structured markdown), output-validation-vs-slot-schema. *TDD.*
+2. **`adapter-wiring`** — recognize/validate agent-adapter object entries. *TDD.*
+3. **`scheduling` run_tick yield/resume seam** — emit envelope + journal + yield at an
+   agent-state; resume with the dispatch result. *TDD with injected results.*
+4. **Executor skill + prompt-cron + domain-free proof** — the tick skill that presses
+   the `Agent` button on yields; heartbeat enqueues a prompt; prove the mechanism live
+   with a trivial subagent + a domain-free agent-state (PING/PONG-style). *Live; packaging.*
+5. **Wire real TRIAGE / IMPLEMENT as agent-adapters** + ship default triager/implementer
+   subagents (the `propose` rung). Then `verify-integrate` (guardrails §3.8.1 + backoff
+   §3.8.5), `outbound-report` (loopback §3.11.5), `observability` (escalation §3.9.3).
 
 ## Deferred (NOT in the v1 feature set)
 
