@@ -706,8 +706,11 @@ def test_e2e_full_once_pipeline_ok():
         output_dir=_OUT_DIR)
     assert len(envelopes) == 1
 
+    # No output_schema on this entry -> the coarse {"type": "array"} fallback
+    # is the embedded schema; the subagent's file content must match it.
     schema = envelopes[0]["output_contract"]["schema"]
-    ok, parsed = ad.validate_output('{"text": "a summary"}', schema)
+    assert schema == {"type": "array"}
+    ok, parsed = ad.validate_output('[{"text": "a summary"}]', schema)
     assert ok is True
 
     slot_value = ad.collect_outputs(adapter["dispatch"][0], [parsed])

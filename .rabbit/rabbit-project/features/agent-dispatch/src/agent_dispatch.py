@@ -20,13 +20,16 @@ Public surface:
   - is_agent_entry(entry) -> bool — string entry = script factory (False);
     dict with kind == "agent" = agent-adapter (True).
   - validate_agent_adapter(entry) — raise ValueError on any schema violation.
-  - build_envelopes(adapter, slot_values, tick_context, state) -> [envelope].
-  - render(envelope) -> str — deterministic structured-markdown prompt.
-  - validate_output(returned_text, slot_schema) -> (ok, parsed | error).
+  - build_envelopes(adapter, slot_values, tick_context, state, output_dir)
+    -> [envelope] (each carries output_contract{slot, schema, output_path}).
+  - render(envelope) -> str — deterministic structured-markdown prompt whose
+    self-contained ## Handoff section embeds the schema + mandates write-to-file
+    + a one-line ack.
+  - validate_output(file_content, schema) -> (ok, parsed | error).
   - collect_outputs(adapter_entry, outputs) -> slot_value.
   - compute_signal(rule, slot_value) -> signal.
 
-Version: 0.1.0
+Version: 0.2.0
 Owner: changyu87
 Deprecation criterion: Superseded when the agent-adapter schema or
   invocation-envelope reaches a breaking major version, or when subagent
@@ -35,6 +38,7 @@ Deprecation criterion: Superseded when the agent-adapter schema or
 """
 
 import json
+import os
 
 # The versioned agent-adapter schema. Distinct from the feature version; bumped
 # on a breaking change to the adapter / envelope field set.
@@ -65,7 +69,9 @@ def validate_agent_adapter(entry):
     Requires: a `manifest` with non-empty `reads`/`writes`/`emits` lists; at
     least one `dispatch` entry; each dispatch entry has a str `subagent_type`,
     a list `inputs`, a `cardinality` in the closed vocabulary, and a str
-    `writes`; an optional str `task`; a `signal.rule` in the closed set.
+    `writes`; an optional str `task`; a `signal.rule` in the closed set. An
+    optional `output_schema` (any JSON value — a schema dict or a concrete
+    example shape) is accepted; its absence is valid and it is not constrained.
     """
     if not isinstance(entry, dict):
         raise ValueError("agent-adapter must be a dict")
@@ -139,30 +145,37 @@ def _resolve_path(slot_values, dotted):
     return cur
 
 
-def _schema_ref(entry):
-    """The schema_ref an envelope's output_contract carries: the dispatch
-    entry's explicit `output_schema` when present, else its `writes` slot
-    name (the slot's own schema is named by the slot)."""
+def _output_schema(entry):
+    """The schema an envelope's output_contract embeds: the dispatch entry's
+    explicit `output_schema` when present (a schema dict or a concrete example
+    shape, carried verbatim), else a coarse `{"type": "array"}` fallback so a
+    protocol-naive subagent still sees a concrete shape to produce."""
     if "output_schema" in entry:
         return entry["output_schema"]
-    return entry["writes"]
+    return {"type": "array"}
 
 
-def build_envelopes(adapter, slot_values, tick_context, state):
+def build_envelopes(adapter, slot_values, tick_context, state, output_dir):
     """Produce the invocation envelope(s) the executor will dispatch.
 
     `slot_values` is a {slot_name: value} mapping for the slots the adapter
     reads. `tick_context` is {"tick_id": ..., "mode": ...}. `state` is the FSM
-    state name the dispatch runs under.
+    state name the dispatch runs under. `output_dir` is the directory each
+    envelope's `output_path` is computed under.
 
     For each dispatch entry: `cardinality == "once"` yields ONE envelope;
     `{"per_item": path}` resolves `path` against `slot_values` and yields ONE
     envelope per element of the resolved collection, in order, each carrying
     its `item`.
 
+    Each envelope carries a deterministic, unique `output_path` =
+    os.path.join(output_dir, f"{state}-{dispatch_index}-{item_index}.json")
+    (`item_index` is 0 for `once`). `output_path` is a computed string only;
+    the file is written by the subagent and read by the executor, never here.
+
     Envelope shape:
       { "state", "task", "inputs", "item"?, "output_contract": {"slot",
-        "schema_ref"}, "context": {"tick_id", "mode"} }
+        "schema", "output_path"}, "context": {"tick_id", "mode"} }
     The `item` key is omitted for `once` dispatches.
     """
     context = {
@@ -170,27 +183,37 @@ def build_envelopes(adapter, slot_values, tick_context, state):
         "mode": tick_context["mode"],
     }
     envelopes = []
-    for entry in adapter["dispatch"]:
+    for dispatch_index, entry in enumerate(adapter["dispatch"]):
         inputs = {slot: slot_values[slot] for slot in entry["inputs"]}
-        output_contract = {
-            "slot": entry["writes"],
-            "schema_ref": _schema_ref(entry),
-        }
+        schema = _output_schema(entry)
         base = {
             "state": state,
             "task": entry.get("task", ""),
             "inputs": inputs,
-            "output_contract": output_contract,
             "context": context,
         }
         cardinality = entry["cardinality"]
         if cardinality == "once":
-            envelopes.append(dict(base))
+            env = dict(base)
+            env["output_contract"] = {
+                "slot": entry["writes"],
+                "schema": schema,
+                "output_path": os.path.join(
+                    output_dir, f"{state}-{dispatch_index}-0.json"),
+            }
+            envelopes.append(env)
         else:
             collection = _resolve_path(slot_values, cardinality["per_item"])
-            for element in collection:
+            for item_index, element in enumerate(collection):
                 env = dict(base)
                 env["item"] = element
+                env["output_contract"] = {
+                    "slot": entry["writes"],
+                    "schema": schema,
+                    "output_path": os.path.join(
+                        output_dir,
+                        f"{state}-{dispatch_index}-{item_index}.json"),
+                }
                 envelopes.append(env)
     return envelopes
 
@@ -243,10 +266,13 @@ def render(envelope):
     (DESIGN §3.4.6).
 
     `## Inputs` is a readable DERIVATIVE VIEW (generic slot -> markdown; free-
-    text fields fenced) — NO raw JSON. `## Return` states the target slot +
-    schema_ref as text and instructs the subagent to return one JSON
-    object/array matching that schema, because the return is the machine-first
-    artifact the next state consumes.
+    text fields fenced) — NO raw JSON. `## Handoff` is the SELF-CONTAINED
+    contract: it embeds the actual output schema (pretty-printed JSON of the
+    shape), instructs the subagent to write a single JSON value matching that
+    schema to `output_contract.output_path` using its file-writing tool, then
+    to reply with ONLY a one-line acknowledgement and NOT include the JSON in
+    the reply. The output file is the machine-first artifact the next state
+    consumes; subagents stay protocol-free.
 
     Deterministic: the same envelope renders to a byte-identical string.
     """
@@ -272,19 +298,23 @@ def render(envelope):
         out.append("")
 
     oc = envelope["output_contract"]
-    schema_ref = oc["schema_ref"]
-    if isinstance(schema_ref, str):
-        schema_text = schema_ref
-    else:
-        schema_text = json.dumps(schema_ref, sort_keys=True)
-    out.append("## Return")
+    schema_text = json.dumps(oc["schema"], indent=2, sort_keys=True)
+    out.append("## Handoff")
     out.append(
-        f"Return one JSON object/array matching this schema for slot "
-        f"`{oc['slot']}`:")
+        f"Produce the output for slot `{oc['slot']}` as a single JSON value "
+        f"matching this schema:")
     out.append("")
     out.append("```json")
     out.append(schema_text)
     out.append("```")
+    out.append("")
+    out.append(
+        f"Write a single JSON value matching the schema above to this file "
+        f"using your file-writing tool: `{oc['output_path']}`")
+    out.append("")
+    out.append(
+        "Then reply with ONLY a one-line acknowledgement (e.g. "
+        f"`wrote {oc['slot']}`). Do NOT include the JSON in your reply.")
 
     return "\n".join(out)
 
@@ -304,23 +334,37 @@ def _strip_fences(text):
     return "\n".join(lines).strip()
 
 
-def validate_output(returned_text, slot_schema):
-    """Parse the subagent's returned text (tolerating code fences), then check
-    that its top-level type matches `slot_schema` (e.g. {"type": "array"} ->
-    list, {"type": "object"} -> dict).
+def _expected_type(schema):
+    """Derive the expected top-level type name from `schema`. A {"type": ...}
+    dict names it directly; otherwise a rich EXAMPLE shape derives it (a list
+    -> "array", any other dict -> "object"). Returns None when no top-level
+    type can be derived (the content is then accepted as-is)."""
+    if isinstance(schema, dict) and "type" in schema:
+        return schema["type"]
+    if isinstance(schema, list):
+        return "array"
+    if isinstance(schema, dict):
+        return "object"
+    return None
+
+
+def validate_output(file_content, schema):
+    """Parse the JSON content the subagent wrote to its output file (tolerating
+    code fences), then check that its top-level type matches `schema`. `schema`
+    may be a {"type": ...} dict (e.g. {"type": "array"} -> list) or a rich
+    example shape (a list means array, a dict means object).
 
     Returns (True, parsed) on success or (False, "<locatable reason>") on a
     parse / type mismatch. NEVER raises on bad model output — the executor
     re-dispatches on a (False, reason) result.
     """
-    body = _strip_fences(returned_text)
+    body = _strip_fences(file_content)
     try:
         parsed = json.loads(body)
     except (ValueError, TypeError) as e:
-        return False, f"returned text is not valid JSON: {e}"
+        return False, f"output file content is not valid JSON: {e}"
 
-    expected = slot_schema.get("type") if isinstance(slot_schema, dict) \
-        else None
+    expected = _expected_type(schema)
     type_map = {"object": dict, "array": list, "string": str,
                 "number": (int, float), "boolean": bool}
     if expected in type_map:
