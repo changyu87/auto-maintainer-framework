@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.2.2
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -22,6 +22,7 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
       "TICK_CHECKPOINT_KEY = 'tick_checkpoint': the durable-state key under which the agent yield/resume checkpoint is persisted while a tick is PAUSED at an agent-state ({next_state, slots, path, signals, pending:{state, writes, schema_ref, signal_rule, cardinality}}); the SOLE source of truth for the paused dispatch (crash-safety). Cleared on reaching the terminal",
       "persisted_tick_checkpoint(state_path) -> {} | checkpoint: reads the durable PAUSED checkpoint (default {} when no tick is paused)",
       "run_tick agent yield/resume contract (DESIGN §2.8): when the resolved route contains >=1 agent-state, run_tick PAUSES at each agent-state and returns a PAUSED dict {status:'paused', state:<name>, dispatches:[{subagent_type, prompt (rendered markdown), writes, schema_ref, signal_rule, cardinality, item?}...]} after durably checkpointing (it NEVER calls the Agent tool). run_tick(resume_dispatch=[<raw subagent output strings>]) validates + applies the outputs and continues to the next pause or terminal; a validation failure returns {status:'invalid_output', state:<name>, reason:<str>} with the checkpoint left intact (re-dispatchable). A fresh run_tick with no resume_dispatch that finds an existing checkpoint re-emits the SAME PAUSED dispatch (crash-safety, idempotent). A pure-script route is UNCHANGED (runs via tick_orchestrator.run, returns the disposition signal string)",
+      "structured event log: run_tick emits a per-tick structured event log to ${runtime_dir}/events.jsonl, consuming the observability lib UNCHANGED (observability.EventLog.append + the closed EVENT_KINDS vocabulary). Each tick appends, in order: tick_start (detail carries route source + mode) at a FRESH tick start; state_run + signal per visited non-terminal state (pure-script path derives them from RunResult.path/RunResult.signals; agent-driver path emits inline as each SCRIPT state runs); pause + dispatch (subagent_type + writes in detail) when pausing at an agent-state; resume on a --resume invocation; disposition (the resulting disposition + EXIT signal); tick_end (final signal + the four read-product counts work_items/work_orders/execution_plan/handoffs in detail). The event ts reuses the tick's already-resolved tz-aware budget now (the injected now; never an implicit wall clock), so the log is DETERMINISTIC; seq is monotonic across a multi-invocation agent tick (observability assigns it via the file's line count). Event emission is purely ADDITIVE — it changes NO existing behaviour (the trace, signals, disposition, slot persistence, #64 ephemerality, the budget window all unchanged); run_tick emits no kind outside EVENT_KINDS",
       "JSON tick CLI run_tick.main(argv) (also the __main__ entrypoint): a THIN deterministic wrapper around the EXISTING run_tick structured returns (no new tick logic) so the later executor skill can drive the yield/resume loop. Bare invocation (no --step/--resume) is UNCHANGED — calls run_tick() and prints the one-line HUMAN trace (existing bash callers keep working). --step runs to the next pause/terminal and prints a SINGLE JSON object to stdout: done -> {status:'done', signal:'<idle|halt|...>', trace:'<one-line trace>'}; paused -> {status:'paused', state:<name>, dispatches:[{subagent_type, prompt, writes, schema_ref, signal_rule, cardinality, item?}...]}; invalid_output -> {status:'invalid_output', state:..., reason:...}. --resume <file> reads a JSON array of raw subagent output strings (dispatch order), calls run_tick(resume_dispatch=<list>), and prints the same envelope shape. In --step/--resume mode stdout is PURE JSON (the skill parses stdout) — the human trace is captured into the JSON `trace` field, never leaked raw. Exit codes: done/paused -> 0; invalid_output (bad agent output OR malformed/missing --resume file) -> 1 (no crash). The path flags --runtime-dir/--state/--journal/--project-dir point the CLI at a temp runtime for tests; omitted -> production defaults (resolve_runtime_paths). The PULL source is not a CLI flag (defaults to DEFAULT_PULL_SOURCE / live gh); tests stub it by overriding DEFAULT_PULL_SOURCE"
     ],
     "scripts": [
@@ -57,7 +58,8 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
       "implement: IMPLEMENT_MANIFEST, HANDOFFS_SLOT, run (dry-run IMPLEMENT reads execution_plan, writes handoffs; INERT)",
       "adapter-wiring: build_loop, WiringError (load + resolve + validate route-as-data against DEFAULT_ROUTE/DEFAULT_ADAPTER_MAP)",
       "safety-governance: load_governance, evaluate_budget (and the threaded config; consumed UNCHANGED — load governance + the durable budget window's window_key/spent_tokens)",
-      "agent-dispatch: build_envelopes, render, validate_output, collect_outputs, compute_signal (consumed UNCHANGED — the deterministic helpers around an in-session agent dispatch; run_tick emits the dispatch request and applies provided results, never dispatching itself)"
+      "agent-dispatch: build_envelopes, render, validate_output, collect_outputs, compute_signal (consumed UNCHANGED — the deterministic helpers around an in-session agent dispatch; run_tick emits the dispatch request and applies provided results, never dispatching itself)",
+      "observability: EventLog (append/read/tail) + EVENT_KINDS (consumed UNCHANGED — run_tick opens an EventLog at ${runtime_dir}/events.jsonl and appends one structured event per tick milestone; ts comes only from the injected now, seq from the lib's line count)"
     ]
   },
   "invokes": {
@@ -66,7 +68,7 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
     "agents": []
   },
   "never": [
-    "edits or forks fsm-contracts, tick-orchestrator, durable-state, lifecycle-dispositions, work-intake, prioritize, implement, adapter-wiring, safety-governance, or agent-dispatch (consumed unchanged)",
+    "edits or forks fsm-contracts, tick-orchestrator, durable-state, lifecycle-dispositions, work-intake, prioritize, implement, adapter-wiring, safety-governance, agent-dispatch, or observability (consumed unchanged)",
     "calls the Agent tool / any model / subprocess from run_tick (the yield/resume seam only EMITS dispatch requests and applies provided results; the executor that performs the Agent dispatch is a later slice)",
     "enforces act-skip on a budget-blocked tick (deferred to the acting doer next milestone; this slice only loads + surfaces + persists governance state)",
     "re-implements the run loop / transition resolution (owned by tick-orchestrator)",

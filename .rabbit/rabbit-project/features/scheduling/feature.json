@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "updated": "2026-06-13",
   "spec_no_change_reason": null
 }
