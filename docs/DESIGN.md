@@ -279,6 +279,40 @@ non-overridable anchors. The runtime (orchestrator + validator) belongs to the
 lifecycle core; the schemas (slots, signals, `StateResult`, per-state manifest,
 `route.json`) belong to the port-contract layer. **[v1]**
 
+### 2.8 Execution model — in-session, model-orchestrated
+
+The tick runs inside a **live Claude Code session**, which is the tick
+**executor**. Tick states are two kinds:
+
+- **script-states** — deterministic `run(ctx)` callables (tool-tier `script`):
+  `GUARD`, `DRAIN`, `PULL`, `PRIORITIZE`, `PERSIST`, `EXIT`, and any deterministic
+  adapter.
+- **agent-states** — states that require a model (`TRIAGE`, `IMPLEMENT`; sections
+  2.1, 3.5, 3.6). The session dispatches subagent(s) via the `Agent` tool per a
+  declarative **dispatch schema** (tool-tier `spec`) and writes their structured
+  output to the blackboard slot.
+
+The deterministic route resolver + validator (section 1.1.1) still own control
+flow; the session walks the route and, per state kind, either runs the script or
+dispatches the agent-adapter. Subagents run one level below the orchestrator
+(L0 session → L1 subagent); a dispatched subagent never dispatches another (the
+2-level nesting cap, section 3.6.2).
+
+*Rationale:* the only states that need a model cannot be reached from a
+deterministic script — a `run(ctx)` cannot invoke the `Agent` tool. Inverting
+control so the **session orchestrates and calls the scripts** (rather than a
+headless script that shells out to a model) deletes the subprocess/headless
+transport entirely and uses Claude Code's native subagent dispatch.
+
+*Consequence — warm-only:* the loop runs only while a session for the project is
+open. It is autonomous in **what** it decides and does, not in **when** it runs.
+
+*Supersedes:* section 3.1.4's headless branch (behavior is warm-only; on-disk
+state remains the sole source of truth for resume-after-reopen) and section
+3.3.1's system-cron branch (the in-session durable heartbeat is the sole
+scheduler). Section 0's "autonomous" is re-scoped to "autonomous within an open
+session." **[v1]**
+
 ---
 
 ## 3. Feature areas (with adopt/defer decisions)
@@ -296,7 +330,8 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
   detection). **[v1]**
 - **3.1.4** Host-agnostic resumption contract — identical behavior on fresh
   (headless) or warm (in-session) context; on-disk state is the only source of
-  truth. **[v1]**
+  truth. **[v1]** *(Superseded by section 2.8: execution is warm-only; on-disk
+  state remains the sole source of truth for resume-after-reopen.)*
 
 ### 3.2 State, Resumability & Idempotency
 - **3.2.1** Versioned durable state schema (single JSON, semver'd). **[v1]**
@@ -312,7 +347,8 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 ### 3.3 Scheduling, Heartbeat & Restart
 - **3.3.1** Scheduler detection (system cron where available, else an in-session
   durable heartbeat). **[v1]** *(forced by the platform: a plugin cannot
-  install its own clock)*
+  install its own clock)* *(Superseded by section 2.8: the in-session durable
+  heartbeat is the sole scheduler; the system-cron branch is dropped.)*
 - **3.3.2** Heartbeat install/uninstall bootstrap — the "configure" step wires the
   clock; the user authorizes it. **[v1]**
 - **3.3.3** Immediate-refire decision (work-remains -> one-shot; queue-empty ->
