@@ -41,6 +41,7 @@ decomposition. Update the **Status** column as features progress.
 | 12 | `packaging-config` | §3.4.3, §3.10.1, §3.10.2, §3.10.4, §3.10.5 | **Slices 1–2:** clean plugin assembly (no `.rabbit/`) + `marketplace.json` + `ship/` collection + 5 loop libs + `/auto-maintainer:start`/`:stop`/`:status` + SessionStart persona. Later: `userConfig`, port→adapter wiring, dogfood. | **slice 2 implemented** (PRs #13/#23/#27/#34/#42/#47/#57/#62/#67/#71/#78/#83/#90; **v0.2.11**; 35 tests; ships route-as-data loop + route-source + per-tick read products #64 + status work_orders #69 + PRIORITIZE/IMPLEMENT act-path + safety_governance no-limit default, 13 libs) |
 | 13 | `adapter-wiring` | §2.4, §3.4.1, §3.4.3, §3.10.2, §3.4.6 | Route-as-data: load `route.json` + `port→adapter` map (project-local override), resolve adapters via the `factory(runtime)→(manifest,run)` convention, validate wiring at load (signals + data-readiness + anchors), `build_loop`. Now also resolves/validates **agent-adapter** object entries → `(manifest, AgentState)` (PR #94). | **implemented** (PRs #54/#56/#94; 27 tests; TRIAGE wireable by config; agent entries supported) |
 | 14 | `agent-dispatch` | §2.8, §3.4.6 | Deterministic helpers for the agent-adapter mechanism: schema + `is_agent_entry`/`validate_agent_adapter`, `build_envelopes`, `render` (envelope→structured markdown), `validate_output`, `collect_outputs`, `compute_signal`. Dispatches nothing (executor's job). | **implemented** (PR #93; 52 tests) |
+| 15 | `observability` | §3.9.1, §3.9.3 | Structured append-only event log (`events.jsonl`, versioned, injectable clock) + escalation channel (issue-comment via injectable `gh` sink, un-stubs §3.8.3). `run_tick` emits events each tick (PR #104). | **implemented** (PRs #103/#104; 10+11 tests; event log live in the loop) |
 
 > Note: `lifecycle-core` from the first-pass decomposition was split into #2
 > `tick-orchestrator` (router) and #3 `lifecycle-dispositions` (cross-tick state)
@@ -133,14 +134,25 @@ reports only what THIS tick's route produced — a route without TRIAGE reports
 
 **Agent-adapter mechanism (§3.4.6) — COMPLETE & live-proven (v0.2.12).**
 
+11. **Observability + heartbeat automation — DONE** (PRs #103/#104/#105/#106/#107,
+    shipped **v0.2.13**). New `observability` feature (#15): structured event log
+    (`events.jsonl`) + escalation channel; `run_tick` emits events each tick.
+    `/start` reworked to a prompt-cron heartbeat that drives the **executor**
+    (`start.py --clear-only` + tick-1 via `/auto-maintainer:tick`), and the tick
+    skill's resume-marshalling hardened (#100 closed). The loop now **auto-runs
+    the executor** while a session is open, and records what it did.
+    *Escalation channel is built but its live trigger (a would-block on a
+    specific work order) lands with the doer.*
+
 **Next:**
-5. **Heartbeat automation follow-up** — rework `/start` + the heartbeat to a
-   **prompt-cron** firing `/auto-maintainer:tick` (so the loop runs the executor
-   automatically, not just a manual `/tick`); + harden the tick skill's
-   resume-marshalling (#100, script-backed not hand-rolled python).
-6. **Wire real TRIAGE / IMPLEMENT as agent-adapters** + ship default triager/implementer
-   subagents (the `propose` rung). Then `verify-integrate` (guardrails §3.8.1 + backoff
-   §3.8.5), `outbound-report` (loopback §3.11.5), `observability` (escalation §3.9.3).
+6. **Real IMPLEMENT doer + `userConfig`** — swap the dry-run/echo for a genuine
+   `propose`-rung implementer subagent (writes code + opens a PR, worktree
+   isolation, consults `permits`/budget — the real token spender, which finally
+   exercises governance + the escalation trigger); `userConfig` (§3.10.1) prompts
+   mode/budget/token at enable, now that its knobs bite. This is where the loop
+   starts doing real maintenance work.
+7. Then a real **TRIAGE** subagent, `verify-integrate` (guardrails §3.8.1 +
+   backoff §3.8.5), `outbound-report` (REPORT + loopback §3.11.5).
 
 ## Deferred (NOT in the v1 feature set)
 
