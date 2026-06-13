@@ -1,5 +1,32 @@
 # scheduling — Changelog
 
+## contract 0.2.1 — 2026-06-13
+
+- Added a JSON **tick CLI** to `run_tick.py` (`run_tick.main(argv)`, also the
+  `__main__` entrypoint) so the later executor skill can drive the yield/resume
+  loop deterministically. It is a THIN deterministic wrapper around the EXISTING
+  `run_tick(...)` structured returns (the yield/resume seam) — NO new tick logic.
+- Bare invocation (`python run_tick.py`, no flags) is UNCHANGED: it calls
+  `run_tick()` and prints the one-line HUMAN trace, so existing pure-script bash
+  callers keep working (backward-compatible).
+- `--step` runs to the next pause/terminal and prints a SINGLE JSON object to
+  stdout: `done -> {"status":"done","signal":"<idle|halt|...>","trace":"<one-line
+  trace>"}`; `paused -> {"status":"paused","state":"<name>","dispatches":[...]}`;
+  `invalid_output -> {"status":"invalid_output","state":...,"reason":...}`.
+- `--resume <file>` reads a JSON array of raw subagent output strings (dispatch
+  order), calls `run_tick(resume_dispatch=<list>)`, and prints the same envelope
+  shape (paused again, done, or invalid_output).
+- In `--step`/`--resume` mode stdout is PURE JSON (the skill parses stdout): the
+  human trace `run_tick` writes to stdout is captured into the JSON `trace` field,
+  never leaked raw. Exit codes: `done`/`paused` -> 0; `invalid_output` (a bad
+  agent output OR a malformed/missing `--resume` file) -> 1 (no crash/traceback).
+- The path flags `--runtime-dir`/`--state`/`--journal`/`--project-dir` point the
+  CLI at a temp runtime for tests; when omitted the CLI uses the production
+  defaults (`resolve_runtime_paths`) exactly like bare mode. The PULL source is
+  not a CLI flag (defaults to `DEFAULT_PULL_SOURCE` / the live `gh` CLI); tests
+  stub it by overriding `DEFAULT_PULL_SOURCE`. New public CLI surface only; no
+  typed schema field changed and no existing return contract altered.
+
 ## contract 0.2.0 — 2026-06-13
 
 - Gave `run_tick` a **yield/resume seam** (DESIGN §2.8 executor protocol) so a

@@ -295,12 +295,19 @@ def test_step_stdout_is_pure_json_only():
     with _stub_pull_source():
         _code, out = _run_main(_step_argv(runtime_dir, state_path, journal_path))
     stripped = out.strip()
-    # Exactly one JSON document: json.loads on the whole stdout succeeds and there
-    # is no extra non-whitespace content.
+    # Exactly one JSON document: json.loads on the WHOLE stdout succeeds and there
+    # is no extra non-whitespace content (the skill parses stdout). The done
+    # envelope folds the human trace into the JSON `trace` field, so `[tick]`
+    # appears ONLY inside that JSON string value, never as a raw stdout line.
     parsed = json.loads(stripped)
     assert isinstance(parsed, dict), parsed
-    # No stray "[tick]" trace line leaked onto raw stdout.
-    assert "[tick]" not in stripped, stripped
+    # The raw trace is NOT emitted as its own stdout line outside the JSON: the
+    # only line of stdout is the JSON object itself.
+    lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    assert len(lines) == 1, lines
+    assert lines[0] == json.dumps(parsed), lines[0]
+    # Whatever `[tick]` text exists is carried inside the JSON `trace` value.
+    assert "[tick]" in parsed["trace"], parsed
 
 
 # ==========================================================================

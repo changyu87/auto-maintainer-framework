@@ -53,6 +53,10 @@ Deprecation criterion: Superseded when scheduling moves to a different clock
   config-driven and this slice's hardcoding is removed.
 """
 
+import argparse
+import contextlib
+import io
+import json
 import os
 import sys
 from datetime import datetime
@@ -954,11 +958,115 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     return signal
 
 
+# --------------------------------------------------------------------------
+# JSON tick CLI (the --step / --resume executor seam).
+#
+# A THIN deterministic wrapper around the EXISTING run_tick(...) structured
+# returns (the yield/resume seam above) — it adds NO new tick logic. The later
+# executor skill drives the yield/resume loop by calling --step, then feeding the
+# paused agent-state's subagent outputs back via --resume <file>. stdout is PURE
+# JSON in those modes (the skill parses stdout); the human trace run_tick writes
+# is captured into the JSON `trace` field, never leaked raw. Bare invocation (no
+# --step/--resume) is UNCHANGED: it prints the human trace, so pure-script bash
+# callers keep working.
+# --------------------------------------------------------------------------
+
+
+def _run_tick_paths(args):
+    """The keyword path args for run_tick() from the parsed CLI flags (a temp
+    runtime under test, else None -> the production defaults via
+    resolve_runtime_paths). Mirrors run_tick's own None-fallback behaviour."""
+    return {
+        "runtime_dir": args.runtime_dir,
+        "state_path": args.state,
+        "journal_path": args.journal,
+        "project_dir": args.project_dir,
+    }
+
+
+def _step_envelope(result, trace):
+    """Map a run_tick(...) structured return to the CLI JSON envelope.
+
+    run_tick returns either a disposition signal STRING (a clean terminal) or a
+    structured dict (paused / invalid_output). A string -> the done envelope
+    carrying the captured one-line trace; a dict is already the settled
+    paused/invalid_output shape and is surfaced verbatim (a pause emits no trace).
+    """
+    if isinstance(result, dict):
+        return result
+    return {"status": "done", "signal": result, "trace": trace}
+
+
+def main(argv=None):
+    """The JSON tick CLI entrypoint. Returns the process exit code.
+
+    Bare (no --step/--resume): run one tick and print the HUMAN trace (unchanged).
+    --step: run to the next pause/terminal, print the JSON envelope to stdout.
+    --resume <file>: feed the file's JSON array of raw subagent outputs back via
+    run_tick(resume_dispatch=...), print the same envelope shape.
+
+    Exit codes: done/paused -> 0; invalid_output (bad agent output OR a
+    malformed/missing --resume file) -> 1.
+    """
+    parser = argparse.ArgumentParser(
+        description="Run one maintainer tick (JSON --step/--resume seam).")
+    parser.add_argument(
+        "--step", action="store_true",
+        help="run to the next pause/terminal and print a JSON envelope")
+    parser.add_argument(
+        "--resume", metavar="FILE",
+        help="resume a paused tick from FILE (a JSON array of raw subagent "
+             "output strings, in dispatch order); print a JSON envelope")
+    parser.add_argument("--runtime-dir", dest="runtime_dir")
+    parser.add_argument("--state", dest="state")
+    parser.add_argument("--journal", dest="journal")
+    parser.add_argument("--project-dir", dest="project_dir")
+    args = parser.parse_args(argv)
+
+    paths = _run_tick_paths(args)
+
+    # Bare mode (no JSON flags): UNCHANGED — print the one-line human trace.
+    if not args.step and not args.resume:
+        run_tick(**paths)
+        return 0
+
+    resume_dispatch = None
+    if args.resume:
+        # Read the dispatch outputs. A missing/malformed file is surfaced as an
+        # invalid_output envelope (no crash), never a traceback.
+        try:
+            with open(args.resume) as f:
+                resume_dispatch = json.load(f)
+        except (OSError, ValueError) as exc:
+            sys.stdout.write(json.dumps({
+                "status": "invalid_output", "state": None,
+                "reason": f"could not read resume file: {exc}"}) + "\n")
+            return 1
+        if not isinstance(resume_dispatch, list):
+            sys.stdout.write(json.dumps({
+                "status": "invalid_output", "state": None,
+                "reason": "resume file must contain a JSON array of output "
+                          "strings"}) + "\n")
+            return 1
+
+    # Capture run_tick's one-line human trace so it does NOT pollute stdout (the
+    # skill parses stdout as pure JSON); fold it into the envelope `trace` field.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = run_tick(resume_dispatch=resume_dispatch, **paths)
+    trace = buf.getvalue().strip()
+
+    envelope = _step_envelope(result, trace)
+    sys.stdout.write(json.dumps(envelope) + "\n")
+    return 1 if envelope.get("status") == "invalid_output" else 0
+
+
 if __name__ == "__main__":
     # Production entrypoint: the scheduling skills invoke this once per tick from
-    # the installed plugin with no path wiring and no injected source. run_tick
-    # defaults its durable file locations to the writable per-project runtime dir
+    # the installed plugin. With no flags it defaults its durable file locations
+    # to the writable per-project runtime dir
     # (${CLAUDE_PROJECT_DIR}/.auto-maintainer/ else .auto-maintainer/ under cwd)
     # via resolve_runtime_paths(), loads the project-local route override (else
-    # the default spine), and pulls real open issues via the live gh source.
-    run_tick()
+    # the default spine), and pulls real open issues via the live gh source. The
+    # --step/--resume flags give the executor skill the JSON yield/resume seam.
+    sys.exit(main())
