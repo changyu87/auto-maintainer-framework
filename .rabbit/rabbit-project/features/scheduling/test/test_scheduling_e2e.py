@@ -826,6 +826,135 @@ def test_start_when_clean_ticks_normally():
     assert ld.read_disposition(runtime_dir) == ld.Disposition.IDLE
 
 
+# --------------------------------------------------------------------------
+# start.py --clear-only — separate the FRESH-start latch-clear from tick #1.
+#
+# Under the in-session executor model (DESIGN §2.8) tick #1 of an AGENT route
+# must go through the executor skill (which presses the Agent button), NOT
+# start.py's in-process run_tick (which would just pause). So start.py gains a
+# --clear-only mode that performs ONLY the disposition decision (clear a
+# latched STOPPED -> IDLE, refuse on ABORTED, no-op on RUNNING/IDLE/absent) and
+# does NOT run tick #1. The clear/refuse decision is shared with the default
+# (clear+tick) path — one place, no fork.
+#
+# "No tick ran" is proven by TWO robust signals: durable work_items stays 0
+# (a tick PULLs + persists 2 fixture items) AND no events.jsonl is written
+# (a FRESH tick always emits a tick_start event to ${runtime_dir}/events.jsonl).
+# --------------------------------------------------------------------------
+
+
+def _no_tick_ran(runtime_dir, state_path):
+    """Assert no tick executed: no work_items persisted and no event log."""
+    return (rt.persisted_work_items_count(state_path) == 0
+            and not os.path.exists(os.path.join(runtime_dir, "events.jsonl")))
+
+
+def test_start_clear_only_clears_stopped_without_ticking():
+    """--clear-only on a latched STOPPED clears the latch to IDLE and runs NO
+    tick (tick #1 is deferred to the executor)."""
+    runtime_dir, state_path, journal_path = _paths()
+    ld.write_disposition(runtime_dir, ld.Disposition.STOPPED)
+
+    def _exploding_source(repo=None):
+        raise AssertionError("--clear-only must NOT run a tick")
+
+    rc = sa.start(runtime_dir=runtime_dir, state_path=state_path,
+                  journal_path=journal_path, source=_exploding_source,
+                  clear_only=True)
+
+    # clear-only returns None (no tick signal), the latch is cleared to IDLE,
+    # and no tick side-effects exist.
+    assert rc is None, rc
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.IDLE
+    assert _no_tick_ran(runtime_dir, state_path)
+
+
+def test_start_clear_only_refuses_aborted_without_ticking():
+    """--clear-only on a latched ABORTED REFUSES (raises StartRefused), runs NO
+    tick, and leaves the ABORTED fault latch in place."""
+    runtime_dir, state_path, journal_path = _paths()
+    ld.write_disposition(runtime_dir, ld.Disposition.ABORTED)
+
+    def _exploding_source(repo=None):
+        raise AssertionError("--clear-only must NOT run a tick")
+
+    raised = False
+    try:
+        sa.start(runtime_dir=runtime_dir, state_path=state_path,
+                 journal_path=journal_path, source=_exploding_source,
+                 clear_only=True)
+    except sa.StartRefused:
+        raised = True
+    assert raised, "--clear-only must refuse on ABORTED"
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.ABORTED
+    assert _no_tick_ran(runtime_dir, state_path)
+
+
+def test_start_clear_only_noops_on_clean_without_ticking():
+    """--clear-only on a clean state (absent -> IDLE) is a no-op: it does NOT
+    tick and leaves the disposition IDLE."""
+    runtime_dir, state_path, journal_path = _paths()
+
+    def _exploding_source(repo=None):
+        raise AssertionError("--clear-only must NOT run a tick")
+
+    rc = sa.start(runtime_dir=runtime_dir, state_path=state_path,
+                  journal_path=journal_path, source=_exploding_source,
+                  clear_only=True)
+    assert rc is None, rc
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.IDLE
+    assert _no_tick_ran(runtime_dir, state_path)
+
+
+def test_start_default_still_clears_and_ticks_regression():
+    """DEFAULT behaviour (no clear_only) is unchanged: a latched STOPPED is
+    cleared AND tick #1 runs (work_items pulled/persisted, EXIT idles)."""
+    runtime_dir, state_path, journal_path = _paths()
+    ld.write_disposition(runtime_dir, ld.Disposition.STOPPED)
+
+    signal = sa.start(runtime_dir=runtime_dir, state_path=state_path,
+                      journal_path=journal_path, source=_stub_source())
+
+    assert signal == "idle", signal
+    assert rt.persisted_work_items_count(state_path) == 2
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.IDLE
+
+
+def test_start_main_clear_only_clears_stopped_and_exits_zero():
+    """CLI e2e: `python3 start.py --clear-only` against a latched STOPPED clears
+    it to IDLE, exits 0, and runs no tick (no events.jsonl written)."""
+    import subprocess
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    am_dir = os.path.join(project_dir, ".auto-maintainer")
+    ld.write_disposition(am_dir, ld.Disposition.STOPPED)
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = project_dir
+    proc = subprocess.run(
+        [sys.executable, os.path.join(_SRC, "start.py"), "--clear-only"],
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
+    assert ld.read_disposition(am_dir) == ld.Disposition.IDLE
+    # No tick ran: the runtime dir holds no event log.
+    assert not os.path.exists(os.path.join(am_dir, "events.jsonl")), proc.stdout
+
+
+def test_start_main_clear_only_exits_nonzero_on_aborted():
+    """CLI e2e: `python3 start.py --clear-only` against a latched ABORTED exits
+    NON-ZERO, leaves the fault latched, and runs no tick."""
+    import subprocess
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    am_dir = os.path.join(project_dir, ".auto-maintainer")
+    ld.write_disposition(am_dir, ld.Disposition.ABORTED)
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = project_dir
+    proc = subprocess.run(
+        [sys.executable, os.path.join(_SRC, "start.py"), "--clear-only"],
+        capture_output=True, text=True, env=env)
+    assert proc.returncode != 0, (proc.returncode, proc.stdout, proc.stderr)
+    assert ld.read_disposition(am_dir) == ld.Disposition.ABORTED
+    assert not os.path.exists(os.path.join(am_dir, "events.jsonl")), proc.stdout
+
+
 def test_start_main_exits_nonzero_on_aborted():
     """End-to-end via the CLI entrypoint: `python3 start.py` against a latched
     ABORTED runtime dir exits NON-ZERO and runs no tick (the #44 fault refusal
