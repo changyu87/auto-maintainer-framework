@@ -19,6 +19,7 @@ Sources:
       .rabbit/rabbit-project/features/durable-state/src/durable_state.py
       .rabbit/rabbit-project/features/lifecycle-dispositions/src/lifecycle_dispositions.py
       .rabbit/rabbit-project/features/agent-dispatch/src/agent_dispatch.py
+      .rabbit/rabbit-project/features/observability/src/observability.py
       .rabbit/rabbit-project/features/scheduling/src/run_tick.py
       .rabbit/rabbit-project/features/scheduling/src/status.py
       .rabbit/rabbit-project/features/scheduling/src/stop.py
@@ -28,17 +29,23 @@ Sources:
       .rabbit/rabbit-project/features/prioritize/src/prioritize.py
       .rabbit/rabbit-project/features/implement/src/implement.py
       .rabbit/rabbit-project/features/safety-governance/src/safety_governance.py
-    The five pure libs are copied byte-for-byte; run_tick.py, status.py,
+    The six pure libs are copied byte-for-byte; run_tick.py, status.py,
     stop.py, start.py, work_intake.py, adapter_wiring.py, prioritize.py,
     implement.py, and safety_governance.py are normalized so their sibling-lib
     imports resolve from the co-located lib/ dir alone (the shipped plugin
     carries only its own dir, so it cannot reach the feature src/ trees the dev
-    copy resolves through). agent_dispatch.py is a PURE stdlib lib (imports only
-    json, no sibling libs), so it is copied byte-for-byte alongside the other
-    four pure libs — it is NOT normalized. status.py and stop.py import run_tick
-    + the lifecycle/durable libs, start.py imports run_tick +
+    copy resolves through). agent_dispatch.py and observability.py are PURE
+    stdlib libs (agent_dispatch imports only json; observability imports only
+    json + os; neither imports a sibling lib), so each is copied byte-for-byte
+    alongside the other pure libs — neither is normalized. run_tick imports
+    observability (`import observability as ob`) and emits a structured tick
+    event log to ${runtime_dir}/events.jsonl via observability.EventLog;
+    run_tick's existing self-path bootstrap resolves observability from lib/ once
+    shipped, so observability needs no normalization entry. status.py and stop.py
+    import run_tick + the lifecycle/durable libs, start.py imports run_tick +
     lifecycle_dispositions, run_tick imports work_intake + adapter_wiring +
-    prioritize + implement + safety_governance + agent_dispatch (and uses
+    prioritize + implement + safety_governance + agent_dispatch + observability
+    (and uses
     adapter_wiring.AgentState for its yield/resume --step/--resume CLI),
     work_intake imports fsm_contracts, adapter_wiring imports fsm_contracts +
     tick_orchestrator + agent_dispatch, prioritize + implement each import
@@ -63,7 +70,7 @@ The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
 
-Version: 0.2.12
+Version: 0.2.13
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the framework adopts a different
   distribution channel than a self-hosted Claude Code plugin marketplace, or
@@ -82,7 +89,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.2.12"
+_PLUGIN_VERSION = "0.2.13"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -110,6 +117,13 @@ _LIBS = {
     # adapter_wiring import it and resolve it from lib/ via their own bootstrap.
     "agent_dispatch.py": os.path.join(
         _FEATURES_REL, "agent-dispatch", "src", "agent_dispatch.py",
+    ),
+    # observability is pure stdlib (imports only json + os, no sibling libs), so
+    # it ships byte-for-byte alongside the other pure libs. run_tick imports it
+    # (`import observability as ob`) and emits structured tick events; run_tick's
+    # own bootstrap resolves it from lib/ once shipped, so it is NOT normalized.
+    "observability.py": os.path.join(
+        _FEATURES_REL, "observability", "src", "observability.py",
     ),
 }
 
