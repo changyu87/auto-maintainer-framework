@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.5.0
+version: 0.5.1
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -217,10 +217,17 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   `fc.apply_result` + `resolve_next` (as `to.run` does); at an AGENT state build
   the dispatch request with agent-dispatch
   (`ad.build_envelopes(entry, slot_values, {"tick_id", "mode"}, state=<name>)`,
-  each rendered with `ad.render`), journal the pending dispatch
-  (record-before-act) and **checkpoint** to durable state, then return a PAUSED
-  result. `run_tick` NEVER calls the Agent tool — that is the executor's job
-  (a later slice).
+  each rendered with `ad.render`) and **checkpoint** to durable state, then
+  return a PAUSED result. `run_tick` NEVER calls the Agent tool — that is the
+  executor's job (a later slice). The pause does NOT record any intent in the
+  durable-state tick journal: that journal is the counter-reconciliation ledger
+  (`drain_run` reads `target_counter` from every unconfirmed intent), and an
+  agent dispatch never touches the counter. The durable checkpoint alone carries
+  the paused dispatch (see below), so journaling it as well was redundant AND it
+  poisoned the counter journal — an agent-dispatch intent has no `target_counter`
+  and is never confirmed, so it survived into the NEXT tick's DRAIN and crashed
+  it with `KeyError: 'target_counter'` (auto-maintainer-framework#109). The agent
+  driver therefore writes ONLY the checkpoint, never a journal intent.
 - **Durable checkpoint** under `TICK_CHECKPOINT_KEY = "tick_checkpoint"`:
   `{next_state, slots (a full snapshot of the live TickContext slot values),
   path, signals, pending: {state, writes, schema_ref, signal_rule,

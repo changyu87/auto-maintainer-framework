@@ -1,5 +1,25 @@
 # scheduling — Changelog
 
+## contract 0.5.1 — 2026-06-13
+
+- **Fix #109 — second consecutive AGENT-route tick crashed in DRAIN with
+  `KeyError: 'target_counter'`.** The agent yield/resume driver
+  (`_drive_agent_tick`) recorded an `agent-dispatch:<tick>:<state>` intent in the
+  durable-state tick journal on each pause. That journal is the
+  counter-reconciliation ledger: `durable_state.drain_run` reads `target_counter`
+  from every unconfirmed intent. The agent-dispatch intent has no `target_counter`
+  and is never confirmed, so it survived into the NEXT tick's DRAIN and crashed it.
+  The record was REDUNDANT — the durable checkpoint (`TICK_CHECKPOINT_KEY`) is
+  already the SOLE crash-safety source of truth for a paused dispatch. Removed the
+  redundant `journal.record({...})` (and the now-orphaned local
+  `journal = ds.Journal(journal_path)`) from the agent driver; the durable
+  checkpoint is untouched, so paused-dispatch crash-safety (a fresh `--step`
+  re-emits the same PAUSE) is unchanged. Pure-script routes are unaffected.
+- scheduling consumes `durable-state` and all sibling features UNCHANGED;
+  `drain_run` is NOT modified (defense-in-depth tolerance of non-counter intents
+  is a separate follow-up).
+- Closes #109.
+
 ## contract 0.5.0 — 2026-06-10
 
 - **`/auto-maintainer:start` skill reworked to v0.2.0** — executor-driven first
