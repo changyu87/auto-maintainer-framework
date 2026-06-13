@@ -439,13 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (safety_governance.py): version bumped to 0.2.10 in BOTH plugin.json
+# Re-ship (safety_governance.py): version bumped to 0.2.11 in BOTH plugin.json
 # and marketplace.json, and the two are consistent. The spec permits a patch
-# bump on each re-ship of the plugin tree (0.2.10 ships the new
-# safety_governance.py governance lib that run_tick now imports, so the
-# installed plugin's run_tick resolves it from lib/ alone).
+# bump on each re-ship of the plugin tree (0.2.11 re-normalizes the updated
+# safety_governance.py governance lib whose default per_day_tokens is now null /
+# no-limit, so the installed plugin carries the new default).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_10_and_consistent():
+def test_version_bumped_to_0_2_11_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +457,10 @@ def test_version_bumped_to_0_2_10_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.10", \
-            f"plugin.json version must be 0.2.10, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.10", \
-            "marketplace.json plugin entry version must be 0.2.10"
+        assert pdata.get("version") == "0.2.11", \
+            f"plugin.json version must be 0.2.11, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.11", \
+            "marketplace.json plugin entry version must be 0.2.11"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -945,6 +945,40 @@ def test_shipped_run_tick_imports_safety_governance_from_lib_alone():
         )
         assert proc.returncode == 0, \
             f"shipped run_tick cannot resolve safety_governance: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (safety_governance.py): v0.2.11 ships the updated governance lib whose
+# DEFAULT_GOVERNANCE per_day_tokens is now null / no-limit (was 200000). Import
+# the SHIPPED lib from lib/ alone and assert the default daily budget ceiling is
+# None — the behaviour this re-ship exists to carry into the installed plugin.
+# ---------------------------------------------------------------------------
+def test_shipped_safety_governance_default_per_day_tokens_is_none():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        probe = (
+            "import sys; "
+            f"sys.path.insert(0, {lib!r}); "
+            "import safety_governance as sg; "
+            "assert sg.DEFAULT_GOVERNANCE['budget']['per_day_tokens'] is None, "
+            "sg.DEFAULT_GOVERNANCE['budget']['per_day_tokens']; "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped safety_governance default per_day_tokens not None: {proc.stderr}"
         assert proc.stdout.strip() == "OK"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
