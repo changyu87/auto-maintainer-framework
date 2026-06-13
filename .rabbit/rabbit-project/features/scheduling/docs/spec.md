@@ -65,6 +65,42 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
   `work_items work_orders execution_plan handoffs`. (Durable state keeps cross-tick
   facts; the read-product snapshot is overwritten every tick.)
 
+## Governance wiring (slice 1: load + surface + persist)
+
+scheduling consumes `safety-governance` UNCHANGED to make the maintainer loop
+governance-aware. This slice **loads + surfaces + persists** governance state;
+enforcement of act-skip is **deferred** to the acting doer (next milestone).
+
+- **Load once per tick.** `run_tick` calls `sg.load_governance(project_dir)`
+  (project-local `${project_dir}/.auto-maintainer/governance.json`, else the
+  documented defaults) and threads the loaded config into the factory `runtime`
+  dict under a `governance` key — so future acting adapters can consult
+  `permits`/budget — without disturbing the existing runtime keys
+  (`project_dir`/`runtime_dir`/`source`/`now`).
+- **Durable, cross-tick budget window (#69-style surface, durable like the
+  counter).** A new durable key `budget` stores `{window_key, spent_tokens}`.
+  Each tick resolves a tz-aware `now` (the injected `now` when it is tz-aware,
+  else the host local-aware now `datetime.now().astimezone()`), loads the prior
+  budget state from durable state (default `{}`), calls
+  `sg.evaluate_budget(gov, budget_state, now, tick_spend=<injected, default 0>)`,
+  and PERSISTS the returned `budget_state`. The lib performs the window rollover
+  / auto-resume: a `now` on a later local day advances `window_key` and resets
+  `spent_tokens`. `tick_spend` is `0` in production (no model spender yet); tests
+  inject it. The budget window is a durable CROSS-TICK fact, **not** a per-tick
+  ephemeral read product (#64): a tick within the same window carries the
+  accumulated spend forward — only a window rollover (inside `evaluate_budget`)
+  resets it.
+- **Surface in the trace AND status.py** (always shown, #69 style): `mode=<mode>`
+  and a compact `budget=<spent>/<ceiling-or-"none"> win=<window_key>` field
+  (`none` = a null/unlimited per_day ceiling), placed after the existing fields
+  (all current fields/order preserved). When `evaluate_budget` returns
+  `allowed=False`, a `budget_paused=<reason>` indicator is appended (e.g.
+  `budget_paused=per_day_exhausted`).
+- **No act-skip this slice.** A budget-blocked tick is NOT skipped or idled
+  differently — there is no model spender yet, and the acting doer will consult
+  `permits`/budget itself next milestone. This slice only SURFACES the paused
+  reason; the tick still completes (read-and-idle).
+
 ## Paths governed
 
 Greenfield. Code under `.../features/scheduling/src/`. Shippable plugin

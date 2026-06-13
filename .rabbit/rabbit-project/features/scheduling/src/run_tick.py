@@ -55,6 +55,7 @@ Deprecation criterion: Superseded when scheduling moves to a different clock
 
 import os
 import sys
+from datetime import datetime
 
 # Consume the sibling features via sys.path, exactly as the other feature
 # sources/tests do. Resolve them relative to this file's feature dir so the
@@ -68,7 +69,7 @@ _FEATURE_DIR = os.path.dirname(_SRC)
 _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
              "lifecycle-dispositions", "work-intake", "adapter-wiring",
-             "prioritize", "implement"):
+             "prioritize", "implement", "safety-governance"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if os.path.isdir(_dep_src) and _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
@@ -81,6 +82,7 @@ import work_intake as wi  # noqa: E402
 import adapter_wiring as aw  # noqa: E402
 import prioritize as pr  # noqa: E402
 import implement as im  # noqa: E402
+import safety_governance as sg  # noqa: E402
 
 
 # The production PULL issue source: work-intake's live `gh` CLI adapter. Tests
@@ -95,6 +97,14 @@ WORK_ITEMS_KEY = "work_items"
 WORK_ORDERS_KEY = "work_orders"
 EXECUTION_PLAN_KEY = "execution_plan"
 HANDOFFS_KEY = "handoffs"
+
+# The durable-state document key under which the safety-governance budget window
+# {window_key, spent_tokens} is persisted. Unlike the four read-product keys
+# above, BUDGET is a durable CROSS-TICK fact (like the counter), NOT a per-tick
+# ephemeral read product (#64): a tick within the same window carries the
+# accumulated spend forward; only a window rollover (inside sg.evaluate_budget)
+# resets spent_tokens.
+BUDGET_KEY = "budget"
 
 # DONE is the true terminal: tick-orchestrator HALTS the moment it reaches a
 # terminal state and NEVER run()s it, so EXIT must be a NON-terminal state that
@@ -399,8 +409,84 @@ def persisted_handoffs_count(state_path):
     return len(persisted_handoffs(state_path))
 
 
+def persisted_budget_state(state_path):
+    """The durable budget window {window_key, spent_tokens} persisted in durable
+    state, or {} when the loop never evaluated a budget. Unlike the read products
+    this is a durable CROSS-TICK fact (see BUDGET_KEY)."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(BUDGET_KEY, {})
+
+
+def _budget_clock(now):
+    """The tz-aware `now` the budget window keys off.
+
+    safety-governance never reads the wall clock — `now` is always injected. Use
+    the injected `now` when it is tz-aware; otherwise default to the host
+    local-aware now (datetime.now().astimezone()), so window_key never sees a
+    naive datetime. A naive injected `now` likewise falls back to the host-local
+    now (the budget clock must always be tz-aware)."""
+    if now is not None and now.tzinfo is not None:
+        return now
+    return datetime.now().astimezone()
+
+
+def governance_fields(gov, budget_state, budget=None):
+    """Render the always-shown governance surface as a trace/status token string.
+
+    Returns ``mode=<mode> budget=<spent>/<ceiling-or-"none"> win=<window_key>``,
+    appending ``budget_paused=<reason>`` when `budget` (an sg.evaluate_budget
+    result) reports allowed=False. A null per_day ceiling renders as "none"
+    (unlimited). Shared by the tick trace and status.py so the two never diverge
+    (#69). `budget_state` is the {window_key, spent_tokens} window; an empty
+    state renders 0 spend with an empty window key.
+    """
+    mode = gov.get("mode", "")
+    ceiling = gov.get("budget", {}).get("per_day_tokens")
+    ceiling_str = "none" if ceiling is None else str(ceiling)
+    spent = budget_state.get("spent_tokens", 0)
+    win = budget_state.get("window_key", "")
+    field = f"mode={mode} budget={spent}/{ceiling_str} win={win}"
+    if budget is not None and not budget.get("allowed", True):
+        field += f" budget_paused={budget.get('reason', '')}"
+    return field
+
+
+def governance_status(project_dir, state_path):
+    """The governance surface for status.py: loads gov + the durable budget
+    window and renders the same always-shown field string the tick trace prints
+    (#69). Reads only — never writes or advances the budget.
+
+    The budget is evaluated AT the persisted window (a clock on the persisted
+    window_key's date), NOT at the host wall-clock now, so status reports the
+    last tick's durable exhaustion rather than rolling the window over to today
+    (which would mask a paused window). When no budget was ever persisted the
+    window is empty and the budget reads as allowed (nothing spent).
+    """
+    gov = sg.load_governance(project_dir)
+    budget_state = persisted_budget_state(state_path)
+    clock = _clock_for_window(budget_state.get("window_key"))
+    budget = sg.evaluate_budget(gov, budget_state, clock)
+    return governance_fields(gov, budget_state, budget)
+
+
+def _clock_for_window(window_key):
+    """A tz-aware datetime whose LOCAL date is `window_key` (an ISO date string),
+    so sg.evaluate_budget keys to the persisted window without rolling it over.
+    Falls back to the host local-aware now when `window_key` is absent/unparsable
+    (no persisted window yet)."""
+    local_now = datetime.now().astimezone()
+    if not window_key:
+        return local_now
+    try:
+        d = datetime.strptime(window_key, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return local_now
+    return datetime(d.year, d.month, d.day, 12, 0, 0, tzinfo=local_now.tzinfo)
+
+
 def run_tick(runtime_dir=None, state_path=None, journal_path=None,
-             project_dir=None, source=None, now=None, return_run_result=False):
+             project_dir=None, source=None, now=None, tick_spend=0,
+             return_run_result=False):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -439,15 +525,38 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     if project_dir is None:
         project_dir = _resolve_project_dir()
 
+    # Load governance once per tick (project-local governance.json else the
+    # documented defaults). Threaded into the runtime dict so future acting
+    # adapters can consult permits/budget; this slice only loads + surfaces +
+    # persists (act-skip enforcement is deferred to the acting doer).
+    gov = sg.load_governance(project_dir)
+
     # The runtime dict the factory convention binds: GUARD/EXIT read runtime_dir;
     # PULL the injectable source; TRIAGE the reference time. build_loop reads
-    # project_dir for the override-config location.
+    # project_dir for the override-config location. `governance` carries the
+    # loaded config (the existing keys are preserved, no regression).
     runtime = {
         "project_dir": project_dir,
         "runtime_dir": runtime_dir,
         "source": source,
         "now": now,
+        "governance": gov,
     }
+
+    # Evaluate + persist the durable, cross-tick budget window. The tz-aware
+    # budget clock is the injected `now` when tz-aware, else the host local-aware
+    # now. evaluate_budget rolls the prior state over to this window (auto-resume
+    # on a new local day) and reports allowance over the injected tick_spend
+    # (0 in production — no model spender yet). The returned budget_state is the
+    # one to persist; record the actual spend when the tick acted (tick_spend>0).
+    budget_clock = _budget_clock(now)
+    prior_budget_state = persisted_budget_state(state_path)
+    budget = sg.evaluate_budget(gov, prior_budget_state, budget_clock,
+                                tick_spend=tick_spend)
+    new_budget_state = budget["budget_state"]
+    if tick_spend:
+        new_budget_state = sg.record_spend(new_budget_state, budget_clock,
+                                           tick_spend)
 
     # Route-as-data: load (override else default) -> resolve -> validate. A bad
     # override raises WiringError here, before any tick body runs.
@@ -484,11 +593,19 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         doc[HANDOFFS_KEY] = (
             ctx.read(im.HANDOFFS_SLOT["name"])
             if "IMPLEMENT" in route["states"] else [])
+        # The durable, cross-tick budget window (NOT a #64 read product): persist
+        # the evaluated/recorded budget_state so the window rollover + spend
+        # accrual survive across ticks.
+        doc[BUDGET_KEY] = new_budget_state
         ds.DurableState(state_path).save(doc)
     else:
         # GUARD short-circuited (STOPPED/ABORTED/RESTART_NEEDED): the tick did no
-        # work (no read stage ran); map the halting condition to "halt".
+        # read/PERSIST work, but the budget window is still a durable cross-tick
+        # fact — persist its rollover/state so it stays current even on a halt.
         signal = "halt"
+        doc = ds.DurableState(state_path).load()
+        doc[BUDGET_KEY] = new_budget_state
+        ds.DurableState(state_path).save(doc)
 
     disposition = ld.read_disposition(runtime_dir)
     work_items_count = persisted_work_items_count(state_path)
@@ -499,12 +616,16 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # misplaced/absent route.json is visible in the trace, not silently ignored.
     # Resolved from the SAME project_dir build_loop loaded the route from.
     route_src = route_source_label(project_dir)
+    # Governance surface (#69 style — always shown): the trust mode + a compact
+    # budget field, plus a budget_paused indicator when the budget is exhausted.
+    # Placed after the existing fields; all current fields/order are preserved.
+    gov_fields = governance_fields(gov, new_budget_state, budget)
     sys.stdout.write(
         f"[tick] path={'->'.join(result.path)} work_items={work_items_count} "
         f"work_orders={work_orders_count} "
         f"execution_plan={execution_plan_count} handoffs={handoffs_count} "
         f"disposition={disposition} "
-        f"signal={signal} route={route_src}\n")
+        f"signal={signal} route={route_src} {gov_fields}\n")
 
     if return_run_result:
         return result

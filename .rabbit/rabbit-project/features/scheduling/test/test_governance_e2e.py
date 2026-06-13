@@ -213,7 +213,9 @@ def test_gated_merge_unlimited_status_shows_mode_and_none_ceiling():
         else:
             os.environ["CLAUDE_PROJECT_DIR"] = old
     assert "mode=gated-merge" in line, line
-    assert "budget=0/none" in line, line
+    # The recorded spend is surfaced against the unlimited "/none" ceiling.
+    assert "budget=10000000/none" in line, line
+    # An unlimited budget never pauses, no matter how large the spend.
     assert "budget_paused" not in line, line
 
 
