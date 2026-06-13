@@ -439,13 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship, prioritize.py + implement.py): version bumped to 0.2.9
-# in BOTH plugin.json and marketplace.json, and the two are consistent. The spec
-# permits a patch bump on each re-ship of the plugin tree (0.2.9 ships the two
-# new deterministic adapter libs prioritize.py + implement.py that run_tick now
-# imports, so the installed plugin's run_tick resolves them from lib/ alone).
+# Re-ship (safety_governance.py): version bumped to 0.2.10 in BOTH plugin.json
+# and marketplace.json, and the two are consistent. The spec permits a patch
+# bump on each re-ship of the plugin tree (0.2.10 ships the new
+# safety_governance.py governance lib that run_tick now imports, so the
+# installed plugin's run_tick resolves it from lib/ alone).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_9_and_consistent():
+def test_version_bumped_to_0_2_10_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +457,10 @@ def test_version_bumped_to_0_2_9_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.9", \
-            f"plugin.json version must be 0.2.9, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.9", \
-            "marketplace.json plugin entry version must be 0.2.9"
+        assert pdata.get("version") == "0.2.10", \
+            f"plugin.json version must be 0.2.10, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.10", \
+            "marketplace.json plugin entry version must be 0.2.10"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -835,6 +835,116 @@ def test_shipped_run_tick_imports_prioritize_implement_from_lib_alone():
         )
         assert proc.returncode == 0, \
             f"shipped run_tick cannot resolve prioritize/implement: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (safety_governance.py): the new safety-governance lib ships under
+# lib/ — run_tick now imports it (`import safety_governance as sg`), so the
+# installed plugin must carry it alongside the other control libs.
+# ---------------------------------------------------------------------------
+def test_safety_governance_lib_present():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        assert os.path.isfile(os.path.join(lib, "safety_governance.py")), \
+            "lib/safety_governance.py must ship in the plugin tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (safety_governance.py): the shipped safety_governance.py must be
+# byte-identical to the build's OWN normalization of its source. It imports
+# `import lifecycle_dispositions as ld` and imports os (not sys) at module top
+# — the SAME shape as adapter_wiring.py — so it is normalized via the
+# adapter_wiring-style with-imports bootstrap. Prove the rebuilt tree genuinely
+# ships the normalized source bytes — mirroring the run_tick/status/adapter
+# normalization-equality assertions.
+# ---------------------------------------------------------------------------
+def test_shipped_safety_governance_is_normalized_source_bytes():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        dst = os.path.join(lib, "safety_governance.py")
+        assert os.path.isfile(dst), f"missing shipped lib: {dst}"
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "safety-governance", "src", "safety_governance.py",
+        )
+        with open(dst, encoding="utf-8") as fh:
+            shipped = fh.read()
+        _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS["safety_governance.py"]
+        expected = mod._normalize_lib(src, anchor, bootstrap)
+        assert shipped == expected, \
+            "shipped safety_governance is not the normalized source bytes"
+        # the with-imports bootstrap must be present (the file imports os but
+        # not sys at top, so the bootstrap supplies sys before the insert; the
+        # re-import of os is harmless — identical to adapter_wiring)
+        assert "import sys  # noqa: E402" in shipped, \
+            "shipped safety_governance must carry the with-imports bootstrap"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (safety_governance.py): the newly-shipped, build-rewritten lib must
+# not leak a path back into the source feature tree — the headline clean-ship
+# invariant applies to it too.
+# ---------------------------------------------------------------------------
+def test_shipped_safety_governance_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        with open(
+            os.path.join(lib, "safety_governance.py"), encoding="utf-8"
+        ) as fh:
+            body = fh.read()
+        assert ".rabbit" not in body, "shipped safety_governance leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "shipped safety_governance references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (safety_governance.py), critical self-containment: the shipped
+# run_tick.py imports `import safety_governance as sg`, so importing the shipped
+# run_tick with ONLY the plugin lib/ on sys.path must resolve safety_governance
+# (and IT must resolve its lifecycle_dispositions sibling) from lib/ alone.
+# Claude copies just the plugin dir into its cache, so a shipped run_tick that
+# could not find safety_governance in lib/ would fail to import once installed.
+# Prove it by importing the shipped run_tick (and safety_governance directly) in
+# a subprocess whose sys.path is restricted to the shipped lib/ dir alone, with
+# NOTHING else.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_imports_safety_governance_from_lib_alone():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        probe = (
+            "import sys; "
+            f"sys.path.insert(0, {lib!r}); "
+            "import run_tick; "
+            "import safety_governance, lifecycle_dispositions; "
+            "assert run_tick.sg is safety_governance; "
+            "assert safety_governance.ld is lifecycle_dispositions; "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped run_tick cannot resolve safety_governance: {proc.stderr}"
         assert proc.stdout.strip() == "OK"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
