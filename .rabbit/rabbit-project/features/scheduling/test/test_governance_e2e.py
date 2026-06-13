@@ -148,8 +148,9 @@ def test_default_governance_trace_shows_mode_propose_and_budget():
         source=_stub_source(), now=_DAY1)
     assert signal == "idle", signal
     assert "mode=propose" in trace, trace
-    # Default per_day ceiling is 200000 (safety-governance default); spent 0.
-    assert "budget=0/200000" in trace, trace
+    # Default per_day ceiling is null/unlimited (safety-governance default);
+    # renders as "none". Spent 0.
+    assert "budget=0/none" in trace, trace
     assert "win=2026-05-01" in trace, trace
     # Not paused on a fresh, unspent budget.
     assert "budget_paused" not in trace, trace
@@ -168,7 +169,7 @@ def test_default_governance_status_shows_mode_propose_and_budget():
         else:
             os.environ["CLAUDE_PROJECT_DIR"] = old
     assert "mode=propose" in line, line
-    assert "budget=0/200000" in line, line
+    assert "budget=0/none" in line, line
     assert "budget_paused" not in line, line
 
 
