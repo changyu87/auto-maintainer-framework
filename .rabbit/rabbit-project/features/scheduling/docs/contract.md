@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.5.0
+version: 0.5.1
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---

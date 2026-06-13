@@ -676,7 +676,7 @@ def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
     return _pause_result(name, agentstate, slot_values, tick_id, mode)
 
 
-def _drive_agent_tick(route, states, ctx, journal_path, state_path,
+def _drive_agent_tick(route, states, ctx, state_path,
                       current, mode, tick_id, agentstates, path, signals,
                       events=None):
     """Walk the route from `current` SCRIPT-state-by-SCRIPT-state, pausing at the
@@ -695,18 +695,18 @@ def _drive_agent_tick(route, states, ctx, journal_path, state_path,
     never changes the walk, the signals, or the checkpoint.
     """
     terminal = set(route["terminal"])
-    journal = ds.Journal(journal_path)
 
     while current not in terminal:
         second = states[current][1]
         if current in agentstates:
             agentstate = agentstates[current]
-            # record-before-act: journal the pending dispatch, then checkpoint.
-            journal.record({
-                "dedup_key": f"agent-dispatch:{tick_id}:{current}",
-                "state": current,
-                "writes": agentstate.entry["dispatch"][0]["writes"],
-            })
+            # Checkpoint to durable state — the SOLE crash-safety source of
+            # truth for the paused dispatch. The pause is deliberately NOT
+            # journaled: the tick journal is durable-state's counter-
+            # reconciliation ledger (drain_run reads `target_counter` from every
+            # unconfirmed intent), an agent dispatch never touches the counter,
+            # and a counter-less agent-dispatch intent would poison the NEXT
+            # tick's DRAIN with KeyError 'target_counter' (#109).
             _write_checkpoint(state_path, current, ctx, path, signals,
                               agentstate)
             # Render the PAUSE from the just-written checkpoint so a fresh PAUSE
@@ -774,7 +774,7 @@ def _resume_agent_state(route, states, ctx, checkpoint, resume_dispatch,
 
 
 def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
-                    journal_path, resume_dispatch, mode, events=None,
+                    resume_dispatch, mode, events=None,
                     route_src=None):
     """Drive a tick over a route that contains agent-states (DESIGN §2.8).
 
@@ -795,8 +795,8 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
     RunResult + the final TickContext for read-product persistence.
     """
     checkpoint = persisted_tick_checkpoint(state_path)
-    # The tick id keys the dispatch journal dedup; the durable counter is the
-    # deterministic per-tick anchor (no wall clock).
+    # The durable counter is the deterministic per-tick anchor (no wall clock);
+    # it seeds the rendered dispatch's {tick_id} slot value.
     tick_id = ds.DurableState(state_path).load().get("counter", 0)
 
     if resume_dispatch is not None:
@@ -813,7 +813,7 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
         path = list(checkpoint["path"]) + [next_state]
         signals = list(checkpoint["signals"])
         return _drive_agent_tick(
-            route, states, ctx, journal_path, state_path, next_state, mode,
+            route, states, ctx, state_path, next_state, mode,
             tick_id, agentstates, path, signals, events=events) + (ctx,)
 
     if checkpoint:
@@ -830,7 +830,7 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
         events.emit("tick_start", detail={"source": route_src, "mode": mode})
     ctx = ctx_seed()
     return _drive_agent_tick(
-        route, states, ctx, journal_path, state_path, "GUARD", mode, tick_id,
+        route, states, ctx, state_path, "GUARD", mode, tick_id,
         agentstates, ["GUARD"], [], events=events) + (ctx,)
 
 
@@ -956,7 +956,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         agent_outcome = _run_agent_tick(
             route, states, agentstates, ctx_seed=lambda: _seed_context(
                 state_path, journal_path, route),
-            state_path=state_path, journal_path=journal_path,
+            state_path=state_path,
             resume_dispatch=resume_dispatch, mode=mode, events=events,
             route_src=route_src)
         if agent_outcome[0] is not None:
