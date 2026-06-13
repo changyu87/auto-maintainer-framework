@@ -62,6 +62,7 @@ import run_tick as rt  # noqa: E402
 
 _SHIP_DIR = os.path.join(_FEATURE_DIR, "ship")
 _TICK_SKILL = os.path.join(_SHIP_DIR, "skills", "tick", "SKILL.md")
+_START_SKILL = os.path.join(_SHIP_DIR, "skills", "start", "SKILL.md")
 _ECHO_AGENT = os.path.join(_SHIP_DIR, "agents", "auto-maintainer-echo.md")
 
 
@@ -109,6 +110,68 @@ def test_ship_assets_carry_lifecycle_metadata():
         fields = _parse_frontmatter(path)
         for key in ("version", "owner", "deprecation_criterion"):
             assert fields.get(key), (path, key, fields)
+
+
+def _read_text(path):
+    with open(path, "r") as f:
+        return f.read()
+
+
+# --------------------------------------------------------------------------
+# Behaviour — the REWORKED start skill (v0.2.0): executor-driven first tick +
+# prompt-cron heartbeat, consuming start.py --clear-only for the latch-clear.
+# --------------------------------------------------------------------------
+
+def test_ship_start_skill_exists_and_names_start_v020():
+    assert os.path.isfile(_START_SKILL), _START_SKILL
+    fields = _parse_frontmatter(_START_SKILL)
+    assert fields.get("name") == "start", fields
+    assert fields.get("version") == "0.2.0", fields
+
+
+def test_ship_start_skill_carries_lifecycle_metadata():
+    fields = _parse_frontmatter(_START_SKILL)
+    for key in ("version", "owner", "deprecation_criterion"):
+        assert fields.get(key), (key, fields)
+
+
+def test_ship_start_skill_body_drives_executor_and_clear_only_and_heartbeat():
+    """The reworked start skill (1) clears the latch via start.py --clear-only,
+    (2) runs the first tick THROUGH the /auto-maintainer:tick executor (so
+    agent-state dispatches are fulfilled), and (3) schedules a recurring PROMPT
+    heartbeat that keeps ticking."""
+    body = _read_text(_START_SKILL)
+    # (1) latch-clear via the merged --clear-only mode (no tick #1 in start.py).
+    assert "start.py --clear-only" in body, "start skill must use start.py --clear-only"
+    # (2) first tick driven through the executor skill, not a bare run_tick.
+    assert "/auto-maintainer:tick" in body, "start skill must drive tick-1 via the executor"
+    # (3) a recurring prompt heartbeat fires the executor each interval.
+    assert "prompt" in body.lower(), "start skill must schedule a prompt heartbeat"
+    assert "recurring" in body.lower(), "start skill must schedule a recurring heartbeat"
+
+
+# --------------------------------------------------------------------------
+# Behaviour — the HARDENED tick skill (v0.1.1, #100): the resume step mandates
+# the Write tool writing to the ABSOLUTE dispatch-result.json path.
+# --------------------------------------------------------------------------
+
+def test_ship_tick_skill_version_is_0_1_1():
+    fields = _parse_frontmatter(_TICK_SKILL)
+    assert fields.get("version") == "0.1.1", fields
+
+
+def test_ship_tick_skill_resume_step_mandates_write_tool_and_absolute_path():
+    """#100 hardening: the resume step must use the `Write` tool with the
+    absolute ${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json path,
+    not an improvised python -c, so large/quoted/newline subagent outputs
+    serialize faithfully."""
+    body = _read_text(_TICK_SKILL)
+    assert "`Write` tool" in body or "Write tool" in body, \
+        "tick skill resume step must reference the Write tool"
+    assert "${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json" in body, \
+        "tick skill must reference the absolute dispatch-result.json path"
+    # The hardening calls out the absolute path explicitly.
+    assert "absolute" in body.lower(), "tick skill must call out the absolute path"
 
 
 # --------------------------------------------------------------------------
