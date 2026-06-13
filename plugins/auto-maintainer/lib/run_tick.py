@@ -53,6 +53,10 @@ Deprecation criterion: Superseded when scheduling moves to a different clock
   config-driven and this slice's hardcoding is removed.
 """
 
+import argparse
+import contextlib
+import io
+import json
 import os
 import sys
 from datetime import datetime
@@ -69,7 +73,7 @@ _FEATURE_DIR = os.path.dirname(_SRC)
 _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
              "lifecycle-dispositions", "work-intake", "adapter-wiring",
-             "prioritize", "implement", "safety-governance"):
+             "prioritize", "implement", "safety-governance", "agent-dispatch"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if os.path.isdir(_dep_src) and _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
@@ -87,6 +91,7 @@ import adapter_wiring as aw  # noqa: E402
 import prioritize as pr  # noqa: E402
 import implement as im  # noqa: E402
 import safety_governance as sg  # noqa: E402
+import agent_dispatch as ad  # noqa: E402
 
 
 # The production PULL issue source: work-intake's live `gh` CLI adapter. Tests
@@ -109,6 +114,15 @@ HANDOFFS_KEY = "handoffs"
 # accumulated spend forward; only a window rollover (inside sg.evaluate_budget)
 # resets spent_tokens.
 BUDGET_KEY = "budget"
+
+# The durable-state document key under which the agent yield/resume CHECKPOINT is
+# persisted while a tick is PAUSED at an agent-state (DESIGN §2.8 executor
+# protocol). It is the SOLE source of truth for the paused dispatch (crash-safety):
+# {next_state, slots (full live TickContext slot snapshot), path, signals,
+#  pending: {state, writes, schema_ref, signal_rule, cardinality}}. It is cleared
+# the moment the driver reaches the terminal. Unlike the read products it is a
+# transient cross-invocation handoff, NOT a #64 read product.
+TICK_CHECKPOINT_KEY = "tick_checkpoint"
 
 # DONE is the true terminal: tick-orchestrator HALTS the moment it reaches a
 # terminal state and NEVER run()s it, so EXIT must be a NON-terminal state that
@@ -421,6 +435,15 @@ def persisted_budget_state(state_path):
     return doc.get(BUDGET_KEY, {})
 
 
+def persisted_tick_checkpoint(state_path):
+    """The durable PAUSED checkpoint persisted under TICK_CHECKPOINT_KEY while a
+    tick is paused at an agent-state, or {} when no tick is paused. The
+    checkpoint is the SOLE source of truth for the paused dispatch (crash-safety
+    re-emit)."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(TICK_CHECKPOINT_KEY, {})
+
+
 def _budget_clock(now):
     """The tz-aware `now` the budget window keys off.
 
@@ -488,9 +511,270 @@ def _clock_for_window(window_key):
     return datetime(d.year, d.month, d.day, 12, 0, 0, tzinfo=local_now.tzinfo)
 
 
+# --------------------------------------------------------------------------
+# Agent yield/resume seam (DESIGN §2.8 executor protocol).
+#
+# A route that contains agent-states pauses at each agent-state (emitting a
+# rendered dispatch request) and resumes when given the dispatch result. The
+# driver below mirrors tick_orchestrator.run but is agent-aware: it runs SCRIPT
+# states inline and YIELDS a PAUSED result at an AGENT state. run_tick NEVER
+# calls the Agent tool — the executor (a later slice) performs the dispatch and
+# feeds the raw outputs back via resume_dispatch.
+# --------------------------------------------------------------------------
+
+# The known slot descriptors, indexed by slot name, so resume can look up the
+# JSON-Schema of an agent-state's `writes` slot to validate the returned text
+# (agent_dispatch.validate_output). These mirror the slots _seed_context
+# registers; built from the sibling SLOT descriptors (consumed unchanged).
+_SLOT_SCHEMAS = {
+    wi.WORK_ITEMS_SLOT["name"]: wi.WORK_ITEMS_SLOT["schema"],
+    wi.WORK_ORDERS_SLOT["name"]: wi.WORK_ORDERS_SLOT["schema"],
+    pr.EXECUTION_PLAN_SLOT["name"]: pr.EXECUTION_PLAN_SLOT["schema"],
+    im.HANDOFFS_SLOT["name"]: im.HANDOFFS_SLOT["schema"],
+}
+
+
+def _snapshot_slots(ctx):
+    """A {slot_name: value} snapshot of every WRITTEN slot in the TickContext, so
+    the live blackboard can be checkpointed and restored across invocations."""
+    snapshot = {}
+    for name in ctx.registered_slots():
+        try:
+            snapshot[name] = ctx.read(name)
+        except fc.ContractError:
+            # An unwritten slot has no value to snapshot.
+            continue
+    return snapshot
+
+
+def _restore_slots(ctx, slots):
+    """Restore a checkpointed slot snapshot onto a freshly-seeded TickContext.
+
+    Only slots the context already registered are restored (the route's seeded
+    set); a checkpoint slot for a stage the current route omits is ignored."""
+    for name, value in slots.items():
+        if name in ctx.registered_slots():
+            ctx.write(name, value)
+
+
+def _pause_result(name, agentstate, slot_values, tick_id, mode):
+    """Build the PAUSED result for an agent-state: render the dispatch
+    envelope(s) via agent-dispatch and shape the per-dispatch records the
+    executor consumes. Returns the PAUSED dict.
+
+    `slot_values` is the {slot: value} mapping for the agent-state's read slots.
+    A `once` dispatch yields one record (no `item`); a {per_item: path} dispatch
+    yields one record per resolved element, each carrying its `item`.
+    """
+    entry = agentstate.entry
+    envelopes = ad.build_envelopes(
+        entry, slot_values, {"tick_id": tick_id, "mode": mode}, state=name)
+    signal_rule = entry["signal"]["rule"]
+    dispatches = []
+    # build_envelopes flattens all dispatch entries; this slice's agent-states
+    # carry a single dispatch entry, so the per-envelope cardinality/writes come
+    # from that entry. Pair each envelope with its dispatch entry's metadata.
+    dispatch_entry = entry["dispatch"][0]
+    for env in envelopes:
+        rec = {
+            "subagent_type": dispatch_entry["subagent_type"],
+            "prompt": ad.render(env),
+            "writes": dispatch_entry["writes"],
+            "schema_ref": env["output_contract"]["schema_ref"],
+            "signal_rule": signal_rule,
+            "cardinality": dispatch_entry["cardinality"],
+        }
+        if "item" in env:
+            rec["item"] = env["item"]
+        dispatches.append(rec)
+    return {"status": "paused", "state": name, "dispatches": dispatches}
+
+
+def _write_checkpoint(state_path, name, ctx, path, signals, agentstate):
+    """Journal-free durable checkpoint of the PAUSED tick under
+    TICK_CHECKPOINT_KEY. The slots snapshot is the full live blackboard; pending
+    carries the agent-state's dispatch metadata so resume can validate + apply."""
+    entry = agentstate.entry
+    dispatch_entry = entry["dispatch"][0]
+    doc = ds.DurableState(state_path).load()
+    doc[TICK_CHECKPOINT_KEY] = {
+        "next_state": name,
+        "slots": _snapshot_slots(ctx),
+        "path": list(path),
+        "signals": list(signals),
+        "pending": {
+            "state": name,
+            "writes": dispatch_entry["writes"],
+            "schema_ref": dispatch_entry.get("output_schema",
+                                             dispatch_entry["writes"]),
+            "signal_rule": entry["signal"]["rule"],
+            "cardinality": dispatch_entry["cardinality"],
+        },
+    }
+    ds.DurableState(state_path).save(doc)
+
+
+def _clear_checkpoint(state_path):
+    """Clear the PAUSED checkpoint on reaching the terminal."""
+    doc = ds.DurableState(state_path).load()
+    if TICK_CHECKPOINT_KEY in doc:
+        del doc[TICK_CHECKPOINT_KEY]
+        ds.DurableState(state_path).save(doc)
+
+
+def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
+    """Build the PAUSED result by RE-LOADING the just-written checkpoint and
+    rendering from its restored slot snapshot.
+
+    Rendering from the durable checkpoint (rather than the live ctx) makes the
+    first emission and a crash-safety re-emit BYTE-IDENTICAL: both go through the
+    same save/load round-trip, so the rendered prompt is independent of the live
+    in-process slot key order (DurableState.save sorts keys). The checkpoint is
+    the SOLE source of truth for the paused dispatch."""
+    checkpoint = persisted_tick_checkpoint(state_path)
+    name = checkpoint["pending"]["state"]
+    agentstate = agentstates[name]
+    slots = checkpoint["slots"]
+    slot_values = {slot: slots[slot] for slot in agentstate.manifest.reads}
+    return _pause_result(name, agentstate, slot_values, tick_id, mode)
+
+
+def _drive_agent_tick(route, states, ctx, journal_path, state_path,
+                      current, mode, tick_id, agentstates, path, signals):
+    """Walk the route from `current` SCRIPT-state-by-SCRIPT-state, pausing at the
+    first AGENT state with a durable checkpoint. SCRIPT states run inline exactly
+    as tick_orchestrator.run does (impl(ctx) + fc.apply_result + resolve_next).
+
+    `path`/`signals` are the accumulators (already containing the segments walked
+    in prior invocations); they are extended in place. Returns (PAUSED dict,
+    None) when it pauses at an agent-state, or (None, RunResult) when it reaches
+    the terminal with no agent-state ahead.
+    """
+    terminal = set(route["terminal"])
+    journal = ds.Journal(journal_path)
+
+    while current not in terminal:
+        second = states[current][1]
+        if current in agentstates:
+            agentstate = agentstates[current]
+            # record-before-act: journal the pending dispatch, then checkpoint.
+            journal.record({
+                "dedup_key": f"agent-dispatch:{tick_id}:{current}",
+                "state": current,
+                "writes": agentstate.entry["dispatch"][0]["writes"],
+            })
+            _write_checkpoint(state_path, current, ctx, path, signals,
+                              agentstate)
+            # Render the PAUSE from the just-written checkpoint so a fresh PAUSE
+            # and a crash-safety re-emit are byte-identical (both round-trip the
+            # slots through the durable store).
+            return _emit_pause_from_checkpoint(
+                state_path, agentstates, tick_id, mode), None
+        manifest = states[current][0]
+        result = second(ctx)
+        fc.apply_result(ctx, manifest, result, _VOCAB)
+        signals.append(result.signal)
+        current = to.resolve_next(route, current, result.signal)
+        path.append(current)
+
+    return None, to.RunResult(final_state=current, path=path, signals=signals)
+
+
+def _resume_agent_state(route, states, ctx, checkpoint, resume_dispatch,
+                        agentstates):
+    """Validate + apply the resumed agent-state's outputs, then return the next
+    SCRIPT-walk position. On a validation failure returns
+    ({"status": "invalid_output", ...}, None, None) so the caller re-emits a
+    re-dispatchable PAUSE without clearing the checkpoint.
+
+    Returns (None, next_state, signal) on success."""
+    name = checkpoint["pending"]["state"]
+    pending = checkpoint["pending"]
+    writes = pending["writes"]
+    dispatch_entry = agentstates[name].entry["dispatch"][0]
+
+    # For a `once` dispatch the single output IS the whole slot value, so it is
+    # validated against the slot schema. For a {per_item: ...} dispatch each
+    # output is ONE ELEMENT that collect_outputs assembles into the array slot;
+    # validating each element against the array slot schema would wrongly reject
+    # a single object, so per-item outputs are validated as generic JSON (no
+    # top-level type check).
+    if dispatch_entry["cardinality"] == "once":
+        out_schema = _SLOT_SCHEMAS.get(writes, {})
+    else:
+        out_schema = {}
+
+    validated = []
+    for output_text in resume_dispatch:
+        ok, parsed = ad.validate_output(output_text, out_schema)
+        if not ok:
+            return ({"status": "invalid_output", "state": name,
+                     "reason": parsed}, None, None)
+        validated.append(parsed)
+
+    slot_value = ad.collect_outputs(dispatch_entry, validated)
+    ctx.write(writes, slot_value)
+    signal = ad.compute_signal(pending["signal_rule"], slot_value)
+    next_state = to.resolve_next(route, name, signal)
+    return None, next_state, signal
+
+
+def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
+                    journal_path, resume_dispatch, mode):
+    """Drive a tick over a route that contains agent-states (DESIGN §2.8).
+
+    Three cases, all keyed off the durable checkpoint (the source of truth):
+
+      - RESUME (resume_dispatch given): load the checkpoint, restore the slots,
+        validate + apply the agent outputs, and continue driving from the
+        successor state. A validation failure returns an "invalid_output" dict
+        (checkpoint left intact, re-dispatchable).
+      - CRASH-SAFETY RE-EMIT (no resume_dispatch, checkpoint present): restore
+        the slots and re-emit the SAME PAUSED dispatch from the checkpoint.
+      - FRESH (no resume_dispatch, no checkpoint): seed a fresh context and drive
+        from GUARD until the first agent-state PAUSE or the terminal.
+
+    Returns a 3-tuple: (early_dict, result, ctx). `early_dict` is the PAUSED /
+    invalid_output dict to return directly (then result/ctx are None); when the
+    driver reaches the terminal `early_dict` is None and (result, ctx) carry the
+    RunResult + the final TickContext for read-product persistence.
+    """
+    checkpoint = persisted_tick_checkpoint(state_path)
+    # The tick id keys the dispatch journal dedup; the durable counter is the
+    # deterministic per-tick anchor (no wall clock).
+    tick_id = ds.DurableState(state_path).load().get("counter", 0)
+
+    if resume_dispatch is not None:
+        # RESUME: the checkpoint must exist (a resume without a prior PAUSE is a
+        # caller error). Restore the blackboard, then validate + apply.
+        ctx = ctx_seed()
+        _restore_slots(ctx, checkpoint["slots"])
+        early, next_state, _signal = _resume_agent_state(
+            route, states, ctx, checkpoint, resume_dispatch, agentstates)
+        if early is not None:
+            return early, None, None
+        path = list(checkpoint["path"]) + [next_state]
+        signals = list(checkpoint["signals"])
+        return _drive_agent_tick(
+            route, states, ctx, journal_path, state_path, next_state, mode,
+            tick_id, agentstates, path, signals) + (ctx,)
+
+    if checkpoint:
+        # CRASH-SAFETY RE-EMIT: re-issue the SAME PAUSED dispatch idempotently
+        # from the durable checkpoint (the source of truth).
+        return _emit_pause_from_checkpoint(
+            state_path, agentstates, tick_id, mode), None, None
+
+    # FRESH: drive from GUARD.
+    ctx = ctx_seed()
+    return _drive_agent_tick(
+        route, states, ctx, journal_path, state_path, "GUARD", mode, tick_id,
+        agentstates, ["GUARD"], []) + (ctx,)
+
+
 def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              project_dir=None, source=None, now=None, tick_spend=0,
-             return_run_result=False):
+             return_run_result=False, resume_dispatch=None):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -517,6 +801,14 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     `project_dir` likewise defaults to the CLAUDE_PROJECT_DIR / cwd anchor.
     `source` is the injectable PULL issue source; `now` the injectable TRIAGE
     reference time.
+
+    Agent yield/resume seam (DESIGN §2.8): when the resolved route contains >=1
+    agent-state, the tick PAUSES at each agent-state and returns a PAUSED dict
+    (the dispatch request) after durably checkpointing; the executor (a later
+    slice) performs the Agent dispatch and feeds the raw outputs back via
+    `resume_dispatch`. On resume the outputs are validated + applied and the
+    driver continues to the next pause or the terminal. A pure-script route is
+    UNCHANGED — it runs via tick_orchestrator.run and returns the signal string.
 
     Prints a one-line tick trace (state path, work_items/work_orders counts,
     disposition, and the route source — default vs override:<path>, #59).
@@ -547,20 +839,34 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "governance": gov,
     }
 
-    # Evaluate + persist the durable, cross-tick budget window. The tz-aware
-    # budget clock is the injected `now` when tz-aware, else the host local-aware
-    # now. evaluate_budget rolls the prior state over to this window (auto-resume
-    # on a new local day) and reports allowance over the injected tick_spend
-    # (0 in production — no model spender yet). The returned budget_state is the
-    # one to persist; record the actual spend when the tick acted (tick_spend>0).
-    budget_clock = _budget_clock(now)
-    prior_budget_state = persisted_budget_state(state_path)
-    budget = sg.evaluate_budget(gov, prior_budget_state, budget_clock,
-                                tick_spend=tick_spend)
-    new_budget_state = budget["budget_state"]
-    if tick_spend:
-        new_budget_state = sg.record_spend(new_budget_state, budget_clock,
-                                           tick_spend)
+    # The budget readiness gate is evaluated at FRESH tick start ONLY, not on
+    # resume (spec). A resume reuses the persisted budget window without rolling
+    # it over. `is_resume` is true when the executor feeds dispatch results back
+    # OR when a prior PAUSE left a durable checkpoint (crash-safety re-emit).
+    persisted_checkpoint = persisted_tick_checkpoint(state_path)
+    is_resume = resume_dispatch is not None or bool(persisted_checkpoint)
+
+    if is_resume:
+        # Reuse the persisted budget window verbatim (no fresh-start gate).
+        new_budget_state = persisted_budget_state(state_path)
+        budget = sg.evaluate_budget(
+            gov, new_budget_state, _clock_for_window(
+                new_budget_state.get("window_key")))
+    else:
+        # Evaluate + persist the durable, cross-tick budget window. The tz-aware
+        # budget clock is the injected `now` when tz-aware, else the host
+        # local-aware now. evaluate_budget rolls the prior state over to this
+        # window (auto-resume on a new local day) and reports allowance over the
+        # injected tick_spend (0 in production). The returned budget_state is the
+        # one to persist; record the actual spend when the tick acted.
+        budget_clock = _budget_clock(now)
+        prior_budget_state = persisted_budget_state(state_path)
+        budget = sg.evaluate_budget(gov, prior_budget_state, budget_clock,
+                                    tick_spend=tick_spend)
+        new_budget_state = budget["budget_state"]
+        if tick_spend:
+            new_budget_state = sg.record_spend(new_budget_state, budget_clock,
+                                               tick_spend)
 
     # Route-as-data: load (override else default) -> resolve -> validate. A bad
     # override raises WiringError here, before any tick body runs.
@@ -568,8 +874,28 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime,
         start="GUARD", initial=_INITIAL_SLOTS)
 
-    ctx = _seed_context(state_path, journal_path, route)
-    result = to.run(route, states, ctx, _VOCAB, start="GUARD")
+    # The agent-states resolved in this route ({name: AgentState}). When empty,
+    # the route is pure-script and runs the UNCHANGED tick_orchestrator.run path.
+    agentstates = {name: second for name, (m, second) in states.items()
+                   if isinstance(second, aw.AgentState)}
+
+    if agentstates:
+        agent_outcome = _run_agent_tick(
+            route, states, agentstates, ctx_seed=lambda: _seed_context(
+                state_path, journal_path, route),
+            state_path=state_path, journal_path=journal_path,
+            resume_dispatch=resume_dispatch, mode=gov.get("mode", ""))
+        if agent_outcome[0] is not None:
+            # PAUSED or invalid_output: return the structured dict directly. The
+            # executor re-invokes run_tick with resume_dispatch to continue.
+            return agent_outcome[0]
+        result = agent_outcome[1]
+        ctx = agent_outcome[2]
+        # The driver reached the terminal — clear the PAUSED checkpoint.
+        _clear_checkpoint(state_path)
+    else:
+        ctx = _seed_context(state_path, journal_path, route)
+        result = to.run(route, states, ctx, _VOCAB, start="GUARD")
 
     if result.final_state == _DONE:
         # EXIT ran and emitted the disposition-selecting signal last. Persist the
@@ -636,11 +962,115 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     return signal
 
 
+# --------------------------------------------------------------------------
+# JSON tick CLI (the --step / --resume executor seam).
+#
+# A THIN deterministic wrapper around the EXISTING run_tick(...) structured
+# returns (the yield/resume seam above) — it adds NO new tick logic. The later
+# executor skill drives the yield/resume loop by calling --step, then feeding the
+# paused agent-state's subagent outputs back via --resume <file>. stdout is PURE
+# JSON in those modes (the skill parses stdout); the human trace run_tick writes
+# is captured into the JSON `trace` field, never leaked raw. Bare invocation (no
+# --step/--resume) is UNCHANGED: it prints the human trace, so pure-script bash
+# callers keep working.
+# --------------------------------------------------------------------------
+
+
+def _run_tick_paths(args):
+    """The keyword path args for run_tick() from the parsed CLI flags (a temp
+    runtime under test, else None -> the production defaults via
+    resolve_runtime_paths). Mirrors run_tick's own None-fallback behaviour."""
+    return {
+        "runtime_dir": args.runtime_dir,
+        "state_path": args.state,
+        "journal_path": args.journal,
+        "project_dir": args.project_dir,
+    }
+
+
+def _step_envelope(result, trace):
+    """Map a run_tick(...) structured return to the CLI JSON envelope.
+
+    run_tick returns either a disposition signal STRING (a clean terminal) or a
+    structured dict (paused / invalid_output). A string -> the done envelope
+    carrying the captured one-line trace; a dict is already the settled
+    paused/invalid_output shape and is surfaced verbatim (a pause emits no trace).
+    """
+    if isinstance(result, dict):
+        return result
+    return {"status": "done", "signal": result, "trace": trace}
+
+
+def main(argv=None):
+    """The JSON tick CLI entrypoint. Returns the process exit code.
+
+    Bare (no --step/--resume): run one tick and print the HUMAN trace (unchanged).
+    --step: run to the next pause/terminal, print the JSON envelope to stdout.
+    --resume <file>: feed the file's JSON array of raw subagent outputs back via
+    run_tick(resume_dispatch=...), print the same envelope shape.
+
+    Exit codes: done/paused -> 0; invalid_output (bad agent output OR a
+    malformed/missing --resume file) -> 1.
+    """
+    parser = argparse.ArgumentParser(
+        description="Run one maintainer tick (JSON --step/--resume seam).")
+    parser.add_argument(
+        "--step", action="store_true",
+        help="run to the next pause/terminal and print a JSON envelope")
+    parser.add_argument(
+        "--resume", metavar="FILE",
+        help="resume a paused tick from FILE (a JSON array of raw subagent "
+             "output strings, in dispatch order); print a JSON envelope")
+    parser.add_argument("--runtime-dir", dest="runtime_dir")
+    parser.add_argument("--state", dest="state")
+    parser.add_argument("--journal", dest="journal")
+    parser.add_argument("--project-dir", dest="project_dir")
+    args = parser.parse_args(argv)
+
+    paths = _run_tick_paths(args)
+
+    # Bare mode (no JSON flags): UNCHANGED — print the one-line human trace.
+    if not args.step and not args.resume:
+        run_tick(**paths)
+        return 0
+
+    resume_dispatch = None
+    if args.resume:
+        # Read the dispatch outputs. A missing/malformed file is surfaced as an
+        # invalid_output envelope (no crash), never a traceback.
+        try:
+            with open(args.resume) as f:
+                resume_dispatch = json.load(f)
+        except (OSError, ValueError) as exc:
+            sys.stdout.write(json.dumps({
+                "status": "invalid_output", "state": None,
+                "reason": f"could not read resume file: {exc}"}) + "\n")
+            return 1
+        if not isinstance(resume_dispatch, list):
+            sys.stdout.write(json.dumps({
+                "status": "invalid_output", "state": None,
+                "reason": "resume file must contain a JSON array of output "
+                          "strings"}) + "\n")
+            return 1
+
+    # Capture run_tick's one-line human trace so it does NOT pollute stdout (the
+    # skill parses stdout as pure JSON); fold it into the envelope `trace` field.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = run_tick(resume_dispatch=resume_dispatch, **paths)
+    trace = buf.getvalue().strip()
+
+    envelope = _step_envelope(result, trace)
+    sys.stdout.write(json.dumps(envelope) + "\n")
+    return 1 if envelope.get("status") == "invalid_output" else 0
+
+
 if __name__ == "__main__":
     # Production entrypoint: the scheduling skills invoke this once per tick from
-    # the installed plugin with no path wiring and no injected source. run_tick
-    # defaults its durable file locations to the writable per-project runtime dir
+    # the installed plugin. With no flags it defaults its durable file locations
+    # to the writable per-project runtime dir
     # (${CLAUDE_PROJECT_DIR}/.auto-maintainer/ else .auto-maintainer/ under cwd)
     # via resolve_runtime_paths(), loads the project-local route override (else
-    # the default spine), and pulls real open issues via the live gh source.
-    run_tick()
+    # the default spine), and pulls real open issues via the live gh source. The
+    # --step/--resume flags give the executor skill the JSON yield/resume seam.
+    sys.exit(main())
