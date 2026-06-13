@@ -283,30 +283,43 @@ non-overridable anchors. The runtime (orchestrator + validator) belongs to the
 lifecycle core; the schemas (slots, signals, `StateResult`, per-state manifest,
 `route.json`) belong to the port-contract layer. **[v1]**
 
-### 2.8 Execution model — in-session, model-orchestrated
+### 2.8 Execution model — in-session, script-driven
 
-The tick runs inside a **live Claude Code session**, which is the tick
-**executor**. Tick states are two kinds:
+The tick runs inside a **live Claude Code session** and is **script-driven**.
+Tick states are two kinds:
 
 - **script-states** — deterministic `run(ctx)` callables (tool-tier `script`):
   `GUARD`, `DRAIN`, `PULL`, `PRIORITIZE`, `PERSIST`, `EXIT`, and any deterministic
   adapter.
 - **agent-states** — states that require a model (`TRIAGE`, `IMPLEMENT`; sections
-  2.1, 3.5, 3.6). The session dispatches subagent(s) via the `Agent` tool per a
-  declarative **dispatch schema** (tool-tier `spec`) and writes their structured
-  output to the blackboard slot.
+  2.1, 3.5, 3.6): a **dispatch point** where a subagent is run via the `Agent`
+  tool per a declarative **dispatch schema** (tool-tier `spec`, section 3.4.6),
+  its structured output written back to the blackboard slot.
 
-The deterministic route resolver + validator (section 1.1.1) still own control
-flow; the session walks the route and, per state kind, either runs the script or
-dispatches the agent-adapter. Subagents run one level below the orchestrator
-(L0 session → L1 subagent); a dispatched subagent never dispatches another (the
-2-level nesting cap, section 3.6.2).
+**The script drives the route; the session only presses the `Agent` button.** A
+script walks the route (the deterministic resolver + validator, section 1.1.1),
+runs every script-state, computes signals, and persists/journals — exactly as a
+pure-script tick does. At a subagent-state the script **cannot** call the `Agent`
+tool, so it emits the rendered invocation envelope (section 3.4.6) and
+**yields**; the session performs that single `Agent` dispatch, the result is
+validated against the slot schema and written to the slot, and the script
+**resumes** (the per-tick journal, section 3.2.2, already provides pause/resume).
+The session **decides nothing** — it is a thin dispatch-fulfiller; all control
+flow stays in the script. Subagents run one level below (L0 session → L1); a
+dispatched subagent never dispatches another (the 2-level nesting cap, section
+3.6.2).
 
 *Rationale:* the only states that need a model cannot be reached from a
-deterministic script — a `run(ctx)` cannot invoke the `Agent` tool. Inverting
-control so the **session orchestrates and calls the scripts** (rather than a
-headless script that shells out to a model) deletes the subprocess/headless
-transport entirely and uses Claude Code's native subagent dispatch.
+deterministic script — a `run(ctx)` cannot invoke the `Agent` tool. Keeping the
+script as the driver and adding a **yield/resume seam** (the session issues only
+the `Agent` dispatch) deletes the subprocess/headless transport entirely and uses
+Claude Code's native subagent dispatch, while leaving all control flow
+deterministic.
+
+*Heartbeat:* because the `Agent` tool is reachable only from within a model turn,
+a tick containing a subagent-state is triggered by the heartbeat **enqueuing a
+prompt** (so the session is present to fulfill dispatches), not a bare Bash cron;
+a pure-script route may still run from a Bash cron (refines sections 3.3.1/3.3.3).
 
 *Consequence — warm-only:* the loop runs only while a session for the project is
 open. It is autonomous in **what** it decides and does, not in **when** it runs.
@@ -352,7 +365,9 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 - **3.3.1** Scheduler detection (system cron where available, else an in-session
   durable heartbeat). **[v1]** *(forced by the platform: a plugin cannot
   install its own clock)* *(Superseded by section 2.8: the in-session durable
-  heartbeat is the sole scheduler; the system-cron branch is dropped.)*
+  heartbeat is the sole scheduler; the system-cron branch is dropped. The
+  heartbeat enqueues a **prompt** so the session is present to fulfill subagent
+  dispatches.)*
 - **3.3.2** Heartbeat install/uninstall bootstrap — the "configure" step wires the
   clock; the user authorizes it. **[v1]**
 - **3.3.3** Immediate-refire decision (work-remains -> one-shot; queue-empty ->
