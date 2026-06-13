@@ -1,5 +1,35 @@
 # scheduling — Changelog
 
+## contract 0.6.0 — 2026-06-13
+
+- **Agent-tick resume now reads subagent-WRITTEN OUTPUT FILES (DESIGN §3.4.6
+  file-based context isolation), not an orchestrator-marshalled blob.** `run_tick`
+  resolves `output_dir = ${runtime_dir}/dispatch-out/` (created `mkdir -p`) and
+  passes it to `ad.build_envelopes(..., output_dir=output_dir)`. Each dispatch
+  carries an `output_path` (under `dispatch-out/`); the rendered `## Handoff`
+  names it and mandates the subagent WRITE its JSON there. The PAUSED dispatch
+  records now carry `output_path` (replacing `schema_ref`).
+- **At pause, any pre-existing file at each `output_path` is DELETED** — a stale
+  prior-tick file can never be misread on resume; a missing fresh write surfaces
+  as `invalid_output`, never a stale read.
+- **`run_tick(resume=True)` reads the output files** at the checkpoint's
+  `output_path`s: a MISSING file → `{status:'invalid_output', reason:'missing
+  output file: <path>'}` (re-dispatchable; checkpoint intact; no crash); else the
+  content is validated via `ad.validate_output(content, schema)`; on all valid it
+  collects + persists the slot, computes the signal, and continues. The old
+  `resume_dispatch` list input and the `dispatch-result.json` marshalling are
+  REMOVED (superseded by file-reading).
+- **`run_tick.py --resume` takes NO file argument** now (it reads the checkpoint's
+  output files); `--step` is unchanged. The checkpoint persists `output_dir` + the
+  per-dispatch `output_path`/`schema`, so a crash-safety re-emit produces the
+  byte-identical `output_path`.
+- Crash-safety preserved: a fresh `--step` with an existing checkpoint re-emits
+  the same PAUSE (byte-identical `output_path`); two consecutive agent ticks
+  through DRAIN still clean (#109 stays fixed — the durable checkpoint remains the
+  sole paused-dispatch source, no journal intent).
+- scheduling consumes `agent-dispatch` and all sibling features UNCHANGED; edits
+  live ONLY in scheduling (`run_tick.py` + tests + docs).
+
 ## contract 0.5.1 — 2026-06-13
 
 - **Fix #109 — second consecutive AGENT-route tick crashed in DRAIN with

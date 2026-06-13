@@ -8,41 +8,58 @@ CONSUMES agent-dispatch + adapter-wiring + tick-orchestrator + work-intake +
 prioritize + implement + safety-governance + durable-state UNCHANGED; edits live
 ONLY in scheduling (run_tick.py).
 
-The PAUSED/resume return contract (the settled shape):
+The PAUSED/resume return contract (the settled shape — FILE-BASED resume per
+DESIGN §3.4.6 context-isolation):
 
   - A fresh run on a route with >=1 agent-state returns a PAUSED dict
         {"status": "paused", "state": <agent-state name>,
          "dispatches": [ {"subagent_type", "prompt" (rendered markdown),
-                          "writes", "schema_ref", "signal_rule",
+                          "writes", "output_path", "signal_rule",
                           "cardinality", "item"? } ... ]}
     and persists a durable checkpoint under TICK_CHECKPOINT_KEY; the script does
-    NOT call the Agent tool (that is the executor's job, a later slice).
-  - run_tick(resume_dispatch=[<raw subagent output strings>]) loads the
-    checkpoint, validates each output against the writes-slot schema, applies the
+    NOT call the Agent tool (that is the executor's job, a later slice). Each
+    dispatch's rendered prompt names an `output_path` under
+    ${runtime_dir}/dispatch-out/ where the subagent WRITES its JSON output. Any
+    pre-existing file at that output_path is DELETED at pause (so a stale
+    prior-tick file can't be misread on resume).
+  - run_tick(resume=True) loads the checkpoint, READS each pending dispatch's
+    output_path FILE, validates it against the writes-slot schema, applies the
     collected slot value, and continues the driver to the next pause or terminal.
-    On a validation failure it returns {"status": "invalid_output", "state",
-    "reason"} and leaves the checkpoint intact (re-dispatchable) — no crash.
+    A MISSING output file -> {"status": "invalid_output", "state", "reason"
+    naming the missing path}; an invalid file -> the same shape; both leave the
+    checkpoint intact (re-dispatchable) — no crash. There is NO orchestrator-
+    marshalled blob: the subagent-written output files are the sole resume input.
   - On reaching the terminal (DONE) it clears the checkpoint, persists the read
     products (#64), prints the stitched one-line trace, and returns the
     disposition signal (a string) exactly as a pure-script tick does.
-  - Crash-safety: a fresh run_tick with no resume_dispatch that finds an existing
-    checkpoint re-emits the SAME PAUSED dispatch request from the checkpoint.
+  - Crash-safety: a fresh run_tick with no resume that finds an existing
+    checkpoint re-emits the SAME PAUSED dispatch request (byte-identical
+    output_path) from the checkpoint.
 
 Behaviours exercised (every one has an e2e test, per the E2E TEST RULE):
 
   A. Fresh run on an agent route -> PAUSED at TRIAGE; the dispatch carries a
-     rendered prompt (markdown), writes="work_orders", signal_rule, cardinality;
-     checkpoint persisted; work_items already produced/persisted.
-  B. Resume with a canned valid work_orders output -> applies work_orders, runs
-     PRIORITIZE (script), returns PAUSED at IMPLEMENT (per_item over
-     execution_plan.ordered -> one dispatch per order, each with `item`).
-  C. Resume with canned handoffs -> DONE; handoffs persisted; signal idle;
-     checkpoint cleared; trace shows the full stitched path.
-  D. Crash-safety: after the first PAUSE, a fresh run_tick (no resume_dispatch)
-     re-emits the same TRIAGE dispatch from the checkpoint.
-  E. Invalid agent output (wrong type) on resume -> status "invalid_output" with
-     a reason, no crash, checkpoint intact.
-  F. Pure-script DEFAULT route unchanged: still runs via to.run, same trace.
+     rendered prompt (markdown), writes="work_orders", an output_path under
+     dispatch-out/, signal_rule, cardinality; checkpoint persisted; work_items
+     already produced/persisted.
+  B. WRITE a canned valid work_orders output to the TRIAGE output_path, resume
+     -> applies work_orders, runs PRIORITIZE (script), returns PAUSED at IMPLEMENT
+     (per_item over execution_plan.ordered -> one dispatch per order, each with
+     `item` + its own output_path).
+  C. WRITE canned handoffs to the IMPLEMENT output_paths, resume -> DONE; handoffs
+     persisted; signal idle; checkpoint cleared; trace shows the full stitched
+     path.
+  D. Crash-safety: after the first PAUSE, a fresh run_tick (no resume) re-emits
+     the same TRIAGE dispatch (byte-identical output_path) from the checkpoint.
+  E. Resume with the output file MISSING -> status "invalid_output" naming the
+     missing path, no crash, checkpoint intact; then writing the file + resume
+     succeeds (re-dispatch path).
+  F. Stale-file safety: a pre-existing file at the output_path is deleted at
+     pause, so a missing fresh write surfaces as invalid_output (not a stale
+     read).
+  G. Invalid agent output (wrong type) written to the file on resume -> status
+     "invalid_output" with a reason, no crash, checkpoint intact.
+  H. Pure-script DEFAULT route unchanged: still runs via to.run, same trace.
 
 scheduling CONSUMES the loop-core / work-intake / prioritize / implement /
 adapter-wiring / agent-dispatch features UNCHANGED via sys.path; it does NOT edit
@@ -246,6 +263,20 @@ def _canned_handoff(work_order_id):
     })
 
 
+def _write_outputs(paused, contents):
+    """Simulate the subagent: WRITE each `contents[i]` string to the matching
+    paused["dispatches"][i]["output_path"] file. This is the file-based resume
+    handoff — the subagent's written output file is the sole resume input (no
+    orchestrator-marshalled blob)."""
+    dispatches = paused["dispatches"]
+    assert len(dispatches) == len(contents), (len(dispatches), len(contents))
+    for d, content in zip(dispatches, contents):
+        path = d["output_path"]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+
+
 # ==========================================================================
 # Behaviour A — fresh run on an agent route PAUSES at TRIAGE.
 # ==========================================================================
@@ -262,12 +293,17 @@ def test_fresh_agent_route_pauses_at_triage():
     d = result["dispatches"][0]
     assert d["subagent_type"] == "triage-doer", d
     assert d["writes"] == "work_orders", d
-    assert d["schema_ref"] == "work_orders", d
     assert d["signal_rule"] == "nonempty_else_empty", d
     assert d["cardinality"] == "once", d
+    # The dispatch names an output_path under ${runtime_dir}/dispatch-out/ where
+    # the subagent writes its JSON; the rendered ## Handoff section names it too.
+    assert "output_path" in d, d
+    assert os.path.join(runtime_dir, "dispatch-out") in d["output_path"], d
     # The prompt is RENDERED markdown (not raw JSON) — agent-dispatch.render.
     assert d["prompt"].startswith("# Dispatch: TRIAGE"), d["prompt"][:60]
     assert "## Inputs" in d["prompt"], d["prompt"]
+    assert "## Handoff" in d["prompt"], d["prompt"]
+    assert d["output_path"] in d["prompt"], d["prompt"]
 
 
 def test_fresh_agent_route_persists_checkpoint_and_work_items():
@@ -305,19 +341,21 @@ def test_fresh_agent_route_does_not_call_agent_or_persist_read_products():
 
 def test_resume_triage_runs_prioritize_and_pauses_at_implement():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
-    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
-                state_path=state_path, journal_path=journal_path,
-                source=_stub_source())
-    # Resume with the canned valid work_orders output.
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source())
+    # Simulate the TRIAGE subagent: WRITE the canned work_orders to its
+    # output_path, THEN resume (file-based, no marshalled blob).
+    _write_outputs(paused, [_CANNED_WORK_ORDERS])
     result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                          state_path=state_path, journal_path=journal_path,
-                         source=_stub_source(),
-                         resume_dispatch=[_CANNED_WORK_ORDERS])
+                         source=_stub_source(), resume=True)
     assert isinstance(result, dict), result
     assert result["status"] == "paused", result
     assert result["state"] == "IMPLEMENT", result
     # IMPLEMENT is per_item over execution_plan.ordered (2 orders) -> 2 dispatches.
     assert len(result["dispatches"]) == 2, result
+    seen_paths = set()
     for d in result["dispatches"]:
         assert d["subagent_type"] == "implement-doer", d
         assert d["writes"] == "handoffs", d
@@ -325,17 +363,21 @@ def test_resume_triage_runs_prioritize_and_pauses_at_implement():
         # Each per-item dispatch carries its `item` (the order id).
         assert "item" in d, d
         assert d["item"] in ("wo-acme/widget#7", "wo-acme/widget#9"), d
+        # Each per-item dispatch has its OWN distinct output_path.
+        assert "output_path" in d, d
+        seen_paths.add(d["output_path"])
+    assert len(seen_paths) == 2, seen_paths
 
 
 def test_resume_triage_applies_work_orders_to_durable_state():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source())
+    _write_outputs(paused, [_CANNED_WORK_ORDERS])
     rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                 state_path=state_path, journal_path=journal_path,
-                source=_stub_source())
-    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
-                state_path=state_path, journal_path=journal_path,
-                source=_stub_source(),
-                resume_dispatch=[_CANNED_WORK_ORDERS])
+                source=_stub_source(), resume=True)
     # The applied work_orders is carried in the checkpoint slot snapshot, so the
     # IMPLEMENT pause can read execution_plan (derived from work_orders).
     doc = ds.DurableState(state_path).load()
@@ -351,21 +393,22 @@ def test_resume_triage_applies_work_orders_to_durable_state():
 
 def test_resume_implement_reaches_done_persists_handoffs_clears_checkpoint():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
-    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
-                state_path=state_path, journal_path=journal_path,
-                source=_stub_source())
-    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
-                state_path=state_path, journal_path=journal_path,
-                source=_stub_source(),
-                resume_dispatch=[_CANNED_WORK_ORDERS])
-    # Resume IMPLEMENT with two canned handoffs (one per per_item dispatch).
-    handoffs = [_canned_handoff("wo-acme/widget#7"),
-                _canned_handoff("wo-acme/widget#9")]
+    paused1 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source())
+    _write_outputs(paused1, [_CANNED_WORK_ORDERS])
+    paused2 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source(), resume=True)
+    # Resume IMPLEMENT with two canned handoffs (one per per_item dispatch),
+    # written to each dispatch's output_path in order.
+    _write_outputs(paused2, [_canned_handoff(d["item"])
+                             for d in paused2["dispatches"]])
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         signal = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                              state_path=state_path, journal_path=journal_path,
-                             source=_stub_source(), resume_dispatch=handoffs)
+                             source=_stub_source(), resume=True)
     # A terminal resume returns the disposition signal STRING (read-and-idle).
     assert signal == "idle", signal
     # handoffs persisted (#64), count == number of orders.
@@ -402,22 +445,101 @@ def test_crash_safety_reemits_same_dispatch_from_checkpoint():
     assert again["state"] == "TRIAGE", again
     assert again["dispatches"][0]["prompt"] == first["dispatches"][0]["prompt"]
     assert again["dispatches"][0]["writes"] == "work_orders"
+    # The re-emitted output_path is BYTE-IDENTICAL to the first PAUSE's.
+    assert (again["dispatches"][0]["output_path"]
+            == first["dispatches"][0]["output_path"]), (first, again)
 
 
 # ==========================================================================
-# Behaviour E — invalid agent output (wrong type) on resume -> "invalid_output".
+# Behaviour E — resume with the output file MISSING -> "invalid_output" naming
+# the missing path; checkpoint intact; then writing + resume succeeds.
+# ==========================================================================
+
+def test_resume_missing_output_file_returns_invalid_output_then_succeeds():
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source())
+    out_path = paused["dispatches"][0]["output_path"]
+    # No file written: resume must surface invalid_output naming the missing path
+    # (a missing write must NEVER fall through to a stale read or a crash).
+    result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source(), resume=True)
+    assert isinstance(result, dict), result
+    assert result["status"] == "invalid_output", result
+    assert result["state"] == "TRIAGE", result
+    assert out_path in result.get("reason", ""), result
+    # Checkpoint intact (re-dispatchable): still at TRIAGE, work_orders unapplied.
+    doc = ds.DurableState(state_path).load()
+    cp = doc.get(rt.TICK_CHECKPOINT_KEY)
+    assert cp is not None and cp["pending"]["state"] == "TRIAGE", doc
+    assert rt.persisted_work_orders_count(state_path) == 0
+    # Now WRITE the file and resume again -> advances (re-dispatch succeeds).
+    _write_outputs(paused, [_CANNED_WORK_ORDERS])
+    result2 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source(), resume=True)
+    assert result2["status"] == "paused", result2
+    assert result2["state"] == "IMPLEMENT", result2
+
+
+# ==========================================================================
+# Behaviour F — stale-file safety: a pre-existing file at the output_path is
+# DELETED at pause, so a missing fresh write surfaces as invalid_output (not a
+# stale read).
+# ==========================================================================
+
+def test_stale_output_file_is_deleted_at_pause():
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    paused1 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source())
+    out_path = paused1["dispatches"][0]["output_path"]
+    # Drive tick-1 to DONE so a stale file sits at out_path from this run.
+    _write_outputs(paused1, [_CANNED_WORK_ORDERS])
+    paused2 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source(), resume=True)
+    _write_outputs(paused2, [_canned_handoff(d["item"])
+                             for d in paused2["dispatches"]])
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                    state_path=state_path, journal_path=journal_path,
+                    source=_stub_source(), resume=True)
+    # A stale TRIAGE output file from tick-1 exists at out_path.
+    assert os.path.isfile(out_path), out_path
+    # tick-2 fresh PAUSE must DELETE the stale file at the same output_path.
+    paused3 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source())
+    assert paused3["dispatches"][0]["output_path"] == out_path, paused3
+    assert not os.path.isfile(out_path), "stale output file must be deleted at pause"
+    # With the stale file gone and no fresh write, resume -> invalid_output (NOT
+    # a stale read of tick-1's content).
+    result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source(), resume=True)
+    assert result["status"] == "invalid_output", result
+    assert out_path in result.get("reason", ""), result
+
+
+# ==========================================================================
+# Behaviour G — invalid agent output (wrong type / unparseable) written to the
+# output file on resume -> "invalid_output".
 # ==========================================================================
 
 def test_invalid_agent_output_returns_invalid_output_no_crash():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
-    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
-                state_path=state_path, journal_path=journal_path,
-                source=_stub_source())
-    # work_orders expects an array; resume with an OBJECT -> type mismatch.
-    bad = json.dumps({"not": "an array"})
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source())
+    # work_orders expects an array; the subagent writes an OBJECT -> type mismatch.
+    _write_outputs(paused, [json.dumps({"not": "an array"})])
     result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                          state_path=state_path, journal_path=journal_path,
-                         source=_stub_source(), resume_dispatch=[bad])
+                         source=_stub_source(), resume=True)
     assert isinstance(result, dict), result
     assert result["status"] == "invalid_output", result
     assert result["state"] == "TRIAGE", result
@@ -431,19 +553,19 @@ def test_invalid_agent_output_returns_invalid_output_no_crash():
 
 def test_invalid_agent_output_unparseable_json_returns_invalid_output():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
-    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
-                state_path=state_path, journal_path=journal_path,
-                source=_stub_source())
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source())
+    _write_outputs(paused, ["this is not json {{{"])
     result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                          state_path=state_path, journal_path=journal_path,
-                         source=_stub_source(),
-                         resume_dispatch=["this is not json {{{"])
+                         source=_stub_source(), resume=True)
     assert result["status"] == "invalid_output", result
     assert result.get("reason"), result
 
 
 # ==========================================================================
-# Behaviour F — pure-script DEFAULT route is UNCHANGED (still via to.run).
+# Behaviour H — pure-script DEFAULT route is UNCHANGED (still via to.run).
 # ==========================================================================
 
 def test_pure_script_default_route_returns_signal_string():
@@ -496,25 +618,24 @@ def test_pure_script_default_route_return_run_result_still_works():
 
 def _drive_agent_tick_to_done(project_dir, runtime_dir, state_path,
                               journal_path):
-    """Drive a full agent tick (step -> resume TRIAGE -> resume IMPLEMENT) to the
-    DONE terminal in the given runtime dir. Returns the terminal disposition
-    signal string."""
+    """Drive a full agent tick (step -> write+resume TRIAGE -> write+resume
+    IMPLEMENT) to the DONE terminal in the given runtime dir. Returns the terminal
+    disposition signal string."""
     r = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                     state_path=state_path, journal_path=journal_path,
                     source=_stub_source())
     assert r["status"] == "paused" and r["state"] == "TRIAGE", r
+    _write_outputs(r, [_CANNED_WORK_ORDERS])
     r = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                     state_path=state_path, journal_path=journal_path,
-                    source=_stub_source(),
-                    resume_dispatch=[_CANNED_WORK_ORDERS])
+                    source=_stub_source(), resume=True)
     assert r["status"] == "paused" and r["state"] == "IMPLEMENT", r
-    handoffs = [_canned_handoff("wo-acme/widget#7"),
-                _canned_handoff("wo-acme/widget#9")]
+    _write_outputs(r, [_canned_handoff(d["item"]) for d in r["dispatches"]])
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         signal = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                              state_path=state_path, journal_path=journal_path,
-                             source=_stub_source(), resume_dispatch=handoffs)
+                             source=_stub_source(), resume=True)
     return signal
 
 
