@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-13",
   "spec_no_change_reason": "safety-governance per_day default changed 200000->null upstream and is consumed unchanged; scheduling source renders the ceiling dynamically, so only the two stale default-budget test assertions needed updating (budget=0/200000 -> budget=0/none). No public surface change."
 }
