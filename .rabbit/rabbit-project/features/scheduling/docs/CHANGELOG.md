@@ -1,5 +1,27 @@
 # scheduling — Changelog
 
+## contract 0.5.0 — 2026-06-10
+
+- **`/auto-maintainer:start` skill reworked to v0.2.0** — executor-driven first
+  tick + prompt-cron heartbeat. The skill now (1) clears the FRESH-start latch via
+  `start.py --clear-only` (clear `STOPPED` → `IDLE`, or REFUSE on `ABORTED` and
+  stop), (2) runs tick #1 **through the `/auto-maintainer:tick` executor** — NOT
+  `start.py`'s in-process `run_tick` — so an AGENT route's agent-state dispatches
+  are fulfilled (DESIGN §2.8 in-session executor model), and (3) schedules a
+  recurring ~1-min heartbeat as a **prompt** job firing `/auto-maintainer:tick`
+  each interval (NOT a bare `run_tick.py` command, which cannot dispatch
+  agent-states). The latch is cleared once at start, not re-cleared per heartbeat.
+- **`/auto-maintainer:tick` skill hardened to v0.1.1 (#100)** — the resume step
+  now MANDATES the `Write` tool writing a JSON array of the verbatim subagent
+  outputs (dispatch order) to the **absolute**
+  `${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json` path — never an
+  improvised `python -c` (truncates/mis-escapes large/quoted/newline payloads) and
+  never a relative path (resolves against the wrong directory). The runner
+  validates the payload against the slot schema, so faithful serialization matters.
+- Both skills ship via the build's `ship/` collection with NO build change.
+  scheduling consumes `start.py`/`run_tick.py` and all sibling features UNCHANGED.
+- Closes #100.
+
 ## contract 0.4.0 — 2026-06-10
 
 - `start.py` gains a **`--clear-only`** mode that performs ONLY the disposition
