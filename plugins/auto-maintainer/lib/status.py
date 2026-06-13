@@ -64,10 +64,15 @@ def status_line():
     execution_plan = rt.persisted_execution_plan_count(state_path)
     handoffs = rt.persisted_handoffs_count(state_path)
     route_src = rt.route_source_label()
+    # Governance surface (#69 style — always shown): mode + the compact budget
+    # field (+ budget_paused when exhausted), via the SAME helper the tick trace
+    # uses, so status and the trace never diverge. Resolved from the SAME
+    # project_dir / state_path run_tick reads.
+    gov_fields = rt.governance_status(rt._resolve_project_dir(), state_path)
     line = (f"[status] disposition={disposition} work_items={work_items} "
             f"work_orders={work_orders} "
             f"execution_plan={execution_plan} handoffs={handoffs} "
-            f"route={route_src} runtime_dir={runtime_dir}")
+            f"route={route_src} runtime_dir={runtime_dir} {gov_fields}")
     return line
 
 
