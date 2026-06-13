@@ -213,7 +213,11 @@ nowhere to put them. **[v1]**
 Every tick state implements the uniform signature `run(TickContext) ->
 StateResult` (section 1.1). What used to be a point-to-point port signature is
 now expressed as **which blackboard slots a state reads and writes**, plus the
-**signals it emits**. The seven adapter states and their slot contracts:
+**signals it emits**. *(Section 2.8 refines how a state is executed:
+**script-adapters** run this `run(...)` callable directly; **agent-adapters** are
+executed by the session via a declarative dispatch schema — section 3.4.6. Both
+honor the same slot / signal / manifest contract.)* The seven adapter states and
+their slot contracts:
 
 ```
 state       reads                       writes                signals (typical)
@@ -371,6 +375,55 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
   defaults; formal SDK ergonomics follow once contracts are battle-tested.
 - **3.4.5** Built-in non-GitHub trackers (Jira / Linear). **[deferred]**
   *Rationale:* the *port* exists in v1; extra built-in adapters are additive.
+- **3.4.6** Agent-adapter contract (in-session subagent dispatch, per section
+  2.8). **[v1]** Adapter states come in two kinds, both honoring the same
+  slot / signal / manifest contract (section 2.6):
+  - **script-adapter** — a deterministic `run(TickContext) -> StateResult`
+    callable.
+  - **agent-adapter** — executed by the session: a declarative **dispatch
+    schema** the session runs via the `Agent` tool, writing structured output
+    back to slots.
+
+  An agent-adapter expresses only what the route cannot: **one subagent, or a
+  parallel set, within a single state.** Serial composition is achieved by
+  **chaining states** in `route.json` (reusing the slot handoff interface,
+  section 2.6) — there is deliberately **no in-state stage/DAG mechanism**. A
+  multi-stage agent process `A → {B,C,D}∥ → {E,F}∥ → G` is therefore a route
+  chain of agent-states, each one-or-parallel.
+
+  **Dispatch schema** (lives in the adapter-map entry; project-local override +
+  shipped defaults, like `route.json`, section 3.4.3):
+  - `dispatch`: a list of entries that run **in parallel**; a single entry is a
+    single subagent.
+  - each entry: `subagent_type` (resolves to the subagent's standing
+    definition / role — BYO, owned, section 3.3-lifecycle), `task` (the
+    per-dispatch instructions; the role lives in the definition, the task here),
+    `inputs` (slots to inject), `cardinality` (`once` |
+    `{per_item: <collection>}` — `per_item` yields the per-work-order isolated
+    agent of section 3.6.2), and `writes` (its target slot).
+  - parallel outputs land **either** as distinct slots (each entry writes its
+    own) **or**, for a `per_item` fan-out, **collected into one list slot**.
+  - `signal`: a deterministic rule over the written slot(s), computed by the
+    executor **after** dispatch — the model never selects control flow.
+
+  **Invocation envelope + render** (the per-dispatch prompt):
+  - The session builds a machine-first **invocation envelope**
+    `{ state, task, inputs, item?, output_contract{slot, schema_ref},
+    context{tick_id, mode} }` and renders it deterministically into the `Agent`
+    `prompt` (the only per-invocation channel; `subagent_type` carries only the
+    role).
+  - Render format is **structured markdown**: `inputs` are rendered as a
+    readable **derivative view** of the machine-first slots (free-text fields
+    fenced to preserve boundaries) — no raw JSON for inputs; the **return
+    contract** is shown as the target slot schema, because the output is the
+    machine-first artifact the next state consumes (the Machine-First split,
+    section philosophy 1: derivative view in, canonical artifact out).
+  - The executor **validates** the returned output against the slot schema and
+    **re-dispatches on mismatch** (script-tier validation; the model cannot hand
+    back malformed data unchecked).
+  - Subagents run one level below the orchestrator (L0 session → L1); a
+    dispatched subagent never dispatches another (the 2-level nesting cap,
+    section 3.6.2).
 
 ### 3.5 TRIAGE Pipeline
 - **3.5.1** Intake / normalize to a canonical WorkItem. **[v1]**
@@ -392,7 +445,10 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 - **3.6.1** `Handoff` schema — the swap seam (section 2.6). **[v1]**
 - **3.6.2** Subagent isolation = hard rule + per-dispatch isolated workspace
   (worktree). **[v1]** *(also: the 2-level nesting cap means the loop dispatches
-  the implementer directly, never wrapped in another agent)*
+  the implementer directly, never wrapped in another agent)* *(Realized as a
+  section 3.4.6 agent-adapter: the in-session orchestrator dispatches the
+  implementer at L1 with `per_item` cardinality and Agent-tool worktree
+  isolation.)*
 - **3.6.3** Default implementer = generic implement-then-PR. **[v1]**
 - **3.6.4** TDD implementer as an optional bundled adapter (rabbit's path).
   **[v1, optional]** *Rationale:* keeps TDD available without making it a
