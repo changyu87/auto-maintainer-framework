@@ -25,15 +25,17 @@ _SRC = os.path.join(_FEATURE_DIR, "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-# adapter-wiring consumes the already-implemented fsm-contracts + tick-orchestrator.
+# adapter-wiring consumes the already-implemented fsm-contracts +
+# tick-orchestrator + agent-dispatch (the agent-adapter helper lib).
 _FEATURES_DIR = os.path.dirname(_FEATURE_DIR)
-for _dep in ("fsm-contracts", "tick-orchestrator"):
+for _dep in ("fsm-contracts", "tick-orchestrator", "agent-dispatch"):
     _dep_src = os.path.join(_FEATURES_DIR, _dep, "src")
     if _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
 
 import fsm_contracts as fc  # noqa: E402
 import tick_orchestrator as to  # noqa: E402
+import agent_dispatch as ad  # noqa: E402
 import adapter_wiring as aw  # noqa: E402
 
 
@@ -434,6 +436,221 @@ def test_e2e_build_loop_honours_project_local_overrides():
         result = to.run(route, states, ctx, vocab, start="GUARD")
         assert result.final_state == "EXIT"
         assert result.path == ["GUARD", "PERSIST", "EXIT"]
+
+
+# ==========================================================================
+# Behaviour 6 — agent-adapter object entries (DESIGN §2.8 / §3.4.6). An
+# adapter-map entry may be EITHER a "module:factory" string (script, unchanged)
+# OR an agent-adapter dict. resolve_states validates the dict via agent-dispatch
+# and yields (manifest, AgentState); the manifest participates in validation
+# exactly as a script-state manifest does. Agent states are RESOLVED + VALIDATED
+# here but NOT executed (no dispatch) — execution is a later slice.
+# ==========================================================================
+
+def _agent_entry():
+    """A well-formed agent-adapter object entry for the AGENT port. Reads
+    `count` (written by GUARD), writes `result`, emits the `GO` edge signal."""
+    return {
+        "kind": "agent",
+        "manifest": {"reads": ["count"], "writes": ["result"], "emits": ["GO"]},
+        "dispatch": [
+            {
+                "subagent_type": "stub-worker",
+                "inputs": ["count"],
+                "cardinality": "once",
+                "writes": "result",
+                "task": "do the thing",
+            }
+        ],
+        "signal": {"rule": "nonempty_else_empty"},
+    }
+
+
+# A route threading an AGENT state between GUARD and PERSIST. GUARD seeds count;
+# AGENT reads count + emits GO; PERSIST reads count + emits DONE; EXIT terminal.
+_AGENT_ROUTE = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "AGENT", "PERSIST", "EXIT"],
+    "edges": [
+        {"state": "GUARD", "signal": "GO", "next": "AGENT"},
+        {"state": "AGENT", "signal": "GO", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "DONE", "next": "EXIT"},
+    ],
+    "terminal": ["EXIT"],
+}
+
+
+def _agent_map():
+    return {
+        "GUARD": "stub_guard:make",
+        "AGENT": _agent_entry(),
+        "PERSIST": "stub_persist:make",
+        "EXIT": "stub_exit:make",
+    }
+
+
+def test_resolve_states_yields_agent_state_for_agent_entry():
+    """An agent-adapter object entry resolves to (manifest, AgentState): the
+    manifest mirrors the entry's manifest; the AgentState carries the dispatch,
+    signal, and the raw entry."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        states = aw.resolve_states(_AGENT_ROUTE, _agent_map(), _runtime(proj))
+        assert set(states) == set(_AGENT_ROUTE["states"])
+
+        manifest, second = states["AGENT"]
+        # First element is uniformly the manifest (script OR agent).
+        assert isinstance(manifest, fc.StateManifest)
+        assert list(manifest.reads) == ["count"]
+        assert list(manifest.writes) == ["result"]
+        assert list(manifest.emits) == ["GO"]
+
+        # Second element is the resolved AgentState (not a run callable).
+        assert isinstance(second, aw.AgentState)
+        assert second.manifest is manifest
+        assert second.dispatch == _agent_entry()["dispatch"]
+        assert second.signal == _agent_entry()["signal"]
+        assert second.entry["kind"] == "agent"
+
+
+def test_resolve_states_mixed_map_resolves_both_kinds():
+    """A MIXED adapter-map (script strings + an agent object) resolves both: the
+    script states yield (manifest, run-callable); the agent state yields
+    (manifest, AgentState)."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        states = aw.resolve_states(_AGENT_ROUTE, _agent_map(), _runtime(proj))
+
+        # Script states keep their run callable as the second element.
+        for script_state in ("GUARD", "PERSIST", "EXIT"):
+            manifest, second = states[script_state]
+            assert isinstance(manifest, fc.StateManifest)
+            assert callable(second)
+            assert not isinstance(second, aw.AgentState)
+
+        # The agent state's second element is an AgentState, never callable.
+        _m, agent_second = states["AGENT"]
+        assert isinstance(agent_second, aw.AgentState)
+
+
+def test_resolve_states_malformed_agent_entry_errors_naming_port():
+    """A malformed agent entry (delegated to agent-dispatch.validate_agent_adapter)
+    raises a locatable WiringError naming the offending port."""
+    bad_cases = [
+        # missing manifest
+        {"kind": "agent", "dispatch": [{"subagent_type": "x", "inputs": [],
+         "cardinality": "once", "writes": "result"}],
+         "signal": {"rule": "always_ok"}},
+        # empty dispatch
+        {"kind": "agent",
+         "manifest": {"reads": ["count"], "writes": ["result"], "emits": ["GO"]},
+         "dispatch": [], "signal": {"rule": "always_ok"}},
+        # bad cardinality
+        {"kind": "agent",
+         "manifest": {"reads": ["count"], "writes": ["result"], "emits": ["GO"]},
+         "dispatch": [{"subagent_type": "x", "inputs": [],
+          "cardinality": "twice", "writes": "result"}],
+         "signal": {"rule": "always_ok"}},
+        # bad signal rule
+        {"kind": "agent",
+         "manifest": {"reads": ["count"], "writes": ["result"], "emits": ["GO"]},
+         "dispatch": [{"subagent_type": "x", "inputs": [],
+          "cardinality": "once", "writes": "result"}],
+         "signal": {"rule": "no_such_rule"}},
+    ]
+    for bad in bad_cases:
+        amap = {
+            "GUARD": "stub_guard:make",
+            "AGENT": bad,
+            "PERSIST": "stub_persist:make",
+            "EXIT": "stub_exit:make",
+        }
+        with tempfile.TemporaryDirectory() as proj:
+            _write_stub_modules(proj)
+            try:
+                aw.resolve_states(_AGENT_ROUTE, amap, _runtime(proj))
+            except aw.WiringError as exc:
+                assert "AGENT" in str(exc), (
+                    f"WiringError must name the port for {bad}: {exc}")
+            else:
+                raise AssertionError(
+                    f"malformed agent entry must raise WiringError: {bad}")
+
+
+def test_load_adapter_map_accepts_object_entries():
+    """load_adapter_map accepts a map whose values are EITHER strings OR agent
+    objects — it does NOT deep-validate the agent dict (that is resolve_states'
+    job via agent-dispatch)."""
+    with tempfile.TemporaryDirectory() as proj:
+        amap = aw.load_adapter_map(_agent_map(), proj)
+        assert amap == _agent_map()
+        assert isinstance(amap["AGENT"], dict)
+
+
+def test_load_adapter_map_rejects_non_str_non_dict_entry():
+    """An entry that is neither a str nor a dict is a locatable WiringError."""
+    bad_map = {"GUARD": "stub_guard:make", "AGENT": 123}
+    with tempfile.TemporaryDirectory() as proj:
+        try:
+            aw.load_adapter_map(bad_map, proj)
+        except aw.WiringError as exc:
+            assert "AGENT" in str(exc)
+        else:
+            raise AssertionError(
+                "a non-str/non-dict entry must raise WiringError naming the port")
+
+
+def test_validate_wiring_passes_for_satisfied_agent_state():
+    """validate_wiring PASSES for a route whose agent-state reads are satisfied by
+    a predecessor's writes — proving the agent manifest participates in
+    data-readiness + signal validation."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        states = aw.resolve_states(_AGENT_ROUTE, _agent_map(), _runtime(proj))
+        manifests = {name: m for name, (m, _s) in states.items()}
+        res = aw.validate_wiring(_AGENT_ROUTE, manifests, start="GUARD",
+                                 initial=[])
+        assert res.passed is True
+
+
+def test_validate_wiring_fails_when_agent_reads_unwritten_slot():
+    """validate_wiring FAILS (data-readiness) when the agent-state reads a slot no
+    predecessor writes — the agent manifest is enforced like any other."""
+    # GUARD seeds `count`, but the AGENT here reads `missing`, which nothing
+    # writes. resolve a map whose AGENT entry reads an unfulfilled slot.
+    bad_agent = _agent_entry()
+    bad_agent["manifest"]["reads"] = ["missing"]
+    amap = {
+        "GUARD": "stub_guard:make",
+        "AGENT": bad_agent,
+        "PERSIST": "stub_persist:make",
+        "EXIT": "stub_exit:make",
+    }
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        states = aw.resolve_states(_AGENT_ROUTE, amap, _runtime(proj))
+        manifests = {name: m for name, (m, _s) in states.items()}
+        res = aw.validate_wiring(_AGENT_ROUTE, manifests, start="GUARD",
+                                 initial=[])
+        assert res.passed is False
+
+
+def test_e2e_build_loop_resolves_mixed_route_and_validates():
+    """End-to-end: build_loop over a MIXED route (script GUARD/PERSIST/EXIT + an
+    agent AGENT) loads + resolves + validates, returning (route, states) with the
+    agent state resolved to an AgentState and the wiring validated at LOAD."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        route, states = aw.build_loop(
+            _AGENT_ROUTE, _agent_map(), _runtime(proj),
+            start="GUARD", initial=[])
+        assert route == _AGENT_ROUTE
+        assert set(states) == set(_AGENT_ROUTE["states"])
+        # The agent state survived load+resolve+validate as an AgentState.
+        _m, agent_second = states["AGENT"]
+        assert isinstance(agent_second, aw.AgentState)
+        # Script states are unchanged: run callables.
+        assert callable(states["GUARD"][1])
 
 
 def test_e2e_build_loop_rejects_invalid_wiring_before_running():

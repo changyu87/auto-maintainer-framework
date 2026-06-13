@@ -31,11 +31,20 @@ Public surface:
   - build_loop(default_route, default_map, runtime, start, initial)
         -> (route, states)
 
-It CONSUMES fsm-contracts (validate_route, StateManifest, CheckResult) and
-tick-orchestrator (validate_signals, validate_data_readiness); it does not
+An adapter-map value is EITHER a "module:factory" string (a script factory,
+above) OR an agent-adapter object (a dict). adapter-wiring CONSUMES the
+agent-dispatch helper lib UNCHANGED to classify + validate the agent object:
+an agent entry resolves to (manifest, AgentState) where AgentState carries the
+dispatch + signal the executor (a later slice) consumes. Agent entries are
+RESOLVED + VALIDATED here but NOT executed (no Agent dispatch); adapter-wiring
+does not import scheduling.
+
+It CONSUMES fsm-contracts (validate_route, StateManifest, CheckResult),
+tick-orchestrator (validate_signals, validate_data_readiness), and
+agent-dispatch (is_agent_entry, validate_agent_adapter); it does not
 re-implement them.
 
-Version: 0.1.0
+Version: 0.2.0
 Owner: changyu87
 Deprecation criterion: Superseded when the route/adapter wiring model changes
   incompatibly (e.g. the adapter factory convention or route.json schema
@@ -46,15 +55,49 @@ Deprecation criterion: Superseded when the route/adapter wiring model changes
 import importlib
 import json
 import os
+import sys
+from dataclasses import dataclass
 
-import fsm_contracts as fc
-import tick_orchestrator as to
+# Consume the sibling features via sys.path. Resolve them relative to this
+# file's feature dir so the module imports both in the worktree and in the
+# installed plugin lib/ (where the modules are flat siblings, already on the
+# path once _SRC is inserted). adapter-wiring CONSUMES these unchanged.
+_SRC = os.path.dirname(os.path.abspath(__file__))
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+_FEATURES = os.path.dirname(os.path.dirname(_SRC))
+for _dep in ("fsm-contracts", "tick-orchestrator", "agent-dispatch"):
+    _dep_src = os.path.join(_FEATURES, _dep, "src")
+    if os.path.isdir(_dep_src) and _dep_src not in sys.path:
+        sys.path.insert(0, _dep_src)
+
+import fsm_contracts as fc  # noqa: E402
+import tick_orchestrator as to  # noqa: E402
+import agent_dispatch as ad  # noqa: E402
 
 
 class WiringError(Exception):
     """Raised when route/map config is malformed or an adapter cannot be
     resolved. The message NAMES the offending port/file so the failure is
     locatable to a source artifact (spec-rules §1: determinism)."""
+
+
+@dataclass(frozen=True)
+class AgentState:
+    """The resolved form of an agent-adapter object entry (DESIGN §2.8/§3.4.6).
+
+    `resolve_states` returns each state uniformly as `(manifest, second)`: for a
+    script entry `second` is the run callable; for an agent entry `second` is an
+    AgentState. It carries the agent-adapter's `manifest` (the fsm-contracts
+    StateManifest, identical to the first element of the tuple), the `dispatch`
+    list, the `signal` rule, and the raw `entry`. The executor (a later slice)
+    consumes it to build + dispatch invocation envelopes via agent-dispatch.
+    adapter-wiring resolves + validates an AgentState but never executes it.
+    """
+    manifest: object
+    dispatch: list
+    signal: dict
+    entry: dict
 
 
 # Project-local config lives under ${project_dir}/.auto-maintainer/ — the same
@@ -101,7 +144,12 @@ def load_route(default_route, project_dir):
 def load_adapter_map(default_map, project_dir):
     """Return the project-local
     ${project_dir}/.auto-maintainer/adapter-map.json if it exists, else
-    `default_map`. Same override logic as load_route."""
+    `default_map`. Same override logic as load_route.
+
+    Each value is EITHER a `str` (script factory address, "module:factory") OR a
+    `dict` (agent-adapter object). Any other type is a locatable WiringError
+    naming the port. The agent dict is NOT deep-validated here — that is
+    resolve_states' job via agent-dispatch."""
     path = _config_path(project_dir, _MAP_FILENAME)
     if os.path.isfile(path):
         try:
@@ -116,7 +164,14 @@ def load_adapter_map(default_map, project_dir):
 
     if not isinstance(amap, dict):
         raise WiringError(
-            "adapter map must be a JSON object of port -> 'module:factory'")
+            "adapter map must be a JSON object of port -> 'module:factory' "
+            "string or agent-adapter object")
+    for port, entry in amap.items():
+        if not isinstance(entry, (str, dict)):
+            raise WiringError(
+                f"port '{port}' has an invalid adapter entry of type "
+                f"{type(entry).__name__}; expected a 'module:factory' string "
+                f"or an agent-adapter object")
     return amap
 
 
@@ -150,19 +205,48 @@ def _resolve_factory(port, address, runtime):
     return manifest, run
 
 
-def resolve_states(route, adapter_map, runtime):
-    """For each state in the route, look up its 'module:factory' in
-    `adapter_map`, import the module, get the factory, call factory(runtime) ->
-    (manifest, run), and assemble {state: (manifest, run)}.
+def _resolve_agent(port, entry):
+    """Validate an agent-adapter object entry via agent-dispatch (UNCHANGED) and
+    resolve it to (manifest, AgentState). agent-dispatch's ValueError is
+    re-raised as a locatable WiringError naming `port` (spec-rules §1)."""
+    try:
+        ad.validate_agent_adapter(entry)
+    except ValueError as exc:
+        raise WiringError(
+            f"port '{port}' has a malformed agent-adapter entry: {exc}")
+    m = entry["manifest"]
+    manifest = fc.StateManifest(
+        reads=m["reads"], writes=m["writes"], emits=m["emits"])
+    agent_state = AgentState(
+        manifest=manifest, dispatch=entry["dispatch"],
+        signal=entry["signal"], entry=entry)
+    return manifest, agent_state
 
-    An unknown port (no map entry), an unimportable module, a missing factory,
-    or a malformed address is a locatable WiringError naming the port."""
+
+def resolve_states(route, adapter_map, runtime):
+    """For each state in the route, resolve its adapter-map entry into a uniform
+    `(manifest, second)` pair and assemble `{state: (manifest, second)}`.
+
+    A STRING entry is a "module:factory" script address: import the module, get
+    the factory, call factory(runtime) -> (manifest, run); `second` is the run
+    callable (UNCHANGED). An AGENT entry (a dict, classified by
+    agent_dispatch.is_agent_entry) is validated via
+    agent_dispatch.validate_agent_adapter and resolved to (manifest,
+    AgentState); `second` is the AgentState.
+
+    An unknown port (no map entry), an unimportable module, a missing factory, a
+    malformed address, or a malformed agent entry is a locatable WiringError
+    naming the port."""
     states = {}
     for name in route["states"]:
         if name not in adapter_map:
             raise WiringError(
                 f"port '{name}' has no adapter-map entry")
-        states[name] = _resolve_factory(name, adapter_map[name], runtime)
+        entry = adapter_map[name]
+        if ad.is_agent_entry(entry):
+            states[name] = _resolve_agent(name, entry)
+        else:
+            states[name] = _resolve_factory(name, entry, runtime)
     return states
 
 
