@@ -1,5 +1,33 @@
 # scheduling — Changelog
 
+## contract 0.6.1 — 2026-06-10
+
+- **#100 fully closed — no orchestrator content-marshalling remains.** Shipped
+  three reworked, skill-creator-validated plugin assets into `ship/` VERBATIM
+  (collected by the build's `_copy_tree(ship_dir, plugin_root)`, NO build change):
+  - `ship/agents/auto-maintainer-echo.md` → **v2.0.0**, now
+    **interface-protocol-free** (DESIGN §3.4.6). Its `.md` is role-only with
+    frontmatter `tools: [Write]`; it bakes in NO schema, NO output path, and NO
+    output format. The rendered prompt is the complete handoff contract (embedded
+    schema + `output_path` + ack); for each input item it produces one accepted
+    output and WRITES it to the file the prompt names, replying with only a short
+    ack.
+  - `ship/skills/tick/SKILL.md` → **v0.2.0**, subagent-writes-its-own-file. The
+    skill marshals NO content: each dispatched subagent writes its own output file
+    and `run_tick.py --resume` (taking **NO file argument**) reads those files
+    itself from the checkpoint. The removed `dispatch-result.json` marshalling and
+    the `Write`-the-output step are gone.
+  - `ship/skills/start/SKILL.md` → **v0.2.1**, the recurring heartbeat interval is
+    now **~3 minutes** (for testability; configurability still deferred — #17). It
+    still clears the latch via `start.py --clear-only`, runs tick #1 through the
+    `/auto-maintainer:tick` executor, and schedules a recurring prompt heartbeat.
+- Updated the ship-asset e2e tests to the new contracts (echo protocol-free,
+  tick subagent-writes-file + `--resume` no arg, start ~3-min) and kept the
+  echo-TRIAGE wiring test green.
+- scheduling consumes `run_tick.py`/`start.py`/`status.py` logic and all sibling
+  features UNCHANGED; edits live ONLY in scheduling (`ship/` assets + tests + docs).
+- Closes #100.
+
 ## contract 0.6.0 — 2026-06-13
 
 - **Agent-tick resume now reads subagent-WRITTEN OUTPUT FILES (DESIGN §3.4.6
