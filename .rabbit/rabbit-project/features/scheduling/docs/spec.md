@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.4.0
+version: 0.5.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -150,13 +150,20 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      API) using the same runtime-path resolution. Owns the state write.
    These own ALL state operations so the skills never hand-roll Python.
 4. **Shipped control skills** (`ship/skills/{start,stop,status}`):
-   - `/auto-maintainer:start` — invokes `start.py` for tick #1 (which first clears
-     a latched `STOPPED`, or refuses on `ABORTED`), then schedules a recurring
-     ~1-min heartbeat (CronCreate) that re-runs `run_tick.py` (not `start.py` — no
-     reset per tick); honors EXIT's signal — `refire` → one immediate extra tick
-     with **at-most-one-refire dedup** (§3.3.3); `idle` → wait; `halt` → stop.
-     **Interval hardcoded to 1 min** (#17). Heartbeat is **session-only** for
-     slice 1 (durable + restart-resume deferred, #31).
+   - `/auto-maintainer:start` (skill **v0.2.0**) — first invokes
+     `start.py --clear-only` to perform ONLY the FRESH-start latch decision (clear
+     a latched `STOPPED` → `IDLE`, or REFUSE on `ABORTED` and stop), then runs
+     tick #1 **through the executor** by invoking the `/auto-maintainer:tick`
+     skill — NOT `start.py`'s in-process `run_tick` — so an AGENT route's
+     agent-state dispatches are fulfilled (DESIGN §2.8 in-session executor model).
+     It then schedules a recurring ~1-min heartbeat as a **prompt** job (so the
+     session is present to fulfill agent dispatches) whose prompt fires the
+     `/auto-maintainer:tick` executor each interval — NOT a bare `run_tick.py`
+     command, which cannot dispatch agent-states. The latch is cleared ONCE at
+     start; the heartbeat does not re-clear it (re-clearing each minute would
+     defeat a `/stop` that lands between heartbeats). **Interval hardcoded to
+     1 min** (#17). Heartbeat is **session-only** for slice 1 (durable +
+     restart-resume deferred, #31).
    - `/auto-maintainer:stop` — invokes `stop.py` (latch STOPPED) then cancels the
      heartbeat (CronDelete).
    - `/auto-maintainer:status` — invokes `status.py` and reports the real
@@ -294,14 +301,22 @@ into a usable, drop-in executor (DESIGN §3.4.6 / §2.8). The build's
 the plugin tree with NO build change.
 
 - **`ship/skills/tick/SKILL.md`** (`/auto-maintainer:tick`, the `tick` executor
-  skill) — drives `run_tick.py --step`/`--resume` and presses the `Agent` button
-  at each agent-state: it steps the runner, and whenever the runner PAUSES at an
-  agent-state, dispatches the named subagent(s) with the runner's rendered prompt
-  and feeds the output back via the fixed resume file
+  skill, **v0.1.1**) — drives `run_tick.py --step`/`--resume` and presses the
+  `Agent` button at each agent-state: it steps the runner, and whenever the runner
+  PAUSES at an agent-state, dispatches the named subagent(s) with the runner's
+  rendered prompt and feeds the output back via the fixed resume file
   (`${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json`) until the tick
   completes. The skill decides nothing about the route — all tick logic (route,
   validation, slot writes, signal selection, crash-safe checkpointing) lives in
   `run_tick.py`; the skill only relays dispatch requests and results.
+  **Resume-marshalling hardening (#100):** the resume step MANDATES the `Write`
+  tool writing a JSON array of the subagent outputs (each the full final message
+  **verbatim**, in dispatch order) to the **absolute**
+  `${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json` path — never an
+  improvised `python -c`, which truncates or mis-escapes large/quoted/newline
+  payloads, and never a relative path, which resolves against the wrong directory.
+  The runner validates the payload against the slot schema and rejects a mangled
+  one, so faithful serialization is load-bearing.
 - **`ship/agents/auto-maintainer-echo.md`** (the `auto-maintainer-echo` subagent)
   — the domain-free PROOF triager: dispatched by `subagent_type` at the TRIAGE
   agent-state, it echoes each input `work_item` back as one accepted `work_order`

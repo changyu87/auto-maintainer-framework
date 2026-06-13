@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.4.0
+version: 0.5.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -30,10 +30,10 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
       "src/start.py / src/stop.py / src/status.py: deterministic control scripts (script-tier) owning all state operations; start.py gains a --clear-only mode that performs ONLY the disposition decision (clear a latched STOPPED -> IDLE, REFUSE on ABORTED via non-zero exit, no-op on RUNNING/IDLE/absent) and does NOT run tick #1 — separating the FRESH-start latch-clear from tick #1 so tick #1 of an AGENT route goes through the executor skill (DESIGN §2.8), not start.py's in-process run_tick; the clear-or-refuse decision lives in one place shared by both --clear-only and the default clear+tick mode; status.py reports disposition + the four read-product counts work_items/work_orders/execution_plan/handoffs (always reported, including 0, matching the tick trace, #69) + the route source (default vs override:<path>, #59) via run_tick.route_source + the governance mode + the compact budget field (budget=<spent>/<ceiling-or-none> win=<window_key>) + a budget_paused=<reason> indicator when the durable budget is exhausted"
     ],
     "skills": [
-      "ship/skills/start/SKILL.md (/auto-maintainer:start): runs tick #1 via start.py then schedules the recurring ~1-min in-session heartbeat re-running run_tick.py",
+      "ship/skills/start/SKILL.md (/auto-maintainer:start, v0.2.0): clears the FRESH-start latch via start.py --clear-only (clear STOPPED->IDLE, or REFUSE on ABORTED and stop), runs tick #1 THROUGH the /auto-maintainer:tick executor (NOT start.py's in-process run_tick, so AGENT-route agent-states are dispatched — DESIGN §2.8), then schedules a recurring ~1-min PROMPT heartbeat firing /auto-maintainer:tick each interval (NOT a bare run_tick.py command, which cannot dispatch agent-states); latch cleared once at start, not re-cleared per heartbeat",
       "ship/skills/stop/SKILL.md (/auto-maintainer:stop): invokes stop.py (latch STOPPED) and cancels the heartbeat",
       "ship/skills/status/SKILL.md (/auto-maintainer:status): invokes status.py and reports the real disposition + last-pull work_items count",
-      "ship/skills/tick/SKILL.md (/auto-maintainer:tick): the executor skill — drives run_tick.py --step/--resume and presses the Agent button at agent-states (dispatches the runner's named subagent(s) with the rendered prompt, feeds outputs back via ${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json) until the tick completes; all tick logic stays in run_tick.py (the skill only relays dispatch requests + results)"
+      "ship/skills/tick/SKILL.md (/auto-maintainer:tick, v0.1.1): the executor skill — drives run_tick.py --step/--resume and presses the Agent button at agent-states (dispatches the runner's named subagent(s) with the rendered prompt, feeds outputs back via ${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json) until the tick completes; all tick logic stays in run_tick.py (the skill only relays dispatch requests + results). #100 hardening: the resume step MANDATES the Write tool writing a JSON array of the verbatim subagent outputs (dispatch order) to the ABSOLUTE dispatch-result.json path — never an improvised python -c (truncates/mis-escapes large/quoted/newline payloads) and never a relative path"
     ],
     "agents": [
       "ship/agents/auto-maintainer-echo.md (auto-maintainer-echo): the domain-free PROOF triager subagent — dispatched by subagent_type at the TRIAGE agent-state, echoes each input work_item back as one accepted work_order and returns ONLY the work_orders JSON array (work-intake:WORK_ORDERS). The echo-TRIAGE adapter-map entry (kind=agent, reads work_items, writes work_orders, dispatch subagent_type=auto-maintainer-echo cardinality once, signal nonempty_else_empty) is valid drop-in config: adapter_wiring.build_loop ACCEPTS it (TRIAGE resolves to an AgentState) and run_tick runs it end-to-end via the yield/resume seam"
@@ -63,7 +63,7 @@ deprecation_criterion: Superseded when scheduling moves to a different clock sou
     ]
   },
   "invokes": {
-    "scripts": ["src/run_tick.py (invoked once per tick by the /auto-maintainer:start heartbeat)"],
+    "scripts": ["src/run_tick.py (--step/--resume, driven once per tick by the /auto-maintainer:tick executor, which the /auto-maintainer:start prompt-heartbeat fires each interval)", "src/start.py --clear-only (the FRESH-start latch decision, invoked by /auto-maintainer:start before tick #1)"],
     "external": ["adapter-wiring: build_loop(default_route, default_map, runtime, start, initial) -> (route, states)"],
     "agents": []
   },

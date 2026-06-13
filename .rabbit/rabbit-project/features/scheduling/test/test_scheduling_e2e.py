@@ -303,9 +303,13 @@ def test_no_skill_references_retired_demo_work():
 _INSTALL_PATH = "${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py"
 
 
-def test_start_skill_references_install_correct_run_tick_path():
+def test_start_skill_drives_executor_not_bare_run_tick():
+    """Reworked start skill (v0.2.0): the first tick + the heartbeat both go
+    THROUGH the /auto-maintainer:tick executor (so agent-state dispatches are
+    fulfilled), not a bare run_tick.py invocation. The skill must reference the
+    executor command and must NOT use a bare src/ run_tick path."""
     body = open(_ship_skill("start")).read()
-    assert _INSTALL_PATH in body, body
+    assert "/auto-maintainer:tick" in body, body
     assert "src/run_tick.py" not in body, body
 
 
@@ -1021,11 +1025,17 @@ def test_start_skill_invokes_start_script_for_tick_one():
     assert "src/start.py" not in body, body
 
 
-def test_start_skill_heartbeat_uses_run_tick_not_start():
-    """The recurring heartbeat re-runs run_tick.py (no per-tick reset), so the
-    start skill still references the installed run_tick.py for the heartbeat."""
+def test_start_skill_heartbeat_is_prompt_firing_executor():
+    """Reworked start skill (v0.2.0): the recurring heartbeat is a PROMPT job
+    (so the session is present to fulfill agent dispatches) that fires the
+    /auto-maintainer:tick executor each interval — NOT a bare run_tick.py
+    command, which cannot dispatch agent-states. The latch is cleared ONCE via
+    start.py --clear-only, never re-cleared per heartbeat."""
     body = open(_ship_skill("start")).read()
-    assert _INSTALL_PATH in body, body  # ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py
+    assert "/auto-maintainer:tick" in body, body
+    assert "start.py --clear-only" in body, body
+    assert "prompt" in body.lower(), body
+    assert "recurring" in body.lower(), body
 
 
 def test_start_skill_has_no_handrolled_disposition_clear():
