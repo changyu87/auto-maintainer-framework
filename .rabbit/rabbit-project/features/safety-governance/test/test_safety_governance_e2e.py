@@ -39,10 +39,17 @@ if _SRC not in sys.path:
 
 # Consume the already-implemented lifecycle-dispositions module via sys.path,
 # exactly as the sibling adapters consume fsm-contracts. Do NOT edit/fork it.
+# lifecycle-dispositions itself imports fsm_contracts, so its src must be on
+# the path too (transitive sibling dependency).
 _LD_SRC = os.path.join(
     os.path.dirname(_FEATURE_DIR), "lifecycle-dispositions", "src")
 if _LD_SRC not in sys.path:
     sys.path.insert(0, _LD_SRC)
+
+_FSM_SRC = os.path.join(
+    os.path.dirname(_FEATURE_DIR), "fsm-contracts", "src")
+if _FSM_SRC not in sys.path:
+    sys.path.insert(0, _FSM_SRC)
 
 import lifecycle_dispositions as ld  # noqa: E402
 import safety_governance as sg  # noqa: E402
