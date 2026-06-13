@@ -439,13 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (safety_governance.py): version bumped to 0.2.11 in BOTH plugin.json
-# and marketplace.json, and the two are consistent. The spec permits a patch
-# bump on each re-ship of the plugin tree (0.2.11 re-normalizes the updated
-# safety_governance.py governance lib whose default per_day_tokens is now null /
-# no-limit, so the installed plugin carries the new default).
+# Re-ship (agent-adapter milestone): version bumped to 0.2.12 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. The spec permits
+# a patch bump on each re-ship of the plugin tree (0.2.12 ships the new
+# agent_dispatch.py lib, the updated run_tick/adapter_wiring that import it, and
+# the tick executor skill + auto-maintainer-echo subagent).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_11_and_consistent():
+def test_version_bumped_to_0_2_12_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +457,10 @@ def test_version_bumped_to_0_2_11_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.11", \
-            f"plugin.json version must be 0.2.11, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.11", \
-            "marketplace.json plugin entry version must be 0.2.11"
+        assert pdata.get("version") == "0.2.12", \
+            f"plugin.json version must be 0.2.12, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.12", \
+            "marketplace.json plugin entry version must be 0.2.12"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -980,6 +980,158 @@ def test_shipped_safety_governance_default_per_day_tokens_is_none():
         assert proc.returncode == 0, \
             f"shipped safety_governance default per_day_tokens not None: {proc.stderr}"
         assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (agent-adapter milestone): the new agent_dispatch.py lib ships under
+# lib/. It is PURE stdlib (imports only json, no sibling libs), so it is copied
+# byte-for-byte (like the four pure libs) — NOT normalized. run_tick and
+# adapter_wiring both import it (`import agent_dispatch as ad`), so the installed
+# plugin must carry it alongside the other control libs.
+# ---------------------------------------------------------------------------
+def test_agent_dispatch_lib_present_and_byte_identical():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        dst = os.path.join(lib, "agent_dispatch.py")
+        assert os.path.isfile(dst), \
+            "lib/agent_dispatch.py must ship in the plugin tree"
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "agent-dispatch", "src", "agent_dispatch.py",
+        )
+        with open(src, "rb") as a, open(dst, "rb") as b:
+            assert a.read() == b.read(), \
+                "agent_dispatch.py is not byte-identical to its source"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (agent-adapter milestone), critical self-containment: the shipped
+# run_tick.py imports `import agent_dispatch as ad` and `import adapter_wiring
+# as aw` (and uses aw.AgentState), so importing the shipped run_tick with ONLY
+# the plugin lib/ on sys.path must resolve agent_dispatch + adapter_wiring (and
+# AgentState) from lib/ alone. Claude copies just the plugin dir into its cache,
+# so a shipped run_tick that could not find agent_dispatch/adapter_wiring in
+# lib/ would fail to import once installed. Prove it in a subprocess whose
+# sys.path is restricted to the shipped lib/ dir alone, with NOTHING else.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_imports_agent_dispatch_from_lib_alone():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        probe = (
+            "import sys; "
+            f"sys.path.insert(0, {lib!r}); "
+            "import run_tick; "
+            "import agent_dispatch, adapter_wiring; "
+            "assert run_tick.ad is agent_dispatch; "
+            "assert run_tick.aw is adapter_wiring; "
+            "assert hasattr(adapter_wiring, 'AgentState'); "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped run_tick cannot resolve agent_dispatch: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (agent-adapter milestone), critical self-containment: the shipped
+# adapter_wiring.py imports `import agent_dispatch as ad`, so importing the
+# shipped adapter_wiring with ONLY the plugin lib/ on sys.path must resolve
+# agent_dispatch (and its fsm_contracts + tick_orchestrator siblings) from lib/
+# alone. Prove it in a subprocess whose sys.path is restricted to the shipped
+# lib/ dir alone.
+# ---------------------------------------------------------------------------
+def test_shipped_adapter_wiring_imports_agent_dispatch_from_lib_alone():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        probe = (
+            "import sys; "
+            f"sys.path.insert(0, {lib!r}); "
+            "import adapter_wiring; "
+            "import agent_dispatch; "
+            "assert adapter_wiring.ad is agent_dispatch; "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped adapter_wiring cannot resolve agent_dispatch: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (agent-adapter milestone): the tick executor skill ships at
+# skills/tick/SKILL.md via the ship/ collection convention (it lives in
+# scheduling's ship/skills/tick/). It drives the --step/--resume yield/resume
+# loop. Assert it ships and its frontmatter name is `tick`.
+# ---------------------------------------------------------------------------
+def test_ship_collection_tick_skill_present():
+    out_root = _build_into_temp()
+    try:
+        sk = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "tick", "SKILL.md",
+        )
+        assert os.path.isfile(sk), \
+            "ship/ collection must place skills/tick/SKILL.md"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert body.lstrip().startswith("---"), \
+            "skills/tick/SKILL.md must carry YAML frontmatter"
+        assert "\nname: tick\n" in body, \
+            "skills/tick/SKILL.md frontmatter name must be `tick`"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (agent-adapter milestone): the auto-maintainer-echo subagent ships at
+# agents/auto-maintainer-echo.md via the ship/ collection convention (it lives
+# in scheduling's ship/agents/). It is the executor-proof triager the tick skill
+# dispatches at the TRIAGE agent-state. Assert it ships and its frontmatter name
+# is `auto-maintainer-echo`.
+# ---------------------------------------------------------------------------
+def test_ship_collection_echo_agent_present():
+    out_root = _build_into_temp()
+    try:
+        ag = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "agents", "auto-maintainer-echo.md",
+        )
+        assert os.path.isfile(ag), \
+            "ship/ collection must place agents/auto-maintainer-echo.md"
+        with open(ag, encoding="utf-8") as fh:
+            body = fh.read()
+        assert body.lstrip().startswith("---"), \
+            "agents/auto-maintainer-echo.md must carry YAML frontmatter"
+        assert "\nname: auto-maintainer-echo\n" in body, \
+            "echo agent frontmatter name must be `auto-maintainer-echo`"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
