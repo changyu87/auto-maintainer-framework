@@ -478,3 +478,116 @@ def test_pure_script_default_route_return_run_result_still_works():
                          return_run_result=True)
     assert result.final_state == "DONE", result
     assert result.path[0] == "GUARD" and result.path[-1] == "DONE", result.path
+
+
+# ==========================================================================
+# Behaviour G (auto-maintainer-framework#109) — TWO consecutive AGENT ticks in
+# the SAME runtime dir must not crash DRAIN.
+#
+# Regression for #109: `_drive_agent_tick` used to `journal.record({...})` an
+# `agent-dispatch:<tick>:<state>` intent on each pause. That intent has NO
+# `target_counter`, is never confirmed, and so survives into the NEXT tick's
+# DRAIN — where durable_state.drain_run unconditionally reads
+# entries[key]["target_counter"] for every unconfirmed intent -> KeyError on
+# the agent-dispatch intent. The redundant journal.record is removed; the
+# durable checkpoint (TICK_CHECKPOINT_KEY) remains the SOLE crash-safety source
+# of truth for a paused dispatch.
+# ==========================================================================
+
+def _drive_agent_tick_to_done(project_dir, runtime_dir, state_path,
+                              journal_path):
+    """Drive a full agent tick (step -> resume TRIAGE -> resume IMPLEMENT) to the
+    DONE terminal in the given runtime dir. Returns the terminal disposition
+    signal string."""
+    r = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                    state_path=state_path, journal_path=journal_path,
+                    source=_stub_source())
+    assert r["status"] == "paused" and r["state"] == "TRIAGE", r
+    r = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                    state_path=state_path, journal_path=journal_path,
+                    source=_stub_source(),
+                    resume_dispatch=[_CANNED_WORK_ORDERS])
+    assert r["status"] == "paused" and r["state"] == "IMPLEMENT", r
+    handoffs = [_canned_handoff("wo-acme/widget#7"),
+                _canned_handoff("wo-acme/widget#9")]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        signal = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                             state_path=state_path, journal_path=journal_path,
+                             source=_stub_source(), resume_dispatch=handoffs)
+    return signal
+
+
+def _journal_agent_dispatch_keys(journal_path):
+    """The dedup_keys of every agent-dispatch:* intent in the tick journal
+    (empty list means none were recorded)."""
+    if not os.path.exists(journal_path):
+        return []
+    journal = ds.Journal(journal_path)
+    return [e["dedup_key"] for e in journal.entries()
+            if str(e.get("dedup_key", "")).startswith("agent-dispatch:")]
+
+
+def test_two_consecutive_agent_ticks_do_not_crash_drain():
+    """THE #109 repro: a SECOND fresh agent tick in the same runtime dir runs
+    GUARD->DRAIN cleanly and reaches the TRIAGE pause again — it does NOT raise
+    KeyError 'target_counter' in DRAIN."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    # tick-1: full agent tick to DONE.
+    signal1 = _drive_agent_tick_to_done(project_dir, runtime_dir, state_path,
+                                        journal_path)
+    assert signal1 == "idle", signal1
+    # tick-2: a FRESH --step in the SAME runtime dir. Previously this raised
+    # KeyError 'target_counter' inside DRAIN; now it must pause at TRIAGE again.
+    result2 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source())
+    assert isinstance(result2, dict), result2
+    assert result2["status"] == "paused", result2
+    assert result2["state"] == "TRIAGE", result2
+
+
+def test_agent_pause_records_no_agent_dispatch_journal_intent():
+    """After tick-1, the tick journal contains NO agent-dispatch:* intent (the
+    redundant record is gone) and DRAIN's unconfirmed() is empty of them —
+    proving the counter-journal is not poisoned by the agent driver."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    _drive_agent_tick_to_done(project_dir, runtime_dir, state_path,
+                              journal_path)
+    assert _journal_agent_dispatch_keys(journal_path) == [], \
+        _journal_agent_dispatch_keys(journal_path)
+    # No unconfirmed agent-dispatch intent lingers for the next DRAIN to choke on.
+    if os.path.exists(journal_path):
+        owed = ds.Journal(journal_path).unconfirmed()
+        assert not [k for k in owed if str(k).startswith("agent-dispatch:")], \
+            owed
+
+
+def test_agent_pause_records_no_journal_intent_before_resume():
+    """Even at the FIRST pause (before any resume), no agent-dispatch:* intent is
+    recorded — the durable checkpoint alone carries the paused dispatch."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source())
+    assert _journal_agent_dispatch_keys(journal_path) == [], \
+        _journal_agent_dispatch_keys(journal_path)
+
+
+def test_paused_dispatch_crash_safety_still_works_via_checkpoint():
+    """Removing the redundant journal.record must NOT weaken paused-dispatch
+    crash-safety: after tick-1 PAUSES (before resume), a FRESH --step re-emits
+    the SAME PAUSE from the durable checkpoint (unchanged behavior)."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    first = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                        state_path=state_path, journal_path=journal_path,
+                        source=_stub_source())
+    assert first["status"] == "paused" and first["state"] == "TRIAGE", first
+    # The durable checkpoint is the SOLE crash-safety source of truth.
+    doc = ds.DurableState(state_path).load()
+    assert doc.get(rt.TICK_CHECKPOINT_KEY) is not None, doc
+    again = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                        state_path=state_path, journal_path=journal_path,
+                        source=_stub_source())
+    assert again["status"] == "paused" and again["state"] == "TRIAGE", again
+    assert again["dispatches"][0]["prompt"] == first["dispatches"][0]["prompt"]
