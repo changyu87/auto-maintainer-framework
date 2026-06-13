@@ -662,7 +662,10 @@ def _materialize_plugin_lib():
                      ("durable-state", "durable_state.py"),
                      ("lifecycle-dispositions", "lifecycle_dispositions.py"),
                      ("work-intake", "work_intake.py"),
-                     ("adapter-wiring", "adapter_wiring.py")):
+                     ("adapter-wiring", "adapter_wiring.py"),
+                     ("prioritize", "prioritize.py"),
+                     ("implement", "implement.py"),
+                     ("safety-governance", "safety_governance.py")):
         shutil.copy(os.path.join(_FEATURES, dep, "src", mod),
                     os.path.join(lib, mod))
     return lib
