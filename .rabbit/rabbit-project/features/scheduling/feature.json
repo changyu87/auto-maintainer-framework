@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.7.0",
+  "version": "0.10.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -10,5 +10,5 @@
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
   "tdd_state": "test-green",
   "updated": "2026-06-14",
-  "spec_no_change_reason": "spec.md (v0.9.0) already carries the Outbound REPORT flush section; this cycle implements that pre-updated spec, no further spec edit needed"
+  "spec_no_change_reason": "Spec for the VERIFY/INTEGRATE/CLEANUP wiring slice was already committed (ef78d4a) ahead of this TDD cycle; this cycle only adds the implementation + tests."
 }

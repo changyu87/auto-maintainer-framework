@@ -43,13 +43,15 @@ Runtime paths (durable state, journal, disposition + lock markers) are injected
 so tests use a temp dir and the on-disk files are the only source of truth.
 
 scheduling CONSUMES fsm-contracts, tick-orchestrator, durable-state,
-lifecycle-dispositions, work-intake, adapter-wiring, and observability UNCHANGED;
-it never edits or forks them. Each tick run_tick also emits a structured event log
-to ${runtime_dir}/events.jsonl via observability.EventLog (the machine-first
-record of "what the loop did"), written ALONGSIDE the existing one-line trace —
-purely additive, no existing behaviour changes.
+lifecycle-dispositions, work-intake, adapter-wiring, verify-integrate, and
+observability UNCHANGED; it never edits or forks them. Each tick run_tick also
+emits a structured event log to ${runtime_dir}/events.jsonl via
+observability.EventLog (the machine-first record of "what the loop did"), written
+ALONGSIDE the existing one-line trace — purely additive, no existing behaviour
+changes. The VERIFY/INTEGRATE/CLEANUP ports (verify-integrate) are pre-mapped in
+DEFAULT_ADAPTER_MAP so the close-the-loop route wires by a pure route.json edit.
 
-Version: 0.4.0
+Version: 0.5.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the tick interval becomes
@@ -78,7 +80,7 @@ _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
              "lifecycle-dispositions", "work-intake", "adapter-wiring",
              "prioritize", "implement", "safety-governance", "agent-dispatch",
-             "observability"):
+             "observability", "verify-integrate"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if os.path.isdir(_dep_src) and _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
@@ -94,6 +96,7 @@ import implement as im  # noqa: E402
 import safety_governance as sg  # noqa: E402
 import agent_dispatch as ad  # noqa: E402
 import observability as ob  # noqa: E402
+import verify_integrate as vi  # noqa: E402
 
 
 # The production PULL issue source: work-intake's live `gh` CLI adapter. Tests
@@ -114,6 +117,14 @@ WORK_ITEMS_KEY = "work_items"
 WORK_ORDERS_KEY = "work_orders"
 EXECUTION_PLAN_KEY = "execution_plan"
 HANDOFFS_KEY = "handoffs"
+# The verify-integrate close-the-loop read products: VERIFY writes verdicts (a
+# list of Verdict dicts), INTEGRATE writes integration_result (an object
+# {merged, skipped, errors}). Like the four above they are per-tick EPHEMERAL
+# read products (#64): each tick they reflect ONLY what THIS tick's route
+# produced (empty when the route omits VERIFY / INTEGRATE), never a stale
+# carry-forward.
+VERDICTS_KEY = "verdicts"
+INTEGRATION_RESULT_KEY = "integration_result"
 
 # The durable-state document key under which the safety-governance budget window
 # {window_key, spent_tokens} is persisted. Unlike the four read-product keys
@@ -239,6 +250,51 @@ def make_implement(runtime):  # noqa: ARG001 - IMPLEMENT binds no runtime config
     return im.IMPLEMENT_MANIFEST, im.run
 
 
+def make_verify(runtime):  # noqa: ARG001 - VERIFY binds no governance config
+    """VERIFY adapter (verify-integrate): the READ-ONLY act-side gate that lists
+    the loop's open PRs (live `gh`, injectable) and writes one Verdict per PR into
+    the `verdicts` slot. Binds no governance (VERIFY never merges); the PR source
+    + default-branch resolver default to verify-integrate's live `gh` seams.
+    Returns the sibling manifest + the state's bound run callable."""
+    # Reference the module seams at factory-call time (not the def-time defaults)
+    # so an injected/overridden source is honored.
+    verify = vi.Verify(source=vi.gh_open_pr_source, repo=runtime.get("repo"),
+                       default_branch_source=vi.gh_default_branch_source)
+    return vi.VERIFY_MANIFEST, verify.run
+
+
+def make_integrate(runtime):
+    """INTEGRATE adapter (verify-integrate): the single highest-stakes act-side
+    state. Reads `verdicts`, merges each `ok` verdict's PR via the injectable
+    merge sink ONLY at gated-merge, and writes the `integration_result` slot.
+
+    Binds the loaded governance `mode` (runtime['governance']['mode']) so the
+    trust ladder gates merge at gated-merge only (sg.permits) and the §3.8.1
+    declarative backstop applies (sg.merge_guardrails over the resolved default
+    branch). The default branch is resolved via verify-integrate's injectable
+    `gh` resolver (the same seam VERIFY uses), so the guardrail's never-merge-
+    wrong-base check agrees with VERIFY's verdict. At propose the would-merge
+    intent is recorded under `skipped` and the sink is never called."""
+    mode = runtime["governance"].get("mode", "")
+    default_branch = vi.gh_default_branch_source(runtime.get("repo"))
+    # Reference the module merge sink at factory-call time (not the def-time
+    # default) so an injected/overridden sink is honored.
+    integrate = vi.Integrate(mode=mode, merge_sink=vi.gh_pr_merge_sink,
+                             repo=runtime.get("repo"),
+                             default_branch=default_branch,
+                             permits_fn=sg.permits,
+                             guardrails_fn=sg.merge_guardrails)
+    return vi.INTEGRATE_MANIFEST, integrate.run
+
+
+def make_cleanup(runtime):  # noqa: ARG001 - CLEANUP binds no runtime config
+    """CLEANUP adapter (verify-integrate): the v1-thin branch/release hygiene
+    pass-through. Reads `integration_result`, writes nothing, emits OK. Binds no
+    runtime config; returns the sibling manifest + the state's run callable."""
+    cleanup = vi.Cleanup()
+    return vi.CLEANUP_MANIFEST, cleanup.run
+
+
 # --------------------------------------------------------------------------
 # The shipped DEFAULT_ROUTE + DEFAULT_ADAPTER_MAP (route-as-data).
 #
@@ -268,9 +324,10 @@ DEFAULT_ROUTE = {
     "terminal": [_DONE, _HALTED],
 }
 
-# Every known port -> its built-in factory address. TRIAGE, PRIORITIZE, and
-# IMPLEMENT are included even though DEFAULT_ROUTE omits them (the
-# ports-and-adapters promise: insert the act chain by data, no code change).
+# Every known port -> its built-in factory address. TRIAGE, PRIORITIZE,
+# IMPLEMENT, VERIFY, INTEGRATE, and CLEANUP are included even though
+# DEFAULT_ROUTE omits them (the ports-and-adapters promise: insert the
+# close-the-loop chain by data, no code change).
 # The terminals are addressed too so adapter-wiring can resolve every state in a
 # route (terminals never run(), but their manifests must resolve for validation).
 DEFAULT_ADAPTER_MAP = {
@@ -280,6 +337,9 @@ DEFAULT_ADAPTER_MAP = {
     "TRIAGE": "run_tick:make_triage",
     "PRIORITIZE": "run_tick:make_prioritize",
     "IMPLEMENT": "run_tick:make_implement",
+    "VERIFY": "run_tick:make_verify",
+    "INTEGRATE": "run_tick:make_integrate",
+    "CLEANUP": "run_tick:make_cleanup",
     "PERSIST": "run_tick:make_persist",
     "EXIT": "run_tick:make_exit",
     _DONE: "run_tick:make_terminal",
@@ -318,10 +378,12 @@ def _seed_context(state_path, journal_path, route):
     Registers the durable-state plumbing slots (counter/state_path/journal_path)
     that DRAIN/PERSIST read, the work_items slot PULL writes, the tick_outcome
     slot EXIT reads, and — when the active route includes them — the work_orders
-    slot TRIAGE writes, the execution_plan slot PRIORITIZE writes, and the
-    handoffs slot IMPLEMENT writes. tick_outcome is seeded "empty" so EXIT
-    selects IDLE after the read stages (read-and-idle): the dry-run IMPLEMENT is
-    INERT, so even an act-path tick leaves no remaining work and still idles.
+    slot TRIAGE writes, the execution_plan slot PRIORITIZE writes, the handoffs
+    slot IMPLEMENT writes, the verdicts slot VERIFY writes, and the
+    integration_result slot INTEGRATE writes. tick_outcome is seeded "empty" so
+    EXIT selects IDLE after the read stages (read-and-idle): the dry-run
+    IMPLEMENT is INERT, so even an act-path tick leaves no remaining work and
+    still idles.
     """
     ctx = fc.TickContext()
     ctx.register_slot("counter", {"type": "integer"}, version="1.0.0")
@@ -343,6 +405,15 @@ def _seed_context(state_path, journal_path, route):
         ctx.register_slot(
             im.HANDOFFS_SLOT["name"], im.HANDOFFS_SLOT["schema"],
             version=im.HANDOFFS_SLOT["version"])
+    if "VERIFY" in route["states"]:
+        ctx.register_slot(
+            vi.VERDICTS_SLOT["name"], vi.VERDICTS_SLOT["schema"],
+            version=vi.VERDICTS_SLOT["version"])
+    if "INTEGRATE" in route["states"]:
+        ctx.register_slot(
+            vi.INTEGRATION_RESULT_SLOT["name"],
+            vi.INTEGRATION_RESULT_SLOT["schema"],
+            version=vi.INTEGRATION_RESULT_SLOT["version"])
     ctx.write("state_path", state_path)
     ctx.write("journal_path", journal_path)
     ctx.write("counter", ds.DurableState(state_path).load()["counter"])
@@ -1540,6 +1611,16 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
             ctx.read(im.HANDOFFS_SLOT["name"])
             if "IMPLEMENT" in route["states"] else [])
         doc[HANDOFFS_KEY] = tick_handoffs
+        # The verify-integrate close-the-loop read products (#64): VERIFY writes
+        # verdicts, INTEGRATE writes integration_result. A route omitting the
+        # producing stage persists that product empty (NOT a stale carry-forward),
+        # symmetric with the four products above.
+        doc[VERDICTS_KEY] = (
+            ctx.read(vi.VERDICTS_SLOT["name"])
+            if "VERIFY" in route["states"] else [])
+        doc[INTEGRATION_RESULT_KEY] = (
+            ctx.read(vi.INTEGRATION_RESULT_SLOT["name"])
+            if "INTEGRATE" in route["states"] else {})
         # The durable, cross-tick budget window (NOT a #64 read product): persist
         # the evaluated/recorded budget_state so the window rollover + spend
         # accrual survive across ticks.
