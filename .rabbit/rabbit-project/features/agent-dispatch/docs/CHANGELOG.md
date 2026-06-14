@@ -4,6 +4,34 @@ All notable changes to the agent-adapter schema, the invocation envelope, and
 the deterministic helper surface are recorded here. Versions follow the
 `version` field in `spec.md` / `contract.md` / `feature.json`.
 
+## 0.3.0
+
+Make the embedded handoff contract a concrete EXAMPLE to MIMIC, and reject a
+JSON-Schema descriptor at the wiring boundary (#119). The live bug: an entry's
+`output_schema` was authored as a descriptor `{"type":"array","items":{...}}`;
+render embedded it and the protocol-naive subagent wrote the descriptor verbatim
+instead of a bare array, failing validation. Concrete examples are mimicked
+reliably; schema notation is not.
+
+- Rename the user-facing dispatch-entry field to `output_example` (a concrete
+  example value the subagent copies and adapts). `output_schema` becomes a
+  DEPRECATED back-compat alias: `output_example` wins when both are present,
+  `output_schema` is read when `output_example` is absent. Existing adapter-maps
+  using `output_schema` (with a concrete example) keep working. The envelope's
+  internal `output_contract` key name `schema` is UNCHANGED so `run_tick` /
+  `scheduling` are untouched.
+- `render`: reframe the `## Handoff` output block as a concrete example to mimic
+  ("produce a JSON value shaped EXACTLY like this example — copy its structure,
+  replace the placeholder values"). The embedded value is never called a
+  "schema." Write-to-file + one-line-ack instructions unchanged.
+- `validate_agent_adapter`: add a descriptor guard — reject an `output_example`
+  (or the deprecated `output_schema` alias) that is a dict whose `"type"` is a
+  JSON-Schema type name AND which also carries `"items"` or `"properties"`. A
+  concrete example (a list, or a dict without that combination) passes.
+- `validate_output`: unchanged (derives expected top-level type from the example;
+  list -> array, dict -> object).
+- Library remains deterministic and effect-free.
+
 ## 0.2.0
 
 Make the rendered prompt the COMPLETE, self-contained handoff contract

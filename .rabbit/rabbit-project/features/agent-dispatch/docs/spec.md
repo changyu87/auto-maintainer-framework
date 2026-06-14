@@ -1,6 +1,6 @@
 ---
 feature: agent-dispatch
-version: 0.2.0
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when the agent-adapter schema or invocation-envelope reaches a breaking major version, or when subagent dispatch moves to a transport other than the in-session Agent tool.
 ---
@@ -35,7 +35,7 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
       "inputs": ["<slot>", "..."],
       "cardinality": "once" | { "per_item": "<dotted path into a read slot>" },
       "writes": "<target slot>",
-      "output_schema": <optional schema dict or concrete example shape> }
+      "output_example": <optional concrete example value the subagent mimics> }
   ],
   "signal": { "rule": "<closed-vocab rule>" }
 }
@@ -51,12 +51,29 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
 - `signal.rule` is from a **closed vocabulary** (v1): `nonempty_else_empty`
   (OK if the written slot is non-empty else EMPTY), `blocked_if_any` (BLOCKED if
   any written element carries a blocked status, else OK), `always_ok`.
-- `output_schema` is **optional** on each dispatch entry. It is a JSON value —
-  either a JSON-schema-style dict (e.g. `{"type": "object"}`) or a concrete
-  example shape (e.g. `[{"id": "..."}]`). When present it is carried verbatim
-  into the envelope's `output_contract.schema` and embedded in the rendered
-  prompt so a protocol-naive subagent sees the exact shape to produce. When
-  absent, the envelope falls back to a coarse `{"type": ...}` schema.
+- `output_example` is **optional** on each dispatch entry. It is a **concrete
+  example value** — a sample valid output the subagent copies and adapts (e.g.
+  a bare list `[{"id": "..."}]` for an array slot, or an object `{"id": "..."}`
+  for an object slot), NOT a JSON-Schema descriptor. When present it is carried
+  verbatim into the envelope's `output_contract` (internal key `schema`,
+  unchanged so `run_tick` / `scheduling` are untouched) and embedded in the
+  rendered prompt, framed as an example to mimic, so a protocol-naive subagent
+  copies the exact shape. When absent, the envelope falls back to a coarse
+  `{"type": ...}` value.
+- `output_schema` is a **DEPRECATED back-compat alias** for `output_example`
+  (#119). When both are present `output_example` wins; when only `output_schema`
+  is present it is read as the example. Existing adapter-maps using
+  `output_schema` (with a concrete example value) keep working. The
+  deprecation criterion: removed once all adapter-maps migrate to
+  `output_example`.
+- **Descriptor guard** (#119): `validate_agent_adapter` REJECTS an
+  `output_example` (or the deprecated `output_schema` alias) that looks like a
+  JSON-Schema descriptor — a dict whose `"type"` is one of `object` / `array` /
+  `string` / `number` / `integer` / `boolean` / `null` AND which also has an
+  `"items"` or `"properties"` key. The earlier bug: a descriptor
+  `{"type": "array", "items": {...}}` was embedded, and the protocol-naive
+  subagent wrote the descriptor verbatim instead of a bare array. Concrete
+  examples are mimicked reliably; descriptor notation is not.
 
 ## Public surface (deterministic functions)
 
@@ -66,7 +83,9 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
 - `validate_agent_adapter(entry)` — well-formedness: manifest present with
   reads/writes/emits; ≥1 dispatch entry; each entry has subagent_type + inputs +
   cardinality + writes; cardinality and signal rule are in the closed vocab; an
-  optional `output_schema` (any JSON value) is accepted, its absence is valid.
+  optional `output_example` (or the deprecated `output_schema` alias) holding a
+  concrete example value is accepted, its absence is valid. It REJECTS an
+  example authored as a JSON-Schema descriptor (the #119 descriptor guard).
   Raises a clear error on violation (deterministic, locatable).
 - `build_envelopes(adapter, slot_values, tick_context, state, output_dir) ->
   [envelope]` — produce the invocation envelope(s) the executor will dispatch.
@@ -76,19 +95,23 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
   `os.path.join(output_dir, f"{state}-{dispatch_index}-{item_index}.json")`
   (`item_index` is 0 for `once`). Envelope shape:
   `{ state, task, inputs, item?, output_contract: {slot, schema, output_path}, context: {tick_id, mode} }`,
-  where `schema` is the entry's `output_schema` when present, else a coarse
-  `{"type": ...}` fallback. The `output_path` is a computed string only; the file
-  is written by the subagent and read by the executor — never by this library.
+  where the internal `schema` key (name unchanged for `run_tick` / `scheduling`)
+  carries the entry's `output_example` (or the deprecated `output_schema` alias)
+  when present, else a coarse `{"type": ...}` fallback. The `output_path` is a
+  computed string only; the file is written by the subagent and read by the
+  executor — never by this library.
 - `render(envelope) -> str` — deterministic **structured-markdown** prompt
   (DESIGN §3.4.6): `inputs` rendered as a readable **derivative view** (generic
   slot→markdown; free-text fields fenced/block-quoted to preserve boundaries) —
   **no raw JSON for inputs**; the **`## Handoff`** section is the SELF-CONTAINED
-  contract — it embeds the actual output schema (pretty-printed JSON of the
-  shape), instructs the subagent to **write a single JSON value matching the
-  schema to `output_contract.output_path` using its file-writing tool**, then to
-  **reply with ONLY a one-line acknowledgement and NOT include the JSON in the
-  reply**. The rendered prompt is thus the complete handoff contract; subagents
-  stay protocol-free.
+  contract — it embeds the concrete output **example** (pretty-printed JSON),
+  framed as a value to **mimic** ("produce a JSON value shaped EXACTLY like this
+  example — copy its structure, replace the placeholder values"), never called a
+  "schema" (#119); it instructs the subagent to **write that JSON to
+  `output_contract.output_path` using its file-writing tool**, then to **reply
+  with ONLY a one-line acknowledgement and NOT include the JSON in the reply**.
+  The rendered prompt is thus the complete handoff contract; subagents stay
+  protocol-free.
 - `validate_output(file_content, schema) -> (ok, parsed | error)` — parse the
   JSON content the subagent wrote to its output file (tolerating code fences),
   check it structurally conforms to `schema` (at least the declared top-level
@@ -109,9 +132,9 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
   computed string (via `os.path.join`); the file itself is written by the
   subagent and read by the executor, never by this library.
 - Machine-first split (DESIGN §1, §3.4.6): inputs render to a **derivative view**;
-  the self-contained `## Handoff` section embeds the **schema** the output must
-  match and names the **output_path** the subagent writes — the output file is
-  the canonical machine-first artifact the next state consumes.
+  the self-contained `## Handoff` section embeds the concrete output **example**
+  the subagent mimics and names the **output_path** the subagent writes — the
+  output file is the canonical machine-first artifact the next state consumes.
 - Closed vocabularies for `cardinality` and `signal.rule`; unknown values raise.
 - Bounded scope: owns the schema + these helpers only; it neither loads the
   adapter-map (adapter-wiring) nor walks the route nor dispatches (scheduling /

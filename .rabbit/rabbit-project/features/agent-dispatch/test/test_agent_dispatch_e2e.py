@@ -57,7 +57,7 @@ def _per_item_adapter():
                 "inputs": ["execution_plan", "policy"],
                 "cardinality": {"per_item": "execution_plan.ordered"},
                 "writes": "implement_results",
-                "output_schema": {"type": "object"},
+                "output_example": {"id": "wo-1", "status": "done"},
             }
         ],
         "signal": {"rule": "blocked_if_any"},
@@ -66,7 +66,7 @@ def _per_item_adapter():
 
 def _once_adapter():
     """A valid once adapter: a single dispatch over the whole input. No
-    output_schema -> schema falls back to a coarse {"type": ...}."""
+    output_example -> schema falls back to a coarse {"type": ...}."""
     return {
         "kind": "agent",
         "manifest": {
@@ -141,9 +141,9 @@ def test_validate_accepts_valid_per_item_adapter():
 # output_schema validates; an entry WITHOUT it still validates.
 # ==========================================================================
 
-def test_validate_accepts_entry_with_output_schema():
+def test_validate_accepts_entry_with_output_example():
     a = _per_item_adapter()
-    assert "output_schema" in a["dispatch"][0]
+    assert "output_example" in a["dispatch"][0]
     ad.validate_agent_adapter(a)  # must not raise
 
 
@@ -154,9 +154,85 @@ def test_validate_accepts_entry_without_output_schema():
 
 
 def test_validate_accepts_output_schema_as_example_shape():
-    # output_schema may be a concrete example shape, not just a schema dict.
+    # output_schema (deprecated alias) may be a concrete example shape.
     a = _once_adapter()
     a["dispatch"][0]["output_schema"] = [{"id": "x"}]
+    ad.validate_agent_adapter(a)  # must not raise
+
+
+def test_validate_accepts_output_example_concrete_value():
+    a = _once_adapter()
+    a["dispatch"][0]["output_example"] = [{"id": "x"}]
+    ad.validate_agent_adapter(a)  # must not raise
+
+
+# ==========================================================================
+# Behaviour (#119): validate_agent_adapter rejects an output_example (or the
+# deprecated output_schema alias) authored as a JSON-Schema DESCRIPTOR — a dict
+# whose "type" is a JSON-Schema type name AND which also has "items"/
+# "properties". A protocol-naive subagent copies a concrete example reliably but
+# is confused into writing the descriptor verbatim. A concrete example value (a
+# list, or a dict that is not descriptor-shaped) passes.
+# ==========================================================================
+
+def test_validate_rejects_output_example_array_descriptor():
+    a = _once_adapter()
+    a["dispatch"][0]["output_example"] = {
+        "type": "array", "items": {"type": "object"}}
+    _assert_raises(lambda: ad.validate_agent_adapter(a))
+
+
+def test_validate_rejects_output_example_object_descriptor():
+    a = _once_adapter()
+    a["dispatch"][0]["output_example"] = {
+        "type": "object", "properties": {"id": {"type": "string"}}}
+    _assert_raises(lambda: ad.validate_agent_adapter(a))
+
+
+def test_validate_rejects_output_schema_alias_descriptor():
+    # The descriptor guard also applies to the deprecated output_schema alias.
+    a = _once_adapter()
+    a["dispatch"][0]["output_schema"] = {
+        "type": "array", "items": {"type": "object"}}
+    _assert_raises(lambda: ad.validate_agent_adapter(a))
+
+
+def test_validate_descriptor_guard_error_message_is_clear():
+    a = _once_adapter()
+    a["dispatch"][0]["output_example"] = {
+        "type": "array", "items": {"type": "object"}}
+    try:
+        ad.validate_agent_adapter(a)
+    except ValueError as e:
+        msg = str(e)
+        assert "output_example" in msg
+        assert "concrete example" in msg
+        assert "descriptor" in msg
+        return
+    raise AssertionError("expected ValueError, none raised")
+
+
+def test_validate_accepts_bare_list_example():
+    a = _once_adapter()
+    a["dispatch"][0]["output_example"] = [{"id": "x", "status": "done"}]
+    ad.validate_agent_adapter(a)  # must not raise
+
+
+def test_validate_accepts_object_example_without_descriptor_shape():
+    # A concrete object example without the type+items/properties combination
+    # passes — even one that happens to carry a "type" key as real data.
+    a = _once_adapter()
+    a["dispatch"][0]["output_example"] = {"id": "x", "status": "done"}
+    ad.validate_agent_adapter(a)  # must not raise
+    a2 = _once_adapter()
+    a2["dispatch"][0]["output_example"] = {"type": "feature", "id": "x"}
+    ad.validate_agent_adapter(a2)  # "type" alone (no items/properties) passes
+
+
+def test_validate_accepts_absent_output_example():
+    a = _once_adapter()
+    assert "output_example" not in a["dispatch"][0]
+    assert "output_schema" not in a["dispatch"][0]
     ad.validate_agent_adapter(a)  # must not raise
 
 
@@ -364,9 +440,10 @@ def test_build_envelopes_per_item_fans_out_in_order_with_item():
             "execution_plan": slot_values["execution_plan"],
             "policy": slot_values["policy"],
         }
-        # output_schema present -> schema is that schema verbatim.
+        # output_example present -> schema is that example verbatim.
         assert env["output_contract"]["slot"] == "implement_results"
-        assert env["output_contract"]["schema"] == {"type": "object"}
+        assert env["output_contract"]["schema"] == {"id": "wo-1",
+                                                     "status": "done"}
         assert env["context"] == {"tick_id": "tick-42", "mode": "live"}
 
 
@@ -377,6 +454,58 @@ def test_build_envelopes_per_item_empty_collection_yields_no_envelopes():
         adapter, slot_values, _tick_context(), state="IMPLEMENT",
         output_dir=_OUT_DIR)
     assert envelopes == []
+
+
+# ==========================================================================
+# E2E Behaviour: build_envelopes reads the dispatch entry's `output_example`
+# (the concrete example value) into output_contract.schema (the internal
+# envelope key name is unchanged so run_tick/scheduling stays the same).
+# `output_schema` remains a DEPRECATED back-compat alias: output_example wins
+# when both are present; output_schema is used when output_example is absent;
+# the coarse {"type": ...} fallback applies when neither is present.
+# ==========================================================================
+
+def test_build_envelopes_reads_output_example():
+    adapter = _once_adapter()
+    example = [{"text": "a summary"}]
+    adapter["dispatch"][0]["output_example"] = example
+    env = ad.build_envelopes(
+        adapter, {"work_orders": []}, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
+    assert env["output_contract"]["schema"] == example
+
+
+def test_build_envelopes_output_schema_back_compat_alias():
+    # An entry using the OLD output_schema field (with a concrete example) still
+    # flows into output_contract.schema.
+    adapter = _once_adapter()
+    adapter["dispatch"][0]["output_schema"] = [{"text": "x"}]
+    env = ad.build_envelopes(
+        adapter, {"work_orders": []}, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
+    assert env["output_contract"]["schema"] == [{"text": "x"}]
+
+
+def test_build_envelopes_output_example_wins_over_output_schema():
+    adapter = _once_adapter()
+    adapter["dispatch"][0]["output_example"] = [{"new": 1}]
+    adapter["dispatch"][0]["output_schema"] = [{"old": 1}]
+    env = ad.build_envelopes(
+        adapter, {"work_orders": []}, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
+    assert env["output_contract"]["schema"] == [{"new": 1}]
+
+
+def test_build_envelopes_neither_field_coarse_fallback():
+    adapter = _once_adapter()
+    assert "output_example" not in adapter["dispatch"][0]
+    assert "output_schema" not in adapter["dispatch"][0]
+    env = ad.build_envelopes(
+        adapter, {"work_orders": []}, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
+    schema = env["output_contract"]["schema"]
+    assert schema == {"type": schema["type"]}
+    assert "type" in schema
 
 
 def test_build_envelopes_output_paths_are_unique_per_dispatch():
@@ -460,7 +589,7 @@ def test_render_free_text_body_is_fenced_or_blockquoted():
     assert fenced or blockquoted
 
 
-def test_render_handoff_embeds_schema_path_write_and_ack():
+def test_render_handoff_embeds_example_path_write_and_ack():
     adapter = _per_item_adapter()
     slot_values = {
         "execution_plan": {"ordered": ["wo-1"]},
@@ -472,20 +601,49 @@ def test_render_handoff_embeds_schema_path_write_and_ack():
     text = ad.render(env)
     handoff = text.split("## Handoff")[1]
 
-    # 1. The embedded schema — pretty JSON of the actual shape.
-    schema = env["output_contract"]["schema"]
-    pretty = json.dumps(schema, indent=2, sort_keys=True)
+    # 1. The embedded example — pretty JSON of the actual shape.
+    example = env["output_contract"]["schema"]
+    pretty = json.dumps(example, indent=2, sort_keys=True)
     assert pretty in handoff
 
     # 2. write-to-file: the exact output_path + a file-writing-tool instruction.
     path = env["output_contract"]["output_path"]
     assert path in handoff
     assert "file-writing tool" in handoff
-    assert "Write a single JSON value" in handoff
 
     # 3. ack: one-line acknowledgement, do NOT include the JSON in the reply.
     assert "one-line acknowledgement" in handoff
     assert "Do NOT include the JSON" in handoff
+
+
+# ==========================================================================
+# E2E Behaviour: render frames the embedded value as a concrete EXAMPLE to
+# MIMIC (copy its structure, replace placeholder values) — it must NOT call the
+# value a "schema" (#119). A protocol-naive subagent reliably mimics a concrete
+# example but is confused by JSON-Schema descriptor notation.
+# ==========================================================================
+
+def test_render_handoff_frames_value_as_example_not_schema():
+    adapter = _per_item_adapter()
+    adapter["dispatch"][0]["output_example"] = [{"id": "wo-1", "status": "done"}]
+    slot_values = {"execution_plan": {"ordered": ["wo-1"]}, "policy": {}}
+    env = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)[0]
+    text = ad.render(env)
+    handoff = text.split("## Handoff")[1]
+
+    # Frames it as an EXAMPLE to mimic — "like this example" wording present.
+    assert "example" in handoff.lower()
+    lowered = handoff.lower()
+    assert ("shaped exactly like this example" in lowered
+            or "like this example" in lowered)
+    # The reframed Handoff must NOT call the embedded value a "schema".
+    assert "schema" not in lowered
+    # The concrete example is embedded verbatim (pretty-printed).
+    pretty = json.dumps(env["output_contract"]["schema"], indent=2,
+                        sort_keys=True)
+    assert pretty in handoff
 
 
 def test_render_handoff_schema_fallback_shape_when_no_output_schema():
@@ -682,10 +840,10 @@ def test_e2e_full_per_item_pipeline_blocked():
         '{"id": "wo-1", "status": "done"}',
         '```json\n{"id": "wo-2", "status": "blocked"}\n```',
     ]
-    schema = adapter["dispatch"][0]["output_schema"]
+    example = adapter["dispatch"][0]["output_example"]
     parsed = []
     for content in file_contents:
-        ok, val = ad.validate_output(content, schema)
+        ok, val = ad.validate_output(content, example)
         assert ok is True
         parsed.append(val)
 
