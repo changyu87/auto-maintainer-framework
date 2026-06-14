@@ -49,7 +49,7 @@ to ${runtime_dir}/events.jsonl via observability.EventLog (the machine-first
 record of "what the loop did"), written ALONGSIDE the existing one-line trace —
 purely additive, no existing behaviour changes.
 
-Version: 0.3.0
+Version: 0.3.1
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the tick interval becomes
@@ -981,11 +981,16 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     is_resume = resume or bool(persisted_checkpoint)
 
     if is_resume:
-        # Reuse the persisted budget window verbatim (no fresh-start gate).
-        new_budget_state = persisted_budget_state(state_path)
+        # Reuse the persisted budget window (no fresh-start gate). Carry the
+        # evaluated/rolled window forward (#123): the fresh tick's window was
+        # persisted on the PAUSE early-return path, but a resume must always
+        # surface a real {window_key, spent_tokens} even if the persisted value
+        # is {} — so assign budget["budget_state"] back rather than re-rolling.
+        prior_budget_state = persisted_budget_state(state_path)
         budget = sg.evaluate_budget(
-            gov, new_budget_state, _clock_for_window(
-                new_budget_state.get("window_key")))
+            gov, prior_budget_state, _clock_for_window(
+                prior_budget_state.get("window_key")))
+        new_budget_state = budget["budget_state"]
     else:
         # Evaluate + persist the durable, cross-tick budget window. The tz-aware
         # budget clock is the injected `now` when tz-aware, else the host
@@ -1035,6 +1040,17 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
             # PAUSED or invalid_output: return the structured dict directly. The
             # executor re-invokes run_tick(resume=True) to continue after the
             # subagent has written its output file.
+            #
+            # Persist the durable budget window BEFORE returning (#123). An agent
+            # route pauses at the first agent-state and returns here, BEFORE the
+            # terminal budget-persist block below — so without this the fresh
+            # tick's rolled window would never be saved (durable budget={},
+            # /status win= empty). Load-modify-save ONLY BUDGET_KEY so the
+            # checkpoint + read products + every other durable key are preserved;
+            # the budget is a durable cross-tick fact on EVERY route.
+            doc = ds.DurableState(state_path).load()
+            doc[BUDGET_KEY] = new_budget_state
+            ds.DurableState(state_path).save(doc)
             return agent_outcome[0]
         result = agent_outcome[1]
         ctx = agent_outcome[2]
