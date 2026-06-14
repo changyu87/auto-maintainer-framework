@@ -23,13 +23,13 @@ Public surface:
   - build_envelopes(adapter, slot_values, tick_context, state, output_dir)
     -> [envelope] (each carries output_contract{slot, schema, output_path}).
   - render(envelope) -> str — deterministic structured-markdown prompt whose
-    self-contained ## Handoff section embeds the schema + mandates write-to-file
-    + a one-line ack.
+    self-contained ## Handoff section embeds a concrete output example to mimic
+    + mandates write-to-file + a one-line ack.
   - validate_output(file_content, schema) -> (ok, parsed | error).
   - collect_outputs(adapter_entry, outputs) -> slot_value.
   - compute_signal(rule, slot_value) -> signal.
 
-Version: 0.2.0
+Version: 0.3.0
 Owner: changyu87
 Deprecation criterion: Superseded when the agent-adapter schema or
   invocation-envelope reaches a breaking major version, or when subagent
@@ -49,6 +49,12 @@ _SIGNAL_RULES = ("nonempty_else_empty", "blocked_if_any", "always_ok")
 
 # A blocked element carries one of these status values.
 _BLOCKED_STATUSES = ("blocked",)
+
+# JSON-Schema type-name vocabulary used by the descriptor guard (#119). A dict
+# example whose "type" is one of these AND which also carries "items" or
+# "properties" is a JSON-Schema descriptor, not a concrete example.
+_JSON_SCHEMA_TYPES = ("object", "array", "string", "number", "integer",
+                      "boolean", "null")
 
 
 def is_agent_entry(entry):
@@ -70,8 +76,9 @@ def validate_agent_adapter(entry):
     least one `dispatch` entry; each dispatch entry has a str `subagent_type`,
     a list `inputs`, a `cardinality` in the closed vocabulary, and a str
     `writes`; an optional str `task`; a `signal.rule` in the closed set. An
-    optional `output_schema` (any JSON value — a schema dict or a concrete
-    example shape) is accepted; its absence is valid and it is not constrained.
+    optional `output_example` (or the DEPRECATED `output_schema` alias) holding a
+    concrete example value is accepted; its absence is valid. It is REJECTED when
+    authored as a JSON-Schema descriptor (the #119 descriptor guard).
     """
     if not isinstance(entry, dict):
         raise ValueError("agent-adapter must be a dict")
@@ -104,6 +111,7 @@ def validate_agent_adapter(entry):
         if "task" in d and not isinstance(d["task"], str):
             raise ValueError(f"dispatch[{i}].task must be a str when present")
         _validate_cardinality(d.get("cardinality"), i)
+        _reject_schema_descriptor(d, i)
 
     signal = entry.get("signal")
     if not isinstance(signal, dict):
@@ -136,6 +144,30 @@ def _validate_cardinality(cardinality, i):
         "vocabulary ('once' | {{'per_item': '<path>'}})")
 
 
+def _is_schema_descriptor(value):
+    """A JSON-Schema descriptor (#119): a dict whose `"type"` is a JSON-Schema
+    type name AND which also has an `"items"` or `"properties"` key. A concrete
+    example (a list, or a dict without that combination) is NOT a descriptor."""
+    return (
+        isinstance(value, dict)
+        and value.get("type") in _JSON_SCHEMA_TYPES
+        and ("items" in value or "properties" in value)
+    )
+
+
+def _reject_schema_descriptor(entry, i):
+    """Reject a dispatch entry whose `output_example` (or the deprecated
+    `output_schema` alias) is a JSON-Schema descriptor rather than a concrete
+    example value. Protocol-naive subagents copy a concrete example reliably but
+    are confused into writing the descriptor verbatim (#119)."""
+    for field in ("output_example", "output_schema"):
+        if field in entry and _is_schema_descriptor(entry[field]):
+            raise ValueError(
+                f"dispatch[{i}].{field} must be a concrete example value "
+                "(a sample valid output to mimic), not a JSON-Schema "
+                "descriptor; e.g. for an array slot, a bare list like [{...}]")
+
+
 def _resolve_path(slot_values, dotted):
     """Resolve a dotted path (e.g. "execution_plan.ordered") against the
     slot_values mapping. Pure dict/attr traversal — no eval, no I/O."""
@@ -145,11 +177,15 @@ def _resolve_path(slot_values, dotted):
     return cur
 
 
-def _output_schema(entry):
-    """The schema an envelope's output_contract embeds: the dispatch entry's
-    explicit `output_schema` when present (a schema dict or a concrete example
-    shape, carried verbatim), else a coarse `{"type": "array"}` fallback so a
-    protocol-naive subagent still sees a concrete shape to produce."""
+def _output_example(entry):
+    """The concrete example value an envelope's output_contract embeds (carried
+    into the internal `schema` key, name unchanged for run_tick / scheduling):
+    the dispatch entry's `output_example` when present; else the DEPRECATED
+    `output_schema` alias (#119); else a coarse `{"type": "array"}` fallback so
+    a protocol-naive subagent still sees a concrete shape to mimic. When both
+    `output_example` and the alias are present, `output_example` wins."""
+    if "output_example" in entry:
+        return entry["output_example"]
     if "output_schema" in entry:
         return entry["output_schema"]
     return {"type": "array"}
@@ -185,7 +221,7 @@ def build_envelopes(adapter, slot_values, tick_context, state, output_dir):
     envelopes = []
     for dispatch_index, entry in enumerate(adapter["dispatch"]):
         inputs = {slot: slot_values[slot] for slot in entry["inputs"]}
-        schema = _output_schema(entry)
+        schema = _output_example(entry)
         base = {
             "state": state,
             "task": entry.get("task", ""),
@@ -267,12 +303,13 @@ def render(envelope):
 
     `## Inputs` is a readable DERIVATIVE VIEW (generic slot -> markdown; free-
     text fields fenced) — NO raw JSON. `## Handoff` is the SELF-CONTAINED
-    contract: it embeds the actual output schema (pretty-printed JSON of the
-    shape), instructs the subagent to write a single JSON value matching that
-    schema to `output_contract.output_path` using its file-writing tool, then
-    to reply with ONLY a one-line acknowledgement and NOT include the JSON in
-    the reply. The output file is the machine-first artifact the next state
-    consumes; subagents stay protocol-free.
+    contract: it embeds the concrete output EXAMPLE (pretty-printed JSON),
+    framed as a value to MIMIC ("shaped EXACTLY like this example -- copy its
+    structure") and never called a "schema" (#119), instructs the subagent to
+    write that JSON to `output_contract.output_path` using its file-writing
+    tool, then to reply with ONLY a one-line acknowledgement and NOT include the
+    JSON in the reply. The output file is the machine-first artifact the next
+    state consumes; subagents stay protocol-free.
 
     Deterministic: the same envelope renders to a byte-identical string.
     """
@@ -298,19 +335,20 @@ def render(envelope):
         out.append("")
 
     oc = envelope["output_contract"]
-    schema_text = json.dumps(oc["schema"], indent=2, sort_keys=True)
+    example_text = json.dumps(oc["schema"], indent=2, sort_keys=True)
     out.append("## Handoff")
     out.append(
-        f"Produce the output for slot `{oc['slot']}` as a single JSON value "
-        f"matching this schema:")
+        f"Produce the output for slot `{oc['slot']}` as a JSON value shaped "
+        f"EXACTLY like this example -- copy its structure and replace the "
+        f"placeholder values with real ones:")
     out.append("")
     out.append("```json")
-    out.append(schema_text)
+    out.append(example_text)
     out.append("```")
     out.append("")
     out.append(
-        f"Write a single JSON value matching the schema above to this file "
-        f"using your file-writing tool: `{oc['output_path']}`")
+        f"Write that JSON to this file using your file-writing tool: "
+        f"`{oc['output_path']}`")
     out.append("")
     out.append(
         "Then reply with ONLY a one-line acknowledgement (e.g. "
