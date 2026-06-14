@@ -62,6 +62,16 @@ A startup banner also appears the next time you open Claude Code.
 /plugin uninstall auto-maintainer@auto-maintainer   # remove the plugin
 ```
 
+## Commands
+
+Once installed, the plugin provides these slash commands:
+
+- `/auto-maintainer:start` — start (or resume) the in-session tick loop and its recurring heartbeat.
+- `/auto-maintainer:stop` — stop the loop and cancel its scheduled heartbeat.
+- `/auto-maintainer:status` — report the loop's real on-disk status (current disposition and the last pull's work-item count).
+- `/auto-maintainer:tick` — run exactly one tick, dispatching any subagents the tick requests.
+- `/auto-maintainer:configure` — set the maintainer's trust mode and token budget in the project-local governance config.
+
 ## Relationship to rabbit-workflow
 
 This framework generalizes the `rabbit-auto-evolve` feature of the
