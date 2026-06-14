@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-14",
-  "spec_no_change_reason": "Patch re-ship: plugin version bump 0.2.16->0.2.17 to ship run_tick.py with the #123 fix (persist budget window on agent-route ticks + carry on resume); spec already documents the packaging + per-reship patch-bump convention."
+  "spec_no_change_reason": "Patch re-ship: plugin version bump 0.2.17->0.2.18 to ship the new auto-maintainer-triager subagent (collected from work-intake's ship/agents/ by the existing ship/ walk); spec already documents the packaging + per-reship patch-bump convention."
 }
