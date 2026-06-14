@@ -441,9 +441,13 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
     **derivative view** of the machine-first slots (free-text fields fenced) —
     no raw JSON for inputs. The **`## Handoff`** section is the self-contained
     output contract and mandates all three of:
-    1. the **embedded output schema** — the *resolved schema shape itself*
-       (not a bare `schema_ref` the subagent can't resolve), so the subagent
-       knows exactly what to produce;
+    1. the **embedded output example** — a **concrete example value** (a sample
+       valid output, the `output_example` from the adapter entry), framed as
+       *"shape your output exactly like this example"*. It MUST be a concrete
+       example, **not a JSON-Schema descriptor** (`{type, items/properties}`): a
+       protocol-naive subagent reliably **mimics an example** but mis-reads
+       schema notation and copies the descriptor verbatim. The wiring validator
+       rejects an `output_example` that looks like a JSON-Schema descriptor;
     2. **where to write it** — "write the JSON output to `<output_path>` using
        your file-writing tool"; the subagent writes the artifact to disk
        directly, so the (potentially large) output **never passes through the
