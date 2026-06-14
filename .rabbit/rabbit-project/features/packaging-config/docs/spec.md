@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.4
+version: 0.2.5
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -160,6 +160,16 @@ source by the existing assembly.
 (the out-of-band REPORT flush + report-ledger), and the triager `agents/`
 subagent at v1.2.0. No build change beyond `_PLUGIN_VERSION → 0.2.23`; all three
 re-collect/normalize from their updated sources by the existing assembly.
+
+**Plugin patch v0.2.24** — ship the new `verify-integrate` lib (§3.7
+VERIFY/INTEGRATE/CLEANUP). `lib/verify_integrate.py` is added to
+`_NORMALIZED_LIBS` — it imports its siblings `fsm_contracts` (first import,
+the bootstrap anchor) and `safety_governance`, and does NOT import `os`/`sys`
+at module top, so it takes the `_SELF_PATH_BOOTSTRAP_WITH_IMPORTS` variant (the
+same as `prioritize`/`implement`/`work_intake`). `lib/run_tick.py` re-normalizes
+to carry the make_verify/make_integrate/make_cleanup wiring, and the implementer
+`agents/` subagent re-collects at v2.1.0 (PR-label stamp). Version
+`_PLUGIN_VERSION → 0.2.24`.
 
 Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
 the self-path bootstrap, importing `safety_governance` from `lib/`),

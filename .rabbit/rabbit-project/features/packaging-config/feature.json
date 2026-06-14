@@ -7,5 +7,5 @@
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-14",
-  "spec_no_change_reason": "Spec for v0.2.23 already committed (7bd8434) by dispatcher before this cycle; this cycle implements the version bump only."
+  "spec_no_change_reason": "spec v0.2.24 note + frontmatter 0.2.5 already committed earlier this cycle (commit 6e4a547)"
 }

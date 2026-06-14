@@ -439,13 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (REPORT outbound port): version bumped to 0.2.23 in BOTH
+# Re-ship (verify-integrate lib): version bumped to 0.2.24 in BOTH
 # plugin.json and marketplace.json, and the two are consistent. The spec permits
-# a patch bump on each re-ship of the plugin tree (0.2.23 re-ships work_intake.py
-# + run_tick.py with the REPORT outbound port and the triager subagent v1.2.0,
-# with no other build change).
+# a patch bump on each re-ship of the plugin tree (0.2.24 ships verify_integrate.py
+# + re-ships run_tick.py with the make_verify/make_integrate/make_cleanup wiring
+# and the implementer subagent v2.1.0).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_23_and_consistent():
+def test_version_bumped_to_0_2_24_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +457,10 @@ def test_version_bumped_to_0_2_23_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.23", \
-            f"plugin.json version must be 0.2.23, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.23", \
-            "marketplace.json plugin entry version must be 0.2.23"
+        assert pdata.get("version") == "0.2.24", \
+            f"plugin.json version must be 0.2.24, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.24", \
+            "marketplace.json plugin entry version must be 0.2.24"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1744,5 +1744,125 @@ def test_ship_collection_implementer_agent_present():
             "agents/auto-maintainer-implementer.md must carry YAML frontmatter"
         assert "\nname: auto-maintainer-implementer\n" in body, \
             "implementer agent frontmatter name must be `auto-maintainer-implementer`"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (verify-integrate lib, v0.2.24): the new verify-integrate lib ships under
+# lib/ as a normalized control lib. It imports its siblings `fsm_contracts` (the
+# FIRST import, the bootstrap anchor) and `safety_governance`, and does NOT import
+# os/sys at module top, so it takes the with-imports self-path bootstrap (the same
+# as prioritize/implement/work_intake).
+# ---------------------------------------------------------------------------
+def test_verify_integrate_lib_present():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        assert os.path.isfile(os.path.join(lib, "verify_integrate.py")), \
+            "lib/verify_integrate.py must ship in the plugin tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (verify-integrate lib, v0.2.24): the shipped verify_integrate.py must be
+# byte-identical to the build's OWN normalization of its source. It imports
+# `import fsm_contracts as fc` (first sibling import, the anchor) and
+# `import safety_governance as sg`, and does NOT import os/sys at module top, so
+# it is normalized via the with-imports bootstrap inserted before its first
+# sibling import — the SAME shape as prioritize/implement/work_intake.
+# ---------------------------------------------------------------------------
+def test_shipped_verify_integrate_is_normalized_source_bytes():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        dst = os.path.join(lib, "verify_integrate.py")
+        assert os.path.isfile(dst), f"missing shipped lib: {dst}"
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "verify-integrate", "src", "verify_integrate.py",
+        )
+        with open(dst, encoding="utf-8") as fh:
+            shipped = fh.read()
+        _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS["verify_integrate.py"]
+        expected = mod._normalize_lib(src, anchor, bootstrap)
+        assert shipped == expected, \
+            "shipped verify_integrate is not the normalized source bytes"
+        # the with-imports bootstrap must be present (the file imports no os/sys
+        # at top, so the bootstrap supplies them before the insert), anchored
+        # before the FIRST sibling import (fsm_contracts).
+        assert "import os  # noqa: E402" in shipped, \
+            "shipped verify_integrate must carry the with-imports bootstrap"
+        bootstrap_marker = (
+            "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))"
+        )
+        assert bootstrap_marker in shipped, \
+            "shipped verify_integrate must carry the self-path bootstrap"
+        # the bootstrap must precede the fsm_contracts import so the shipped copy
+        # resolves its siblings from the co-located lib/ alone.
+        assert shipped.index(bootstrap_marker) < \
+            shipped.index("import fsm_contracts as fc"), \
+            "bootstrap must be inserted before the fsm_contracts import"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (verify-integrate lib, v0.2.24): the build-rewritten verify_integrate lib
+# must not leak a path back into the source feature tree — the headline clean-ship
+# invariant applies to it too.
+# ---------------------------------------------------------------------------
+def test_shipped_verify_integrate_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        with open(
+            os.path.join(lib, "verify_integrate.py"), encoding="utf-8"
+        ) as fh:
+            body = fh.read()
+        assert ".rabbit" not in body, "shipped verify_integrate leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "shipped verify_integrate references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (verify-integrate lib, v0.2.24), critical self-containment: the shipped
+# verify_integrate.py imports `import fsm_contracts as fc` and
+# `import safety_governance as sg`, so importing the shipped verify_integrate with
+# ONLY the plugin lib/ on sys.path must resolve both siblings (and
+# safety_governance's lifecycle_dispositions sibling) from lib/ alone. Claude
+# copies just the plugin dir into its cache, so a shipped verify_integrate that
+# could not find its siblings in lib/ would fail to import once installed. Prove
+# it in a subprocess whose sys.path is restricted to the shipped lib/ dir alone.
+# ---------------------------------------------------------------------------
+def test_shipped_verify_integrate_imports_siblings_from_lib_alone():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        probe = (
+            "import sys; "
+            f"sys.path.insert(0, {lib!r}); "
+            "import verify_integrate; "
+            "import fsm_contracts, safety_governance; "
+            "assert verify_integrate.fc is fsm_contracts; "
+            "assert verify_integrate.sg is safety_governance; "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped verify_integrate cannot resolve siblings: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
