@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.1.0
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when the governance config schema reaches a breaking major version, or when trust-ladder / budget enforcement moves into a different layer than a project-local governance config consulted at tick entry.
 ---
@@ -104,11 +104,45 @@ budget-paused reason when idling over-ceiling) are surfaced in the tick trace an
 status — same spirit as route-source (#59) — so "idle: budget exhausted, resumes
 next window" is distinguishable from "idle: no work".
 
+## Config writer + the configure skill (userConfig §3.10.1)
+
+safety_governance.py READS + decides over `governance.json`; this feature also
+ships its **writer half** — the deterministic `src/configure.py` script and the
+`/auto-maintainer:configure` skill (`ship/skills/configure/`) — so a user can set
+the trust `mode` and budget ceilings without hand-editing JSON.
+
+- **`src/configure.py`** (deterministic, script-tier — spec-rules §1). A
+  load-modify-save of `governance.json`: it loads the current config via
+  `load_governance` (absent keys backfilled from the defaults), applies only the
+  mentioned fields, validates, writes back (pretty, `sort_keys`), and prints the
+  resulting config. It owns NO schema — the schema is this feature's
+  (`GOVERNANCE_SCHEMA_VERSION`).
+  - `mode` is validated through `permits` (the closed mode set
+    {dry-run, propose, gated-merge}); an unknown mode raises `ValueError`
+    (CLI exit 2 with an error, never a silent write).
+  - `per_day_tokens` / `per_tick_tokens` accept a non-negative int, or
+    `none`/`null`/`unlimited`/`""` meaning NO LIMIT (stored as JSON `null`). A
+    dimension not mentioned is preserved unchanged (other durable keys preserved
+    too).
+  - Project dir resolves from `--project-dir`, else `$CLAUDE_PROJECT_DIR`, else
+    cwd. `--show` (or no mutating flag) prints the current config and writes
+    nothing.
+- **`/auto-maintainer:configure` skill** (`ship/skills/configure/SKILL.md`) — a
+  thin relay: it invokes `configure.py` with only the flags matching the user's
+  request (the values are the user's data, passed verbatim) and reports the
+  resulting config. It never edits `governance.json` directly. This is the
+  arming surface for the model-backed doer: `--mode dry-run` keeps it inert,
+  `--mode propose` arms it to open PRs.
+
 ## Invariants
 
 - Deterministic given injected `now` + injected spend: no model, no network, no
   wall-clock except through the injectable `now`, no filesystem beyond the
   durable budget state.
+- `configure.py` is a deterministic load-modify-save: it validates `mode` against
+  the closed set and budget ceilings as non-negative-int-or-null, preserves
+  unmentioned keys, and never writes an invalid config (an invalid value is a
+  non-zero exit, not a partial write).
 - Budget NEVER latches a halt disposition — it gates work and auto-resumes via
   `IDLE` at the next window. `null` ceiling ⇒ unbounded (no gate).
 - ABORTED (§3.8.3 faults) IS a true latch; only budget auto-resumes.
@@ -126,6 +160,8 @@ next window" is distinguishable from "idle: no work".
 - **Loopback / provenance guard** (§3.11.5, `filed_by` stamp recognized by the
   TRIAGE gates) → with `outbound-report` (nothing files until REPORT exists).
 - **Blast-radius / learned scope** (§3.8.6) → v2.
-- **`userConfig` prompting** of mode/budget values (§3.10.1) → later.
+- **`userConfig` interactive prompting** of mode/budget values (§3.10.1) — the
+  writer (`configure.py` + the `/auto-maintainer:configure` skill) now ships; a
+  guided interactive prompt flow is a later refinement.
 - **Per-day window basis other than local-tz**, and a real escalation sink
   (§3.9.3, observability) → later refinements.
