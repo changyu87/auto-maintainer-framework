@@ -36,6 +36,20 @@ _SRC = os.path.join(_FEATURE_DIR, "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+# configure.py imports safety_governance, which imports lifecycle_dispositions
+# (which in turn imports fsm_contracts). Put those sibling srcs on the path too,
+# the same way the safety_governance e2e test does, so this module's imports
+# resolve regardless of test-file load order.
+_LD_SRC = os.path.join(
+    os.path.dirname(_FEATURE_DIR), "lifecycle-dispositions", "src")
+if _LD_SRC not in sys.path:
+    sys.path.insert(0, _LD_SRC)
+
+_FSM_SRC = os.path.join(
+    os.path.dirname(_FEATURE_DIR), "fsm-contracts", "src")
+if _FSM_SRC not in sys.path:
+    sys.path.insert(0, _FSM_SRC)
+
 import configure  # noqa: E402
 
 _SKILL_PATH = os.path.join(
