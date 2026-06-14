@@ -250,14 +250,16 @@ def test_integrate_factory_binds_governance_mode():
     rti = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
            "source": None, "now": None,
            "governance": {"mode": "gated-merge"}}
-    manifest, run = rt.make_integrate(rti)
-    assert manifest is vi.INTEGRATE_MANIFEST
-    assert callable(run)
-    # The bound run, invoked over a ctx with one ok verdict, merges via the sink
-    # at gated-merge (mode binding proven through behaviour).
+    # Patch the gh seams BEFORE constructing the factory: make_integrate resolves
+    # the default branch at factory-call time via vi.gh_default_branch_source.
     merge_calls = []
     restore = _patch_vi_seams(None, merge_calls=merge_calls)
     try:
+        manifest, run = rt.make_integrate(rti)
+        assert manifest is vi.INTEGRATE_MANIFEST
+        assert callable(run)
+        # The bound run, invoked over a ctx with one ok verdict, merges via the
+        # sink at gated-merge (mode binding proven through behaviour).
         ctx = fc.TickContext()
         ctx.register_slot("verdicts", {"type": "array"}, version="1.0.0")
         ctx.register_slot("integration_result", {"type": "object"},
