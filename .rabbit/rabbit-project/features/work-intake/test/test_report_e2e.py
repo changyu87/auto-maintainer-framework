@@ -12,8 +12,9 @@ sits behind the injectable sink, so these tests pass a stub (or a fake
 subprocess runner) with NO network (spec-rules §1: the failure is locatable to
 the file boundary). `file_discoveries` performs no I/O of its own.
 
-The shipped triager guard test asserts the loopback reject criterion (§3.11.5)
-is present in the deployed v1.1.0 subagent definition.
+The shipped triager guard test asserts the v1.2.0 subagent definition no longer
+rejects loop-filed items: the §3.11.5 loopback guard is enforced UPSTREAM at PULL
+by exclusion (work_intake.is_loop_filed), so the triager never sees them.
 
 Owner: changyu87
 """
@@ -278,8 +279,9 @@ def test_file_discoveries_through_real_sink_assembly_stamps_provenance():
 
 
 # ==========================================================================
-# Behaviour: the shipped triager .md is v1.1.0 and carries the loopback reject
-# criterion (§3.11.5) — it rejects items stamped filed-by:autonomous-maintainer.
+# Behaviour: the shipped triager .md is v1.2.0 and carries NO loopback reject
+# criterion — the §3.11.5 guard is enforced upstream at PULL by exclusion, so
+# the triager never sees loop-filed items.
 # ==========================================================================
 
 _SHIP_AGENT = os.path.join(
@@ -300,20 +302,23 @@ def _frontmatter_value(fm_text, key):
     raise KeyError(key)
 
 
-def test_shipped_triager_is_v1_1_0():
+def test_shipped_triager_is_v1_2_0():
     with open(_SHIP_AGENT) as f:
         fm, _body = _split_frontmatter(f.read())
-    assert _frontmatter_value(fm, "version") == "1.1.0"
+    assert _frontmatter_value(fm, "version") == "1.2.0"
 
 
-def test_shipped_triager_body_has_loopback_reject_instruction():
+def test_shipped_triager_body_has_no_loopback_reject_instruction():
     with open(_SHIP_AGENT) as f:
         _fm, body = _split_frontmatter(f.read())
     lowered = body.lower()
-    # The loopback guard rejects items stamped by the loop itself.
-    assert "filed-by:autonomous-maintainer" in body, (
-        "triager must reject items carrying the loop provenance label")
-    assert "am-dedup" in lowered, (
-        "triager must recognize the am-dedup body marker as loop provenance")
-    assert "loop-filed" in lowered or "loop filed" in lowered, (
-        "triager must name the loopback policy in its reject criterion")
+    # The triager no longer rejects loop-filed items: the §3.11.5 guard is
+    # enforced UPSTREAM at PULL by exclusion, so the triager never sees them.
+    # It must NOT carry a reject-the-provenance-label instruction.
+    assert "reject it with a" not in lowered, (
+        "v1.2.0 triager must not reject loop-filed items; PULL excludes them")
+    # Instead it notes the upstream exclusion (loop-filed items never reach it).
+    assert "loop" in lowered and "pull" in lowered, (
+        "triager must note loop-filed items are excluded upstream at PULL")
+    assert "excluded" in lowered, (
+        "triager must say loop-filed items are excluded upstream")
