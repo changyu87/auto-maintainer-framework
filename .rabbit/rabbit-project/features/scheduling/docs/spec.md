@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.6.3
+version: 0.7.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -337,6 +337,49 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
   effect-based trust-gate (dry-run inert vs dispatch) + isolation/description in
   the PAUSED dispatches. Read products stay #64 per-tick ephemeral; the budget
   window persistence (#123) and the #109 journal-free checkpoint are unchanged.
+  (The budget pre-gate, acted-ledger, and spend metering land in the next slice
+  below.)
+
+## Doer governance for acting agent-states (slice: acted-ledger + budget pre-gate + spend metering)
+
+This slice completes the doer's `run_tick` governance for **acting agent-states**
+(those whose dispatch entry carries a truthy `effect`, from the prior trust-gate
+slice). On the PERMITTED (dispatch) path — `sg.permits(effect, mode)` True, e.g.
+`propose` / `gated-merge` — it adds three things. ALL apply ONLY to acting
+agent-states; a **non-acting** agent-state (TRIAGE, no `effect`), the dry-run
+inert path, and pure-script routes are BYTE-IDENTICAL / unchanged. It consumes
+`safety-governance` + `durable-state` + `agent-dispatch` + every sibling
+UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
+
+- **Acted-ledger (idempotency, §3.2.4).** A new durable cross-tick key
+  `ACTED_LEDGER_KEY = "acted_ledger"` (a durable cross-tick fact like `BUDGET_KEY`,
+  NOT a #64 read product) stores `{work_order_id: {"outcome": <status>, "ref":
+  <artifact ref or null>}}`. `persisted_acted_ledger(state_path)` reads it
+  (default `{}`). At an acting agent-state, when determining the per_item dispatch
+  set, run_tick **filters OUT any `work_order_id` already present in the ledger**
+  (already acted — never re-dispatch / never open a second PR). If, after
+  filtering, NO items remain to dispatch, the state does NOT pause: it synthesizes
+  an inert result (no handoffs to add), computes the route signal, and CONTINUES
+  the driver. On **resume**, after collecting the handoffs, run_tick RECORDS each
+  newly-acted item into the ledger: `ledger[work_order_id] = {"outcome":
+  handoff["status"], "ref": handoff.get("artifact", {}).get("ref")}` and persists
+  it (load-modify-save just `ACTED_LEDGER_KEY`, preserving all other durable keys).
+  Only real, non-planned outcomes reach the resume record path.
+- **Budget pre-gate.** At an acting agent-state on the permitted path, BEFORE
+  pausing for dispatch, run_tick evaluates the budget window
+  (`sg.evaluate_budget(gov, persisted_budget_state(...), budget_clock)`). If
+  `allowed` is False (per-day exhausted), run_tick does NOT pause / dispatch — it
+  synthesizes a **deferred** result (handoffs `status:"blocked"`, `blocked_reason`
+  naming the budget exhaustion, for the not-yet-acted items), computes the signal,
+  and continues — NO spend, NO dispatch. The items stay un-acted (NOT added to the
+  ledger), so they retry on a later tick / next window. TRIAGE / read-only states
+  are NOT budget-pre-gated — the pre-gate is acting-only.
+- **Spend metering on resume.** The CLI `--resume` gains an optional `--spent
+  <int>` (and a programmatic `spent` param on `run_tick(resume=True)`). On resume
+  of an acting state, after applying the subagent outputs, run_tick
+  `record_spend(budget_state, budget_clock, spent)` into the budget window and
+  persists it. Default `spent` is 0 (back-compatible — the existing resume path is
+  unchanged when no spend is metered).
 
 ## JSON tick CLI (slice: --step / --resume executor seam)
 

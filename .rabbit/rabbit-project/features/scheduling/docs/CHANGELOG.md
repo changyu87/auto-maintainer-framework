@@ -1,5 +1,39 @@
 # scheduling — Changelog
 
+## contract 0.7.0 — 2026-06-10
+
+- **Doer governance for ACTING agent-states: acted-ledger + budget pre-gate +
+  spend metering.** Completes `run_tick`'s governance for agent-states that
+  perform outward effects (a truthy `effect`, from the prior trust-gate slice) on
+  the PERMITTED (dispatch) path. ALL three apply ONLY to acting agent-states; a
+  non-acting agent-state (TRIAGE), the dry-run inert path, and pure-script routes
+  are byte-identical / unchanged.
+  - **Acted-ledger (idempotency, §3.2.4).** New durable cross-tick key
+    `ACTED_LEDGER_KEY = "acted_ledger"` + `persisted_acted_ledger(state_path)` ->
+    `{work_order_id: {outcome, ref}}` (default `{}`). When building the per_item
+    dispatch set, run_tick FILTERS OUT any `work_order_id` already in the ledger
+    (already acted — never re-dispatch / no second PR). If after filtering NO items
+    remain, the acting state does NOT pause (synthesizes an inert result, computes
+    the signal, continues). On resume each newly-acted handoff is RECORDED into the
+    ledger (`ledger[work_order_id] = {outcome: handoff["status"], ref:
+    handoff.get("artifact",{}).get("ref")}`) via load-modify-save of ONLY
+    `ACTED_LEDGER_KEY` (preserving every other durable key).
+  - **Budget pre-gate.** BEFORE pausing at an acting agent-state, run_tick
+    evaluates the budget window (`sg.evaluate_budget`); if `allowed` is False
+    (per_day exhausted) it does NOT pause/dispatch — it synthesizes a DEFERRED
+    result (handoffs `status:"blocked"`, `blocked_reason` naming the budget
+    exhaustion, for the not-yet-acted items), computes the signal, continues — NO
+    spend, NO dispatch; the items stay un-acted (NOT in the ledger) so they retry
+    next window. TRIAGE / read-only states are NOT budget-pre-gated.
+  - **Spend metering on resume.** The CLI `--resume` gains an optional `--spent
+    <int>` (and a programmatic `spent` param on `run_tick(resume=True)`, default 0,
+    back-compatible). On resume of an acting state, after applying the subagent
+    outputs, run_tick `sg.record_spend(...)` into the budget window and persists it.
+  - The acted-ledger + budget window are durable cross-tick facts (load-modify-save
+    preserving other keys), never #64-ephemeral. scheduling consumes
+    safety-governance (`evaluate_budget` / `record_spend` / `permits`) +
+    durable-state + agent-dispatch + every sibling UNCHANGED.
+
 ## contract 0.6.3 — 2026-06-10
 
 - **Trust-gate for ACTING agent-states (DESIGN §2.3 / §3.8.2 trust ladder).**
