@@ -439,14 +439,12 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (protocol-free-subagent + file-based-handoff context isolation):
-# version bumped to 0.2.15 in BOTH plugin.json and marketplace.json, and the two
-# are consistent. The spec permits a patch bump on each re-ship of the plugin
-# tree (0.2.15 re-ships the reworked echo agent / tick skill / start skill and
-# re-normalizes scheduling's run_tick.py so resume reads subagent-written output
-# files).
+# Re-ship (#119 handoff hardening): version bumped to 0.2.16 in BOTH plugin.json
+# and marketplace.json, and the two are consistent. The spec permits a patch bump
+# on each re-ship of the plugin tree (0.2.16 re-ships agent_dispatch.py with the
+# #119 output_example concrete-example framing + JSON-Schema descriptor guard).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_15_and_consistent():
+def test_version_bumped_to_0_2_16_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -458,10 +456,10 @@ def test_version_bumped_to_0_2_15_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.15", \
-            f"plugin.json version must be 0.2.15, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.15", \
-            "marketplace.json plugin entry version must be 0.2.15"
+        assert pdata.get("version") == "0.2.16", \
+            f"plugin.json version must be 0.2.16, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.16", \
+            "marketplace.json plugin entry version must be 0.2.16"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1058,6 +1056,75 @@ def test_agent_dispatch_lib_present_and_byte_identical():
         with open(src, "rb") as a, open(dst, "rb") as b:
             assert a.read() == b.read(), \
                 "agent_dispatch.py is not byte-identical to its source"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship #119 (handoff hardening): the whole point of the 0.2.16 re-ship is that
+# the installed plugin's agent_dispatch.py carries the #119 fix — render() frames
+# the embedded output_contract as a CONCRETE example to mimic, and
+# validate_agent_adapter REJECTS a JSON-Schema descriptor in the
+# output_example / output_schema slot (the descriptor guard). Prove the SHIPPED
+# agent_dispatch carries the #119 markers AND, importing it from lib/ alone,
+# enforces the descriptor guard at runtime — so the rebuilt tree genuinely ships
+# the merged fix rather than the old pre-#119 logic.
+# ---------------------------------------------------------------------------
+def test_shipped_agent_dispatch_carries_119_handoff_hardening():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        ad = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "agent_dispatch.py"
+        )
+        with open(ad, encoding="utf-8") as fh:
+            shipped = fh.read()
+        # the #119 markers: descriptor guard + output_example field/alias
+        assert "#119" in shipped, \
+            "shipped agent_dispatch must carry the #119 handoff-hardening fix"
+        assert "output_example" in shipped, \
+            "shipped agent_dispatch must support the output_example field (#119)"
+        assert "output_schema" in shipped, \
+            "shipped agent_dispatch must keep the output_schema back-compat alias"
+        assert "_is_schema_descriptor" in shipped, \
+            "shipped agent_dispatch must carry the JSON-Schema descriptor guard"
+        # runtime: validate_agent_adapter must REJECT a JSON-Schema descriptor in
+        # the output_example slot, importing the shipped lib from lib/ alone. The
+        # adapter is otherwise fully valid, so the descriptor is the SOLE
+        # violation — proving the #119 guard (not some unrelated check) fires.
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        probe = (
+            "import copy, sys\n"
+            f"sys.path.insert(0, {lib!r})\n"
+            "import agent_dispatch as ad\n"
+            "base={'kind':'agent',"
+            "'manifest':{'reads':['a'],'writes':['b'],'emits':['c']},"
+            "'dispatch':[{'subagent_type':'t','inputs':[],"
+            "'cardinality':'once','writes':'w'}],"
+            "'signal':{'rule':'always_ok'}}\n"
+            "ad.validate_agent_adapter(copy.deepcopy(base))\n"
+            "bad=copy.deepcopy(base)\n"
+            "bad['dispatch'][0]['output_example']="
+            "{'type':'array','items':{'type':'object'}}\n"
+            "raised=False\n"
+            "try:\n"
+            "    ad.validate_agent_adapter(bad)\n"
+            "except ValueError:\n"
+            "    raised=True\n"
+            "assert raised, 'descriptor must be rejected'\n"
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped agent_dispatch descriptor guard not enforced: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
