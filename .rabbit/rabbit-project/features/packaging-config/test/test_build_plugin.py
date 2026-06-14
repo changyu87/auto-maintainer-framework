@@ -439,12 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (implementer subagent v2.0.0): version bumped to 0.2.21 in BOTH
+# Re-ship (run_tick spend-metering change): version bumped to 0.2.22 in BOTH
 # plugin.json and marketplace.json, and the two are consistent. The spec permits
-# a patch bump on each re-ship of the plugin tree (0.2.21 re-ships the implementer
-# subagent v2.0.0, #143 follow-up, with no other build change).
+# a patch bump on each re-ship of the plugin tree (0.2.22 re-ships run_tick.py,
+# which meters spend on ALL agent-state resumes including TRIAGE, with no other
+# build change).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_21_and_consistent():
+def test_version_bumped_to_0_2_22_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -456,10 +457,10 @@ def test_version_bumped_to_0_2_21_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.21", \
-            f"plugin.json version must be 0.2.21, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.21", \
-            "marketplace.json plugin entry version must be 0.2.21"
+        assert pdata.get("version") == "0.2.22", \
+            f"plugin.json version must be 0.2.22, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.22", \
+            "marketplace.json plugin entry version must be 0.2.22"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
