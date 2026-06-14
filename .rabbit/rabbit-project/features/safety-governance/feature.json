@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-13T03:57:44Z",
   "deprecation_criterion": "Superseded when the governance config schema reaches a breaking major version, or when trust-ladder / budget enforcement moves into a different layer than a project-local governance config consulted at tick entry.",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "updated": "2026-06-14",
   "spec_no_change_reason": "spec.md Merge guardrails section (\u00a73.8.1) already committed this cycle; implementation only adds the merge_guardrails function it documents"
 }
