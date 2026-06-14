@@ -439,13 +439,12 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (#123 budget-window-on-agent-tick): version bumped to 0.2.17 in BOTH
+# Re-ship (#auto-maintainer-triager): version bumped to 0.2.18 in BOTH
 # plugin.json and marketplace.json, and the two are consistent. The spec permits
-# a patch bump on each re-ship of the plugin tree (0.2.17 re-ships run_tick.py
-# with the #123 fix that persists the budget window on agent-route ticks and
-# carries it on resume).
+# a patch bump on each re-ship of the plugin tree (0.2.18 ships the new
+# auto-maintainer-triager subagent collected from work-intake's ship/agents/).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_17_and_consistent():
+def test_version_bumped_to_0_2_18_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +456,10 @@ def test_version_bumped_to_0_2_17_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.17", \
-            f"plugin.json version must be 0.2.17, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.17", \
-            "marketplace.json plugin entry version must be 0.2.17"
+        assert pdata.get("version") == "0.2.18", \
+            f"plugin.json version must be 0.2.18, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.18", \
+            "marketplace.json plugin entry version must be 0.2.18"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1308,6 +1307,47 @@ def test_ship_collection_echo_agent_present():
         # and the output path, so the agent body bakes in neither.
         assert "output_path" not in body, \
             "protocol-free echo agent must not bake in an output_path"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (0.2.18, auto-maintainer-triager): the new triager subagent ships at
+# agents/auto-maintainer-triager.md via the ship/ collection convention (it
+# lives in work-intake's ship/agents/). It is the TRIAGE-state judge the tick
+# skill dispatches by subagent_type. The build walks EVERY feature's ship/ dir,
+# so it lands alongside the existing auto-maintainer-echo agent with NO build
+# change beyond the version bump. Assert it ships, its frontmatter name is
+# `auto-maintainer-triager`, and it is byte-identical to the work-intake source.
+# ---------------------------------------------------------------------------
+def test_ship_collection_triager_agent_present():
+    out_root = _build_into_temp()
+    try:
+        agents = os.path.join(
+            out_root, "plugins", "auto-maintainer", "agents",
+        )
+        ag = os.path.join(agents, "auto-maintainer-triager.md")
+        assert os.path.isfile(ag), \
+            "ship/ collection must place agents/auto-maintainer-triager.md"
+        # it ships ALONGSIDE the existing echo agent (both via ship/ collection)
+        assert os.path.isfile(
+            os.path.join(agents, "auto-maintainer-echo.md")
+        ), "echo agent must still ship alongside the triager agent"
+        with open(ag, encoding="utf-8") as fh:
+            body = fh.read()
+        assert body.lstrip().startswith("---"), \
+            "agents/auto-maintainer-triager.md must carry YAML frontmatter"
+        assert "\nname: auto-maintainer-triager\n" in body, \
+            "triager agent frontmatter name must be `auto-maintainer-triager`"
+        # byte-identical to the work-intake source (the ship/ collection copies
+        # it verbatim — no build-time normalization for shipped agents).
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "work-intake", "ship", "agents", "auto-maintainer-triager.md",
+        )
+        with open(src, "rb") as a, open(ag, "rb") as b:
+            assert a.read() == b.read(), \
+                "shipped triager agent is not byte-identical to its source"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 

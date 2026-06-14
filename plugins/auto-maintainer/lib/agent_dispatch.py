@@ -262,11 +262,34 @@ def _is_free_text(value):
     return isinstance(value, str) and ("\n" in value or len(value) > 80)
 
 
+def _fence(content):
+    """A CommonMark-correct DYNAMIC-LENGTH fence for free-text content (#126).
+
+    Scan `content` for the longest run of consecutive backticks and wrap it in a
+    fence of (longest_run + 1) backticks, minimum 3. Content that itself contains
+    a ```-fenced code block (e.g. a GitHub issue body) thus cannot terminate the
+    wrapper early; the whole body stays inside one fence. The opening and closing
+    fences use the same (longer) length. Pure function of `content` — the same
+    content always yields the same fence."""
+    longest = 0
+    run = 0
+    for ch in content:
+        if ch == "`":
+            run += 1
+            if run > longest:
+                longest = run
+        else:
+            run = 0
+    ticks = "`" * max(3, longest + 1)
+    return "\n" + ticks + "\n" + content + "\n" + ticks + "\n"
+
+
 def _render_scalar(value):
     """Render a scalar as inline markdown. Free-text strings are fenced so
-    their embedded markdown cannot break the layout."""
+    their embedded markdown cannot break the layout. The fence length is
+    dynamic (#126) so content containing its own code fence cannot break out."""
     if _is_free_text(value):
-        return "\n```\n" + value + "\n```\n"
+        return _fence(value)
     return f"`{value}`" if not isinstance(value, str) else value
 
 
