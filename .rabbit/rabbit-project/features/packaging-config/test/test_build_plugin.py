@@ -439,12 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (#119 handoff hardening): version bumped to 0.2.16 in BOTH plugin.json
-# and marketplace.json, and the two are consistent. The spec permits a patch bump
-# on each re-ship of the plugin tree (0.2.16 re-ships agent_dispatch.py with the
-# #119 output_example concrete-example framing + JSON-Schema descriptor guard).
+# Re-ship (#123 budget-window-on-agent-tick): version bumped to 0.2.17 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. The spec permits
+# a patch bump on each re-ship of the plugin tree (0.2.17 re-ships run_tick.py
+# with the #123 fix that persists the budget window on agent-route ticks and
+# carries it on resume).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_16_and_consistent():
+def test_version_bumped_to_0_2_17_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -456,12 +457,55 @@ def test_version_bumped_to_0_2_16_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.16", \
-            f"plugin.json version must be 0.2.16, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.16", \
-            "marketplace.json plugin entry version must be 0.2.16"
+        assert pdata.get("version") == "0.2.17", \
+            f"plugin.json version must be 0.2.17, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.17", \
+            "marketplace.json plugin entry version must be 0.2.17"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship #123 (budget-window-on-agent-tick): the whole point of the 0.2.17
+# re-ship is that the installed plugin's run_tick carries the #123 fix — an
+# agent-route tick pauses at the first agent-state and returns BEFORE the
+# terminal budget-persist block, so run_tick now persists the durable budget
+# window BEFORE returning the pause outcome (load-modify-save only BUDGET_KEY)
+# and a resume reuses the persisted window without re-rolling. Prove the SHIPPED
+# run_tick carries the fixed logic (the #123 marker, the pre-return budget
+# persist, and the resume carry-forward) AND is byte-identical to the build's own
+# normalization of the CURRENT scheduling source — so the rebuilt tree genuinely
+# ships the merged fix rather than the old logic that lost the window.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_carries_123_budget_window_fix():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            shipped = fh.read()
+        # The #123 fix persists the durable budget window before returning the
+        # agent-route pause outcome, and carries the persisted window on resume.
+        assert "(#123)" in shipped, \
+            "shipped run_tick must carry the #123 budget-window-on-agent fix"
+        assert "doc[BUDGET_KEY] = new_budget_state" in shipped, \
+            "shipped run_tick must persist the budget window before the agent " \
+            "pause returns (#123)"
+        # And it must be byte-identical to the build's own normalization of the
+        # CURRENT scheduling source — proving the merged fix actually shipped.
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "scheduling", "src", "run_tick.py",
+        )
+        _dst_name, (_src_rel, anchor, bootstrap) = "run_tick.py", \
+            mod._NORMALIZED_LIBS["run_tick.py"]
+        expected = mod._normalize_lib(src, anchor, bootstrap)
+        assert shipped == expected, \
+            "shipped run_tick is not the normalized scheduling source bytes"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
