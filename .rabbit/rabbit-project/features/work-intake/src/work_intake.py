@@ -354,3 +354,161 @@ class Triage:
         writes = {"work_orders": [order.to_dict() for order in accepted]}
         signal = "OK" if accepted else "EMPTY"
         return fc.StateResult(signal=signal, writes=writes)
+
+
+# ==========================================================================
+# Slice 3 — REPORT: the outbound filing port (discoveries -> tracker items).
+# ==========================================================================
+#
+# The write-side mirror of PULL. work-intake owns the inbound tracker I/O, so it
+# also owns the outbound port: the DiscoveredIssue/ReportResult schemas, the
+# default GitHub filing sink, and the pure file_discoveries orchestrator. REPORT
+# is out-of-band — NOT a routed tick state; scheduling.run_tick flushes
+# discoveries through it after the route runs (that wiring + the journaled
+# idempotency + the trust-ladder GATE live in scheduling, NOT here).
+
+# The versioned DiscoveredIssue schema (machine-first; bumped on a breaking
+# change to the field set). Distinct from the feature + other slot versions.
+DISCOVERED_ISSUE_SCHEMA_VERSION = "1.0.0"
+
+# The provenance label stamped on every loop filing, and the body-marker
+# template that lets a later PULL/TRIAGE (and a dedup re-scan) recognize a
+# loop-filed item. The marker text is exactly `<!-- am-dedup:<dedup_key> -->`.
+FILED_BY_LABEL = "filed-by:autonomous-maintainer"
+
+
+def _am_dedup_marker(dedup_key):
+    return f"<!-- am-dedup:{dedup_key} -->"
+
+
+@dataclass(eq=True)
+class DiscoveredIssue:
+    """A discovery the maintainer wants durably tracked, filed through REPORT.
+
+    `dedup_key` is a stable caller-supplied key making filing idempotent;
+    `target` selects the destination tracker (`project` | `maintainer-self`);
+    `filed_by` stamps the loop's provenance. `to_dict`/`from_dict` give a
+    machine-first, versioned representation.
+    """
+
+    title: str
+    body: str
+    kind: str
+    severity: str
+    target: str
+    dedup_key: str
+    filed_by: str = "autonomous-maintainer"
+
+    def to_dict(self):
+        return {
+            "schema_version": DISCOVERED_ISSUE_SCHEMA_VERSION,
+            "title": self.title,
+            "body": self.body,
+            "kind": self.kind,
+            "severity": self.severity,
+            "target": self.target,
+            "dedup_key": self.dedup_key,
+            "filed_by": self.filed_by,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            title=d["title"],
+            body=d["body"],
+            kind=d["kind"],
+            severity=d["severity"],
+            target=d["target"],
+            dedup_key=d["dedup_key"],
+            filed_by=d.get("filed_by", "autonomous-maintainer"),
+        )
+
+
+@dataclass(eq=True)
+class ReportResult:
+    """The outcome of a filing batch (machine-first).
+
+      - filed:            [{dedup_key, tracker_ref, url}] — newly filed items.
+      - skipped_existing: [dedup_key] — keys already known (a no-op re-file).
+      - errors:           [{dedup_key, reason}] — per-discovery sink failures.
+    """
+
+    filed: List[dict] = field(default_factory=list)
+    skipped_existing: List[str] = field(default_factory=list)
+    errors: List[dict] = field(default_factory=list)
+
+
+def gh_issue_file_sink(discovery, repo=None, runner=subprocess.run):
+    """Production filing sink: shell `gh issue create` for one DiscoveredIssue
+    and return {tracker_ref, url}. `gh` carries its own auth.
+
+    The provenance label `filed-by:autonomous-maintainer` is stamped, and a
+    `<!-- am-dedup:<dedup_key> -->` marker is appended to the body so a later
+    PULL/TRIAGE (and a dedup re-scan) can recognize the filing. When `repo` is
+    given it is passed via `--repo` (the caller chooses it from
+    discovery.target); otherwise gh resolves the repo from the project default.
+
+    The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so
+    tests pass a fake — no network, the failure locatable to the file boundary.
+    """
+    body = discovery.body
+    marker = _am_dedup_marker(discovery.dedup_key)
+    body = f"{body}\n\n{marker}" if body else marker
+    cmd = ["gh", "issue", "create",
+           "--title", discovery.title,
+           "--body", body,
+           "--label", FILED_BY_LABEL]
+    if repo:
+        cmd += ["--repo", repo]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    url = out.stdout.strip().splitlines()[-1].strip()
+    return {"tracker_ref": _derive_ref(url), "url": url}
+
+
+def _derive_ref(url):
+    """Derive a stable `owner/repo#number` ref from a created-issue URL,
+    falling back to the raw URL when it is not the expected GitHub form."""
+    marker = "github.com/"
+    idx = url.find(marker)
+    if idx != -1:
+        tail = url[idx + len(marker):]
+        parts = tail.strip("/").split("/")
+        # .../<owner>/<repo>/issues/<number>
+        if len(parts) >= 4 and parts[2] == "issues":
+            return f"{parts[0]}/{parts[1]}#{parts[3]}"
+    return url
+
+
+def file_discoveries(discoveries, sink=gh_issue_file_sink, known_dedup_keys=()):
+    """Pure orchestration over a batch of DiscoveredIssues.
+
+    For each discovery: if its `dedup_key` is in `known_dedup_keys` it is
+    recorded in `skipped_existing` with NO sink call (idempotent re-filing is a
+    no-op); otherwise the injected `sink` is invoked and its {tracker_ref, url}
+    recorded in `filed`. A sink exception is caught and recorded in `errors`
+    (filing one bad discovery never aborts the batch).
+
+    Deterministic given the injected sink + known set; performs no I/O of its
+    own. The trust-ladder GATE is NOT here — it lives in scheduling.run_tick,
+    which only calls this when filing is permitted.
+    """
+    known = set(known_dedup_keys)
+    result = ReportResult()
+    for discovery in discoveries:
+        if discovery.dedup_key in known:
+            result.skipped_existing.append(discovery.dedup_key)
+            continue
+        try:
+            ref = sink(discovery)
+        except Exception as exc:  # noqa: BLE001 — locate failure to the sink
+            result.errors.append({
+                "dedup_key": discovery.dedup_key,
+                "reason": str(exc),
+            })
+            continue
+        result.filed.append({
+            "dedup_key": discovery.dedup_key,
+            "tracker_ref": ref["tracker_ref"],
+            "url": ref["url"],
+        })
+    return result

@@ -3,7 +3,7 @@ name: auto-maintainer-triager
 description: Triage judge for the autonomous maintainer. Dispatched (by subagent_type) at the TRIAGE agent-state with a batch of tracker work_items in the prompt; decides for each whether it is a valid, actionable maintenance task and produces accept/reject decisions with reasons, per the handoff contract in the prompt. Read-only judgment — it never modifies the tracker or the repo.
 tools: [Read, Grep, Glob, Write]
 model: sonnet
-version: 1.0.0
+version: 1.1.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different triage policy replaces validity-gate + one-level decompose, or when the invocation-envelope handoff contract reaches a breaking major version.
 ---
@@ -26,6 +26,12 @@ literally:
 
 For **each** input work_item, decide `accepted` or `rejected`:
 
+- **Reject loop-filed discoveries first.** If the item was filed by the
+  maintainer loop ITSELF — its `labels` include `filed-by:autonomous-maintainer`,
+  or its body carries an `<!-- am-dedup:... -->` marker — reject it with a
+  `reason` noting it is a loop-filed discovery awaiting human triage. The
+  maintainer does NOT auto-work its own filings (this prevents self-amplification;
+  a human opts them in). Decide this before any other criterion.
 - **Reject** (with a clear, specific `reason`) when the item is: spam or
   advertising; off-topic / not about this repository; malformed or empty (no
   actionable content); a duplicate of something already obviously resolved;
