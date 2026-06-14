@@ -1,6 +1,6 @@
 {
   "name": "implement",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/implement/src/**"
@@ -9,5 +9,5 @@
   "deprecation_criterion": "Superseded when the model-backed implement-then-PR doer (DESIGN \u00a73.6.2/\u00a73.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.",
   "tdd_state": "test-green",
   "updated": "2026-06-14",
-  "spec_no_change_reason": "spec.md already carries v2.0.0 self-managed-worktree isolation language and the shipped-subagent invariant from a prior scope-update; this cycle only places the reviewed v2.0.0 agent file byte-for-byte; existing guarding test already covers frontmatter compliance"
+  "spec_no_change_reason": "spec.md already carries the v2.1.0 PR-provenance-label language and shipped-subagent invariant from a prior scope-update; this cycle only places the reviewed v2.1.0 agent file byte-for-byte and adds a guarding test for the --label auto-maintainer accept-path behaviour"
 }

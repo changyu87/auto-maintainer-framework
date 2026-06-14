@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.2.0
+version: 0.2.1
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -103,6 +103,12 @@ the output path. Its rendered prompt is the complete handoff contract (the
   (it owns the WHAT, DESIGN §2.1), run the project's checks, and **open a PR
   against the default branch — never merge**. If it cannot complete an accepted
   order it reports `status: blocked` and leaves no open PR.
+- **PR provenance label (v2.1.0).** An opened PR is stamped with the
+  `auto-maintainer` label (`gh pr create --label auto-maintainer`, creating the
+  label if absent). This is the §3.7 hand-off seam to `verify-integrate`: VERIFY
+  finds the loop's own open PRs by querying `gh pr list --label auto-maintainer
+  --state open`. The label is the only coupling between IMPLEMENT and the
+  VERIFY/INTEGRATE chain (no durable PR-ledger).
 - **Isolation — the subagent manages its OWN worktree (v2.0.0,
   auto-maintainer-framework#143 follow-up).** It is dispatched WITHOUT the
   `isolation: "worktree"` adapter flag. That flag uses Claude Code's worktree
