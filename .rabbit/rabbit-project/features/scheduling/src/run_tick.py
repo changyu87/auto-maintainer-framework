@@ -621,6 +621,7 @@ def _pause_result(name, agentstate, slot_values, tick_id, mode, output_dir):
     # carry a single dispatch entry, so the per-envelope cardinality/writes come
     # from that entry. Pair each envelope with its dispatch entry's metadata.
     dispatch_entry = entry["dispatch"][0]
+    isolation = dispatch_entry.get("isolation")
     for env in envelopes:
         rec = {
             "subagent_type": dispatch_entry["subagent_type"],
@@ -629,11 +630,66 @@ def _pause_result(name, agentstate, slot_values, tick_id, mode, output_dir):
             "output_path": env["output_contract"]["output_path"],
             "signal_rule": signal_rule,
             "cardinality": dispatch_entry["cardinality"],
+            # isolation + description let the executor call
+            # Agent(subagent_type, description=..., prompt=..., isolation=...).
+            # isolation is the dispatch entry's value (e.g. "worktree") or null
+            # when absent; description is the entry's value, else a default.
+            "isolation": isolation,
+            "description": _dispatch_description(dispatch_entry, name, env),
         }
         if "item" in env:
             rec["item"] = env["item"]
         dispatches.append(rec)
     return {"status": "paused", "state": name, "dispatches": dispatches}
+
+
+def _dispatch_description(dispatch_entry, name, env):
+    """The description the executor passes to Agent for this dispatch: the
+    dispatch entry's `description` when present, else a sensible default
+    (`f"{state}: {item}"` for a per_item dispatch, else `f"{state} dispatch"`)."""
+    desc = dispatch_entry.get("description")
+    if desc:
+        return desc
+    if "item" in env:
+        return f"{name}: {env['item']}"
+    return f"{name} dispatch"
+
+
+# The INERT handoff a dry-run trust-gated acting agent-state synthesizes per
+# dispatch item (DESIGN §2.3 / §3.8.2 trust ladder): the model never acts, so the
+# handoff is always `planned` with a `none` artifact. Mirrors the dry-run
+# IMPLEMENT script's `_planned_handoff` shape (the closed handoff schema).
+def _inert_planned_handoff(work_order_id):
+    return {
+        "work_order_id": work_order_id,
+        "status": "planned",
+        "artifact": {"kind": "none", "ref": None},
+        "discovered_work": [],
+        "blocked_reason": None,
+    }
+
+
+def _gate_acting_state(name, agentstate, slot_values, tick_id, mode,
+                       output_dir):
+    """Synthesize the INERT result for a trust-gated (not-permitted) acting
+    agent-state — used in dry-run, where sg.permits(effect, mode) is False.
+
+    Builds the per-dispatch items via ad.build_envelopes (to know the work-order
+    ids / cardinality), produces one inert `planned` handoff per item (carrying
+    the item's id when per_item, else null for `once`), collect_outputs them into
+    the writes slot value, and computes the route signal. Returns
+    (slot_name, slot_value, signal) for the driver to apply. No PAUSE, no
+    checkpoint, no subagent dispatch — the model never decides whether to act.
+    """
+    entry = agentstate.entry
+    dispatch_entry = entry["dispatch"][0]
+    envelopes = ad.build_envelopes(
+        entry, slot_values, {"tick_id": tick_id, "mode": mode},
+        state=name, output_dir=output_dir)
+    outputs = [_inert_planned_handoff(env.get("item")) for env in envelopes]
+    slot_value = ad.collect_outputs(dispatch_entry, outputs)
+    signal = ad.compute_signal(entry["signal"]["rule"], slot_value)
+    return dispatch_entry["writes"], slot_value, signal
 
 
 def _resume_schema(writes, cardinality):
@@ -752,6 +808,28 @@ def _drive_agent_tick(route, states, ctx, state_path,
             agentstate = agentstates[current]
             slot_values = {slot: ctx.read(slot)
                            for slot in agentstate.manifest.reads}
+            # Trust-gate an ACTING agent-state (DESIGN §2.3 / §3.8.2 trust
+            # ladder): a dispatch entry with a truthy `effect` performs outward
+            # effects, so it is dispatched ONLY when the trust mode permits that
+            # effect. The decision is the deterministic lib's (sg.permits),
+            # never the model's. When NOT permitted (e.g. dry-run, where permits
+            # is False for every effect) the state does NOT pause/dispatch — it
+            # synthesizes one INERT `planned` handoff per dispatch item and
+            # CONTINUES the driver (no checkpoint, no spend, no subagent).
+            effect = agentstate.entry["dispatch"][0].get("effect")
+            if effect and not sg.permits(effect, mode):
+                writes, slot_value, signal = _gate_acting_state(
+                    current, agentstate, slot_values, tick_id, mode,
+                    output_dir)
+                ctx.write(writes, slot_value)
+                signals.append(signal)
+                if events is not None:
+                    events.emit("state_run", state=current,
+                                detail={"gated": mode})
+                    events.emit("signal", state=current, signal=signal)
+                current = to.resolve_next(route, current, signal)
+                path.append(current)
+                continue
             # Checkpoint to durable state — the SOLE crash-safety source of
             # truth for the paused dispatch. The pause is deliberately NOT
             # journaled: the tick journal is durable-state's counter-

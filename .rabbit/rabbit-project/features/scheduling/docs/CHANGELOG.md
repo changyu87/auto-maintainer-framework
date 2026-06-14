@@ -1,5 +1,38 @@
 # scheduling — Changelog
 
+## contract 0.6.3 — 2026-06-10
+
+- **Trust-gate for ACTING agent-states (DESIGN §2.3 / §3.8.2 trust ladder).**
+  `run_tick` now deterministically trust-gates agent-states that perform outward
+  effects. An ACTING agent-state is an agent-adapter whose dispatch entry carries
+  a truthy `effect` string (safety-governance's closed effect set
+  `{implement, open_pr, merge, file}`).
+  - Before pausing at an acting agent-state, `run_tick` computes
+    `permitted = sg.permits(effect, mode)` (`mode` from the loaded governance) —
+    the deterministic lib's decision, never the model's.
+  - **dry-run (not permitted):** `run_tick` does NOT pause or dispatch. It builds
+    the per-dispatch items via `ad.build_envelopes(...)` and synthesizes one INERT
+    `planned` handoff per item (`{work_order_id, status:"planned", artifact:
+    {kind:"none", ref:null}, discovered_work:[], blocked_reason:null}`),
+    `ad.collect_outputs` them into the writes slot, writes it, computes the route
+    signal, persists the read product, emits `state_run`/`signal` events
+    (`state_run` detail notes `gated=dry-run`), and CONTINUES the driver. No
+    PAUSE, no checkpoint, no spend, no subagent.
+  - **propose / gated-merge (permitted):** the normal PAUSE-for-dispatch path runs
+    unchanged so the executor dispatches the real subagent.
+  - A NON-acting agent-state (no `effect`, e.g. a TRIAGE adapter) is UNCHANGED —
+    the trust-gate does not apply and it always pauses to dispatch.
+- **isolation + description in the PAUSED dispatches.** Each paused dispatch
+  record now also carries `isolation` (the dispatch entry's `isolation`, e.g.
+  `"worktree"`, else null) and `description` (the dispatch entry's `description`
+  else a default `f"{state} dispatch"` / `f"{state}: {item}"`), so the executor
+  can call `Agent(subagent_type, description=..., prompt=..., isolation=...)`.
+- ONLY the effect-based trust-gate + isolation/description this slice; no budget
+  pre-gate / acted-ledger / spend metering (next sub-slice). Read products stay
+  #64 per-tick ephemeral; the #123 budget persistence and the #109 journal-free
+  checkpoint are unchanged. scheduling consumes safety-governance + agent-dispatch
+  + all sibling features UNCHANGED.
+
 ## contract 0.6.2 — 2026-06-14
 
 - **#123 fixed — the durable budget window is now persisted on agent-route
