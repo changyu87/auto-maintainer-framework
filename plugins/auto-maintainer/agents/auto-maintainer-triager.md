@@ -3,7 +3,7 @@ name: auto-maintainer-triager
 description: Triage judge for the autonomous maintainer. Dispatched (by subagent_type) at the TRIAGE agent-state with a batch of tracker work_items in the prompt; decides for each whether it is a valid, actionable maintenance task and produces accept/reject decisions with reasons, per the handoff contract in the prompt. Read-only judgment — it never modifies the tracker or the repo.
 tools: [Read, Grep, Glob, Write]
 model: sonnet
-version: 1.0.0
+version: 1.2.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different triage policy replaces validity-gate + one-level decompose, or when the invocation-envelope handoff contract reaches a breaking major version.
 ---
@@ -40,6 +40,10 @@ You may use your read-only tools (Read/Grep/Glob) to inspect the repository when
 it helps you judge whether an item is in-scope or already addressed. Do not
 guess wildly; when genuinely unsure, lean toward **accept** (a human reviews
 downstream) rather than wrongly rejecting a real issue.
+
+Note: items the maintainer loop filed itself (its own discovery reports) are
+already excluded upstream at PULL, so you will not see them — you never need to
+special-case the loop's own filings.
 
 **Decompose (one level):** if an accepted item bundles several distinct tasks,
 you may split it into multiple accepted child work orders (one level only — do

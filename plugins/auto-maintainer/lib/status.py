@@ -69,10 +69,17 @@ def status_line():
     # uses, so status and the trace never diverge. Resolved from the SAME
     # project_dir / state_path run_tick reads.
     gov_fields = rt.governance_status(rt._resolve_project_dir(), state_path)
+    # Outbound REPORT surface (§3.11): the last tick's reported=<filed>/<skipped>
+    # from the small durable last-reported fact (NOT re-running the flush). Always
+    # shown (#69 style), matching the tick trace's unconditional reported token.
+    last_reported = rt.persisted_last_reported(state_path)
+    reported_field = (f"reported={last_reported.get('filed', 0)}/"
+                      f"{last_reported.get('skipped', 0)}")
     line = (f"[status] disposition={disposition} work_items={work_items} "
             f"work_orders={work_orders} "
             f"execution_plan={execution_plan} handoffs={handoffs} "
-            f"route={route_src} runtime_dir={runtime_dir} {gov_fields}")
+            f"route={route_src} runtime_dir={runtime_dir} {gov_fields} "
+            f"{reported_field}")
     return line
 
 

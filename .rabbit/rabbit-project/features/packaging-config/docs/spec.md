@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.3
+version: 0.2.4
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -153,6 +153,13 @@ that meters spend on ALL agent-state resumes (TRIAGE spend now counts toward the
 budget window, not just the acting doer's). No build change beyond
 `_PLUGIN_VERSION → 0.2.22`; `lib/run_tick.py` re-normalizes from the updated
 source by the existing assembly.
+
+**Plugin patch v0.2.23** — re-ship the REPORT outbound port (§3.11): the updated
+`lib/work_intake.py` (DiscoveredIssue/ReportResult + `gh_issue_file_sink` +
+`file_discoveries` + `is_loop_filed` + PULL loop-filed exclusion), `lib/run_tick.py`
+(the out-of-band REPORT flush + report-ledger), and the triager `agents/`
+subagent at v1.2.0. No build change beyond `_PLUGIN_VERSION → 0.2.23`; all three
+re-collect/normalize from their updated sources by the existing assembly.
 
 Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
 the self-path bootstrap, importing `safety_governance` from `lib/`),
