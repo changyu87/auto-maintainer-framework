@@ -1,8 +1,8 @@
 ---
 feature: work-intake
-version: 0.2.0
+version: 0.3.0
 owner: changyu87
-deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version).
+deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
 
 # work-intake
@@ -105,6 +105,57 @@ LLM triage judge coexist: the gate is the script-tier fast path; the judge is
 the agent-tier path a project wires at the `TRIAGE` port when richer judgment is
 wanted.
 
+- **Loopback / provenance guard (§3.11.5).** The triager REJECTS any input
+  work_item stamped as filed by the loop itself — provenance `filed_by:
+  autonomous-maintainer`, surfaced as the `filed-by:autonomous-maintainer` label
+  (and the `<!-- am-dedup:... -->` body marker REPORT writes, see Slice 3). The
+  v1 policy is that the maintainer does NOT auto-work its own filings: they land
+  for human triage to prevent self-amplification. The reject `reason` names the
+  loopback policy. (The deterministic recognizer is
+  `safety_governance.is_loop_filed`; the triager applies it as a judgment input.)
+
+## Slice 3 — REPORT (outbound filing → DiscoveredIssue)
+
+The **write-side mirror of PULL** (DESIGN §1.3, §2.6, §3.11): an
+adapter-swappable OUTBOUND port that turns discoveries into durably-tracked
+items. work-intake owns the inbound tracker I/O (PULL), so it also owns the
+outbound (REPORT) port, schemas, and default GitHub filing adapter. REPORT is
+**out-of-band** — NOT a routed tick state; `scheduling.run_tick` flushes
+discoveries through it after the route runs (that wiring + the journaled
+idempotency live in scheduling).
+
+- **`DiscoveredIssue` schema** (machine-first, versioned; owned here):
+  `{ schema_version, title, body, kind: bug|enhancement|task, severity, target:
+  project|maintainer-self, dedup_key, filed_by: "autonomous-maintainer" }`.
+  `dedup_key` is a stable caller-supplied key making filing idempotent; `target`
+  selects the destination tracker; `filed_by` stamps loop provenance.
+- **`ReportResult` schema**: `{ filed: [{dedup_key, tracker_ref, url}],
+  skipped_existing: [dedup_key], errors: [{dedup_key, reason}] }`. Re-filing an
+  existing `dedup_key` is a no-op that returns the prior `tracker_ref`.
+- **Injectable filing sink (determinism seam, mirrors `gh_issue_source`).** The
+  production `gh_issue_file_sink(discovery, repo=None) -> {tracker_ref, url}`
+  shells `gh issue create` with the title/body, the provenance label
+  `filed-by:autonomous-maintainer`, and a `<!-- am-dedup:<dedup_key> -->` marker
+  appended to the body (so a later PULL/TRIAGE — and a dedup re-scan — can
+  recognize the filing). The sink is INJECTABLE so tests pass a stub (no
+  network, deterministic; a failure is locatable to the file boundary).
+- **`file_discoveries(discoveries, sink, known_dedup_keys) -> ReportResult`** —
+  pure orchestration: for each `DiscoveredIssue`, if its `dedup_key` is in
+  `known_dedup_keys` it goes to `skipped_existing` (no sink call); otherwise the
+  sink is invoked and the result recorded in `filed`; a sink exception is caught
+  and recorded in `errors` (filing one bad discovery never aborts the batch).
+  Deterministic given the injected sink + known set; performs no I/O of its own.
+- **Target routing (§3.11.6).** `target: project` files into the repo PULL reads
+  (the default); `target: maintainer-self` files into a configured maintainer
+  tracker (a different repo, the dogfood case §3.10.5). The sink maps `target` →
+  the destination repo; v1 ships both with `project` as the default and the
+  maintainer repo supplied via runtime/config.
+- **Trust interaction (§3.11.7).** Filing is the `file` effect. `file_discoveries`
+  itself is pure (it always files through the sink it is handed); the
+  trust-ladder GATE lives in `scheduling.run_tick`, which only calls
+  `file_discoveries` when `safety_governance.permits("file", mode)` — at
+  `dry-run` the intent is logged, not filed; at `propose`/`gated-merge` it files.
+
 ## Current behaviour
 
 Slice 1 (PULL) implemented and merged (`tdd_state: test-green`) — `WorkItem` +
@@ -118,9 +169,9 @@ validates.
 - **TRIAGE — slice 2 (this cycle):** deterministic validity gate → `work_orders`.
   **Slice 3+ deferred:** dedup-vs-closed (§3.5.3), 1-level decompose (§3.5.5),
   dependency ordering (§3.5.7), WHAT-generation/spec seam (§3.5.8, the AI seam).
-- **Loopback / provenance guard** — recognizing `filed_by: autonomous-maintainer`
-  so the loop never auto-consumes its own filings (§3.11.5) — belongs to
-  safety-governance; deferred (and moot until `REPORT`/outbound-report exists).
+- **Loopback / provenance guard (§3.11.5)** — IMPLEMENTED this slice: the
+  recognizer is `safety_governance.is_loop_filed`; the triager rejects
+  loop-filed items. Opt-in "let the loop work its own filings" stays deferred.
 - **`PRIORITIZE`** (execution_plan) — separate state, deferred.
 - **Non-GitHub trackers**, label/filter config, pagination tuning — deferred.
 
