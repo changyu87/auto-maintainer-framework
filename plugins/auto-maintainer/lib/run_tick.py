@@ -1287,18 +1287,16 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     agentstates = {name: second for name, (m, second) in states.items()
                    if isinstance(second, aw.AgentState)}
 
-    # Spend metering on resume of an ACTING agent-state: fold the metered `spent`
-    # into the budget window (sg.record_spend) so the terminal persist records it.
-    # Default spent 0 (back-compatible). Only an ACTING paused state meters spend
-    # — guard on the checkpoint's pending state acting-ness so a non-acting
-    # (TRIAGE) resume never meters even if a stray `spent` is passed.
+    # Spend metering on ALL agent-state resumes (acting OR non-acting): fold the
+    # metered `spent` into the budget window (sg.record_spend) so the terminal
+    # persist records it. The budget is a token ceiling over ALL model spend in
+    # the loop (DESIGN §3.8.4), so a non-acting TRIAGE resume's spend is metered
+    # too — otherwise the budget would undercount real loop model usage. Default
+    # spent 0 (back-compatible). This is distinct from the acting-only budget
+    # PRE-GATE and the acting-only acted-ledger record, which are unchanged.
     if resume and spent and persisted_checkpoint:
-        paused_name = persisted_checkpoint.get("pending", {}).get("state")
-        paused_as = agentstates.get(paused_name)
-        if (paused_as is not None
-                and paused_as.entry["dispatch"][0].get("effect")):
-            new_budget_state = sg.record_spend(
-                new_budget_state, budget_clock, spent)
+        new_budget_state = sg.record_spend(
+            new_budget_state, budget_clock, spent)
 
     # The structured event log (observability §3.9.1), opened at
     # ${runtime_dir}/events.jsonl. The event `ts` reuses the tz-aware budget
