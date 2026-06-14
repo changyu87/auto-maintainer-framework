@@ -439,12 +439,12 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (#auto-maintainer-triager): version bumped to 0.2.18 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. The spec permits
-# a patch bump on each re-ship of the plugin tree (0.2.18 ships the new
-# auto-maintainer-triager subagent collected from work-intake's ship/agents/).
+# Re-ship (configure lib): version bumped to 0.2.19 in BOTH plugin.json and
+# marketplace.json, and the two are consistent. The spec permits a patch bump on
+# each re-ship of the plugin tree (0.2.19 adds the configure.py normalized lib
+# and collects the new configure skill + implementer agent ship artifacts).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_18_and_consistent():
+def test_version_bumped_to_0_2_19_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -456,10 +456,10 @@ def test_version_bumped_to_0_2_18_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.18", \
-            f"plugin.json version must be 0.2.18, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.18", \
-            "marketplace.json plugin entry version must be 0.2.18"
+        assert pdata.get("version") == "0.2.19", \
+            f"plugin.json version must be 0.2.19, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.19", \
+            "marketplace.json plugin entry version must be 0.2.19"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1556,15 +1556,15 @@ def test_shipped_start_skill_is_v0_2_1_clear_only_executor_3min():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (file-based-handoff context isolation): the reworked tick skill
-# (scheduling v0.2.0, collected via ship/) ships at skills/tick/SKILL.md. The
-# dispatched subagent now writes its OWN output file (the prompt's ## Handoff
-# names the path); the executor never marshals the dispatch result. So the skill
-# references `run_tick.py --resume` with NO file argument (the runner reads the
-# subagent-written files from its checkpoint), and it does NOT reference the old
-# dispatch-result.json marshalling path.
+# Re-ship (v0.2.19, configure-lib slice): the reworked tick executor skill
+# (scheduling v0.3.0, collected via ship/) ships at skills/tick/SKILL.md. The
+# dispatched subagent writes its OWN output file (the prompt's ## Handoff names
+# the path); the executor never marshals the dispatch result. So the skill
+# references `run_tick.py --resume` (the runner reads the subagent-written files
+# from its checkpoint), and it does NOT reference the old dispatch-result.json
+# marshalling path.
 # ---------------------------------------------------------------------------
-def test_shipped_tick_skill_is_v0_2_0_resume_no_file_arg():
+def test_shipped_tick_skill_is_v0_3_0_resume_no_file_arg():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1574,12 +1574,174 @@ def test_shipped_tick_skill_is_v0_2_0_resume_no_file_arg():
         assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.2.0\n" in body, \
-            "shipped tick skill frontmatter version must be 0.2.0"
+        assert "\nversion: 0.3.0\n" in body, \
+            "shipped tick skill frontmatter version must be 0.3.0"
         assert "run_tick.py --resume" in body, \
             "shipped tick skill must reference run_tick.py --resume"
         assert "dispatch-result.json" not in body, \
             "shipped tick skill must NOT reference the old dispatch-result.json " \
             "marshalling path (the subagent writes its own output file)"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (configure lib, v0.2.19): safety-governance's configure.py — the
+# governance-config WRITER — ships under lib/ as a normalized control lib. It
+# imports its sibling `safety_governance` (the reader/decider), so the build
+# inserts the plain self-path bootstrap (configure.py already imports os/sys at
+# module top) before its first sibling import, making the shipped copy resolve
+# safety_governance from the co-located lib/ alone.
+# ---------------------------------------------------------------------------
+def test_configure_lib_present():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        assert os.path.isfile(os.path.join(lib, "configure.py")), \
+            "lib/configure.py must ship in the plugin tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (configure lib, v0.2.19): the shipped configure.py must be byte-identical
+# to the build's OWN normalization of its source. It imports
+# `import safety_governance as sg` and already imports os/sys at module top, so it
+# is normalized via the PLAIN self-path bootstrap (no with-imports variant).
+# ---------------------------------------------------------------------------
+def test_shipped_configure_is_normalized_source_bytes():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        dst = os.path.join(lib, "configure.py")
+        assert os.path.isfile(dst), f"missing shipped lib: {dst}"
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "safety-governance", "src", "configure.py",
+        )
+        with open(dst, encoding="utf-8") as fh:
+            shipped = fh.read()
+        _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS["configure.py"]
+        expected = mod._normalize_lib(src, anchor, bootstrap)
+        assert shipped == expected, \
+            "shipped configure is not the normalized source bytes"
+        # the PLAIN bootstrap (sys.path insert) must be present, anchored before
+        # its first sibling import; configure already imports os/sys at top, so
+        # the with-imports variant is NOT used.
+        assert "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))" \
+            in shipped, \
+            "shipped configure must carry the self-path bootstrap"
+        assert "import safety_governance as sg" in shipped, \
+            "shipped configure must import its safety_governance sibling"
+        assert "import os  # noqa: E402" not in shipped, \
+            "shipped configure must use the PLAIN bootstrap (no with-imports)"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (configure lib, v0.2.19): the build-rewritten configure lib must not
+# leak a path back into the source feature tree — the headline clean-ship
+# invariant applies to it too.
+# ---------------------------------------------------------------------------
+def test_shipped_configure_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        with open(
+            os.path.join(lib, "configure.py"), encoding="utf-8"
+        ) as fh:
+            body = fh.read()
+        assert ".rabbit" not in body, "shipped configure leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "shipped configure references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (configure lib, v0.2.19), critical self-containment: the shipped
+# configure.py imports `import safety_governance as sg`, so importing the shipped
+# configure with ONLY the plugin lib/ on sys.path must resolve safety_governance
+# (and IT must resolve its lifecycle_dispositions sibling) from lib/ alone.
+# Claude copies just the plugin dir into its cache, so a shipped configure that
+# could not find safety_governance in lib/ would fail to import once installed.
+# Prove it by importing the shipped configure in a subprocess whose sys.path is
+# restricted to the shipped lib/ dir alone, with NOTHING else.
+# ---------------------------------------------------------------------------
+def test_shipped_configure_imports_safety_governance_from_lib_alone():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        probe = (
+            "import sys; "
+            f"sys.path.insert(0, {lib!r}); "
+            "import configure; "
+            "import safety_governance, lifecycle_dispositions; "
+            "assert configure.sg is safety_governance; "
+            "assert safety_governance.ld is lifecycle_dispositions; "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped configure cannot resolve safety_governance: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (configure lib, v0.2.19): the /auto-maintainer:configure skill ships at
+# skills/configure/SKILL.md via the ship/ convention (safety-governance's
+# ship/skills/configure/). It is collected automatically with NO build change.
+# ---------------------------------------------------------------------------
+def test_ship_collection_configure_skill_present():
+    out_root = _build_into_temp()
+    try:
+        sk = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "configure", "SKILL.md",
+        )
+        assert os.path.isfile(sk), \
+            "ship/ collection must place skills/configure/SKILL.md"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert body.startswith("---"), \
+            "skills/configure/SKILL.md must carry YAML frontmatter"
+        assert "\nname: configure\n" in body, \
+            "configure skill frontmatter name must be `configure`"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Slice (configure lib, v0.2.19): the auto-maintainer-implementer subagent ships
+# at agents/auto-maintainer-implementer.md via the ship/ convention (implement's
+# ship/agents/). It is collected automatically with NO build change.
+# ---------------------------------------------------------------------------
+def test_ship_collection_implementer_agent_present():
+    out_root = _build_into_temp()
+    try:
+        ag = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "agents", "auto-maintainer-implementer.md",
+        )
+        assert os.path.isfile(ag), \
+            "ship/ collection must place agents/auto-maintainer-implementer.md"
+        with open(ag, encoding="utf-8") as fh:
+            body = fh.read()
+        assert body.startswith("---"), \
+            "agents/auto-maintainer-implementer.md must carry YAML frontmatter"
+        assert "\nname: auto-maintainer-implementer\n" in body, \
+            "implementer agent frontmatter name must be `auto-maintainer-implementer`"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)

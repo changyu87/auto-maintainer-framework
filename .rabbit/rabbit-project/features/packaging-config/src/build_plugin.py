@@ -29,10 +29,11 @@ Sources:
       .rabbit/rabbit-project/features/prioritize/src/prioritize.py
       .rabbit/rabbit-project/features/implement/src/implement.py
       .rabbit/rabbit-project/features/safety-governance/src/safety_governance.py
+      .rabbit/rabbit-project/features/safety-governance/src/configure.py
     The six pure libs are copied byte-for-byte; run_tick.py, status.py,
     stop.py, start.py, work_intake.py, adapter_wiring.py, prioritize.py,
-    implement.py, and safety_governance.py are normalized so their sibling-lib
-    imports resolve from the co-located lib/ dir alone (the shipped plugin
+    implement.py, safety_governance.py, and configure.py are normalized so their
+    sibling-lib imports resolve from the co-located lib/ dir alone (the shipped plugin
     carries only its own dir, so it cannot reach the feature src/ trees the dev
     copy resolves through). agent_dispatch.py and observability.py are PURE
     stdlib libs (agent_dispatch imports only json; observability imports only
@@ -56,8 +57,11 @@ Sources:
     work_intake, prioritize, and implement do not import os/sys at module top,
     so their bootstrap variant imports them before the sys.path insert;
     adapter_wiring and safety_governance import os but not sys, so they use the
-    same with-imports variant (re-importing os is harmless); start.py already
-    imports os/sys at top so it uses the plain variant.
+    same with-imports variant (re-importing os is harmless); start.py and
+    configure.py already import os/sys at top so they use the plain variant.
+    configure.py is safety_governance's governance-config writer; it imports its
+    sibling safety_governance (`import safety_governance as sg`), so its plain
+    bootstrap resolves safety_governance from lib/ once shipped.
 
   - shipped components (collected automatically from feature ship/ dirs): the
     tick executor skill (scheduling's ship/skills/tick/SKILL.md) lands at
@@ -70,7 +74,7 @@ The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
 
-Version: 0.2.18
+Version: 0.2.19
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the framework adopts a different
   distribution channel than a self-hosted Claude Code plugin marketplace, or
@@ -89,7 +93,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.2.18"
+_PLUGIN_VERSION = "0.2.19"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -203,6 +207,11 @@ _NORMALIZED_LIBS = {
         ),
         "import lifecycle_dispositions as ld",
         _SELF_PATH_BOOTSTRAP_WITH_IMPORTS,
+    ),
+    "configure.py": (
+        os.path.join(_FEATURES_REL, "safety-governance", "src", "configure.py"),
+        "import safety_governance as sg",
+        _SELF_PATH_BOOTSTRAP,
     ),
 }
 

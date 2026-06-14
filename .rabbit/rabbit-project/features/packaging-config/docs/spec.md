@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.1.0
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -114,6 +114,30 @@ Added invariants (TDD targets): the built tree contains the start/stop skills an
 all five loop libs; still **no `.rabbit` leak**; still idempotent; the shipped
 `/auto-maintainer:start`'s `run_tick` import path resolves entirely within the
 plugin (self-contained — Claude copies only the plugin dir).
+
+## Slice — ship the configure lib (v0.2.19)
+
+The IMPLEMENT doer's arsenal reaches the installed plugin. The new ship artifacts
+— the `auto-maintainer-implementer` subagent (`implement`'s `ship/agents/`), the
+`/auto-maintainer:configure` skill (`safety-governance`'s `ship/skills/`), and the
+reworked tick executor skill v0.3.0 (`scheduling`'s `ship/skills/tick/`) — are
+collected automatically by the existing `ship/` convention, with NO build change.
+The one build change is a new **normalized lib**:
+
+- **`configure.py`** (safety-governance's governance-config writer) is added to
+  `_NORMALIZED_LIBS` so it lands at `plugins/auto-maintainer/lib/configure.py`.
+  It imports its sibling `safety_governance` (the reader/decider), so it gets the
+  plain self-path bootstrap (it already imports `os`/`sys` at top) inserted before
+  its first sibling import (`import safety_governance as sg`) — the same
+  normalization every sibling-importing lib receives, making the shipped copy
+  resolve `safety_governance` from the co-located `lib/` alone. The
+  `/auto-maintainer:configure` skill invokes it at `${CLAUDE_PLUGIN_ROOT}/lib/configure.py`.
+- **Version bump** — `plugin.json` + `marketplace.json` `version` → `0.2.19`.
+
+Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
+the self-path bootstrap, importing `safety_governance` from `lib/`),
+`skills/configure/SKILL.md`, and `agents/auto-maintainer-implementer.md`; the
+plugin version is `0.2.19`; still **no `.rabbit` leak**; still idempotent.
 
 ## Distribution & test flow — GitHub only
 
