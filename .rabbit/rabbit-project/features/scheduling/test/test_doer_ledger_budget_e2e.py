@@ -547,6 +547,33 @@ def test_cli_resume_spent_flag_meters_spend():
 
 
 # ==========================================================================
+# Behaviour 6b — spend metering is broadened to ALL agent-state resumes: a
+# NON-acting TRIAGE resume with spent=N records N into the durable budget window.
+# The budget is a token ceiling over ALL loop model spend (DESIGN §3.8.4), so
+# TRIAGE spend counts too — previously this did NOT meter (acting-only guard).
+# ==========================================================================
+
+def test_non_acting_triage_resume_meters_spend():
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
+        mode="propose")
+    # Pause at TRIAGE (the first, non-acting agent-state).
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source(), now=_DAY1)
+    assert paused["status"] == "paused" and paused["state"] == "TRIAGE", paused
+    _write_outputs(paused, [_CANNED_WORK_ORDERS])
+    # Resume the TRIAGE pause with a metered spend. Because TRIAGE is non-acting,
+    # the OLD acting-only guard would have dropped this spend; the new behaviour
+    # meters it into the durable budget window.
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source(), now=_DAY1, resume=True, spent=42)
+    budget = rt.persisted_budget_state(state_path)
+    assert budget.get("spent_tokens") == 42, budget
+    assert budget.get("window_key") == "2026-05-01", budget
+
+
+# ==========================================================================
 # Behaviour 7 — recording the ledger preserves all OTHER durable keys.
 # ==========================================================================
 
