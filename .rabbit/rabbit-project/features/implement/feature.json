@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-12T06:10:37Z",
   "deprecation_criterion": "Superseded when the model-backed implement-then-PR doer (DESIGN \u00a73.6.2/\u00a73.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-14",
   "spec_no_change_reason": "spec.md already carries the v2.1.0 PR-provenance-label language and shipped-subagent invariant from a prior scope-update; this cycle only places the reviewed v2.1.0 agent file byte-for-byte and adds a guarding test for the --label auto-maintainer accept-path behaviour"
 }
