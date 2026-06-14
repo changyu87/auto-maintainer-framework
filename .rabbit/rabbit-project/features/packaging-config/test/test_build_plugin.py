@@ -439,12 +439,12 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (configure lib): version bumped to 0.2.19 in BOTH plugin.json and
-# marketplace.json, and the two are consistent. The spec permits a patch bump on
-# each re-ship of the plugin tree (0.2.19 adds the configure.py normalized lib
-# and collects the new configure skill + implementer agent ship artifacts).
+# Re-ship (run_tick output_dir fix): version bumped to 0.2.20 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. The spec permits
+# a patch bump on each re-ship of the plugin tree (0.2.20 re-ships the scheduling
+# run_tick.py output_dir absolutization fix, #143, with no other build change).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_19_and_consistent():
+def test_version_bumped_to_0_2_20_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -456,10 +456,10 @@ def test_version_bumped_to_0_2_19_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.19", \
-            f"plugin.json version must be 0.2.19, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.19", \
-            "marketplace.json plugin entry version must be 0.2.19"
+        assert pdata.get("version") == "0.2.20", \
+            f"plugin.json version must be 0.2.20, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.20", \
+            "marketplace.json plugin entry version must be 0.2.20"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
