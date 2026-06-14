@@ -1,6 +1,6 @@
 {
   "name": "verify-integrate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/verify-integrate/src/**"
@@ -8,5 +8,6 @@
   "created": "2026-06-14T16:35:52Z",
   "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult schemas reach a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-06-14"
+  "updated": "2026-06-14",
+  "spec_no_change_reason": "greenfield spec seeded at scaffold; slice 2 implements existing INTEGRATE/CLEANUP spec text"
 }
