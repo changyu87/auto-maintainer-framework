@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "updated": "2026-06-14",
   "spec_no_change_reason": "docs/spec.md already documents the tick skill at v0.3.0 with description/isolation/#130 and --spent metering; this cycle brings the shipped SKILL.md into compliance with the already-updated spec, no further spec edit needed"
 }
