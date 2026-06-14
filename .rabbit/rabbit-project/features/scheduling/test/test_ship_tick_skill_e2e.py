@@ -182,22 +182,25 @@ def test_ship_start_skill_heartbeat_is_three_minutes():
 
 
 # --------------------------------------------------------------------------
-# Behaviour — the REWORKED tick skill (v0.2.0, #100 fully closed): the subagent
-# writes its own output file; the skill marshals NO content and `--resume` takes
-# no file argument.
+# Behaviour — the REWORKED tick skill (v0.3.0, #130 closed): each PAUSED
+# dispatch carries a `description` (always) and, for an acting dispatch, an
+# `isolation` value; the skill passes BOTH through to the Agent tool, and
+# carries the summed subagent_tokens spend to `run_tick.py --resume --spent`.
+# (Still v0.2.0 invariants: #100 — subagent writes its own file; the skill
+# marshals NO content.)
 # --------------------------------------------------------------------------
 
-def test_ship_tick_skill_version_is_0_2_0():
+def test_ship_tick_skill_version_is_0_3_0():
     fields = _parse_frontmatter(_TICK_SKILL)
-    assert fields.get("version") == "0.2.0", fields
+    assert fields.get("version") == "0.3.0", fields
 
 
-def test_ship_tick_skill_resume_takes_no_arg_and_subagent_writes_own_file():
+def test_ship_tick_skill_resume_takes_no_file_arg_and_subagent_writes_own_file():
     """#100 fully closed: the runner reads the subagent-WRITTEN output file on
     resume, so `run_tick.py --resume` takes NO file argument and the skill says
     the subagent writes its own output file. The skill marshals NO content."""
     body = _read_text(_TICK_SKILL)
-    # --resume is referenced with no file argument appended.
+    # --resume is referenced (v0.3.0 adds only --spent, never a file arg).
     assert "run_tick.py --resume" in body, \
         "tick skill must reference run_tick.py --resume"
     assert "${CLAUDE_PROJECT_DIR}/.auto-maintainer/dispatch-result.json" not in body, \
@@ -208,6 +211,39 @@ def test_ship_tick_skill_resume_takes_no_arg_and_subagent_writes_own_file():
     # The subagent writes its own output file (the new contract).
     assert "writes its own" in body.lower() or "writes its own output" in body.lower(), \
         "tick skill must say the subagent writes its own output file"
+
+
+def test_ship_tick_skill_passes_description_to_agent_dispatch():
+    """#130 closed: each PAUSED dispatch carries a `description` (always), and
+    the skill body instructs passing it through to the Agent tool."""
+    body = _read_text(_TICK_SKILL)
+    assert "description" in body, \
+        "tick skill must instruct passing description to the Agent dispatch"
+    # The Agent dispatch invocation surfaces description= as a passed param.
+    assert "description=" in body, \
+        "tick skill must show Agent(..., description=...) in the dispatch call"
+
+
+def test_ship_tick_skill_passes_isolation_to_agent_dispatch_when_present():
+    """An acting dispatch additionally carries an `isolation` value; the skill
+    passes it to the Agent tool when present (omitting it otherwise)."""
+    body = _read_text(_TICK_SKILL)
+    assert "isolation" in body, \
+        "tick skill must instruct passing isolation to the Agent dispatch"
+    assert "isolation=" in body, \
+        "tick skill must show Agent(..., isolation=...) for an acting dispatch"
+
+
+def test_ship_tick_skill_meters_spend_via_resume_spent():
+    """The skill sums each dispatch's reported subagent_tokens and carries the
+    sum to the resume as `run_tick.py --resume --spent <sum>`."""
+    body = _read_text(_TICK_SKILL)
+    assert "--spent" in body, \
+        "tick skill must carry summed spend via --resume --spent"
+    assert "--resume --spent" in body, \
+        "tick skill must pass --spent on the --resume invocation"
+    assert "subagent_tokens" in body, \
+        "tick skill must reference summing the reported subagent_tokens spend"
 
 
 # --------------------------------------------------------------------------

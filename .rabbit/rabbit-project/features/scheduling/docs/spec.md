@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.7.0
+version: 0.8.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -428,20 +428,33 @@ into a usable, drop-in executor (DESIGN §3.4.6 / §2.8). The build's
 the plugin tree with NO build change.
 
 - **`ship/skills/tick/SKILL.md`** (`/auto-maintainer:tick`, the `tick` executor
-  skill, **v0.2.0**) — drives `run_tick.py --step`/`--resume` and presses the
+  skill, **v0.3.0**) — drives `run_tick.py --step`/`--resume` and presses the
   `Agent` button at each agent-state: it steps the runner, and whenever the runner
   PAUSES at an agent-state, dispatches the named subagent(s) with the runner's
   rendered prompt until the tick completes. The skill decides nothing about the
-  route — all tick logic (route, validation, slot writes, signal selection,
-  crash-safe checkpointing) lives in `run_tick.py`; the skill only relays dispatch
-  requests.
+  route — all tick logic (route, validation, slot writes, signal selection, spend
+  metering, crash-safe checkpointing) lives in `run_tick.py`; the skill only
+  relays dispatch requests.
+  **Full dispatch parameters (#130 closed):** each PAUSED dispatch record carries
+  a `description` (always) and, for an **acting** dispatch, an `isolation` value
+  (e.g. `"worktree"`); the skill passes BOTH through to the `Agent` tool
+  verbatim — `Agent(subagent_type, description=..., prompt=..., isolation=...)`,
+  omitting `isolation` only when the record has none. Passing `description` closes
+  auto-maintainer-framework#130 (the prior v0.2.0 dispatch omitted the required
+  `description` arg, triggering an "Invalid tool parameters" self-correction).
+  **Spend metering:** after each pause's dispatches finish, the skill sums the
+  `subagent_tokens` each dispatch reported (a value observable only from the
+  dispatch results, computable by no script) and carries it to the resume as
+  `run_tick.py --resume --spent <sum>` (`0` when none reported), so the runner
+  meters the spend against the durable budget window.
   **Subagent-writes-its-own-file (#100 fully closed):** the orchestrator marshals
   NO content. Each dispatched subagent WRITES its own output to the file named in
-  the rendered prompt's `## Handoff` section, and `run_tick.py --resume` (taking
-  **NO file argument**) reads those subagent-written files itself from the
-  checkpoint. The skill therefore never writes the subagent output, never names a
-  `dispatch-result.json`, and never hand-rolls serialization — keeping the
-  executor's context clean no matter how large the output is.
+  the rendered prompt's `## Handoff` section, and `run_tick.py --resume` reads
+  those subagent-written files itself from the checkpoint (the `--spent` value is
+  the ONLY argument the executor adds to `--resume`). The skill therefore never
+  writes the subagent output, never names a `dispatch-result.json`, and never
+  hand-rolls serialization — keeping the executor's context clean no matter how
+  large the output is.
 - **`ship/agents/auto-maintainer-echo.md`** (the `auto-maintainer-echo` subagent,
   **v2.0.0**) — the domain-free PROOF echo agent: dispatched by `subagent_type` at
   an agent-state, for each input item it produces one accepted output and WRITES it
