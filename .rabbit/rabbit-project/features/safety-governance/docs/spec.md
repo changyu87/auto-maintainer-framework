@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.2.0
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when the governance config schema reaches a breaking major version, or when trust-ladder / budget enforcement moves into a different layer than a project-local governance config consulted at tick entry.
 ---
@@ -64,6 +64,35 @@ A deterministic `permits(effect_kind, mode) -> bool` over the closed effect set:
 Slice-1 note: the only acting adapter today is the reference dry-run IMPLEMENT,
 which is inherently dry-run; the gate is harness-ready for the model-backed doer,
 not yet load-bearing.
+
+## Merge guardrails (§3.8.1)
+
+Declarative red-flags the host enforces before a merge — a hard backstop BELOW
+the trust ladder. Even at `gated-merge` (where `permits("merge", …)` is True), a
+PR must clear these or it is NOT merged. Owned here (the safety layer);
+`verify-integrate`'s INTEGRATE consumes it.
+
+`merge_guardrails(pr_meta, default_branch) -> {ok, violations}` — a pure,
+deterministic check over a PR's metadata (`{base, mergeable, head}` and similar):
+
+- **never-merge-wrong-base** — `pr_meta.base != default_branch` ⇒ violation.
+  The loop only merges PRs targeting the repo's default branch.
+- **never-merge-dirty** — `pr_meta.mergeable` is not cleanly mergeable
+  (CONFLICTING / UNKNOWN / missing) ⇒ violation. Never merge a conflicted or
+  not-yet-computed tree.
+- **never-delete-non-matching-branch** — a branch-deletion target that is not the
+  PR's own `head` ⇒ violation. (Consumed by CLEANUP to bound branch deletion to
+  the PR's head only.)
+
+Returns `ok=True` with an empty `violations` list only when every check passes;
+otherwise `ok=False` and `violations` names each failed check (machine-first, so
+INTEGRATE can record the reason in its `skipped` list). Deterministic: pure
+function of the passed metadata, no I/O.
+
+**Backoff (§3.8.5) — DEFERRED (minimal/none in this slice).** Re-verifying a
+perpetually-red PR each tick is cheap and never merges (VERIFY reports red,
+INTEGRATE skips), so there is no thrash to break yet; a consecutive-failure
+defer/escalate counter is a later refinement.
 
 ## Budget readiness gate (§3.8.4) — auto-resuming, NOT a latch
 
@@ -152,11 +181,11 @@ the trust `mode` and budget ceilings without hand-editing JSON.
 
 ## Deferred (NOT in this slice)
 
-- **Declarative guardrails** (§3.8.1, never-merge-wrong-base / delete-non-matching
-  / merge-dirty) → with `verify-integrate` (nothing to guard until INTEGRATE /
-  CLEANUP exist).
-- **Backoff / circuit-breaker** (§3.8.5) → with `verify-integrate` (needs act /
-  verify failures to count).
+- **Declarative guardrails** (§3.8.1) — IMPLEMENTED this slice as
+  `merge_guardrails` (see "Merge guardrails"); consumed by `verify-integrate`'s
+  INTEGRATE/CLEANUP.
+- **Backoff / circuit-breaker** (§3.8.5) → still deferred (re-verifying a red PR
+  is cheap and never merges, so there is no thrash to break yet).
 - **Loopback / provenance guard** (§3.11.5, `filed_by` stamp recognized by the
   TRIAGE gates) → with `outbound-report` (nothing files until REPORT exists).
 - **Blast-radius / learned scope** (§3.8.6) → v2.
