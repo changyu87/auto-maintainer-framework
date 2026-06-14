@@ -49,7 +49,7 @@ to ${runtime_dir}/events.jsonl via observability.EventLog (the machine-first
 record of "what the loop did"), written ALONGSIDE the existing one-line trace —
 purely additive, no existing behaviour changes.
 
-Version: 0.3.1
+Version: 0.4.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the tick interval becomes
@@ -115,6 +115,14 @@ HANDOFFS_KEY = "handoffs"
 # accumulated spend forward; only a window rollover (inside sg.evaluate_budget)
 # resets spent_tokens.
 BUDGET_KEY = "budget"
+
+# The durable-state document key under which the ACTED-LEDGER is persisted: a
+# durable CROSS-TICK fact (like BUDGET_KEY, NOT a per-tick #64 read product)
+# mapping {work_order_id: {"outcome": <handoff status>, "ref": <artifact ref or
+# null>}}. It records which work orders an ACTING agent-state already acted on, so
+# a later tick that re-pulls the SAME work order does NOT re-dispatch it (no second
+# PR) — idempotency (§3.2.4). Load-modify-saved preserving every other durable key.
+ACTED_LEDGER_KEY = "acted_ledger"
 
 # The durable-state document key under which the agent yield/resume CHECKPOINT is
 # persisted while a tick is PAUSED at an agent-state (DESIGN §2.8 executor
@@ -446,6 +454,15 @@ def persisted_budget_state(state_path):
     return doc.get(BUDGET_KEY, {})
 
 
+def persisted_acted_ledger(state_path):
+    """The durable acted-ledger {work_order_id: {outcome, ref}} persisted under
+    ACTED_LEDGER_KEY, or {} when no acting agent-state ever recorded an outcome.
+    Like the budget window this is a durable CROSS-TICK fact (see
+    ACTED_LEDGER_KEY), NOT a per-tick #64 read product."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(ACTED_LEDGER_KEY, {})
+
+
 def persisted_tick_checkpoint(state_path):
     """The durable PAUSED checkpoint persisted under TICK_CHECKPOINT_KEY while a
     tick is paused at an agent-state, or {} when no tick is paused. The
@@ -669,6 +686,91 @@ def _inert_planned_handoff(work_order_id):
     }
 
 
+# The DEFERRED handoff a budget-exhausted acting agent-state synthesizes per
+# not-yet-acted dispatch item: no work could be dispatched (the budget window is
+# exhausted), so status is `blocked` with a budget reason. Mirrors the closed
+# handoff schema (implement's _blocked_handoff shape). The items stay un-acted —
+# they are NOT recorded in the acted-ledger, so they retry on a later window.
+def _budget_blocked_handoff(work_order_id, reason):
+    return {
+        "work_order_id": work_order_id,
+        "status": "blocked",
+        "artifact": {"kind": "none", "ref": None},
+        "discovered_work": [],
+        "blocked_reason": reason,
+    }
+
+
+def _item_id(item):
+    """The work_order_id of a per_item dispatch element. PRIORITIZE writes
+    execution_plan.ordered as a list of id strings; accept a {"id": ...} dict
+    shape too (mirrors implement._entry_id). Returns the id string or None."""
+    if isinstance(item, str):
+        return item or None
+    if isinstance(item, dict):
+        return item.get("id") or None
+    return None
+
+
+def _per_item_filtered_values(agentstate, slot_values, ledger):
+    """Drop already-acted items from an ACTING agent-state's per_item collection.
+
+    Returns (filtered_slot_values, remaining_items, dropped_any). The per_item
+    cardinality (e.g. {"per_item": "execution_plan.ordered"}) is resolved against
+    `slot_values`; each element whose work_order_id is already a key in `ledger`
+    is filtered OUT (already acted — never re-dispatch). The returned
+    `filtered_slot_values` is a shallow copy with the per_item collection's host
+    slot replaced by a filtered shape, so ad.build_envelopes naturally yields one
+    dispatch per REMAINING item. A `once` dispatch (no per_item) is returned
+    unchanged with dropped_any=False (the ledger filter is per_item-only)."""
+    dispatch_entry = agentstate.entry["dispatch"][0]
+    cardinality = dispatch_entry["cardinality"]
+    if not isinstance(cardinality, dict) or "per_item" not in cardinality:
+        return slot_values, None, False
+    dotted = cardinality["per_item"]
+    collection = ad._resolve_path(slot_values, dotted)
+    remaining = [el for el in collection if _item_id(el) not in ledger]
+    if len(remaining) == len(collection):
+        return slot_values, remaining, False
+    # Rebuild the host slot with the per_item collection filtered down. The path
+    # is `<slot>.<...>.<leaf>`; copy the chain and replace the leaf list.
+    parts = dotted.split(".")
+    slot_name = parts[0]
+    filtered = dict(slot_values)
+    if len(parts) == 1:
+        filtered[slot_name] = remaining
+    else:
+        host = dict(slot_values[slot_name])
+        cur = host
+        for part in parts[1:-1]:
+            cur[part] = dict(cur[part])
+            cur = cur[part]
+        cur[parts[-1]] = remaining
+        filtered[slot_name] = host
+    return filtered, remaining, True
+
+
+def _record_acted_ledger(state_path, handoffs):
+    """Record each newly-acted handoff into the durable acted-ledger
+    (idempotency, §3.2.4). For each handoff:
+    ledger[work_order_id] = {"outcome": handoff["status"], "ref":
+    handoff.get("artifact", {}).get("ref")}. Load-modify-save of ONLY
+    ACTED_LEDGER_KEY, preserving every other durable key. A handoff with no
+    work_order_id is skipped (nothing to key on)."""
+    doc = ds.DurableState(state_path).load()
+    ledger = dict(doc.get(ACTED_LEDGER_KEY, {}))
+    for h in handoffs:
+        wo_id = h.get("work_order_id")
+        if not wo_id:
+            continue
+        ledger[wo_id] = {
+            "outcome": h.get("status"),
+            "ref": h.get("artifact", {}).get("ref"),
+        }
+    doc[ACTED_LEDGER_KEY] = ledger
+    ds.DurableState(state_path).save(doc)
+
+
 def _gate_acting_state(name, agentstate, slot_values, tick_id, mode,
                        output_dir):
     """Synthesize the INERT result for a trust-gated (not-permitted) acting
@@ -687,6 +789,19 @@ def _gate_acting_state(name, agentstate, slot_values, tick_id, mode,
         entry, slot_values, {"tick_id": tick_id, "mode": mode},
         state=name, output_dir=output_dir)
     outputs = [_inert_planned_handoff(env.get("item")) for env in envelopes]
+    slot_value = ad.collect_outputs(dispatch_entry, outputs)
+    signal = ad.compute_signal(entry["signal"]["rule"], slot_value)
+    return dispatch_entry["writes"], slot_value, signal
+
+
+def _synthesize_acting_result(agentstate, outputs):
+    """Collect a pre-built list of handoff `outputs` into the acting agent-state's
+    writes slot value and compute the route signal — used on the doer-governance
+    SKIP paths (budget pre-gate deferral; all-items-already-acted). Returns
+    (slot_name, slot_value, signal) for the driver to apply, mirroring
+    _gate_acting_state's contract. No PAUSE, no checkpoint, no subagent."""
+    entry = agentstate.entry
+    dispatch_entry = entry["dispatch"][0]
     slot_value = ad.collect_outputs(dispatch_entry, outputs)
     signal = ad.compute_signal(entry["signal"]["rule"], slot_value)
     return dispatch_entry["writes"], slot_value, signal
@@ -725,10 +840,20 @@ def _write_checkpoint(state_path, name, ctx, path, signals, agentstate,
     schema = _resume_schema(writes, cardinality)
     dispatches = [{"output_path": d["output_path"], "schema": schema}
                   for d in paused["dispatches"]]
+    # The stored slot snapshot is the full live blackboard, but the agent-state's
+    # READ slots are overridden with `slot_values` — which may have been FILTERED
+    # by the acted-ledger (already-acted per_item elements dropped). This keeps
+    # _emit_pause_from_checkpoint's render + the resume's restored blackboard in
+    # lock-step with the dispatched (un-acted) items, so a re-emit and the resume
+    # both see only the remaining work.
+    snapshot = _snapshot_slots(ctx)
+    for slot in agentstate.manifest.reads:
+        if slot in slot_values:
+            snapshot[slot] = slot_values[slot]
     doc = ds.DurableState(state_path).load()
     doc[TICK_CHECKPOINT_KEY] = {
         "next_state": name,
-        "slots": _snapshot_slots(ctx),
+        "slots": snapshot,
         "path": list(path),
         "signals": list(signals),
         "output_dir": output_dir,
@@ -783,7 +908,7 @@ def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
 
 def _drive_agent_tick(route, states, ctx, state_path,
                       current, mode, tick_id, agentstates, path, signals,
-                      output_dir, events=None):
+                      output_dir, gov, budget_clock, events=None):
     """Walk the route from `current` SCRIPT-state-by-SCRIPT-state, pausing at the
     first AGENT state with a durable checkpoint. SCRIPT states run inline exactly
     as tick_orchestrator.run does (impl(ctx) + fc.apply_result + resolve_next).
@@ -830,6 +955,59 @@ def _drive_agent_tick(route, states, ctx, state_path,
                 current = to.resolve_next(route, current, signal)
                 path.append(current)
                 continue
+            # Doer governance for a PERMITTED ACTING agent-state (effect present
+            # and sg.permits True). ALL of this is acting-state-only — a
+            # non-acting agent-state (no effect) skips straight to the PAUSE
+            # below, unchanged.
+            if effect:
+                # 1. Budget pre-gate: evaluate the budget window BEFORE pausing.
+                #    If the per-day window is exhausted (allowed False) do NOT
+                #    pause/dispatch — synthesize one DEFERRED `blocked` handoff
+                #    per not-yet-acted item, compute the signal, CONTINUE. NO
+                #    spend, NO dispatch; the items stay un-acted (not recorded in
+                #    the acted-ledger) so they retry on a later window.
+                budget = sg.evaluate_budget(
+                    gov, persisted_budget_state(state_path), budget_clock)
+                if not budget.get("allowed", True):
+                    reason = (f"budget exhausted "
+                              f"({budget.get('reason', 'per_day_exhausted')})")
+                    envelopes = ad.build_envelopes(
+                        agentstate.entry, slot_values,
+                        {"tick_id": tick_id, "mode": mode}, state=current,
+                        output_dir=output_dir)
+                    outputs = [_budget_blocked_handoff(env.get("item"), reason)
+                               for env in envelopes]
+                    writes, slot_value, signal = _synthesize_acting_result(
+                        agentstate, outputs)
+                    ctx.write(writes, slot_value)
+                    signals.append(signal)
+                    if events is not None:
+                        events.emit("state_run", state=current,
+                                    detail={"budget_blocked": reason})
+                        events.emit("signal", state=current, signal=signal)
+                    current = to.resolve_next(route, current, signal)
+                    path.append(current)
+                    continue
+                # 2. Acted-ledger idempotency: drop any work_order_id already in
+                #    the ledger from the per_item dispatch set (already acted —
+                #    never re-dispatch / no second PR). If NO items remain, do
+                #    NOT pause — synthesize an inert (empty) result, compute the
+                #    signal, CONTINUE.
+                ledger = persisted_acted_ledger(state_path)
+                slot_values, remaining, dropped = _per_item_filtered_values(
+                    agentstate, slot_values, ledger)
+                if dropped and not remaining:
+                    writes, slot_value, signal = _synthesize_acting_result(
+                        agentstate, [])
+                    ctx.write(writes, slot_value)
+                    signals.append(signal)
+                    if events is not None:
+                        events.emit("state_run", state=current,
+                                    detail={"all_acted": True})
+                        events.emit("signal", state=current, signal=signal)
+                    current = to.resolve_next(route, current, signal)
+                    path.append(current)
+                    continue
             # Checkpoint to durable state — the SOLE crash-safety source of
             # truth for the paused dispatch. The pause is deliberately NOT
             # journaled: the tick journal is durable-state's counter-
@@ -905,8 +1083,8 @@ def _resume_agent_state(route, states, ctx, checkpoint, agentstates):
 
 
 def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
-                    resume, mode, output_dir, events=None,
-                    route_src=None):
+                    resume, mode, output_dir, gov, budget_clock,
+                    events=None, route_src=None):
     """Drive a tick over a route that contains agent-states (DESIGN §2.8, §3.4.6).
 
     Three cases, all keyed off the durable checkpoint (the source of truth):
@@ -939,18 +1117,31 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
         # subagent-written output files.
         ctx = ctx_seed()
         _restore_slots(ctx, checkpoint["slots"])
+        resumed_name = checkpoint["pending"]["state"]
         early, next_state, _signal = _resume_agent_state(
             route, states, ctx, checkpoint, agentstates)
         if early is not None:
             return early, None, None
         if events is not None:
-            events.emit("resume", state=checkpoint["pending"]["state"])
+            events.emit("resume", state=resumed_name)
+        # Doer governance on resume of an ACTING agent-state (effect present):
+        # RECORD each newly-acted handoff into the durable acted-ledger
+        # ({work_order_id: {outcome, ref}}) so a later tick that re-pulls the
+        # SAME work order skips it (idempotency, §3.2.4). Spend metering is folded
+        # into the budget window by run_tick's terminal persist (it knows the
+        # `spent`), so this branch records ONLY the ledger.
+        resumed_effect = (agentstates[resumed_name].entry["dispatch"][0]
+                          .get("effect"))
+        if resumed_effect:
+            handoffs = ctx.read(checkpoint["pending"]["writes"])
+            if isinstance(handoffs, list):
+                _record_acted_ledger(state_path, handoffs)
         path = list(checkpoint["path"]) + [next_state]
         signals = list(checkpoint["signals"])
         return _drive_agent_tick(
             route, states, ctx, state_path, next_state, mode,
             tick_id, agentstates, path, signals, output_dir,
-            events=events) + (ctx,)
+            gov, budget_clock, events=events) + (ctx,)
 
     if checkpoint:
         # CRASH-SAFETY RE-EMIT: re-issue the SAME PAUSED dispatch idempotently
@@ -967,12 +1158,13 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
     ctx = ctx_seed()
     return _drive_agent_tick(
         route, states, ctx, state_path, "GUARD", mode, tick_id,
-        agentstates, ["GUARD"], [], output_dir, events=events) + (ctx,)
+        agentstates, ["GUARD"], [], output_dir, gov, budget_clock,
+        events=events) + (ctx,)
 
 
 def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              project_dir=None, source=None, now=None, tick_spend=0,
-             return_run_result=False, resume=False):
+             return_run_result=False, resume=False, spent=0):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -1061,9 +1253,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         # surface a real {window_key, spent_tokens} even if the persisted value
         # is {} — so assign budget["budget_state"] back rather than re-rolling.
         prior_budget_state = persisted_budget_state(state_path)
-        budget = sg.evaluate_budget(
-            gov, prior_budget_state, _clock_for_window(
-                prior_budget_state.get("window_key")))
+        budget_clock = _clock_for_window(prior_budget_state.get("window_key"))
+        budget = sg.evaluate_budget(gov, prior_budget_state, budget_clock)
         new_budget_state = budget["budget_state"]
     else:
         # Evaluate + persist the durable, cross-tick budget window. The tz-aware
@@ -1092,6 +1283,19 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     agentstates = {name: second for name, (m, second) in states.items()
                    if isinstance(second, aw.AgentState)}
 
+    # Spend metering on resume of an ACTING agent-state: fold the metered `spent`
+    # into the budget window (sg.record_spend) so the terminal persist records it.
+    # Default spent 0 (back-compatible). Only an ACTING paused state meters spend
+    # — guard on the checkpoint's pending state acting-ness so a non-acting
+    # (TRIAGE) resume never meters even if a stray `spent` is passed.
+    if resume and spent and persisted_checkpoint:
+        paused_name = persisted_checkpoint.get("pending", {}).get("state")
+        paused_as = agentstates.get(paused_name)
+        if (paused_as is not None
+                and paused_as.entry["dispatch"][0].get("effect")):
+            new_budget_state = sg.record_spend(
+                new_budget_state, budget_clock, spent)
+
     # The structured event log (observability §3.9.1), opened at
     # ${runtime_dir}/events.jsonl. The event `ts` reuses the tz-aware budget
     # clock (the injected `now`), so the log is deterministic; the tick_id is the
@@ -1108,7 +1312,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
             route, states, agentstates, ctx_seed=lambda: _seed_context(
                 state_path, journal_path, route),
             state_path=state_path,
-            resume=resume, mode=mode, output_dir=output_dir, events=events,
+            resume=resume, mode=mode, output_dir=output_dir,
+            gov=gov, budget_clock=budget_clock, events=events,
             route_src=route_src)
         if agent_outcome[0] is not None:
             # PAUSED or invalid_output: return the structured dict directly. The
@@ -1277,6 +1482,11 @@ def main(argv=None):
         "--resume", action="store_true",
         help="resume a paused tick by reading the subagent-written output files "
              "at the checkpoint's output_paths; print a JSON envelope")
+    parser.add_argument(
+        "--spent", type=int, default=0,
+        help="tokens spent by the resumed dispatch, metered into the durable "
+             "budget window (only on --resume of an acting agent-state; "
+             "default 0)")
     parser.add_argument("--runtime-dir", dest="runtime_dir")
     parser.add_argument("--state", dest="state")
     parser.add_argument("--journal", dest="journal")
@@ -1294,7 +1504,7 @@ def main(argv=None):
     # skill parses stdout as pure JSON); fold it into the envelope `trace` field.
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        result = run_tick(resume=args.resume, **paths)
+        result = run_tick(resume=args.resume, spent=args.spent, **paths)
     trace = buf.getvalue().strip()
 
     envelope = _step_envelope(result, trace)
