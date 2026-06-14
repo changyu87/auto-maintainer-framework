@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.8.0
+version: 0.8.1
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -236,6 +236,20 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   `output_contract{slot, schema, output_path}` and its rendered `## Handoff`
   section names the `output_path` and mandates writing the JSON output there. The
   orchestrator marshals NO content; the file is the sole handoff.
+- **The `output_dir` MUST be ABSOLUTE (worktree-isolation safety,
+  auto-maintainer-framework#143).** `run_tick` absolutizes it
+  (`output_dir = os.path.abspath(os.path.join(runtime_dir, "dispatch-out"))`) so
+  every dispatch's `output_path` is an absolute path. A relative `output_path`
+  is resolved against the *subagent's* cwd; an **acting agent-state dispatched
+  with `isolation: "worktree"`** runs with its cwd INSIDE the worktree, so a
+  relative path would land at `<worktree>/.auto-maintainer/dispatch-out/…` —
+  invisible to the orchestrator (cwd = main workspace), which then reads a
+  MISSING file and re-dispatches, re-running the act (a second PR / a second
+  issue-close). An absolute `output_path` makes the subagent write its handoff to
+  the SHARED main-workspace `dispatch-out/` regardless of its cwd, while its code
+  changes stay isolated in the worktree. Non-isolated dispatches (e.g. TRIAGE)
+  are unaffected (cwd already = main), so the trace/files are byte-identical for
+  them; only the absolute-vs-relative form of the path changes.
 - **At pause: delete any stale output file.** Before returning the PAUSE,
   `run_tick` DELETES any pre-existing file at each dispatch's `output_path`. A
   stale file from a prior tick must never be misread on resume — a missing fresh
