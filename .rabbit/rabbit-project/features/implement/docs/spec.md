@@ -88,6 +88,40 @@ Wired as a route-as-data adapter (adapter-wiring's
 `reads=["execution_plan"]`, `writes=["handoffs"]`,
 `emits=["OK", "BLOCKED"]`.
 
+## Shipped implementer subagent (the propose-rung doer)
+
+This feature also ships the **model-backed implementer subagent** as a
+deployable artifact at `ship/agents/auto-maintainer-implementer.md` — the
+`propose`-rung doer dispatched at the IMPLEMENT agent-state (DESIGN §3.6.2/§3.6.3).
+It is **protocol-free**: it holds no built-in knowledge of the Handoff schema or
+the output path. Its rendered prompt is the complete handoff contract (the
+`## Task` / `## Inputs` / `## Handoff` envelope produced by agent-dispatch).
+
+- **Role.** Given exactly ONE work order in its prompt, it *enacts that work
+  order's triage decision*: `rejected` → close the source issue with a
+  justification comment, no code change; `accepted` → implement the change
+  (it owns the WHAT, DESIGN §2.1), run the project's checks, and **open a PR
+  against the default branch — never merge**. If it cannot complete an accepted
+  order it reports `status: blocked` and leaves no open PR.
+- **Isolation.** Runs in an isolated git worktree (DESIGN §3.6.2), dispatched
+  with `isolation: worktree`.
+- **Output.** Writes its Handoff to the file named in the prompt's `## Handoff`
+  section and replies with only a short ack — its output never passes through the
+  orchestrator's context.
+- **Governance is external.** The subagent always acts for real when dispatched;
+  the trust-ladder gate, budget window, and acted-ledger idempotency
+  (DESIGN §3.8.2/§3.8.4/§3.2.4) are enforced upstream by `scheduling.run_tick`,
+  which only dispatches it under `propose`+ modes. The subagent itself carries no
+  mode logic.
+- **Frontmatter.** Lifecycle-compliant (`version`, `owner`,
+  `deprecation_criterion`), `model: opus`, and a coding toolset that includes
+  `Bash` and `Write`.
+
+This ships the subagent *definition*; the run_tick governance that arms it
+(S2.1a/S2.1b) already exists. Adapter-map wiring of the IMPLEMENT state to this
+subagent and live verification of the propose path are exercised at packaging
+and config time.
+
 ## Invariants
 
 - Deterministic: no model, no wall-clock, no randomness, no network, no
@@ -97,13 +131,18 @@ Wired as a route-as-data adapter (adapter-wiring's
 - No budget cap: processes every plan entry.
 - Reads only `execution_plan` (NOT `workspace`); writes only `handoffs`.
 - One handoff per ordered plan entry, in plan order.
+- The shipped implementer subagent `ship/agents/auto-maintainer-implementer.md`
+  exists with lifecycle-compliant frontmatter (`version`, `owner`,
+  `deprecation_criterion`), `model: opus`, and a coding toolset that includes
+  `Bash` and `Write`.
 
 ## Deferred (NOT in this slice)
 
-- **The model-backed implement-then-PR doer** (DESIGN §3.6.2/§3.6.3) — the
-  `propose` rung: dispatches an isolated subagent in a `workspace` worktree,
-  writes code, opens a PR (never auto-merges). Reads `workspace`. A separate
-  swappable adapter for a later milestone.
+- **The model-backed implement-then-PR doer's run-side adapter** (DESIGN
+  §3.6.2/§3.6.3) — the dry-run adapter remains the wired reference; the
+  subagent *definition* for the `propose` rung is now shipped (see "Shipped
+  implementer subagent"), but selecting it as the IMPLEMENT adapter and reading
+  `workspace` is exercised at adapter-map/config time, not here.
 - **TDD implementer adapter** (DESIGN §3.6.4) — rabbit's path, optional bundle.
 - **Trust-ladder mode selection + budget token ceiling** (DESIGN §3.8.2/§3.8.4)
   — governance that gates the doer; lives in safety-governance.
