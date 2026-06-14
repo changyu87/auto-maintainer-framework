@@ -1,13 +1,13 @@
 {
   "name": "agent-dispatch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/agent-dispatch/src/**"
   ],
   "created": "2026-06-13T09:28:21Z",
   "deprecation_criterion": "Superseded when the agent-adapter schema or invocation-envelope reaches a breaking major version, or when subagent dispatch moves to a transport other than the in-session Agent tool.",
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "updated": "2026-06-14",
   "spec_no_change_reason": null
 }

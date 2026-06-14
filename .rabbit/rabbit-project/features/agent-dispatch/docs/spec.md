@@ -1,6 +1,6 @@
 ---
 feature: agent-dispatch
-version: 0.3.0
+version: 0.3.1
 owner: changyu87
 deprecation_criterion: Superseded when the agent-adapter schema or invocation-envelope reaches a breaking major version, or when subagent dispatch moves to a transport other than the in-session Agent tool.
 ---
@@ -103,7 +103,13 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
 - `render(envelope) -> str` — deterministic **structured-markdown** prompt
   (DESIGN §3.4.6): `inputs` rendered as a readable **derivative view** (generic
   slot→markdown; free-text fields fenced/block-quoted to preserve boundaries) —
-  **no raw JSON for inputs**; the **`## Handoff`** section is the SELF-CONTAINED
+  **no raw JSON for inputs**. Free-text/multiline fences use a
+  **dynamic-length fence** (#126): scan the content for the longest run of
+  consecutive backticks and wrap with `(longest_run + 1)` backticks, minimum 3,
+  so content that itself contains a code fence (e.g. a GitHub issue `body` with
+  ```` ``` ````) cannot terminate the wrapper early; the opening and closing
+  fences use the same (longer) length. The common no-backtick case is a normal
+  3-backtick fence. The **`## Handoff`** section is the SELF-CONTAINED
   contract — it embeds the concrete output **example** (pretty-printed JSON),
   framed as a value to **mimic** ("produce a JSON value shaped EXACTLY like this
   example — copy its structure, replace the placeholder values"), never called a
