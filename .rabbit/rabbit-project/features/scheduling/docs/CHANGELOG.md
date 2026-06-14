@@ -1,5 +1,31 @@
 # scheduling — Changelog
 
+## contract 0.6.2 — 2026-06-14
+
+- **#123 fixed — the durable budget window is now persisted on agent-route
+  ticks.** On an agent route the fresh `--step` rolled the budget window but
+  `_run_agent_tick` PAUSED and `run_tick` RETURNED EARLY (the PAUSE /
+  invalid_output return) BEFORE the terminal budget-persist block, so the window
+  was never saved (durable `budget={}`, `/status` showed `win=` empty). And on
+  `--resume` the `is_resume` branch read the persisted window (`{}` because the
+  pause never saved it) without carrying the evaluated window forward, so it
+  persisted `{}` again.
+  - Fix 1: `run_tick` now persists the budget window durably on the PAUSE /
+    invalid_output early-return path (load-modify-save ONLY `BUDGET_KEY`,
+    preserving the checkpoint, read products, and every other durable key), so
+    the fresh tick's rolled window survives the pause.
+  - Fix 2: on resume, after `evaluate_budget`, the evaluated window is carried
+    forward (`new_budget_state = budget["budget_state"]`) so even a `{}`
+    persisted value resolves to a real `{window_key, spent_tokens}`; the budget
+    is REUSED, never re-rolled, per the FRESH-only gate.
+  - The budget window now survives across two agent ticks in the same runtime
+    dir; a `now` on a later local day rolls the window over (window_key advances,
+    spent resets) on the next fresh tick. Pure-script route budget persistence is
+    UNCHANGED (regression-guarded).
+- scheduling consumes safety-governance and all sibling features UNCHANGED; edits
+  live ONLY in scheduling (`src/run_tick.py` + tests + docs).
+- Closes #123.
+
 ## contract 0.6.1 — 2026-06-10
 
 - **#100 fully closed — no orchestrator content-marshalling remains.** Shipped

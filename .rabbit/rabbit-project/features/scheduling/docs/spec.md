@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.6.1
+version: 0.6.2
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -279,6 +279,21 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
 - The budget readiness gate (safety-governance) is evaluated at FRESH tick start
   only, NOT on resume. Read products stay #64 per-tick ephemeral; the budget
   stays a durable cross-tick fact.
+- **The durable budget window is persisted on an agent-route pause and carried
+  on resume (auto-maintainer-framework#123).** An agent route PAUSES at the first
+  agent-state and RETURNS EARLY (the PAUSE / invalid_output return) before the
+  terminal budget-persist block. So the fresh tick's rolled budget window would
+  never be saved (durable `budget={}`, `/status` shows `win=` empty). To keep the
+  budget a durable cross-tick fact on EVERY route, run_tick persists the budget
+  window durably on the PAUSE / invalid_output early-return path too: it
+  load-modify-saves ONLY `BUDGET_KEY` (preserving the checkpoint, the read
+  products, and every other durable key), so the rolled window survives the
+  pause. On resume the budget is REUSED (never re-rolled, per the FRESH-only
+  gate): after `evaluate_budget` the resume branch carries the evaluated window
+  forward (`new_budget_state = budget["budget_state"]`) so even a `{}` persisted
+  value resolves to a real `{window_key, spent_tokens}` and the terminal persist
+  records the durable window. A pure-script route is UNCHANGED — it already
+  persists the window at the terminal.
 
 ## JSON tick CLI (slice: --step / --resume executor seam)
 
