@@ -257,6 +257,34 @@ def _write_outputs(paused, contents):
             f.write(content)
 
 
+def _setup_pure_project(mode="propose"):
+    """A project dir running the PURE-SCRIPT default route (no agent states), so a
+    discovery injected via the ctx `discoveries` param flows straight to the
+    terminal REPORT flush. Returns (project_dir, runtime_dir, state_path,
+    journal_path)."""
+    project_dir = tempfile.mkdtemp(prefix="sched-report-pure-")
+    _write_governance(project_dir, {"mode": mode})
+    root = tempfile.mkdtemp(prefix="sched-report-pure-rt-")
+    runtime_dir = os.path.join(root, "runtime")
+    state_path = os.path.join(root, "state.json")
+    journal_path = os.path.join(root, "journal.jsonl")
+    return project_dir, runtime_dir, state_path, journal_path
+
+
+def _drive_pure_with_ctx_discovery(project_dir, runtime_dir, state_path,
+                                   journal_path, sink, discoveries, now=_DAY1):
+    """Run the PURE-SCRIPT default route, injecting `discoveries` via the optional
+    ctx discoveries param, and capture the done trace string."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        signal = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                             state_path=state_path, journal_path=journal_path,
+                             source=_stub_source(), now=now, report_sink=sink,
+                             discoveries=discoveries)
+    assert signal == "idle", signal
+    return buf.getvalue()
+
+
 def _drive_to_done_with_discovery(project_dir, runtime_dir, state_path,
                                   journal_path, sink, discovered_work,
                                   now=_DAY1):
@@ -334,19 +362,22 @@ def test_propose_files_discovery_records_ledger_reported_1_0():
 # ==========================================================================
 
 def test_second_tick_same_discovery_skipped_reported_0_1():
-    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
+    project_dir, runtime_dir, state_path, journal_path = _setup_pure_project(
         mode="propose")
     sink1 = _RecordingSink()
-    _drive_to_done_with_discovery(project_dir, runtime_dir, state_path,
-                                  journal_path, sink1, [dict(_DISCOVERY)])
+    trace1 = _drive_pure_with_ctx_discovery(
+        project_dir, runtime_dir, state_path, journal_path, sink1,
+        [dict(_DISCOVERY)])
     assert len(sink1.calls) == 1, sink1.calls
+    assert "reported=1/0" in trace1, trace1
     ledger_after_t1 = rt.persisted_report_ledger(state_path)
 
     # Tick 2: the SAME discovery re-surfaces. It is already in the ledger -> the
     # flush SKIPS it and does NOT call the sink.
     sink2 = _RecordingSink()
-    trace = _drive_to_done_with_discovery(project_dir, runtime_dir, state_path,
-                                          journal_path, sink2, [dict(_DISCOVERY)])
+    trace = _drive_pure_with_ctx_discovery(
+        project_dir, runtime_dir, state_path, journal_path, sink2,
+        [dict(_DISCOVERY)])
     assert sink2.calls == [], sink2.calls
     assert "reported=0/1" in trace, trace
     # The ledger is unchanged (idempotent).
@@ -359,15 +390,12 @@ def test_second_tick_same_discovery_skipped_reported_0_1():
 # ==========================================================================
 
 def test_dry_run_does_not_file_leaves_ledger_untouched():
-    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
+    project_dir, runtime_dir, state_path, journal_path = _setup_pure_project(
         mode="dry-run")
     sink = _RecordingSink()
-    # In dry-run the ACTING IMPLEMENT is trust-gated to inert planned handoffs,
-    # which carry NO discovered_work. So drive a discovery through the optional
-    # ctx `discoveries` slot instead — exercise the dry-run REPORT gate directly.
-    # The flush is gated by permits('file', 'dry-run') == False regardless of the
-    # discovery source, so file nothing.
-    trace = _drive_to_done_dry_run_with_ctx_discovery(
+    # The flush is gated by permits('file', 'dry-run') == False; drive a discovery
+    # through the optional ctx `discoveries` slot — it must NOT be filed.
+    trace = _drive_pure_with_ctx_discovery(
         project_dir, runtime_dir, state_path, journal_path, sink,
         [dict(_DISCOVERY)])
     # Filing was not permitted -> the sink was never called.
@@ -376,21 +404,6 @@ def test_dry_run_does_not_file_leaves_ledger_untouched():
     assert rt.persisted_report_ledger(state_path) == {}
     # The would-file count is logged: reported=0/1.
     assert "reported=0/1" in trace, trace
-
-
-def _drive_to_done_dry_run_with_ctx_discovery(project_dir, runtime_dir,
-                                              state_path, journal_path, sink,
-                                              discoveries, now=_DAY1):
-    """Run the PURE-SCRIPT default route in dry-run, injecting `discoveries` via
-    the optional ctx discoveries slot, and capture the done trace."""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        signal = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
-                             state_path=state_path, journal_path=journal_path,
-                             source=_stub_source(), now=now, report_sink=sink,
-                             discoveries=discoveries)
-    assert signal == "idle", signal
-    return buf.getvalue()
 
 
 # ==========================================================================
