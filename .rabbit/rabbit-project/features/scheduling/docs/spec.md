@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.8.1
+version: 0.8.2
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -388,12 +388,21 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
   and continues — NO spend, NO dispatch. The items stay un-acted (NOT added to the
   ledger), so they retry on a later tick / next window. TRIAGE / read-only states
   are NOT budget-pre-gated — the pre-gate is acting-only.
-- **Spend metering on resume.** The CLI `--resume` gains an optional `--spent
-  <int>` (and a programmatic `spent` param on `run_tick(resume=True)`). On resume
-  of an acting state, after applying the subagent outputs, run_tick
-  `record_spend(budget_state, budget_clock, spent)` into the budget window and
-  persists it. Default `spent` is 0 (back-compatible — the existing resume path is
-  unchanged when no spend is metered).
+- **Spend metering on resume (ALL agent-state resumes, not just acting).** The
+  CLI `--resume` gains an optional `--spent <int>` (and a programmatic `spent`
+  param on `run_tick(resume=True)`). On resume of **any** agent-state, after
+  applying the subagent outputs, run_tick `record_spend(budget_state,
+  budget_clock, spent)` into the budget window and persists it. The budget is a
+  **token ceiling over ALL model spend in the loop** (DESIGN §3.8.4), so a
+  non-acting **TRIAGE** resume's spend is metered too, not only the acting doer's
+  — otherwise the budget would undercount the loop's real model usage. The
+  executor passes the per-pause summed `subagent_tokens` on each `--resume`, so
+  each resume records its own pause's spend with NO double-counting (a tick with a
+  TRIAGE pause then an IMPLEMENT pause records both, cumulatively). Default
+  `spent` is 0 (back-compatible — the resume path is unchanged when no spend is
+  metered). NOTE: spend metering (counting model usage) is distinct from the
+  acting-only **budget pre-gate** above (which still gates only acting dispatches
+  from STARTING when the window is already exhausted).
 
 ## JSON tick CLI (slice: --step / --resume executor seam)
 
