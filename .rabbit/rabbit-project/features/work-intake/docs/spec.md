@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.3.0
+version: 0.3.1
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -34,9 +34,10 @@ Greenfield. Code under `.../features/work-intake/src/`.
 
 2. **`PULL` state** — `run(TickContext) -> StateResult` (fsm-contracts contract).
    Fetches the configured repo's **open** issues, maps each to a `WorkItem`,
-   writes the `work_items` slot, and emits `OK` if any items were found else
-   `EMPTY`. Per-state manifest: `{ reads: [], writes: ["work_items"],
-   emits: ["OK", "EMPTY"] }`.
+   **excludes any item the loop filed itself** (`is_loop_filed`, the §3.11.5
+   loopback guard — see below), writes the surviving items to the `work_items`
+   slot, and emits `OK` if any remain else `EMPTY`. Per-state manifest:
+   `{ reads: [], writes: ["work_items"], emits: ["OK", "EMPTY"] }`.
 
 3. **Injectable issue source (determinism seam)** — the production source shells
    the deterministic **`gh` CLI** (`gh issue list --state open --json
@@ -105,14 +106,20 @@ LLM triage judge coexist: the gate is the script-tier fast path; the judge is
 the agent-tier path a project wires at the `TRIAGE` port when richer judgment is
 wanted.
 
-- **Loopback / provenance guard (§3.11.5).** The triager REJECTS any input
-  work_item stamped as filed by the loop itself — provenance `filed_by:
-  autonomous-maintainer`, surfaced as the `filed-by:autonomous-maintainer` label
+- **Loopback / provenance guard (§3.11.5) — enforced at PULL, by EXCLUSION (not
+  by reject).** Items the loop filed itself carry the provenance stamp
+  `filed_by: autonomous-maintainer` — the `filed-by:autonomous-maintainer` label
   (and the `<!-- am-dedup:... -->` body marker REPORT writes, see Slice 3). The
-  v1 policy is that the maintainer does NOT auto-work its own filings: they land
-  for human triage to prevent self-amplification. The reject `reason` names the
-  loopback policy. (The deterministic recognizer is
-  `safety_governance.is_loop_filed`; the triager applies it as a judgment input.)
+  v1 policy is that the maintainer does NOT auto-work its own filings: they stay
+  open for human triage, preventing self-amplification. Enforcement is a
+  deterministic **PULL-side EXCLUSION**: `PULL` drops any work_item for which
+  `work_intake.is_loop_filed(item)` is true, so loop-filed items never become
+  `work_items` / `work_orders` and the doer never touches them. This is
+  deliberately NOT a TRIAGE reject — a reject would route to the doer's close
+  path and CLOSE the discovery, the opposite of "leave it open for a human." The
+  triager therefore never sees loop-filed items and carries no special-case for
+  them. `is_loop_filed` lives in work-intake (next to the stamp it recognizes:
+  the label + `<!-- am-dedup: -->` body marker that `gh_issue_file_sink` writes).
 
 ## Slice 3 — REPORT (outbound filing → DiscoveredIssue)
 
@@ -169,9 +176,10 @@ validates.
 - **TRIAGE — slice 2 (this cycle):** deterministic validity gate → `work_orders`.
   **Slice 3+ deferred:** dedup-vs-closed (§3.5.3), 1-level decompose (§3.5.5),
   dependency ordering (§3.5.7), WHAT-generation/spec seam (§3.5.8, the AI seam).
-- **Loopback / provenance guard (§3.11.5)** — IMPLEMENTED this slice: the
-  recognizer is `safety_governance.is_loop_filed`; the triager rejects
-  loop-filed items. Opt-in "let the loop work its own filings" stays deferred.
+- **Loopback / provenance guard (§3.11.5)** — IMPLEMENTED: `work_intake.is_loop_filed`
+  recognizes the provenance stamp and `PULL` EXCLUDES loop-filed items (they never
+  enter the pipeline; they stay open for humans). NOT a TRIAGE reject. Opt-in
+  "let the loop work its own filings" stays deferred.
 - **`PRIORITIZE`** (execution_plan) — separate state, deferred.
 - **Non-GitHub trackers**, label/filter config, pagination tuning — deferred.
 

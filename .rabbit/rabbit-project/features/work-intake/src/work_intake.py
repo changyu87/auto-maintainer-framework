@@ -195,6 +195,11 @@ class Pull:
 
     def run(self, ctx):  # noqa: ARG002 — ctx is the fsm-contracts TickContext
         items = self._source(self._repo)
+        # §3.11.5 loopback guard: EXCLUDE items the loop filed itself so they
+        # never enter the pipeline — they stay open for human triage. This is
+        # exclusion at PULL, NOT a TRIAGE reject (a reject would route to the
+        # doer's close path and CLOSE the discovery, the opposite of intent).
+        items = [item for item in items if not is_loop_filed(item)]
         writes = {"work_items": [item.to_dict() for item in items]}
         signal = "OK" if items else "EMPTY"
         return fc.StateResult(signal=signal, writes=writes)
@@ -371,14 +376,46 @@ class Triage:
 # change to the field set). Distinct from the feature + other slot versions.
 DISCOVERED_ISSUE_SCHEMA_VERSION = "1.0.0"
 
-# The provenance label stamped on every loop filing, and the body-marker
-# template that lets a later PULL/TRIAGE (and a dedup re-scan) recognize a
-# loop-filed item. The marker text is exactly `<!-- am-dedup:<dedup_key> -->`.
-FILED_BY_LABEL = "filed-by:autonomous-maintainer"
+# The provenance stamp, as ONE source of truth shared by the stamper
+# (gh_issue_file_sink, which WRITES it) and the recognizer (is_loop_filed,
+# which READS it):
+#   - LOOP_FILED_LABEL is the label stamped on every loop filing;
+#   - AM_DEDUP_MARKER_PREFIX is the prefix of the body marker, whose full text
+#     is exactly `<!-- am-dedup:<dedup_key> -->`.
+# Both must agree so a later PULL can recognize and EXCLUDE the loop's own
+# filings (§3.11.5).
+LOOP_FILED_LABEL = "filed-by:autonomous-maintainer"
+AM_DEDUP_MARKER_PREFIX = "<!-- am-dedup:"
+
+# The filing sink stamps this same label; keep the historical name as an alias
+# so the stamper and recognizer share one constant.
+FILED_BY_LABEL = LOOP_FILED_LABEL
 
 
 def _am_dedup_marker(dedup_key):
-    return f"<!-- am-dedup:{dedup_key} -->"
+    return f"{AM_DEDUP_MARKER_PREFIX}{dedup_key} -->"
+
+
+def is_loop_filed(item):
+    """Return True when `item` was filed by the maintainer loop itself.
+
+    A loop filing carries the provenance stamp gh_issue_file_sink writes: the
+    LOOP_FILED_LABEL label OR the AM_DEDUP_MARKER_PREFIX body marker. Either
+    stamp alone is sufficient. `item` may be a WorkItem or a dict (the
+    machine-first WorkItem form); pure and deterministic.
+
+    PULL uses this to EXCLUDE loop-filed items so they never enter the pipeline
+    — they stay open for human triage (this is exclusion, never a reject/close).
+    """
+    if isinstance(item, dict):
+        labels = item.get("labels") or []
+        body = item.get("body") or ""
+    else:
+        labels = getattr(item, "labels", None) or []
+        body = getattr(item, "body", None) or ""
+    if LOOP_FILED_LABEL in labels:
+        return True
+    return AM_DEDUP_MARKER_PREFIX in body
 
 
 @dataclass(eq=True)
