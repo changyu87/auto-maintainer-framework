@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.1
+version: 0.2.2
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -140,6 +140,13 @@ worktree-isolated acting subagent writes its handoff to the shared main-workspac
 `dispatch-out/` and the doer no longer re-dispatches / duplicates an act. No build
 change beyond `_PLUGIN_VERSION → 0.2.20`; `lib/run_tick.py` is re-normalized from
 the fixed source by the existing assembly.
+
+**Plugin patch v0.2.21** — re-ship to carry the implementer subagent v2.0.0
+(auto-maintainer-framework#143 follow-up): the doer self-manages its own git
+worktree instead of relying on Claude Code's `isolation: worktree` (which
+sandboxed its handoff write). No build change beyond `_PLUGIN_VERSION → 0.2.21`;
+`agents/auto-maintainer-implementer.md` is re-collected from the updated
+`ship/agents/` source by the existing assembly.
 
 Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
 the self-path bootstrap, importing `safety_governance` from `lib/`),
