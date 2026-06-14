@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.9.0
+version: 0.10.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -32,10 +32,16 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
 - Built-in adapters are wired via the factory convention
   (`factory(runtime) -> (manifest, run)`): scheduling provides factories for
   `GUARD`/`EXIT` (lifecycle-dispositions), `DRAIN`/`PERSIST` (durable-state),
-  `PULL`/`TRIAGE` (work-intake), `PRIORITIZE` (prioritize), and `IMPLEMENT`
-  (implement). The **default adapter-map** maps every known port (incl. `TRIAGE`,
-  `PRIORITIZE`, and `IMPLEMENT`) to its factory, even though the default route
-  uses a subset.
+  `PULL`/`TRIAGE` (work-intake), `PRIORITIZE` (prioritize), `IMPLEMENT`
+  (implement), and `VERIFY`/`INTEGRATE`/`CLEANUP` (verify-integrate). The
+  **default adapter-map** maps every known port (incl. `TRIAGE`, `PRIORITIZE`,
+  `IMPLEMENT`, `VERIFY`, `INTEGRATE`, `CLEANUP`) to its factory, even though the
+  default route uses a subset. `make_verify`/`make_integrate`/`make_cleanup` wrap
+  the verify-integrate states; `make_integrate` binds the loaded governance
+  `mode` so INTEGRATE merges only at `gated-merge` (and consumes
+  `safety_governance.permits` + `merge_guardrails`). The full close-the-loop
+  route `… IMPLEMENT → VERIFY → INTEGRATE → CLEANUP → PERSIST → EXIT` therefore
+  wires with NO code change (all ports pre-mapped) — a pure `route.json` edit.
 - **Override by config, not code:** a project-local
   `${CLAUDE_PROJECT_DIR}/.auto-maintainer/route.json` (and optional
   `adapters.json`) overrides the defaults. Inserting `TRIAGE` between PULL and
