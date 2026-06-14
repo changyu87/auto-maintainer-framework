@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.1.0
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version).
 ---
@@ -75,11 +75,43 @@ Turn raw `work_items` into validated `work_orders`. Slice 2 implements a
 3. **Determinism** — pure rules over the in-memory `work_items`; no network, no
    AI. The stale window is hardcoded (config deferred, #17-style).
 
+## Shipped subagent — the TRIAGE judge
+
+work-intake owns the TRIAGE domain and the `WorkOrder` schema, so it ships the
+real triage JUDGE as a subagent: `ship/agents/auto-maintainer-triager.md`. The
+build's `ship/` collection copies `ship/agents/` → the plugin's `agents/` with
+NO build change, so the shipped file IS the deployed subagent definition.
+
+- **Read-only judgment, not action.** The triager produces `work_orders` each
+  carrying `decision: accepted|rejected` + a `reason`; it never modifies the
+  tracker or the repo. Its tools are the read-only `Read`/`Grep`/`Glob` plus
+  `Write` (to emit its output file). Enacting a decision — close a rejected
+  item, implement an accepted one — is the later IMPLEMENT acting state's job,
+  not the triager's.
+- **Protocol-free, prompt-contracted.** The subagent definition bakes in NO
+  output schema, output_path, dispatch-result filename, or file-format detail.
+  Those are carried by the invocation-envelope prompt that agent-dispatch
+  renders at the `TRIAGE` agent-state. The triager copies the concrete output
+  example the prompt embeds.
+- **Wiring.** The `TRIAGE` agent-state's adapter-map entry names this subagent
+  (`subagent_type: auto-maintainer:auto-maintainer-triager`) with manifest
+  `{reads: ["work_items"], writes: ["work_orders"], emits: ["OK","EMPTY"]}`. The
+  TRIAGE→triager wiring validates through adapter-wiring's `build_loop` (TRIAGE
+  resolves to an AgentState; data-readiness is satisfied because PULL writes the
+  `work_items` TRIAGE reads).
+
+The deterministic in-process `Triage` validity gate (Slice 2 below) and this
+LLM triage judge coexist: the gate is the script-tier fast path; the judge is
+the agent-tier path a project wires at the `TRIAGE` port when richer judgment is
+wanted.
+
 ## Current behaviour
 
 Slice 1 (PULL) implemented and merged (`tdd_state: test-green`) — `WorkItem` +
 `PULL` adapter, live in the loop. Slice 2 (TRIAGE validity gate → `work_orders`)
-is being added this cycle.
+implemented and merged. This cycle ships the `auto-maintainer-triager` subagent
+(the real TRIAGE judge) and proves the TRIAGE→triager agent-adapter wiring
+validates.
 
 ## Known gaps / deferred
 

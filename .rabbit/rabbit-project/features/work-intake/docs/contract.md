@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.2.0
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version). See spec.md / feature.json.
 ---
@@ -17,7 +17,10 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
       "TRIAGE state: run(TickContext) -> StateResult, reads work_items, writes work_orders, emits OK|EMPTY (deterministic validity gate)"
     ],
     "scripts": [],
-    "skills": []
+    "skills": [],
+    "agents": [
+      "ship/agents/auto-maintainer-triager (the read-only TRIAGE judge subagent; protocol-free, prompt-contracted; collected into the plugin's agents/ by the build's ship/ pass)"
+    ]
   },
   "reads": {"files": [], "external": []},
   "invokes": {
