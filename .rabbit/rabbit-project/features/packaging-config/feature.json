@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-14",
-  "spec_no_change_reason": "Spec already updated in commit 870a2df with the v0.2.22 patch note and frontmatter version 0.2.3; this cycle only bumps _PLUGIN_VERSION to match."
+  "spec_no_change_reason": "Spec for v0.2.23 already committed (7bd8434) by dispatcher before this cycle; this cycle implements the version bump only."
 }
