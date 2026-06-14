@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.0
+version: 0.2.1
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -133,6 +133,13 @@ The one build change is a new **normalized lib**:
   resolve `safety_governance` from the co-located `lib/` alone. The
   `/auto-maintainer:configure` skill invokes it at `${CLAUDE_PLUGIN_ROOT}/lib/configure.py`.
 - **Version bump** — `plugin.json` + `marketplace.json` `version` → `0.2.19`.
+
+**Plugin patch v0.2.20** — re-ship to carry the scheduling `run_tick.py` fix that
+absolutizes the agent-dispatch `output_dir` (auto-maintainer-framework#143), so a
+worktree-isolated acting subagent writes its handoff to the shared main-workspace
+`dispatch-out/` and the doer no longer re-dispatches / duplicates an act. No build
+change beyond `_PLUGIN_VERSION → 0.2.20`; `lib/run_tick.py` is re-normalized from
+the fixed source by the existing assembly.
 
 Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
 the self-path bootstrap, importing `safety_governance` from `lib/`),
