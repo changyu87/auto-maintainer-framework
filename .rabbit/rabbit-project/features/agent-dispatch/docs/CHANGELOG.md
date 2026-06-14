@@ -4,6 +4,26 @@ All notable changes to the agent-adapter schema, the invocation envelope, and
 the deterministic helper surface are recorded here. Versions follow the
 `version` field in `spec.md` / `contract.md` / `feature.json`.
 
+## 0.3.1
+
+Fix free-text fence collision in `render` (#126). The live bug: `render`
+wrapped free-text/multiline input fields (e.g. a GitHub issue `body`) in a
+fixed 3-backtick fence; when the content itself contained a ```` ``` ````
+code fence, the inner fence terminated the wrapper early and the body bled
+into the surrounding markdown, corrupting the prompt and pulling the
+following `## Handoff` header out of place.
+
+- `render` (`_render_scalar`): wrap free-text/multiline content in a
+  CommonMark-correct **dynamic-length fence** — scan the content for the
+  longest run of consecutive backticks and use `(longest_run + 1)` backticks,
+  minimum 3, for both the opening and closing fence. Content with ```` ``` ````
+  is wrapped in a 4-backtick fence; content with a 4-run is wrapped in 5; the
+  common no-backtick case keeps a plain 3-backtick fence. The fence length is
+  a pure function of the content, so render stays deterministic.
+- No other behavior changes: envelope shape, `output_example` handling,
+  `validate_*`, `build_envelopes`, and the `## Handoff` block are unchanged.
+- Library remains deterministic and effect-free.
+
 ## 0.3.0
 
 Make the embedded handoff contract a concrete EXAMPLE to MIMIC, and reject a

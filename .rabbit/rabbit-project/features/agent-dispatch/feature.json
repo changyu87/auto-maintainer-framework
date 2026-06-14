@@ -1,6 +1,6 @@
 {
   "name": "agent-dispatch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/agent-dispatch/src/**"
