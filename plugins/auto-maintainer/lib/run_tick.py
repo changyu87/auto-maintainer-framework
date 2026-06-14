@@ -1222,7 +1222,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # (DESIGN §3.4.6 file-based context isolation). Created up-front so the
     # subagent's file-writing tool has a directory to write into; a pure-script
     # tick never uses it, but creating it is cheap + harmless.
-    output_dir = os.path.join(runtime_dir, "dispatch-out")
+    output_dir = os.path.abspath(os.path.join(runtime_dir, "dispatch-out"))
     os.makedirs(output_dir, exist_ok=True)
 
     # Load governance once per tick (project-local governance.json else the
