@@ -589,6 +589,106 @@ def test_render_free_text_body_is_fenced_or_blockquoted():
     assert fenced or blockquoted
 
 
+def test_render_free_text_body_with_code_fence_stays_in_one_fence():
+    # #126: a body that itself contains a ```-fenced code block must be wrapped
+    # in a DYNAMIC-length fence (longest backtick run + 1) so the inner ``` does
+    # not terminate the wrapper early and bleed the body into the surrounding
+    # markdown. content with ``` -> wrapped in ```` (4 backticks).
+    body = ("Here is a snippet:\n"
+            "```python\n"
+            "print('hi')\n"
+            "```\n"
+            "End of body.")
+    adapter = _once_adapter()
+    slot_values = {"work_orders": [{"id": "wo-1", "body": body}]}
+    env = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
+    text = ad.render(env)
+
+    inputs_section = text.split("## Handoff")[0]
+    # The body is wrapped in a 4-backtick fence (not 3) because it contains ```.
+    assert "````" in inputs_section
+    # The whole body stays inside ONE fence: the wrapper opens with ```` and
+    # the body content (including its inner ```) appears between a matched pair
+    # of ````-fences. Find the wrapper open/close.
+    open_idx = inputs_section.index("````")
+    close_idx = inputs_section.index("````", open_idx + 4)
+    between = inputs_section[open_idx + 4:close_idx]
+    # The inner ```python fence and the whole body are preserved verbatim inside.
+    assert "```python" in between
+    assert "print('hi')" in between
+    assert "End of body." in between
+    # Boundaries intact: the body did not split the document — `## Handoff`
+    # still appears as a column-0 section header in the full render.
+    assert "\n## Handoff" in text
+
+
+def test_render_free_text_no_backticks_uses_3_backtick_fence():
+    # #126: the common case (no backticks in the body) is UNCHANGED — a normal
+    # 3-backtick fence, never a wider one.
+    body = "Line one of the issue.\nLine two with ## a heading-looking line."
+    adapter = _once_adapter()
+    slot_values = {"work_orders": [{"id": "wo-1", "body": body}]}
+    env = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
+    text = ad.render(env)
+    inputs_section = text.split("## Handoff")[0]
+    # A plain 3-backtick fence wraps the body; no 4-backtick run appears.
+    assert "```" in inputs_section
+    assert "````" not in inputs_section
+    assert body in inputs_section
+
+
+def test_render_free_text_with_4_backtick_run_uses_5_backtick_fence():
+    # #126: a body containing a 4-backtick run -> wrapped in a 5-backtick fence
+    # (longest run + 1).
+    body = ("outer:\n"
+            "````\n"
+            "nested ``` inside\n"
+            "````\n"
+            "done")
+    adapter = _once_adapter()
+    slot_values = {"work_orders": [{"id": "wo-1", "body": body}]}
+    env = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
+    text = ad.render(env)
+    inputs_section = text.split("## Handoff")[0]
+    assert "`````" in inputs_section  # 5-backtick wrapper present
+    open_idx = inputs_section.index("`````")
+    close_idx = inputs_section.index("`````", open_idx + 5)
+    between = inputs_section[open_idx + 5:close_idx]
+    assert "nested ``` inside" in between
+    assert "````" in between  # the inner 4-run preserved verbatim
+
+
+def test_render_free_text_empty_body_does_not_crash():
+    # #126: an empty / whitespace body must not crash render.
+    for body in ("", "   ", "\n\n"):
+        adapter = _once_adapter()
+        slot_values = {"work_orders": [{"id": "wo-1", "body": body,
+                                        "pad": "x" * 90}]}
+        env = ad.build_envelopes(
+            adapter, slot_values, _tick_context(), state="TRIAGE",
+            output_dir=_OUT_DIR)[0]
+        text = ad.render(env)  # must not raise
+        assert "## Handoff" in text
+
+
+def test_render_dynamic_fence_is_deterministic():
+    # #126: same envelope -> identical render (the fence length is a pure
+    # function of content).
+    body = "snippet\n```\ncode\n```\nend"
+    adapter = _once_adapter()
+    slot_values = {"work_orders": [{"id": "wo-1", "body": body}]}
+    env = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)[0]
+    assert ad.render(env) == ad.render(env)
+
+
 def test_render_handoff_embeds_example_path_write_and_ack():
     adapter = _per_item_adapter()
     slot_values = {
