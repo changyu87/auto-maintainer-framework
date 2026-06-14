@@ -32,6 +32,13 @@ def _frontmatter():
     return yaml.safe_load(fm)
 
 
+def _body():
+    with open(_AGENT_PATH, "r") as f:
+        text = f.read()
+    _, _fm, body = text.split("---", 2)
+    return body
+
+
 def test_shipped_implementer_agent_exists():
     assert os.path.isfile(_AGENT_PATH), (
         "shipped implementer subagent must exist at "
@@ -55,3 +62,10 @@ def test_shipped_implementer_tools_include_bash_and_write():
     tools = fm["tools"]
     assert "Bash" in tools
     assert "Write" in tools
+
+
+def test_shipped_implementer_body_stamps_auto_maintainer_label():
+    """v2.1.0: an opened PR is stamped with the `auto-maintainer` label so
+    VERIFY can find the loop's own open PRs (spec: PR provenance label).
+    The accept path must pass `--label auto-maintainer` to `gh pr create`."""
+    assert "--label auto-maintainer" in _body()
