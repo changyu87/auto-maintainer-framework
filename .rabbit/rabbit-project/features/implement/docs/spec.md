@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.1.0
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -103,11 +103,23 @@ the output path. Its rendered prompt is the complete handoff contract (the
   (it owns the WHAT, DESIGN §2.1), run the project's checks, and **open a PR
   against the default branch — never merge**. If it cannot complete an accepted
   order it reports `status: blocked` and leaves no open PR.
-- **Isolation.** Runs in an isolated git worktree (DESIGN §3.6.2), dispatched
-  with `isolation: worktree`.
-- **Output.** Writes its Handoff to the file named in the prompt's `## Handoff`
-  section and replies with only a short ack — its output never passes through the
-  orchestrator's context.
+- **Isolation — the subagent manages its OWN worktree (v2.0.0,
+  auto-maintainer-framework#143 follow-up).** It is dispatched WITHOUT the
+  `isolation: "worktree"` adapter flag. That flag uses Claude Code's worktree
+  isolation, which **sandboxes the subagent's file writes to the worktree** — so
+  the subagent's Handoff file could not reach the shared main-workspace
+  `dispatch-out/` (and for the reject path the worktree auto-cleans, deleting the
+  file), breaking the file-based handoff. Instead, on the accept path the
+  subagent (a coding agent with `Bash`) creates its OWN git worktree off the
+  default branch OUTSIDE the repo tree (`git worktree add`), does all editing /
+  committing there, opens the PR, then removes the worktree (DESIGN §3.6.2: the
+  doer owns its workspace). The reject path needs no worktree. Because the
+  subagent is NOT Claude-sandboxed, it CAN write its Handoff to the absolute
+  `output_path`. The main checkout's branch/index/uncommitted state is never
+  disturbed; `git status` on the main tree stays clean.
+- **Output.** Writes its Handoff to the (absolute) file named in the prompt's
+  `## Handoff` section and replies with only a short ack — its output never
+  passes through the orchestrator's context.
 - **Governance is external.** The subagent always acts for real when dispatched;
   the trust-ladder gate, budget window, and acted-ledger idempotency
   (DESIGN §3.8.2/§3.8.4/§3.2.4) are enforced upstream by `scheduling.run_tick`,
