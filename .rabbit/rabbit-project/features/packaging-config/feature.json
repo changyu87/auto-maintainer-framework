@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "test-red",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-14",
-  "spec_no_change_reason": "spec already updated and committed in 01d9517 (ship configure lib + bump v0.2.19) before this TDD subagent cycle"
+  "spec_no_change_reason": "spec v0.2.20 patch note already authored and committed before this TDD cycle; this cycle only bumps the version constant"
 }
