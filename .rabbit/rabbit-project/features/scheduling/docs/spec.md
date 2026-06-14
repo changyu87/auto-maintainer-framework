@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.6.2
+version: 0.6.3
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -294,6 +294,49 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   value resolves to a real `{window_key, spent_tokens}` and the terminal persist
   records the durable window. A pure-script route is UNCHANGED — it already
   persists the window at the terminal.
+
+## Trust-gate for acting agent-states (slice: effect-based trust ladder)
+
+This slice trust-gates **acting agent-states** in `run_tick` (DESIGN §2.3 /
+§3.8.2 trust ladder). It consumes `safety-governance` + `agent-dispatch`
+UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
+
+- **An acting agent-state** is an agent-adapter whose dispatch entry carries a
+  truthy `effect` string (one of safety-governance's closed effect set
+  `{implement, open_pr, merge, file}`, e.g. `effect: "implement"`). A
+  **non-acting** agent-state (no `effect`, e.g. a TRIAGE adapter) is UNCHANGED —
+  the trust-gate does NOT apply and it always pauses to dispatch.
+- **Deterministic trust-gating in run_tick, never by the subagent.** Before
+  pausing at an acting agent-state, `run_tick` computes
+  `permitted = sg.permits(effect, mode)` (`mode` from the loaded governance).
+  The decision is the deterministic lib's, not the model's.
+  - **Not permitted (e.g. `dry-run`, where permits returns False for every
+    effect):** `run_tick` does NOT pause and does NOT dispatch. It builds the
+    per-dispatch items via `ad.build_envelopes(...)` (to know the work-order
+    ids/cardinality) and synthesizes one **inert `planned` handoff** per item —
+    `{"work_order_id": <id or null>, "status": "planned", "artifact":
+    {"kind": "none", "ref": null}, "discovered_work": [], "blocked_reason":
+    null}` — `ad.collect_outputs` them into the writes slot, writes the slot,
+    `ad.compute_signal` the route signal, persists the read product, emits the
+    `state_run`/`signal` events (the `state_run` detail notes `gated=dry-run`),
+    and CONTINUES the driver. No PAUSE, no checkpoint, no spend, no subagent.
+    This is the dry-run safety behaviour: inert planned handoffs, deterministic,
+    the model never decides whether to act.
+  - **Permitted (`propose` / `gated-merge`):** `run_tick` proceeds to the
+    normal PAUSE-for-dispatch path unchanged, so the executor dispatches the real
+    subagent.
+- **isolation + description in the PAUSED dispatches.** When building the PAUSED
+  `dispatches[]` (the permitted path), each dispatch record now also carries
+  `isolation` (the dispatch entry's `isolation`, e.g. `"worktree"`, or null when
+  absent) and `description` (the dispatch entry's `description` if present, else a
+  default `f"{state} dispatch"`, or `f"{state}: {item}"` for a per_item dispatch).
+  These let the executor call `Agent(subagent_type, description=...,
+  prompt=..., isolation=...)`. `subagent_type`, `prompt`, `writes`,
+  `output_path`, `signal_rule`, and `cardinality` are unchanged.
+- **No budget pre-gate / acted-ledger / spend metering this slice.** ONLY the
+  effect-based trust-gate (dry-run inert vs dispatch) + isolation/description in
+  the PAUSED dispatches. Read products stay #64 per-tick ephemeral; the budget
+  window persistence (#123) and the #109 journal-free checkpoint are unchanged.
 
 ## JSON tick CLI (slice: --step / --resume executor seam)
 
