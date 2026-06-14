@@ -30,9 +30,11 @@ Sources:
       .rabbit/rabbit-project/features/implement/src/implement.py
       .rabbit/rabbit-project/features/safety-governance/src/safety_governance.py
       .rabbit/rabbit-project/features/safety-governance/src/configure.py
+      .rabbit/rabbit-project/features/verify-integrate/src/verify_integrate.py
     The six pure libs are copied byte-for-byte; run_tick.py, status.py,
     stop.py, start.py, work_intake.py, adapter_wiring.py, prioritize.py,
-    implement.py, safety_governance.py, and configure.py are normalized so their
+    implement.py, safety_governance.py, configure.py, and verify_integrate.py
+    are normalized so their
     sibling-lib imports resolve from the co-located lib/ dir alone (the shipped plugin
     carries only its own dir, so it cannot reach the feature src/ trees the dev
     copy resolves through). agent_dispatch.py and observability.py are PURE
@@ -62,6 +64,11 @@ Sources:
     configure.py is safety_governance's governance-config writer; it imports its
     sibling safety_governance (`import safety_governance as sg`), so its plain
     bootstrap resolves safety_governance from lib/ once shipped.
+    verify_integrate.py is the VERIFY/INTEGRATE/CLEANUP lib; it imports its
+    siblings fsm_contracts (its first import, the bootstrap anchor) and
+    safety_governance, and does not import os/sys at module top, so it takes the
+    with-imports bootstrap (the same as prioritize/implement/work_intake),
+    resolving fsm_contracts + safety_governance from lib/ once shipped.
 
   - shipped components (collected automatically from feature ship/ dirs): the
     tick executor skill (scheduling's ship/skills/tick/SKILL.md) lands at
@@ -74,7 +81,7 @@ The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
 
-Version: 0.2.23
+Version: 0.2.24
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the framework adopts a different
   distribution channel than a self-hosted Claude Code plugin marketplace, or
@@ -93,7 +100,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.2.23"
+_PLUGIN_VERSION = "0.2.24"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -212,6 +219,13 @@ _NORMALIZED_LIBS = {
         os.path.join(_FEATURES_REL, "safety-governance", "src", "configure.py"),
         "import safety_governance as sg",
         _SELF_PATH_BOOTSTRAP,
+    ),
+    "verify_integrate.py": (
+        os.path.join(
+            _FEATURES_REL, "verify-integrate", "src", "verify_integrate.py"
+        ),
+        "import fsm_contracts as fc",
+        _SELF_PATH_BOOTSTRAP_WITH_IMPORTS,
     ),
 }
 

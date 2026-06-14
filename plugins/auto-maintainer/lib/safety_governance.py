@@ -170,6 +170,66 @@ def permits(effect_kind, mode):
 
 
 # --------------------------------------------------------------------------
+# 2b. Merge guardrails (§3.8.1) — a hard backstop BELOW the trust ladder.
+# --------------------------------------------------------------------------
+
+# A PR's mergeable state is "clean" only when it is the boolean True or the
+# string "MERGEABLE" (case-insensitive). CONFLICTING / UNKNOWN / None / a
+# missing key are all treated as not-cleanly-mergeable (never merge a
+# conflicted or not-yet-computed tree).
+def _is_cleanly_mergeable(mergeable):
+    if mergeable is True:
+        return True
+    if isinstance(mergeable, str) and mergeable.upper() == "MERGEABLE":
+        return True
+    return False
+
+
+def merge_guardrails(pr_meta, default_branch, delete_branch=None):
+    """Declarative merge red-flags the host enforces before an autonomous merge.
+
+    A pure, deterministic check over a PR's metadata (`pr_meta` is a dict
+    tolerant of the keys {base, mergeable, head}). It is a hard backstop BELOW
+    the trust ladder: even at gated-merge (where permits("merge", …) is True) a
+    violation blocks the merge. Checks (each adds a named violation):
+
+      - never-merge-wrong-base — pr_meta['base'] != default_branch (the loop
+        only merges PRs targeting the repo's default branch).
+      - never-merge-dirty — pr_meta['mergeable'] is not cleanly mergeable
+        (CONFLICTING / UNKNOWN / None / missing).
+      - never-delete-non-matching-branch — ONLY when `delete_branch` is supplied
+        and != pr_meta['head'] (CLEANUP must bound deletion to the PR's own
+        head). When `delete_branch` is None the check is skipped.
+
+    Returns {'ok': bool, 'violations': [str]}: ok is True with an empty
+    violations list only when every check passes; otherwise ok is False and
+    violations names each failed check (machine-first, so INTEGRATE can record
+    each reason in its `skipped` list). Pure: no I/O, does not mutate pr_meta.
+    """
+    violations = []
+
+    base = pr_meta.get("base")
+    if base != default_branch:
+        violations.append(
+            f"wrong-base: PR base {base!r} != default branch "
+            f"{default_branch!r}")
+
+    mergeable = pr_meta.get("mergeable")
+    if not _is_cleanly_mergeable(mergeable):
+        violations.append(
+            f"dirty: PR mergeable {mergeable!r} is not cleanly mergeable")
+
+    if delete_branch is not None:
+        head = pr_meta.get("head")
+        if delete_branch != head:
+            violations.append(
+                f"delete-non-matching-branch: delete target "
+                f"{delete_branch!r} != PR head {head!r}")
+
+    return {"ok": violations == [], "violations": violations}
+
+
+# --------------------------------------------------------------------------
 # 3. Budget readiness gate (§3.8.4) — auto-resuming, NOT a latch.
 # --------------------------------------------------------------------------
 
