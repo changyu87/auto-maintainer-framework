@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T07:47:37Z",
   "deprecation_criterion": "Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version).",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-14",
   "spec_no_change_reason": "Spec already updated in commit 9c2d521 (loopback excludes loop-filed at PULL, not reject); this cycle implements that spec."
 }
