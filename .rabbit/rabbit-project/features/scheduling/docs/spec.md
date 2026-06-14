@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.8.2
+version: 0.9.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -538,6 +538,52 @@ kind outside the closed vocabulary):
 Events are written in BOTH the pure-script done path and the agent-driver
 done/pause paths. The budget readiness gate, slot persistence, and the trace are
 untouched — only event emission is added alongside.
+
+## Outbound REPORT flush (slice: discovered_work → tracker)
+
+`run_tick` flushes the tick's discoveries through `work-intake`'s REPORT port
+(DESIGN §1.3, §3.11) so follow-on work the doer surfaces becomes durably-tracked
+items instead of being dropped. REPORT is **out-of-band — NOT a routed state**:
+the flush runs at the tick TERMINAL (the `done` path), AFTER the route completed
+and the read products are known, on BOTH the pure-script and agent-driver done
+paths. It consumes `work_intake` (`DiscoveredIssue` / `file_discoveries` /
+`gh_issue_file_sink`) and `safety_governance` UNCHANGED.
+
+- **Sources of discoveries.** The flush gathers raw discovery dicts from (a) the
+  tick's `handoffs` — each handoff's `discovered_work[]` — and (b) an optional
+  per-tick `discoveries` slot on `TickContext` any state may append to. v1's
+  primary source is `handoffs.discovered_work`.
+- **Normalization.** Each raw dict is completed into a `DiscoveredIssue`
+  (work_intake schema): `filed_by="autonomous-maintainer"`; `target` defaults to
+  `project`; `kind` defaults to `task`; missing `dedup_key` is DERIVED
+  deterministically (a stable hash of `title`+`body`, optionally prefixed by the
+  source `work_order_id`) so the same discovery always yields the same key.
+- **Durable idempotency ledger.** A new durable cross-tick key
+  `REPORT_LEDGER_KEY = "report_ledger"` (a durable fact like `ACTED_LEDGER_KEY` /
+  `BUDGET_KEY`, NOT a #64 read product) maps `{dedup_key: {tracker_ref, url}}`.
+  `persisted_report_ledger(state_path)` reads it (default `{}`). Discoveries whose
+  `dedup_key` is already a ledger key are skipped (filed in a prior tick — never
+  re-file). The flush passes the ledger keys as `file_discoveries`'
+  `known_dedup_keys`, and after filing RECORDS each `filed` entry back into the
+  ledger (load-modify-save just `REPORT_LEDGER_KEY`, preserving all other durable
+  keys). This is the journaled-idempotency guarantee (§3.11.4): a refire / DRAIN
+  replay never files a duplicate.
+- **Trust gate (§3.11.7).** Filing is the `file` effect. The flush computes
+  `sg.permits("file", mode)`: at `dry-run` it does NOT file — it logs the intent
+  (the would-file count) and leaves the ledger untouched so a later armed tick
+  files them; at `propose`/`gated-merge` it files via `file_discoveries`.
+- **Injectable sink seam.** `DEFAULT_REPORT_SINK = work_intake.gh_issue_file_sink`
+  (mirrors `DEFAULT_PULL_SOURCE`); tests override it with a stub so no network.
+  The sink's destination repo is resolved per `DiscoveredIssue.target`:
+  `project` → the project repo (gh default); `maintainer-self` → a configured
+  maintainer repo (`governance.maintainer_repo` when set, else falls back to the
+  project repo for v1).
+- **Surfacing.** The trace and `status.py` gain a `reported=<filed>/<skipped>`
+  token (always shown, #69 style); the counts are also added to the `tick_end`
+  event's `detail` (NO new event kind — reuses the existing terminal event).
+- **Unchanged.** A tick with NO discoveries flushes nothing (`reported=0/0`) and
+  is otherwise byte-identical. Read products stay #64 per-tick ephemeral; the
+  REPORT ledger + budget window + acted-ledger are the durable cross-tick facts.
 
 ## Known gaps / deferred
 

@@ -58,6 +58,7 @@ Deprecation criterion: Superseded when scheduling moves to a different clock
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -100,6 +101,12 @@ import observability as ob  # noqa: E402
 # (no injected source) pulls real open issues.
 DEFAULT_PULL_SOURCE = wi.gh_issue_source
 
+# The production REPORT filing sink: work-intake's live `gh issue create` adapter
+# (mirrors DEFAULT_PULL_SOURCE). The outbound write-side of PULL. Tests override
+# it with a stub so the suite touches no network; the shipped run_tick (no
+# injected sink) files real tracker items through `gh`.
+DEFAULT_REPORT_SINK = wi.gh_issue_file_sink
+
 # The durable-state document keys under which the last tick's pulled work_items
 # (and triaged work_orders, when the active route produced them) are persisted,
 # so status.py can report the counts without re-running the loop.
@@ -123,6 +130,20 @@ BUDGET_KEY = "budget"
 # a later tick that re-pulls the SAME work order does NOT re-dispatch it (no second
 # PR) — idempotency (§3.2.4). Load-modify-saved preserving every other durable key.
 ACTED_LEDGER_KEY = "acted_ledger"
+
+# The durable-state document key under which the REPORT-LEDGER is persisted: a
+# durable CROSS-TICK fact (like BUDGET_KEY / ACTED_LEDGER_KEY, NOT a per-tick #64
+# read product) mapping {dedup_key: {"tracker_ref": <ref>, "url": <url>}}. It
+# records which discoveries the outbound REPORT flush already filed, so a refire /
+# DRAIN replay never files a duplicate (journaled-idempotency, §3.11.4).
+# Load-modify-saved preserving every other durable key.
+REPORT_LEDGER_KEY = "report_ledger"
+
+# The durable-state document key under which the last tick's REPORT outcome
+# {filed, skipped} is persisted, so status.py can surface reported=<filed>/
+# <skipped> without re-running the loop (mirrors how the read-product counts are
+# read back). A small durable last-tick fact, NOT a #64 read product.
+LAST_REPORTED_KEY = "last_reported"
 
 # The durable-state document key under which the agent yield/resume CHECKPOINT is
 # persisted while a tick is PAUSED at an agent-state (DESIGN §2.8 executor
@@ -463,6 +484,23 @@ def persisted_acted_ledger(state_path):
     return doc.get(ACTED_LEDGER_KEY, {})
 
 
+def persisted_last_reported(state_path):
+    """The last tick's REPORT outcome {filed, skipped} persisted under
+    LAST_REPORTED_KEY, or {"filed": 0, "skipped": 0} when no tick ran a flush.
+    Lets status.py surface reported=<filed>/<skipped> without re-running."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(LAST_REPORTED_KEY, {"filed": 0, "skipped": 0})
+
+
+def persisted_report_ledger(state_path):
+    """The durable report-ledger {dedup_key: {tracker_ref, url}} persisted under
+    REPORT_LEDGER_KEY, or {} when the outbound REPORT flush never filed anything.
+    Like the budget window + acted-ledger this is a durable CROSS-TICK fact (see
+    REPORT_LEDGER_KEY), NOT a per-tick #64 read product."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(REPORT_LEDGER_KEY, {})
+
+
 def persisted_tick_checkpoint(state_path):
     """The durable PAUSED checkpoint persisted under TICK_CHECKPOINT_KEY while a
     tick is paused at an agent-state, or {} when no tick is paused. The
@@ -769,6 +807,125 @@ def _record_acted_ledger(state_path, handoffs):
         }
     doc[ACTED_LEDGER_KEY] = ledger
     ds.DurableState(state_path).save(doc)
+
+
+# --------------------------------------------------------------------------
+# Outbound REPORT flush (DESIGN §1.3 / §3.11): discovered_work -> tracker.
+#
+# REPORT is out-of-band — NOT a routed state. After the route completes at the
+# tick TERMINAL, run_tick gathers the tick's discoveries (handoffs[].discovered_work
+# + an optional ctx `discoveries` slot), normalizes each to a work-intake
+# DiscoveredIssue (deriving a stable dedup_key), trust-gates filing on
+# sg.permits('file', mode), and files the un-seen ones through work-intake's
+# file_discoveries with a durable REPORT_LEDGER_KEY for journaled idempotency.
+# work-intake + safety-governance are consumed UNCHANGED.
+# --------------------------------------------------------------------------
+
+def _derive_dedup_key(title, body, work_order_id=None):
+    """A STABLE dedup_key for a discovery: a sha1 of title+'\\n'+body, prefixed by
+    the source work_order_id when present, so the SAME discovery always yields the
+    SAME key (a refire / DRAIN replay never double-files)."""
+    digest = hashlib.sha1(f"{title}\n{body}".encode("utf-8")).hexdigest()
+    if work_order_id:
+        return f"{work_order_id}:{digest}"
+    return digest
+
+
+def _normalize_discovery(raw, fallback_wo_id=None):
+    """Complete a raw discovery dict into a work-intake DiscoveredIssue.
+
+    Fills the loop's defaults: filed_by="autonomous-maintainer", target="project",
+    kind="task", severity="low". A missing dedup_key is DERIVED deterministically
+    (a stable sha1 of title+body, optionally prefixed by the discovery's own
+    work_order_id else `fallback_wo_id`). Consumes work-intake's DiscoveredIssue
+    schema unchanged."""
+    title = raw.get("title", "")
+    body = raw.get("body", "")
+    wo_id = raw.get("work_order_id") or fallback_wo_id
+    dedup_key = raw.get("dedup_key") or _derive_dedup_key(title, body, wo_id)
+    return wi.DiscoveredIssue(
+        title=title,
+        body=body,
+        kind=raw.get("kind") or "task",
+        severity=raw.get("severity") or "low",
+        target=raw.get("target") or "project",
+        dedup_key=dedup_key,
+        filed_by=raw.get("filed_by") or "autonomous-maintainer",
+    )
+
+
+def _gather_discoveries(handoffs, discoveries_slot):
+    """The raw discovery dicts this tick surfaced: every handoff's
+    discovered_work[] (each tagged with its handoff's work_order_id as the dedup
+    fallback) plus the optional ctx `discoveries` slot. Returns a list of
+    (raw_dict, fallback_wo_id) pairs."""
+    pairs = []
+    for h in handoffs or []:
+        wo_id = h.get("work_order_id")
+        for raw in h.get("discovered_work", []) or []:
+            pairs.append((raw, wo_id))
+    for raw in discoveries_slot or []:
+        pairs.append((raw, None))
+    return pairs
+
+
+def _repo_for_target(target, gov):
+    """The destination repo for a DiscoveredIssue.target: `project` -> the gh
+    default repo (None); `maintainer-self` -> the configured maintainer repo
+    (gov.get('maintainer_repo')) else the project repo (None) for v1."""
+    if target == "maintainer-self":
+        return gov.get("maintainer_repo") or None
+    return None
+
+
+def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink):
+    """Flush the tick's discoveries through work-intake's REPORT port at the
+    terminal (out-of-band). Returns (filed_count, skipped_count).
+
+    Gathers + normalizes the discoveries, then trust-gates filing on
+    sg.permits('file', mode):
+      - NOT permitted (dry-run): does NOT file and leaves the ledger UNTOUCHED so
+        a later armed tick files them; returns (0, <would-file count>) — the
+        intent (the would-file count) is surfaced via the returned skipped count.
+      - permitted (propose / gated-merge): files each not-yet-known discovery via
+        wi.file_discoveries (the per-target repo bound onto the injected sink),
+        then RECORDS each filed {dedup_key: {tracker_ref, url}} into the durable
+        REPORT_LEDGER_KEY (load-modify-save just that key). Returns
+        (len(filed), len(skipped_existing)).
+    """
+    pairs = _gather_discoveries(handoffs, discoveries_slot)
+    if not pairs:
+        return 0, 0
+    normalized = [_normalize_discovery(raw, fallback_wo_id=wo_id)
+                  for raw, wo_id in pairs]
+    known = set(persisted_report_ledger(state_path))
+
+    if not sg.permits("file", mode):
+        # dry-run: log the intent (the would-file count) but DO NOT file and DO
+        # NOT touch the ledger — a later armed tick files them.
+        would_file = len([d for d in normalized if d.dedup_key not in known])
+        return 0, would_file
+
+    def _routed_sink(discovery):
+        return sink(discovery, repo=_repo_for_target(discovery.target, gov))
+
+    result = wi.file_discoveries(
+        normalized, sink=_routed_sink, known_dedup_keys=known)
+
+    # Record each newly-filed discovery into the durable report-ledger
+    # (load-modify-save ONLY REPORT_LEDGER_KEY, preserving every other key).
+    if result.filed:
+        doc = ds.DurableState(state_path).load()
+        ledger = dict(doc.get(REPORT_LEDGER_KEY, {}))
+        for entry in result.filed:
+            ledger[entry["dedup_key"]] = {
+                "tracker_ref": entry["tracker_ref"],
+                "url": entry["url"],
+            }
+        doc[REPORT_LEDGER_KEY] = ledger
+        ds.DurableState(state_path).save(doc)
+
+    return len(result.filed), len(result.skipped_existing)
 
 
 def _gate_acting_state(name, agentstate, slot_values, tick_id, mode,
@@ -1164,7 +1321,8 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
 
 def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              project_dir=None, source=None, now=None, tick_spend=0,
-             return_run_result=False, resume=False, spent=0):
+             return_run_result=False, resume=False, spent=0,
+             report_sink=None, discoveries=None):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -1202,6 +1360,16 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     them, and continues to the next pause or the terminal. A missing output file on
     resume returns an invalid_output dict (checkpoint intact). A pure-script route
     is UNCHANGED — it runs via tick_orchestrator.run and returns the signal string.
+
+    Outbound REPORT flush (out-of-band — §3.11): at the terminal (the `done`
+    path, on BOTH the pure-script and agent-driver paths), after the read products
+    are persisted, run_tick flushes the tick's discoveries
+    (handoffs[].discovered_work + the optional `discoveries` param) through
+    work-intake's REPORT port, trust-gated on sg.permits('file', mode) and
+    journal-idempotent via the durable REPORT_LEDGER_KEY. `report_sink` is the
+    injectable filing sink (default DEFAULT_REPORT_SINK = work-intake's live `gh`
+    sink); tests inject a stub so no network. The reported=<filed>/<skipped> token
+    is appended to the trace and the tick_end event detail.
 
     Prints a one-line tick trace (state path, work_items/work_orders counts,
     disposition, and the route source — default vs override:<path>, #59).
@@ -1368,14 +1536,23 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         doc[EXECUTION_PLAN_KEY] = (
             ctx.read(pr.EXECUTION_PLAN_SLOT["name"])
             if "PRIORITIZE" in route["states"] else {})
-        doc[HANDOFFS_KEY] = (
+        tick_handoffs = (
             ctx.read(im.HANDOFFS_SLOT["name"])
             if "IMPLEMENT" in route["states"] else [])
+        doc[HANDOFFS_KEY] = tick_handoffs
         # The durable, cross-tick budget window (NOT a #64 read product): persist
         # the evaluated/recorded budget_state so the window rollover + spend
         # accrual survive across ticks.
         doc[BUDGET_KEY] = new_budget_state
         ds.DurableState(state_path).save(doc)
+        # Outbound REPORT flush (out-of-band — §3.11): file the tick's
+        # discoveries (handoffs[].discovered_work + the optional `discoveries`
+        # slot) at the terminal, AFTER the read products are persisted, on BOTH
+        # the pure-script and agent-driver done paths. Trust-gated + journaled
+        # idempotent inside _flush_report.
+        reported_filed, reported_skipped = _flush_report(
+            state_path, tick_handoffs, discoveries, mode, gov,
+            report_sink or DEFAULT_REPORT_SINK)
     else:
         # GUARD short-circuited (STOPPED/ABORTED/RESTART_NEEDED): the tick did no
         # read/PERSIST work, but the budget window is still a durable cross-tick
@@ -1384,6 +1561,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         doc = ds.DurableState(state_path).load()
         doc[BUDGET_KEY] = new_budget_state
         ds.DurableState(state_path).save(doc)
+        # No route body ran on a halt: nothing to report.
+        reported_filed, reported_skipped = 0, 0
 
     disposition = ld.read_disposition(runtime_dir)
     work_items_count = persisted_work_items_count(state_path)
@@ -1396,12 +1575,22 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # `route_src` (#59) was resolved above from the SAME project_dir build_loop
     # loaded the route from, and reused for both the trace and the event log.
     gov_fields = governance_fields(gov, new_budget_state, budget)
+    # The outbound REPORT surface (#69 style — always shown): reported=<filed>/
+    # <skipped>. Placed after the governance fields; all current fields/order are
+    # preserved. A no-discovery tick shows reported=0/0.
+    reported_field = f"reported={reported_filed}/{reported_skipped}"
+    # Persist the last-tick REPORT outcome so status.py can surface it without
+    # re-running (load-modify-save just LAST_REPORTED_KEY, preserving all else).
+    doc = ds.DurableState(state_path).load()
+    doc[LAST_REPORTED_KEY] = {"filed": reported_filed,
+                              "skipped": reported_skipped}
+    ds.DurableState(state_path).save(doc)
     sys.stdout.write(
         f"[tick] path={'->'.join(result.path)} work_items={work_items_count} "
         f"work_orders={work_orders_count} "
         f"execution_plan={execution_plan_count} handoffs={handoffs_count} "
         f"disposition={disposition} "
-        f"signal={signal} route={route_src} {gov_fields}\n")
+        f"signal={signal} route={route_src} {gov_fields} {reported_field}\n")
 
     # Terminal events (observability §3.9.1): the resulting disposition, then the
     # tick_end carrying the final signal + the four read-product counts. Emitted
@@ -1412,7 +1601,9 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "work_items": work_items_count,
         "work_orders": work_orders_count,
         "execution_plan": execution_plan_count,
-        "handoffs": handoffs_count})
+        "handoffs": handoffs_count,
+        "reported_filed": reported_filed,
+        "reported_skipped": reported_skipped})
 
     if return_run_result:
         return result
