@@ -32,6 +32,14 @@ Installing today gives you a working `/plugin install` and an
 maintainer adapters (PULL / TRIAGE / IMPLEMENT / scheduling) are still on the
 roadmap.
 
+## Requirements
+
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — this is a
+  Claude Code plugin and is installed and run from inside Claude Code.
+- **The [`gh`](https://cli.github.com/) CLI, installed and authenticated** — the
+  default GitHub adapters shell out to `gh` for issues and pull requests. Run
+  `gh auth login` once so it can talk to your repository.
+
 ## Installation
 
 Distributed as a **Claude Code plugin** served from a self-hosted marketplace.
