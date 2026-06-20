@@ -51,7 +51,7 @@ ALONGSIDE the existing one-line trace — purely additive, no existing behaviour
 changes. The VERIFY/INTEGRATE/CLEANUP ports (verify-integrate) are pre-mapped in
 DEFAULT_ADAPTER_MAP so the close-the-loop route wires by a pure route.json edit.
 
-Version: 0.5.0
+Version: 0.6.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the tick interval becomes
@@ -146,6 +146,46 @@ BUDGET_KEY = "budget"
 # PR) — idempotency (§3.2.4). Load-modify-saved preserving every other durable key.
 ACTED_LEDGER_KEY = "acted_ledger"
 
+# The durable-state document key under which the BACKOFF-LEDGER is persisted: a
+# durable CROSS-TICK fact (like ACTED_LEDGER_KEY, NOT a per-tick #64 read product)
+# mapping {work_item_id: {"blocked_count": <int>, "deferred_at_updated_at": <iso
+# updated_at or null>}}. It bounds-retries a work order the doer reports `blocked`
+# (§3.8.5): each blocked resume increments blocked_count keyed on the SOURCE
+# work_item_id; at BACKOFF_THRESHOLD the item is deferred (deferred_at_updated_at
+# pinned to the issue's current updated_at) and escalated to a human once. The
+# acted-ledger stays work_order_id-keyed and unchanged; backoff is the additive
+# work_item_id-keyed retry state. Load-modify-saved preserving every other key.
+BACKOFF_LEDGER_KEY = "backoff"
+
+# The number of honest `blocked` attempts a work_item gets before it is deferred
+# and escalated to a human (§3.8.5). A module constant for now; config-driven
+# later (the same deferral the interval/route hardcoding note covers).
+BACKOFF_THRESHOLD = 3
+
+# The durable-state document key under which the TRIAGE MEMORY is persisted: a
+# durable CROSS-TICK fact (like BACKOFF_LEDGER_KEY, NOT a per-tick #64 read
+# product) mapping {work_item_id: {"updated_at": <iso>, "status": <done|deferred>}}
+# (§3.5.3). It lets the triager skip re-judging issues that are already handled
+# and UNCHANGED: an item is recorded `done` once the doer opened/closed it, or
+# `deferred` once it reaches the backoff deferral. Recorded at the acting-state
+# resume alongside the acted/backoff ledgers, from the same work_order_id ->
+# work_item_id mapping + the item's current issue updated_at. Load-modify-saved
+# preserving every other durable key.
+TRIAGE_MEMORY_KEY = "triage_memory"
+
+# The triage-memory statuses that, when the issue updated_at is UNCHANGED, cause a
+# work_item to be filtered OUT of the TRIAGE dispatch (already handled — no need to
+# re-judge). An `active` (accepted-not-done) item is NOT in this set, so it is
+# always re-triaged (never starved).
+_TRIAGE_SKIP_STATUSES = ("done", "deferred")
+
+# The production escalation sink: observability's live `gh issue comment` adapter
+# (mirrors DEFAULT_PULL_SOURCE / DEFAULT_REPORT_SINK). When a work_item reaches
+# BACKOFF_THRESHOLD the deferral posts ONE issue comment naming the human through
+# this sink. Tests inject a stub so the suite touches no network; the shipped
+# run_tick (no injected sink) comments via `gh`.
+DEFAULT_ESCALATE_SINK = ob.gh_comment_sink
+
 # The durable-state document key under which the REPORT-LEDGER is persisted: a
 # durable CROSS-TICK fact (like BUDGET_KEY / ACTED_LEDGER_KEY, NOT a per-tick #64
 # read product) mapping {dedup_key: {"tracker_ref": <ref>, "url": <url>}}. It
@@ -159,6 +199,14 @@ REPORT_LEDGER_KEY = "report_ledger"
 # <skipped> without re-running the loop (mirrors how the read-product counts are
 # read back). A small durable last-tick fact, NOT a #64 read product.
 LAST_REPORTED_KEY = "last_reported"
+
+# The durable-state document key under which the last tick's TRIAGE filter outcome
+# {judged, pulled} is persisted, so the terminal trace can surface
+# triaged=<judged>/<pulled> even when TRIAGE paused in an earlier invocation than
+# the one that reaches the terminal (§3.5.3). `judged` is the count of work_items
+# fed to the TRIAGE subagent (after the skip-unchanged filter); `pulled` is the
+# full PULL set. A small durable last-tick fact, NOT a #64 read product.
+LAST_TRIAGED_KEY = "last_triaged"
 
 # The durable-state document key under which the agent yield/resume CHECKPOINT is
 # persisted while a tick is PAUSED at an agent-state (DESIGN §2.8 executor
@@ -559,6 +607,26 @@ def persisted_acted_ledger(state_path):
     return doc.get(ACTED_LEDGER_KEY, {})
 
 
+def persisted_backoff_ledger(state_path):
+    """The durable backoff-ledger {work_item_id: {blocked_count,
+    deferred_at_updated_at}} persisted under BACKOFF_LEDGER_KEY, or {} when no
+    acting agent-state ever reported a blocked work order. Like the acted-ledger
+    this is a durable CROSS-TICK fact (see BACKOFF_LEDGER_KEY), NOT a per-tick #64
+    read product."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(BACKOFF_LEDGER_KEY, {})
+
+
+def persisted_triage_memory(state_path):
+    """The durable triage memory {work_item_id: {updated_at, status}} persisted
+    under TRIAGE_MEMORY_KEY, or {} when no acting agent-state ever recorded an
+    outcome. Like the backoff ledger this is a durable CROSS-TICK fact (see
+    TRIAGE_MEMORY_KEY), NOT a per-tick #64 read product. `status` is `done`
+    (opened/closed) or `deferred` (backoff)."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(TRIAGE_MEMORY_KEY, {})
+
+
 def persisted_last_reported(state_path):
     """The last tick's REPORT outcome {filed, skipped} persisted under
     LAST_REPORTED_KEY, or {"filed": 0, "skipped": 0} when no tick ran a flush.
@@ -706,6 +774,19 @@ _SLOT_SCHEMAS = {
 }
 
 
+def _read_slot_or(ctx, name, default):
+    """Read a TickContext slot, returning `default` when the slot is not
+    registered in this route or not yet written. Lets the acting-state governance
+    consult the work_orders / work_items slots without assuming the route seeded
+    or populated them."""
+    if name not in ctx.registered_slots():
+        return default
+    try:
+        return ctx.read(name)
+    except fc.ContractError:
+        return default
+
+
 def _snapshot_slots(ctx):
     """A {slot_name: value} snapshot of every WRITTEN slot in the TickContext, so
     the live blackboard can be checkpointed and restored across invocations."""
@@ -729,7 +810,8 @@ def _restore_slots(ctx, slots):
             ctx.write(name, value)
 
 
-def _pause_result(name, agentstate, slot_values, tick_id, mode, output_dir):
+def _pause_result(name, agentstate, slot_values, tick_id, mode, output_dir,
+                  triage_memory=None):
     """Build the PAUSED result for an agent-state: render the dispatch
     envelope(s) via agent-dispatch (under `output_dir`) and shape the
     per-dispatch records the executor consumes. Returns the PAUSED dict.
@@ -740,8 +822,18 @@ def _pause_result(name, agentstate, slot_values, tick_id, mode, output_dir):
     output there and the executor reads it back on resume. A `once` dispatch
     yields one record (no `item`); a {per_item: path} dispatch yields one record
     per resolved element, each carrying its `item` and its own `output_path`.
+
+    `triage_memory` (§3.5.3), when given and this agent-state reads work_items,
+    FILTERS the work_items fed to build_envelopes — drop done/deferred-AND-
+    unchanged items — for RENDER ONLY. The caller's `slot_values` (and thus the
+    checkpoint snapshot) is NOT mutated, so the persisted work_items read product
+    stays the full PULL set; only the dispatched subagent sees the filtered list.
     """
     entry = agentstate.entry
+    if (triage_memory and wi.WORK_ITEMS_SLOT["name"] in slot_values):
+        slot_values = dict(slot_values)
+        slot_values[wi.WORK_ITEMS_SLOT["name"]] = _filter_triage_work_items(
+            slot_values[wi.WORK_ITEMS_SLOT["name"]], triage_memory)
     envelopes = ad.build_envelopes(
         entry, slot_values, {"tick_id": tick_id, "mode": mode}, state=name,
         output_dir=output_dir)
@@ -825,26 +917,95 @@ def _item_id(item):
     return None
 
 
-def _per_item_filtered_values(agentstate, slot_values, ledger):
-    """Drop already-acted items from an ACTING agent-state's per_item collection.
+def _work_order_to_work_item(work_orders):
+    """A {work_order_id: work_item_id} map from a list of WorkOrder dicts, so the
+    acting-state governance can key backoff on the SOURCE work_item_id while the
+    acted-ledger stays work_order_id-keyed. A work_order missing either id is
+    skipped."""
+    mapping = {}
+    for wo in work_orders or []:
+        wo_id = wo.get("id")
+        wi_id = wo.get("work_item_id")
+        if wo_id and wi_id:
+            mapping[wo_id] = wi_id
+    return mapping
 
-    Returns (filtered_slot_values, remaining_items, dropped_any). The per_item
-    cardinality (e.g. {"per_item": "execution_plan.ordered"}) is resolved against
-    `slot_values`; each element whose work_order_id is already a key in `ledger`
-    is filtered OUT (already acted — never re-dispatch). The returned
-    `filtered_slot_values` is a shallow copy with the per_item collection's host
-    slot replaced by a filtered shape, so ad.build_envelopes naturally yields one
-    dispatch per REMAINING item. A `once` dispatch (no per_item) is returned
-    unchanged with dropped_any=False (the ledger filter is per_item-only)."""
+
+def _work_items_updated_at(work_items):
+    """A {work_item_id: updated_at} map from a list of WorkItem dicts (the work
+    item `id` IS the work_item_id, e.g. `owner/repo#N`). The deferral pins +
+    compares against the issue's CURRENT updated_at, the durable, GitHub-native,
+    session-independent retry trigger (§3.8.5). A work item missing its id is
+    skipped."""
+    mapping = {}
+    for it in work_items or []:
+        wi_id = it.get("id")
+        if wi_id:
+            mapping[wi_id] = it.get("updated_at", "")
+    return mapping
+
+
+def _is_deferred_unchanged(wi_id, backoff, wi_updated_at):
+    """True when work_item `wi_id` is DEFERRED in the backoff ledger AND its issue
+    updated_at is UNCHANGED since deferral (current updated_at ==
+    deferred_at_updated_at) — the deferred-unchanged skip condition (§3.8.5). A
+    deferred item whose updated_at has ADVANCED is NOT unchanged (it re-enters)."""
+    entry = backoff.get(wi_id)
+    if not entry:
+        return False
+    deferred_at = entry.get("deferred_at_updated_at")
+    if not deferred_at:
+        return False
+    return wi_updated_at.get(wi_id, "") == deferred_at
+
+
+def _per_item_filtered_values(agentstate, slot_values, ledger, backoff=None,
+                              wo_to_wi=None, wi_updated_at=None):
+    """Drop already-acted AND deferred-unchanged items from an ACTING agent-state's
+    per_item collection.
+
+    Returns (filtered_slot_values, remaining_items, dropped_any, reenter_wi_ids).
+    The per_item cardinality (e.g. {"per_item": "execution_plan.ordered"}) is
+    resolved against `slot_values`; each element is filtered OUT when EITHER:
+      - its work_order_id is already a key in `ledger` (already acted — never
+        re-dispatch), OR
+      - its SOURCE work_item_id (via `wo_to_wi`) is DEFERRED-and-UNCHANGED in
+        `backoff` (deferred + the issue updated_at has not advanced — no thrash).
+    An item whose work_item_id is deferred but whose issue updated_at has ADVANCED
+    is NOT filtered (it re-enters); its work_item_id is collected into
+    `reenter_wi_ids` so the caller can RESET its backoff entry (fresh attempts).
+
+    The returned `filtered_slot_values` is a shallow copy with the per_item
+    collection's host slot replaced by a filtered shape, so ad.build_envelopes
+    naturally yields one dispatch per REMAINING item. A `once` dispatch (no
+    per_item) is returned unchanged with dropped_any=False (the filter is
+    per_item-only)."""
+    backoff = backoff or {}
+    wo_to_wi = wo_to_wi or {}
+    wi_updated_at = wi_updated_at or {}
     dispatch_entry = agentstate.entry["dispatch"][0]
     cardinality = dispatch_entry["cardinality"]
     if not isinstance(cardinality, dict) or "per_item" not in cardinality:
-        return slot_values, None, False
+        return slot_values, None, False, []
     dotted = cardinality["per_item"]
     collection = ad._resolve_path(slot_values, dotted)
-    remaining = [el for el in collection if _item_id(el) not in ledger]
+
+    remaining = []
+    reenter_wi_ids = []
+    for el in collection:
+        wo_id = _item_id(el)
+        if wo_id in ledger:
+            continue  # already acted — never re-dispatch
+        wi_id = wo_to_wi.get(wo_id)
+        if wi_id and _is_deferred_unchanged(wi_id, backoff, wi_updated_at):
+            continue  # deferred + unchanged — no thrash
+        # A deferred item whose issue updated_at advanced re-enters with a reset.
+        if wi_id and backoff.get(wi_id, {}).get("deferred_at_updated_at"):
+            reenter_wi_ids.append(wi_id)
+        remaining.append(el)
+
     if len(remaining) == len(collection):
-        return slot_values, remaining, False
+        return slot_values, remaining, False, reenter_wi_ids
     # Rebuild the host slot with the per_item collection filtered down. The path
     # is `<slot>.<...>.<leaf>`; copy the chain and replace the leaf list.
     parts = dotted.split(".")
@@ -860,21 +1021,35 @@ def _per_item_filtered_values(agentstate, slot_values, ledger):
             cur = cur[part]
         cur[parts[-1]] = remaining
         filtered[slot_name] = host
-    return filtered, remaining, True
+    return filtered, remaining, True, reenter_wi_ids
+
+
+# The COMPLETED outcomes that count as "acted" (idempotency, §3.2.4). A work
+# order the doer reports `blocked` is NOT completed — it must stay retryable
+# (§3.8.5 leak fix), so it is NEVER written to the acted-ledger.
+_COMPLETED_OUTCOMES = ("opened", "closed")
 
 
 def _record_acted_ledger(state_path, handoffs):
-    """Record each newly-acted handoff into the durable acted-ledger
-    (idempotency, §3.2.4). For each handoff:
+    """Record each newly-COMPLETED handoff into the durable acted-ledger
+    (idempotency, §3.2.4). For each handoff whose status is a completed outcome
+    (`opened`/`closed`):
     ledger[work_order_id] = {"outcome": handoff["status"], "ref":
     handoff.get("artifact", {}).get("ref")}. Load-modify-save of ONLY
     ACTED_LEDGER_KEY, preserving every other durable key. A handoff with no
-    work_order_id is skipped (nothing to key on)."""
+    work_order_id is skipped (nothing to key on).
+
+    The §3.8.5 leak fix: a `blocked` (or any non-completed) handoff is NEVER
+    recorded — previously it was, then filtered out as "already acted" forever
+    (silent leak). A blocked item now stays retryable; its bounded-retry state
+    lives in the backoff ledger instead (see _record_backoff_outcomes)."""
     doc = ds.DurableState(state_path).load()
     ledger = dict(doc.get(ACTED_LEDGER_KEY, {}))
     for h in handoffs:
         wo_id = h.get("work_order_id")
         if not wo_id:
+            continue
+        if h.get("status") not in _COMPLETED_OUTCOMES:
             continue
         ledger[wo_id] = {
             "outcome": h.get("status"),
@@ -882,6 +1057,146 @@ def _record_acted_ledger(state_path, handoffs):
         }
     doc[ACTED_LEDGER_KEY] = ledger
     ds.DurableState(state_path).save(doc)
+
+
+def _record_backoff_outcomes(state_path, handoffs, wo_to_wi, wi_updated_at,
+                             escalate_sink, now):
+    """Update the durable backoff ledger from an acting-state resume's handoffs
+    (§3.8.5). For each handoff, mapped from work_order_id -> work_item_id via
+    `wo_to_wi`:
+
+      - a COMPLETED outcome (`opened`/`closed`) CLEARS the item's backoff entry
+        (a success resets the counter).
+      - a `blocked` outcome increments blocked_count. When it reaches
+        BACKOFF_THRESHOLD the item is DEFERRED: deferred_at_updated_at is pinned
+        to the issue's current updated_at (from `wi_updated_at`) and a single
+        escalation is posted on the issue via observability.escalate (the
+        injectable `escalate_sink`; never raises, never crashes the tick).
+
+    Load-modify-save of ONLY BACKOFF_LEDGER_KEY, preserving every other durable
+    key. A handoff with no resolvable work_item_id is skipped."""
+    doc = ds.DurableState(state_path).load()
+    backoff = dict(doc.get(BACKOFF_LEDGER_KEY, {}))
+    for h in handoffs:
+        wo_id = h.get("work_order_id")
+        wi_id = wo_to_wi.get(wo_id)
+        if not wi_id:
+            continue
+        status = h.get("status")
+        if status in _COMPLETED_OUTCOMES:
+            backoff.pop(wi_id, None)
+            continue
+        if status != "blocked":
+            continue
+        entry = dict(backoff.get(wi_id) or {})
+        count = int(entry.get("blocked_count", 0)) + 1
+        entry["blocked_count"] = count
+        entry.setdefault("deferred_at_updated_at", None)
+        if count >= BACKOFF_THRESHOLD and not entry.get("deferred_at_updated_at"):
+            updated_at = wi_updated_at.get(wi_id, "")
+            entry["deferred_at_updated_at"] = updated_at
+            reason = h.get("blocked_reason")
+            message = (f"auto-maintainer attempted {count} times and is "
+                       f"blocked: {reason}. Needs human attention.")
+            # escalate swallows sink errors (returns ok:False) and never raises,
+            # so a failed escalation cannot crash the tick (§3.8.5).
+            ob.escalate(wi_id, message, sink=escalate_sink, now=now)
+        backoff[wi_id] = entry
+    doc[BACKOFF_LEDGER_KEY] = backoff
+    ds.DurableState(state_path).save(doc)
+
+
+def _record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at):
+    """Upsert the durable triage memory from an acting-state resume's handoffs
+    (§3.5.3). For each handoff, mapped from work_order_id -> work_item_id via
+    `wo_to_wi`:
+
+      - a COMPLETED outcome (`opened`/`closed`) records status='done'.
+      - a `blocked` outcome that just reached the backoff DEFERRAL (its post-update
+        backoff entry has a truthy `deferred_at_updated_at`) records
+        status='deferred'.
+      - any other outcome (blocked-but-not-yet-deferred) records NOTHING — the
+        item stays `active` and MUST keep being triaged (never starved).
+
+    `updated_at` is the item's CURRENT issue updated_at (from `wi_updated_at`), the
+    same value the skip-unchanged filter compares against. Load-modify-save of ONLY
+    TRIAGE_MEMORY_KEY, preserving every other durable key. Called AFTER
+    _record_backoff_outcomes so the just-deferred items are visible in the backoff
+    ledger. A handoff with no resolvable work_item_id is skipped."""
+    doc = ds.DurableState(state_path).load()
+    memory = dict(doc.get(TRIAGE_MEMORY_KEY, {}))
+    backoff = doc.get(BACKOFF_LEDGER_KEY, {})
+    changed = False
+    for h in handoffs:
+        wo_id = h.get("work_order_id")
+        wi_id = wo_to_wi.get(wo_id)
+        if not wi_id:
+            continue
+        status = h.get("status")
+        if status in _COMPLETED_OUTCOMES:
+            new_status = "done"
+        elif status == "blocked" and backoff.get(wi_id, {}).get(
+                "deferred_at_updated_at"):
+            new_status = "deferred"
+        else:
+            # Blocked-but-not-yet-deferred (active): keep triaging it.
+            continue
+        memory[wi_id] = {"updated_at": wi_updated_at.get(wi_id, ""),
+                         "status": new_status}
+        changed = True
+    if changed:
+        doc[TRIAGE_MEMORY_KEY] = memory
+        ds.DurableState(state_path).save(doc)
+
+
+def _record_last_triaged(state_path, judged, pulled):
+    """Persist the last tick's TRIAGE filter outcome {judged, pulled} under
+    LAST_TRIAGED_KEY so the terminal trace can surface triaged=<judged>/<pulled>
+    even though TRIAGE may have paused in an earlier invocation than the one that
+    reaches the terminal. Load-modify-save of ONLY LAST_TRIAGED_KEY."""
+    doc = ds.DurableState(state_path).load()
+    doc[LAST_TRIAGED_KEY] = {"judged": judged, "pulled": pulled}
+    ds.DurableState(state_path).save(doc)
+
+
+def _filter_triage_work_items(work_items, triage_memory):
+    """Drop done/deferred-AND-unchanged work_items from the list fed to a
+    work_items-reading agent-state (TRIAGE), per §3.5.3. An item is dropped iff
+    `triage_memory[item.id].status` is in _TRIAGE_SKIP_STATUSES AND its current
+    `updated_at` EQUALS the remembered `updated_at` (handled + unchanged). NEW
+    items (not in memory), CHANGED items (advanced updated_at), and `active` items
+    (not recorded) are KEPT. Returns the filtered list (a new list; the input is
+    not mutated). An empty memory returns the list unchanged (byte-identical)."""
+    if not triage_memory:
+        return list(work_items)
+    kept = []
+    for it in work_items:
+        wi_id = it.get("id")
+        remembered = triage_memory.get(wi_id)
+        if (remembered
+                and remembered.get("status") in _TRIAGE_SKIP_STATUSES
+                and remembered.get("updated_at", "") == it.get("updated_at", "")):
+            continue  # handled + unchanged — skip re-triage
+        kept.append(it)
+    return kept
+
+
+def _reset_backoff_entries(state_path, wi_ids):
+    """Reset (clear) the backoff entries for `wi_ids` — items that re-entered the
+    dispatch set because their issue updated_at ADVANCED since deferral (§3.8.5).
+    They get a fresh K attempts. Load-modify-save of ONLY BACKOFF_LEDGER_KEY."""
+    if not wi_ids:
+        return
+    doc = ds.DurableState(state_path).load()
+    backoff = dict(doc.get(BACKOFF_LEDGER_KEY, {}))
+    changed = False
+    for wi_id in wi_ids:
+        if wi_id in backoff:
+            backoff.pop(wi_id, None)
+            changed = True
+    if changed:
+        doc[BACKOFF_LEDGER_KEY] = backoff
+        ds.DurableState(state_path).save(doc)
 
 
 # --------------------------------------------------------------------------
@@ -1067,8 +1382,11 @@ def _write_checkpoint(state_path, name, ctx, path, signals, agentstate,
     # The per-dispatch output_paths are the SAME ones the PAUSE renders (the
     # subagent writes there). Built from output_dir + the live slot values, which
     # are exactly what _pause_result renders from, so they agree byte-for-byte.
+    # The triage memory (§3.5.3) is passed so the rendered work_items match the
+    # filtered TRIAGE dispatch; it filters the RENDER only, never the snapshot.
+    triage_memory = persisted_triage_memory(state_path)
     paused = _pause_result(name, agentstate, slot_values, tick_id, mode,
-                           output_dir)
+                           output_dir, triage_memory=triage_memory)
     schema = _resume_schema(writes, cardinality)
     dispatches = [{"output_path": d["output_path"], "schema": schema}
                   for d in paused["dispatches"]]
@@ -1077,7 +1395,10 @@ def _write_checkpoint(state_path, name, ctx, path, signals, agentstate,
     # by the acted-ledger (already-acted per_item elements dropped). This keeps
     # _emit_pause_from_checkpoint's render + the resume's restored blackboard in
     # lock-step with the dispatched (un-acted) items, so a re-emit and the resume
-    # both see only the remaining work.
+    # both see only the remaining work. NOTE: the §3.5.3 work_items skip-filter is
+    # NOT applied here — it filters the dispatch RENDER only (above), so the
+    # snapshot keeps the full PULL work_items and the persisted read product stays
+    # the full set.
     snapshot = _snapshot_slots(ctx)
     for slot in agentstate.manifest.reads:
         if slot in slot_values:
@@ -1128,8 +1449,12 @@ def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
     slots = checkpoint["slots"]
     output_dir = checkpoint["output_dir"]
     slot_values = {slot: slots[slot] for slot in agentstate.manifest.reads}
+    # §3.5.3: the checkpoint snapshot keeps the FULL work_items; filter the render
+    # from the durable triage memory so the re-emit matches the original filtered
+    # dispatch byte-for-byte (memory is stable within a tick).
+    triage_memory = persisted_triage_memory(state_path)
     paused = _pause_result(name, agentstate, slot_values, tick_id, mode,
-                           output_dir)
+                           output_dir, triage_memory=triage_memory)
     for d in paused["dispatches"]:
         # Stale-file safety: remove any pre-existing output file so a missing
         # fresh write cannot be misread as a valid (stale) output on resume.
@@ -1165,6 +1490,20 @@ def _drive_agent_tick(route, states, ctx, state_path,
             agentstate = agentstates[current]
             slot_values = {slot: ctx.read(slot)
                            for slot in agentstate.manifest.reads}
+            # Skip-unchanged re-triage (§3.5.3): when this agent-state reads the
+            # work_items slot (i.e. TRIAGE), the work_items fed to the subagent are
+            # FILTERED (done/deferred-AND-unchanged items dropped) at RENDER time —
+            # see `triage_memory` threaded into _pause_result / _write_checkpoint
+            # below, which filters the dispatch input WITHOUT polluting the
+            # checkpoint snapshot, so the persisted work_items read product stays
+            # the full PULL set. Here we only record the judged/pulled counts
+            # (LAST_TRIAGED_KEY) for the terminal trace, which may run in a later
+            # invocation. Empty memory filters nothing (byte-identical).
+            if wi.WORK_ITEMS_SLOT["name"] in slot_values:
+                pulled = slot_values[wi.WORK_ITEMS_SLOT["name"]]
+                judged = _filter_triage_work_items(
+                    pulled, persisted_triage_memory(state_path))
+                _record_last_triaged(state_path, len(judged), len(pulled))
             # Trust-gate an ACTING agent-state (DESIGN §2.3 / §3.8.2 trust
             # ladder): a dispatch entry with a truthy `effect` performs outward
             # effects, so it is dispatched ONLY when the trust mode permits that
@@ -1220,14 +1559,26 @@ def _drive_agent_tick(route, states, ctx, state_path,
                     current = to.resolve_next(route, current, signal)
                     path.append(current)
                     continue
-                # 2. Acted-ledger idempotency: drop any work_order_id already in
-                #    the ledger from the per_item dispatch set (already acted —
-                #    never re-dispatch / no second PR). If NO items remain, do
-                #    NOT pause — synthesize an inert (empty) result, compute the
-                #    signal, CONTINUE.
+                # 2. Acted-ledger idempotency + backoff defer-skip: drop from the
+                #    per_item dispatch set any work_order already acted (in the
+                #    ledger — never re-dispatch / no second PR) OR whose SOURCE
+                #    work_item is deferred-AND-unchanged in the backoff ledger
+                #    (§3.8.5 — no thrash). A deferred item whose issue updated_at
+                #    advanced re-enters and its backoff entry is RESET (fresh K
+                #    attempts). If NO items remain, do NOT pause — synthesize an
+                #    inert (empty) result, compute the signal, CONTINUE.
                 ledger = persisted_acted_ledger(state_path)
-                slot_values, remaining, dropped = _per_item_filtered_values(
-                    agentstate, slot_values, ledger)
+                backoff = persisted_backoff_ledger(state_path)
+                wo_to_wi = _work_order_to_work_item(
+                    _read_slot_or(ctx, wi.WORK_ORDERS_SLOT["name"], []))
+                wi_updated_at = _work_items_updated_at(
+                    _read_slot_or(ctx, wi.WORK_ITEMS_SLOT["name"], []))
+                slot_values, remaining, dropped, reenter = \
+                    _per_item_filtered_values(
+                        agentstate, slot_values, ledger, backoff=backoff,
+                        wo_to_wi=wo_to_wi, wi_updated_at=wi_updated_at)
+                # Re-entered (issue advanced) items get a fresh K attempts.
+                _reset_backoff_entries(state_path, reenter)
                 if dropped and not remaining:
                     writes, slot_value, signal = _synthesize_acting_result(
                         agentstate, [])
@@ -1316,7 +1667,8 @@ def _resume_agent_state(route, states, ctx, checkpoint, agentstates):
 
 def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
                     resume, mode, output_dir, gov, budget_clock,
-                    events=None, route_src=None):
+                    events=None, route_src=None, escalate_sink=None,
+                    escalate_now=None):
     """Drive a tick over a route that contains agent-states (DESIGN §2.8, §3.4.6).
 
     Three cases, all keyed off the durable checkpoint (the source of truth):
@@ -1368,6 +1720,23 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
             handoffs = ctx.read(checkpoint["pending"]["writes"])
             if isinstance(handoffs, list):
                 _record_acted_ledger(state_path, handoffs)
+                # Backoff governance (§3.8.5): map each handoff's work_order_id
+                # -> work_item_id via the dispatched work_orders, then count
+                # blocked outcomes / clear successes on the work_item_id-keyed
+                # backoff ledger; at BACKOFF_THRESHOLD defer + escalate once.
+                wo_to_wi = _work_order_to_work_item(
+                    _read_slot_or(ctx, wi.WORK_ORDERS_SLOT["name"], []))
+                wi_updated_at = _work_items_updated_at(
+                    _read_slot_or(ctx, wi.WORK_ITEMS_SLOT["name"], []))
+                _record_backoff_outcomes(
+                    state_path, handoffs, wo_to_wi, wi_updated_at,
+                    escalate_sink, escalate_now)
+                # Triage memory (§3.5.3): upsert done (opened/closed) / deferred
+                # (just-deferred) status keyed on work_item_id, so the next tick's
+                # TRIAGE skips re-judging handled-and-unchanged issues. Recorded
+                # AFTER the backoff ledger so just-deferred items are visible.
+                _record_triage_memory(
+                    state_path, handoffs, wo_to_wi, wi_updated_at)
         path = list(checkpoint["path"]) + [next_state]
         signals = list(checkpoint["signals"])
         return _drive_agent_tick(
@@ -1397,7 +1766,7 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
 def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              project_dir=None, source=None, now=None, tick_spend=0,
              return_run_result=False, resume=False, spent=0,
-             report_sink=None, discoveries=None):
+             report_sink=None, discoveries=None, escalate_sink=None):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -1526,6 +1895,15 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     agentstates = {name: second for name, (m, second) in states.items()
                    if isinstance(second, aw.AgentState)}
 
+    # Whether ANY agent-state in this route reads the work_items slot (i.e. an
+    # agent TRIAGE) — only then does the skip-unchanged filter run and the durable
+    # LAST_TRIAGED_KEY carry this tick's judged/pulled. When no work_items
+    # agent-state exists, the terminal trace shows triaged=<n>/<n> (n = full PULL),
+    # never a stale cross-tick last_triaged value (§3.5.3).
+    has_triage_agent = any(
+        wi.WORK_ITEMS_SLOT["name"] in st.manifest.reads
+        for st in agentstates.values())
+
     # Spend metering on ALL agent-state resumes (acting OR non-acting): fold the
     # metered `spent` into the budget window (sg.record_spend) so the terminal
     # persist records it. The budget is a token ceiling over ALL model spend in
@@ -1555,7 +1933,9 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
             state_path=state_path,
             resume=resume, mode=mode, output_dir=output_dir,
             gov=gov, budget_clock=budget_clock, events=events,
-            route_src=route_src)
+            route_src=route_src,
+            escalate_sink=escalate_sink or DEFAULT_ESCALATE_SINK,
+            escalate_now=event_now)
         if agent_outcome[0] is not None:
             # PAUSED or invalid_output: return the structured dict directly. The
             # executor re-invokes run_tick(resume=True) to continue after the
@@ -1664,6 +2044,20 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # <skipped>. Placed after the governance fields; all current fields/order are
     # preserved. A no-discovery tick shows reported=0/0.
     reported_field = f"reported={reported_filed}/{reported_skipped}"
+    # The skip-unchanged re-triage surface (§3.5.3 — always shown): triaged=
+    # <judged>/<pulled>. When a work_items agent-state (TRIAGE) ran this tick, the
+    # filter persisted this tick's judged/pulled under LAST_TRIAGED_KEY; read it.
+    # Otherwise nothing was filtered, so judged == pulled == the full PULL count
+    # (never a stale cross-tick value). Placed after the reported field; all
+    # current fields/order are preserved.
+    if has_triage_agent:
+        last_triaged = ds.DurableState(state_path).load().get(
+            LAST_TRIAGED_KEY, {})
+        triaged_judged = last_triaged.get("judged", work_items_count)
+        triaged_pulled = last_triaged.get("pulled", work_items_count)
+    else:
+        triaged_judged = triaged_pulled = work_items_count
+    triaged_field = f"triaged={triaged_judged}/{triaged_pulled}"
     # Persist the last-tick REPORT outcome so status.py can surface it without
     # re-running (load-modify-save just LAST_REPORTED_KEY, preserving all else).
     doc = ds.DurableState(state_path).load()
@@ -1675,7 +2069,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         f"work_orders={work_orders_count} "
         f"execution_plan={execution_plan_count} handoffs={handoffs_count} "
         f"disposition={disposition} "
-        f"signal={signal} route={route_src} {gov_fields} {reported_field}\n")
+        f"signal={signal} route={route_src} {gov_fields} {reported_field} "
+        f"{triaged_field}\n")
 
     # Terminal events (observability §3.9.1): the resulting disposition, then the
     # tick_end carrying the final signal + the four read-product counts. Emitted

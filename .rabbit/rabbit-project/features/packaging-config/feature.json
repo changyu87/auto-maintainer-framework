@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-06-14",
-  "spec_no_change_reason": "spec v0.2.24 note + frontmatter 0.2.5 already committed earlier this cycle (commit 6e4a547)"
+  "updated": "2026-06-20",
+  "spec_no_change_reason": "spec v0.2.25 note + frontmatter bump already committed by dispatcher (commit 44ca061) before this TDD cycle"
 }
