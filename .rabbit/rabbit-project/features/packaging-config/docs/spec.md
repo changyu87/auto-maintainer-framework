@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.5
+version: 0.2.6
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -170,6 +170,13 @@ same as `prioritize`/`implement`/`work_intake`). `lib/run_tick.py` re-normalizes
 to carry the make_verify/make_integrate/make_cleanup wiring, and the implementer
 `agents/` subagent re-collects at v2.1.0 (PR-label stamp). Version
 `_PLUGIN_VERSION → 0.2.24`.
+
+**Plugin patch v0.2.25** — re-ship the v1 polish pack. `lib/run_tick.py`
+re-normalizes to carry backoff (§3.8.5: bounded-retry → escalate → defer + the
+acted-ledger blocked-leak fix) and skip-unchanged re-triage (§3.5.3 triage
+memory); `lib/safety_governance.py` + `lib/configure.py` re-copy/normalize with
+`maintainer_repo` (§3.11.6 maintainer-self routing). No build change beyond
+`_PLUGIN_VERSION → 0.2.25`; all re-collect from their updated sources.
 
 Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
 the self-path bootstrap, importing `safety_governance` from `lib/`),
