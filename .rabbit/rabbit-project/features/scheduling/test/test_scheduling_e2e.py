@@ -52,7 +52,8 @@ if _SRC not in sys.path:
 # other feature tests do. Do NOT edit/fork any of them.
 _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
-             "lifecycle-dispositions", "work-intake", "adapter-wiring"):
+             "lifecycle-dispositions", "work-intake", "adapter-wiring",
+             "safety-governance"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
@@ -65,6 +66,7 @@ import run_tick as rt  # noqa: E402
 import status as st  # noqa: E402
 import stop as sp  # noqa: E402
 import start as sa  # noqa: E402
+import safety_governance as sg  # noqa: E402,F401
 
 
 # --------------------------------------------------------------------------
@@ -1046,3 +1048,71 @@ def test_start_skill_has_no_handrolled_disposition_clear():
     assert "import lifecycle_dispositions" not in body, body
     assert "from lifecycle_dispositions" not in body, body
     assert "import durable_state" not in body, body
+
+
+# --------------------------------------------------------------------------
+# Config-driven heartbeat interval (§3.3.2, #17 resolved): start.py emits the
+# configured heartbeat.interval_minutes (default 3, read via sg.load_config) via
+# a CLI flag, and the /start skill schedules the heartbeat at THAT emitted
+# cadence — never a hardcoded ~3-minute value.
+# --------------------------------------------------------------------------
+
+def test_start_print_interval_emits_default_three():
+    """`start.py --print-interval` with no project config prints the documented
+    default heartbeat interval (3) — one bare integer on stdout, exit 0."""
+    import subprocess
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = project_dir
+    proc = subprocess.run(
+        [sys.executable, os.path.join(_SRC, "start.py"), "--print-interval"],
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
+    assert proc.stdout.strip() == "3", repr(proc.stdout)
+    # --print-interval runs NO tick (no disposition write, no event log).
+    am_dir = os.path.join(project_dir, ".auto-maintainer")
+    assert not os.path.exists(os.path.join(am_dir, "events.jsonl")), proc.stdout
+
+
+def test_start_print_interval_reflects_configured_value():
+    """`start.py --print-interval` reflects a project-local config override of
+    heartbeat.interval_minutes (read via sg.load_config), not a hardcoded 3."""
+    import subprocess
+    project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    am_dir = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(am_dir, exist_ok=True)
+    with open(os.path.join(am_dir, "config.json"), "w") as f:
+        json.dump({"mode": "propose", "heartbeat": {"interval_minutes": 7}}, f)
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = project_dir
+    proc = subprocess.run(
+        [sys.executable, os.path.join(_SRC, "start.py"), "--print-interval"],
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
+    assert proc.stdout.strip() == "7", repr(proc.stdout)
+
+
+def test_start_heartbeat_interval_helper_reads_config():
+    """The programmatic helper start.heartbeat_interval_minutes reads the config
+    via sg.load_config: default 3, override honored."""
+    default_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    assert sa.heartbeat_interval_minutes(default_dir) == 3
+    over_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
+    am_dir = os.path.join(over_dir, ".auto-maintainer")
+    os.makedirs(am_dir, exist_ok=True)
+    with open(os.path.join(am_dir, "config.json"), "w") as f:
+        json.dump({"heartbeat": {"interval_minutes": 11}}, f)
+    assert sa.heartbeat_interval_minutes(over_dir) == 11
+
+
+def test_start_skill_schedules_at_configured_interval_not_hardcoded():
+    """The /start skill schedules the heartbeat at the interval start.py emits
+    (--print-interval), NOT a hardcoded ~3-minute cadence. The skill body must
+    reference --print-interval and must NOT claim a fixed/hardcoded interval."""
+    body = open(_ship_skill("start")).read()
+    assert "--print-interval" in body, body
+    lowered = body.lower()
+    # The prior wording hardcoded the cadence ("hardcoded to ~3 minutes"); the
+    # config-driven skill must not assert a hardcoded/fixed interval.
+    assert "hardcoded to ~3" not in lowered, body
+    assert "hardcoded" not in lowered, body

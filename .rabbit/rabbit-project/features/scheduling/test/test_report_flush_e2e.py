@@ -498,13 +498,14 @@ def test_report_ledger_record_preserves_other_durable_keys():
 
 
 # ==========================================================================
-# Behaviour 7 — a maintainer-self target resolves its repo via
-# gov.get('maintainer_repo'); with safety-governance consumed UNCHANGED (its
-# load_governance does NOT surface a maintainer_repo key) this falls back to the
-# project repo (None) per the documented v1 fallback. The flush still files it.
+# Behaviour 7 — a maintainer-self target resolves its repo to the FIXED
+# safety_governance.MAINTAINER_REPO constant (§3.11.6), NEVER the project repo,
+# with NO fallback. The former governance.maintainer_repo config field is gone:
+# _repo_for_target ignores config entirely for maintainer-self and always routes
+# to the upstream maintainer repo.
 # ==========================================================================
 
-def test_maintainer_self_target_routes_to_project_repo_fallback():
+def test_maintainer_self_target_routes_to_fixed_maintainer_repo():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
         mode="propose")
     sink = _RecordingSink()
@@ -515,9 +516,21 @@ def test_maintainer_self_target_routes_to_project_repo_fallback():
     assert len(sink.calls) == 1, sink.calls
     filed, repo = sink.calls[0]
     assert filed.target == "maintainer-self", filed
-    # v1 fallback: no maintainer_repo surfaced by the unchanged lib -> project
-    # repo (the gh default, None).
-    assert repo is None, repo
+    # Fixed MAINTAINER_REPO, never the project repo, no fallback.
+    assert repo == sg.MAINTAINER_REPO, (repo, sg.MAINTAINER_REPO)
+
+
+def test_repo_for_target_maintainer_self_ignores_config_no_fallback():
+    """_repo_for_target(maintainer-self) is the FIXED constant regardless of the
+    governance dict (a stale maintainer_repo config field is ignored — gone)."""
+    # An empty gov, a gov with a (now-removed) maintainer_repo, and a real loaded
+    # config all route maintainer-self to the SAME fixed MAINTAINER_REPO.
+    assert rt._repo_for_target("maintainer-self", {}) == sg.MAINTAINER_REPO
+    assert rt._repo_for_target(
+        "maintainer-self", {"maintainer_repo": "someone/else"}
+    ) == sg.MAINTAINER_REPO
+    # A `project` target is still the gh default (None).
+    assert rt._repo_for_target("project", {}) is None
 
 
 def _read_events(runtime_dir):

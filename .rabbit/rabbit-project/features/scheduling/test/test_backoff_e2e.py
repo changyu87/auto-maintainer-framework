@@ -13,7 +13,8 @@ Behaviours covered:
      retryable (not filtered as "already acted").
   2. Backoff ledger (durable, keyed on work_item_id): BACKOFF_LEDGER_KEY="backoff"
      maps {work_item_id: {blocked_count, deferred_at_updated_at}};
-     persisted_backoff_ledger reads it (default {}); BACKOFF_THRESHOLD=3.
+     persisted_backoff_ledger reads it (default {}); the threshold is
+     CONFIG-DRIVEN (sg.load_config's backoff.threshold, default 5).
   3. On resume of an acting state, a blocked handoff increments blocked_count;
      at the threshold the item is deferred (deferred_at_updated_at set to the
      issue's current updated_at) AND an escalation is posted once via an
@@ -202,13 +203,19 @@ def _write_governance(project_dir, payload):
         json.dump(payload, f)
 
 
-def _setup_agent_project(mode="propose", budget=None):
+def _setup_agent_project(mode="propose", budget=None, backoff_threshold=3):
     project_dir = tempfile.mkdtemp(prefix="sched-backoff-")
     _write_project_route(project_dir, _AGENT_ROUTE)
     _write_project_map(project_dir, _agent_map())
     gov = {"mode": mode}
     if budget is not None:
         gov["budget"] = budget
+    # The backoff threshold is config-driven (§3.8.5): run_tick reads
+    # backoff.threshold from sg.load_config. The block-N behaviour tests below
+    # pin it to 3 so they reach the deferral at the 3rd block; the default-5
+    # behaviour is asserted separately. `None` leaves it unset (the default 5).
+    if backoff_threshold is not None:
+        gov["backoff"] = {"threshold": backoff_threshold}
     _write_governance(project_dir, gov)
     runtime_dir = os.path.join(project_dir, ".auto-maintainer")
     state_path = os.path.join(runtime_dir, "durable-state.json")
@@ -281,15 +288,24 @@ def _block_once(project_dir, runtime_dir, state_path, journal_path,
 
 
 # ==========================================================================
-# Behaviour 0 — the backoff key + helper + threshold exist.
+# Behaviour 0 — the backoff key + helper exist; the threshold is config-driven
+# (default 5, read from sg.load_config's backoff.threshold).
 # ==========================================================================
 
-def test_backoff_key_helper_threshold_exist():
+def test_backoff_key_helper_exist():
     assert rt.BACKOFF_LEDGER_KEY == "backoff"
-    assert rt.BACKOFF_THRESHOLD == 3
     root = tempfile.mkdtemp(prefix="sched-backoff-empty-")
     state_path = os.path.join(root, "state.json")
     assert rt.persisted_backoff_ledger(state_path) == {}
+
+
+def test_backoff_threshold_default_is_five():
+    """The DEFAULT backoff threshold is 5 (safety-governance's documented
+    default), read from sg.load_config — never a hardcoded module constant."""
+    project_dir = tempfile.mkdtemp(prefix="sched-backoff-default-")
+    # No config.json / governance.json -> the documented defaults apply.
+    cfg = sg.load_config(project_dir)
+    assert cfg["backoff"]["threshold"] == 5, cfg
 
 
 # ==========================================================================
@@ -334,8 +350,9 @@ def test_blocked_count_increments_below_threshold():
     assert backoff["acme/widget#7"]["deferred_at_updated_at"] in (None, ""), \
         backoff
 
-    # Tick 2 — block again; count rises to 2; still below threshold (3) -> the
-    # item is still dispatched (retryable), not skipped.
+    # Tick 2 — block again; count rises to 2; still below the configured
+    # threshold (3, set by _setup_agent_project) -> the item is still dispatched
+    # (retryable), not skipped.
     paused = _resume_triage(project_dir, runtime_dir, state_path, journal_path,
                             now=_DAY1)
     assert paused["status"] == "paused" and paused["state"] == "IMPLEMENT", paused
@@ -387,6 +404,43 @@ def test_kth_block_defers_and_escalates_once():
     assert target_ref == "acme/widget#7", target_ref
     assert "3" in body, body
     assert "dep C" in body, body
+
+
+# ==========================================================================
+# Behaviour 3b — the threshold is CONFIG-DRIVEN (default 5): with no backoff
+# config the item is NOT deferred at the 3rd block (the old hardcoded-3 behaviour
+# is gone); it is deferred at the 5th. A config-set threshold of 5 behaves the
+# same as the default.
+# ==========================================================================
+
+def test_default_threshold_five_defers_at_fifth_block_not_third():
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
+        backoff_threshold=None)  # unset -> the documented default 5
+    calls = []
+
+    def sink(target_ref, body):
+        calls.append((target_ref, body))
+        return "commented"
+
+    # Blocks 1..4: below the default threshold (5) -> NOT deferred, no escalation.
+    for i in range(4):
+        _block_once(project_dir, runtime_dir, state_path, journal_path,
+                    blocked_reason=f"dep {i}", escalate_sink=sink)
+        backoff = rt.persisted_backoff_ledger(state_path)
+        assert backoff["acme/widget#7"]["blocked_count"] == i + 1, backoff
+        assert backoff["acme/widget#7"]["deferred_at_updated_at"] in (None, ""), \
+            (i, backoff)
+        assert calls == [], (i, calls)
+
+    # Block 5: reaches the default threshold -> deferred + escalated once.
+    _block_once(project_dir, runtime_dir, state_path, journal_path,
+                blocked_reason="dep 5", escalate_sink=sink)
+    backoff = rt.persisted_backoff_ledger(state_path)
+    assert backoff["acme/widget#7"]["blocked_count"] == 5, backoff
+    assert backoff["acme/widget#7"]["deferred_at_updated_at"] == _UPDATED_T1, \
+        backoff
+    assert len(calls) == 1, calls
+    assert "5" in calls[0][1], calls
 
 
 # ==========================================================================
