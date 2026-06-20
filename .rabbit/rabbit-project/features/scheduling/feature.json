@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "updated": "2026-06-20",
-  "spec_no_change_reason": "Spec section for backoff (\u00a73.8.5) + version bump to 0.11.0 were committed ahead of this TDD cycle; this cycle adds implementation + tests only."
+  "spec_no_change_reason": "Spec section Skip-unchanged re-triage (\u00a73.5.3) + version bump to 0.12.0 in docs/spec.md were committed ahead of this TDD cycle; this cycle adds implementation + tests only."
 }

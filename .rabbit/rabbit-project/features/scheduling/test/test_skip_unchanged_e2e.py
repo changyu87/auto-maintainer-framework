@@ -225,6 +225,14 @@ _CANNED_WORK_ORDERS_7 = json.dumps([
      "reason": "", "created_at": ""},
 ])
 
+# One work_order for issue #8 (used after #7 is filtered from TRIAGE).
+_CANNED_WORK_ORDERS_8 = json.dumps([
+    {"schema_version": "1.0.0", "id": "wo-acme/widget#8",
+     "work_item_id": "acme/widget#8", "title": "Add a flag",
+     "body": "", "url": "", "labels": [], "decision": "accepted",
+     "reason": "", "created_at": ""},
+])
+
 
 def _canned_handoff(work_order_id, status="opened", ref="PR#1",
                     blocked_reason=None):
@@ -469,15 +477,20 @@ def test_persisted_work_items_full_pull_after_filter():
                 state_path=state_path, journal_path=journal_path,
                 source=src, now=_DAY1, resume=True)
 
-    # Tick 2: #7 filtered from TRIAGE, but the persisted work_items is still 2.
+    # Tick 2: #7 filtered from TRIAGE (only #8 judged), but the persisted
+    # work_items read product must STILL be the full PULL set (2), written at the
+    # TERMINAL from the full pulled work_items — not the filtered TRIAGE input.
     paused2 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                           state_path=state_path, journal_path=journal_path,
                           source=src, now=_DAY1)
     assert paused2["state"] == "TRIAGE", paused2
-    # The PERSIST already ran before TRIAGE? No — PULL writes work_items, PERSIST
-    # is later in the route. The persisted snapshot is written at the TERMINAL.
-    # After tick 2 completes, the persisted work_items must be the FULL 2.
-    _write_outputs(paused2, [json.dumps([])])
+    _write_outputs(paused2, [_CANNED_WORK_ORDERS_8])
+    impl2 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                        state_path=state_path, journal_path=journal_path,
+                        source=src, now=_DAY1, resume=True)
+    assert impl2["state"] == "IMPLEMENT", impl2
+    _write_outputs(impl2, [_canned_handoff(impl2["dispatches"][0]["item"],
+                                           status="opened", ref="PR#2")])
     rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                 state_path=state_path, journal_path=journal_path,
                 source=src, now=_DAY1, resume=True)
@@ -506,11 +519,19 @@ def test_trace_surfaces_triaged_token():
                 state_path=state_path, journal_path=journal_path,
                 source=src, now=_DAY1, resume=True)
 
-    # Tick 2: TRIAGE filters #7; resume to DONE and capture the terminal trace.
+    # Tick 2: TRIAGE filters #7 (only #8 judged); complete #8 so the tick reaches
+    # the terminal and prints the trace with the triaged token.
     paused2 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                           state_path=state_path, journal_path=journal_path,
                           source=src, now=_DAY1)
-    _write_outputs(paused2, [json.dumps([])])
+    assert paused2["state"] == "TRIAGE", paused2
+    _write_outputs(paused2, [_CANNED_WORK_ORDERS_8])
+    impl2 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                        state_path=state_path, journal_path=journal_path,
+                        source=src, now=_DAY1, resume=True)
+    assert impl2["state"] == "IMPLEMENT", impl2
+    _write_outputs(impl2, [_canned_handoff(impl2["dispatches"][0]["item"],
+                                           status="opened", ref="PR#2")])
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
