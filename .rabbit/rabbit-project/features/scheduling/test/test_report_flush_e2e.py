@@ -106,6 +106,20 @@ class _RecordingSink:
                 "url": f"https://github.com/acme/widget/issues/{100 + n}"}
 
 
+class _RaisingSink:
+    """A stub REPORT sink that RAISES for every discovery (reproduces the live
+    silent-failure class — e.g. a missing tracker label). file_discoveries
+    catches the exception into ReportResult.errors so the batch never aborts."""
+
+    def __init__(self, reason="missing tracker label: needs-triage"):
+        self.calls = []
+        self.reason = reason
+
+    def __call__(self, discovery, repo=None):
+        self.calls.append((discovery, repo))
+        raise RuntimeError(self.reason)
+
+
 # --------------------------------------------------------------------------
 # Agent-adapter fixtures (mirror test_doer_ledger_budget_e2e.py): an ACTING
 # IMPLEMENT agent whose handoff carries discovered_work, plus a non-acting TRIAGE
@@ -352,8 +366,9 @@ def test_propose_files_discovery_records_ledger_reported_1_0():
     (dedup_key, rec), = ledger.items()
     assert rec["tracker_ref"].startswith("acme/widget#"), rec
     assert rec["url"].startswith("https://"), rec
-    # The trace surfaces reported=1/0.
+    # The trace surfaces reported=1/0 with NO report_errors token (errored==0).
     assert "reported=1/0" in trace, trace
+    assert "report_errors" not in trace, trace
 
 
 # ==========================================================================
@@ -429,11 +444,16 @@ def test_no_discovery_tick_reported_0_0():
     # The default pure-script path is unchanged except the reported token.
     assert "[tick] path=GUARD->DRAIN->PULL->PERSIST->EXIT->DONE" in line, line
     assert "reported=0/0" in line, line
+    # errored==0 -> NO report_errors token in the trace (default, no error).
+    assert "report_errors" not in line, line
     # The sink was never called (no discoveries).
     assert sink.calls == [], sink.calls
     # No report ledger key was written (nothing filed).
     doc = ds.DurableState(state_path).load()
     assert rt.REPORT_LEDGER_KEY not in doc, doc
+    # The tick_end event detail carries reported_errored defaulting to 0.
+    end = next(e for e in _read_events(runtime_dir) if e["kind"] == "tick_end")
+    assert end["detail"]["reported_errored"] == 0, end
 
 
 # ==========================================================================
@@ -498,6 +518,58 @@ def test_maintainer_self_target_routes_to_project_repo_fallback():
     # v1 fallback: no maintainer_repo surfaced by the unchanged lib -> project
     # repo (the gh default, None).
     assert repo is None, repo
+
+
+def _read_events(runtime_dir):
+    path = os.path.join(runtime_dir, "events.jsonl")
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+# ==========================================================================
+# Behaviour 8 — REPORT filing ERRORS are surfaced, never silent. A sink that
+# RAISES for a discovery -> file_discoveries records it in errors ->
+# _flush_report returns errored=1 -> the trace shows reported=0/0 report_errors=1
+# and the tick_end event detail carries reported_errored=1. This is the fix for a
+# real silent failure: a filing error (missing tracker label) was caught but the
+# surface only showed reported=0/0, looking like "no discoveries".
+# ==========================================================================
+
+def test_filing_error_is_surfaced_report_errors_and_tick_end_detail():
+    project_dir, runtime_dir, state_path, journal_path = _setup_pure_project(
+        mode="propose")
+    sink = _RaisingSink()
+    trace = _drive_pure_with_ctx_discovery(
+        project_dir, runtime_dir, state_path, journal_path, sink,
+        [dict(_DISCOVERY)])
+    # The sink WAS called (filing was attempted) but raised.
+    assert len(sink.calls) == 1, sink.calls
+    # Nothing filed, nothing skipped -> reported=0/0, but the error is visible.
+    assert "reported=0/0" in trace, trace
+    assert "report_errors=1" in trace, trace
+    # The error did NOT enter the ledger (it never filed) so a later armed tick
+    # retries it.
+    assert rt.persisted_report_ledger(state_path) == {}
+    # The tick_end event detail carries reported_errored=1.
+    end = next(e for e in _read_events(runtime_dir) if e["kind"] == "tick_end")
+    assert end["detail"]["reported_errored"] == 1, end
+
+
+# ==========================================================================
+# Behaviour 9 — _flush_report returns the (filed, skipped, errored) triple. The
+# errored count is len(ReportResult.errors).
+# ==========================================================================
+
+def test_flush_report_returns_errored_triple():
+    root = tempfile.mkdtemp(prefix="sched-report-triple-")
+    state_path = os.path.join(root, "state.json")
+    handoff = {"work_order_id": "wo-1", "status": "opened",
+               "artifact": {"kind": "pr", "ref": "PR#1"},
+               "discovered_work": [dict(_DISCOVERY)], "blocked_reason": None}
+    gov = sg.load_governance(tempfile.mkdtemp(prefix="sched-report-triple-pd-"))
+    filed, skipped, errored = rt._flush_report(
+        state_path, [handoff], [], "propose", gov, _RaisingSink())
+    assert (filed, skipped, errored) == (0, 0, 1), (filed, skipped, errored)
 
 
 if __name__ == "__main__":
