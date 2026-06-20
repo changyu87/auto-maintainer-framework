@@ -151,16 +151,26 @@ ACTED_LEDGER_KEY = "acted_ledger"
 # mapping {work_item_id: {"blocked_count": <int>, "deferred_at_updated_at": <iso
 # updated_at or null>}}. It bounds-retries a work order the doer reports `blocked`
 # (§3.8.5): each blocked resume increments blocked_count keyed on the SOURCE
-# work_item_id; at BACKOFF_THRESHOLD the item is deferred (deferred_at_updated_at
-# pinned to the issue's current updated_at) and escalated to a human once. The
+# work_item_id; at the configured backoff.threshold the item is deferred
+# (deferred_at_updated_at pinned to the issue's current updated_at) and escalated
+# to a human once. The
 # acted-ledger stays work_order_id-keyed and unchanged; backoff is the additive
 # work_item_id-keyed retry state. Load-modify-saved preserving every other key.
 BACKOFF_LEDGER_KEY = "backoff"
 
-# The number of honest `blocked` attempts a work_item gets before it is deferred
-# and escalated to a human (§3.8.5). A module constant for now; config-driven
-# later (the same deferral the interval/route hardcoding note covers).
-BACKOFF_THRESHOLD = 3
+# The DEFAULT number of honest `blocked` attempts a work_item gets before it is
+# deferred and escalated to a human (§3.8.5). Used only when the loaded config
+# carries no backoff.threshold; the live threshold is CONFIG-DRIVEN, read from
+# sg.load_config's backoff.threshold (default 5) via _backoff_threshold(gov).
+BACKOFF_THRESHOLD_DEFAULT = 5
+
+
+def _backoff_threshold(gov):
+    """The configured backoff threshold K (§3.8.5): the consecutive-`blocked`
+    count at which a work_item is deferred + escalated. Read from the loaded
+    central config's backoff.threshold (sg.load_config), falling back to
+    BACKOFF_THRESHOLD_DEFAULT when absent."""
+    return (gov.get("backoff") or {}).get("threshold", BACKOFF_THRESHOLD_DEFAULT)
 
 # The durable-state document key under which the TRIAGE MEMORY is persisted: a
 # durable CROSS-TICK fact (like BACKOFF_LEDGER_KEY, NOT a per-tick #64 read
@@ -181,9 +191,9 @@ _TRIAGE_SKIP_STATUSES = ("done", "deferred")
 
 # The production escalation sink: observability's live `gh issue comment` adapter
 # (mirrors DEFAULT_PULL_SOURCE / DEFAULT_REPORT_SINK). When a work_item reaches
-# BACKOFF_THRESHOLD the deferral posts ONE issue comment naming the human through
-# this sink. Tests inject a stub so the suite touches no network; the shipped
-# run_tick (no injected sink) comments via `gh`.
+# the configured backoff.threshold the deferral posts ONE issue comment naming
+# the human through this sink. Tests inject a stub so the suite touches no
+# network; the shipped run_tick (no injected sink) comments via `gh`.
 DEFAULT_ESCALATE_SINK = ob.gh_comment_sink
 
 # The durable-state document key under which the REPORT-LEDGER is persisted: a
@@ -1089,18 +1099,19 @@ def _record_acted_ledger(state_path, handoffs):
 
 
 def _record_backoff_outcomes(state_path, handoffs, wo_to_wi, wi_updated_at,
-                             escalate_sink, now):
+                             escalate_sink, now, threshold):
     """Update the durable backoff ledger from an acting-state resume's handoffs
     (§3.8.5). For each handoff, mapped from work_order_id -> work_item_id via
     `wo_to_wi`:
 
       - a COMPLETED outcome (`opened`/`closed`) CLEARS the item's backoff entry
         (a success resets the counter).
-      - a `blocked` outcome increments blocked_count. When it reaches
-        BACKOFF_THRESHOLD the item is DEFERRED: deferred_at_updated_at is pinned
-        to the issue's current updated_at (from `wi_updated_at`) and a single
-        escalation is posted on the issue via observability.escalate (the
-        injectable `escalate_sink`; never raises, never crashes the tick).
+      - a `blocked` outcome increments blocked_count. When it reaches the
+        configured `threshold` (config-driven backoff.threshold, default 5) the
+        item is DEFERRED: deferred_at_updated_at is pinned to the issue's current
+        updated_at (from `wi_updated_at`) and a single escalation is posted on the
+        issue via observability.escalate (the injectable `escalate_sink`; never
+        raises, never crashes the tick).
 
     Load-modify-save of ONLY BACKOFF_LEDGER_KEY, preserving every other durable
     key. A handoff with no resolvable work_item_id is skipped."""
@@ -1121,7 +1132,7 @@ def _record_backoff_outcomes(state_path, handoffs, wo_to_wi, wi_updated_at,
         count = int(entry.get("blocked_count", 0)) + 1
         entry["blocked_count"] = count
         entry.setdefault("deferred_at_updated_at", None)
-        if count >= BACKOFF_THRESHOLD and not entry.get("deferred_at_updated_at"):
+        if count >= threshold and not entry.get("deferred_at_updated_at"):
             updated_at = wi_updated_at.get(wi_id, "")
             entry["deferred_at_updated_at"] = updated_at
             reason = h.get("blocked_reason")
@@ -1290,10 +1301,12 @@ def _gather_discoveries(handoffs, discoveries_slot):
 
 def _repo_for_target(target, gov):
     """The destination repo for a DiscoveredIssue.target: `project` -> the gh
-    default repo (None); `maintainer-self` -> the configured maintainer repo
-    (gov.get('maintainer_repo')) else the project repo (None) for v1."""
+    default repo (None); `maintainer-self` -> the FIXED
+    safety_governance.MAINTAINER_REPO (the upstream maintainer repo, §3.11.6) —
+    NEVER the project repo, with NO fallback. The former governance.maintainer_repo
+    config field is gone, so `gov` is ignored for maintainer-self routing."""
     if target == "maintainer-self":
-        return gov.get("maintainer_repo") or None
+        return sg.MAINTAINER_REPO
     return None
 
 
@@ -1757,14 +1770,14 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
                 # Backoff governance (§3.8.5): map each handoff's work_order_id
                 # -> work_item_id via the dispatched work_orders, then count
                 # blocked outcomes / clear successes on the work_item_id-keyed
-                # backoff ledger; at BACKOFF_THRESHOLD defer + escalate once.
+                # backoff ledger; at the configured threshold defer + escalate once.
                 wo_to_wi = _work_order_to_work_item(
                     _read_slot_or(ctx, wi.WORK_ORDERS_SLOT["name"], []))
                 wi_updated_at = _work_items_updated_at(
                     _read_slot_or(ctx, wi.WORK_ITEMS_SLOT["name"], []))
                 _record_backoff_outcomes(
                     state_path, handoffs, wo_to_wi, wi_updated_at,
-                    escalate_sink, escalate_now)
+                    escalate_sink, escalate_now, _backoff_threshold(gov))
                 # Triage memory (§3.5.3): upsert done (opened/closed) / deferred
                 # (just-deferred) status keyed on work_item_id, so the next tick's
                 # TRIAGE skips re-judging handled-and-unchanged issues. Recorded
@@ -1867,11 +1880,12 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     output_dir = os.path.abspath(os.path.join(runtime_dir, "dispatch-out"))
     os.makedirs(output_dir, exist_ok=True)
 
-    # Load governance once per tick (project-local governance.json else the
-    # documented defaults). Threaded into the runtime dict so future acting
-    # adapters can consult permits/budget; this slice only loads + surfaces +
-    # persists (act-skip enforcement is deferred to the acting doer).
-    gov = sg.load_governance(project_dir)
+    # Load the central config once per tick (project-local config.json, else the
+    # legacy governance.json migrated once, else the documented defaults).
+    # Threaded into the runtime dict so acting adapters can consult permits/budget;
+    # run_tick also reads backoff.threshold (default 5) from it for the backoff
+    # gate. load_governance is a thin alias of load_config.
+    gov = sg.load_config(project_dir)
 
     # The runtime dict the factory convention binds: GUARD/EXIT read runtime_dir;
     # PULL the injectable source; TRIAGE the reference time. build_loop reads
