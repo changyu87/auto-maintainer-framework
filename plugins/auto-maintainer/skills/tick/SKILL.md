@@ -1,7 +1,7 @@
 ---
 name: tick
 description: Run exactly one auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute one tick or step the maintainer loop once, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) — passing each one's description and (when present) isolation — and resumes, reporting the dispatched subagents' token usage, until the tick completes.
-version: 0.3.0
+version: 0.4.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when Claude Code can dispatch subagents from within a script (removing the need for a session-mediated executor), or when the tick CLI's --step/--resume protocol reaches a breaking major version.
 ---
@@ -22,6 +22,26 @@ reply with only a short ack). So you never handle the subagent's output content
 — the runner reads the file on resume. This keeps your context clean no matter
 how large the output is.
 
+## ⚠️ The one rule that keeps a tick correct: `--step` once, then only `--resume`
+
+The runner is advanced by exactly two commands, and **mixing them up corrupts
+the tick**:
+
+- **`--step`** — call it **exactly ONCE, as the very first runner command of the
+  tick**. The only other time you may call `--step` is to **re-emit a pause after
+  an `invalid_output`** (see step 5). NEVER for anything else.
+- **`--resume`** — the ONLY way to advance after you have dispatched the
+  subagent(s) for a pause. After **every** `paused` you handle, the next runner
+  command is `--resume` — never `--step`.
+
+**Why this matters:** the `--resume` is what applies the subagent's output,
+advances the route through the remaining states, and fires the terminal work
+(disposition selection + the out-of-band REPORT flush). If you call `--step`
+again after a dispatch instead of `--resume`, you skip that resume — the
+subagent's work is not applied, discoveries are not reported, and the tick
+double-runs. So: **one `--step` to begin; after each dispatch, `--resume`; repeat
+until `done`.**
+
 ## The runner's JSON protocol
 
 `run_tick.py --step` (and `--resume`) print a single JSON object to stdout:
@@ -30,22 +50,24 @@ how large the output is.
   the tick finished. Print the `trace` and stop.
 - `{"status":"paused","state":"<name>","dispatches":[ {"subagent_type","prompt",
   "description", ... }, ... ]}` — the runner is waiting at an agent-state.
-  Dispatch each entry, then resume. Every entry carries a `subagent_type`, a
-  `prompt`, and a `description`; an **acting** entry (one that performs outward
+  Dispatch each entry, then **`--resume`**. Every entry carries a `subagent_type`,
+  a `prompt`, and a `description`; an **acting** entry (one that performs outward
   effects) additionally carries an `isolation` value (e.g. `"worktree"`).
 - `{"status":"invalid_output","state":"<name>","reason":"<why>"}` — a dispatched
   subagent's output file was missing or didn't match the schema. Re-dispatch
-  that state (see Steps); after 2 failed attempts, print the reason and stop.
+  that state (see step 5); after 2 failed attempts, print the reason and stop.
 
 ## Steps
 
-1. Step the runner:
+1. **Begin the tick — the one and only `--step`:**
 
    ```
    python3 ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py --step
    ```
 
-   Parse the single JSON object it prints to stdout.
+   Parse the single JSON object it prints to stdout, then follow steps 2–5 on the
+   result. From here on you advance ONLY with `--resume` (except an
+   `invalid_output` re-emit, step 5).
 
 2. If `status` is `"done"`: print the `trace` and stop — the tick is complete.
 
@@ -72,8 +94,9 @@ how large the output is.
    value is observable only from the dispatch results (no script can compute
    it), so you carry it to the resume in the next step.
 
-4. Resume the runner — it reads the subagent-written output files itself, and
-   meters the reported spend against the budget window:
+4. **Advance with `--resume` (NOT `--step`)** — the runner reads the
+   subagent-written output files itself and meters the reported spend against the
+   budget window:
 
    ```
    python3 ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py --resume --spent <spend>
@@ -82,16 +105,28 @@ how large the output is.
    `<spend>` is the summed `subagent_tokens` from step 3 (use `0` if no entry
    reported usage). `--resume` needs no other arguments; the runner knows the
    output files from its checkpoint. Parse the JSON it prints and go back to
-   step 2 with the result.
+   step 2 with the result. **Do not call `--step` here** — after a dispatch the
+   advance is always `--resume`, even if the dispatched subagent took a long time.
 
-5. If `status` is `"invalid_output"`: re-dispatch the same state — go back to
-   step 1 (the runner re-emits the same pause from its checkpoint; a fresh
-   dispatch lets the subagent re-write its output file). Allow at most **2**
-   re-dispatch attempts for a given state; if it still fails, print the `reason`
-   and stop (do not force-advance past a state whose output won't validate).
+5. If `status` is `"invalid_output"`: re-dispatch the same state. This is the ONE
+   case where you call `--step` again — to re-emit the same pause from the
+   checkpoint so you get the dispatch prompt back:
+
+   ```
+   python3 ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py --step
+   ```
+
+   then dispatch the re-emitted entries (step 3) and `--resume` (step 4). Allow
+   at most **2** re-dispatch attempts for a given state; if it still fails, print
+   the `reason` and stop (do not force-advance past a state whose output won't
+   validate).
 
 ## Rules
 
+- **`--step` once to begin; `--resume` after every dispatch; `--step` again ONLY
+  to re-emit after `invalid_output`.** Never `--step` mid-tick after a successful
+  dispatch — that skips the resume that applies outputs and fires the terminal
+  REPORT flush.
 - Dispatch a subagent ONLY for the entries the runner hands you, with the
   prompt, `description`, and (when present) `isolation` the runner provides,
   verbatim — do not alter them or invoke any other subagent. The prompt is the
