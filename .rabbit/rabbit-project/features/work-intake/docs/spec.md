@@ -161,10 +161,12 @@ idempotency live in scheduling).
   and recorded in `errors` (filing one bad discovery never aborts the batch).
   Deterministic given the injected sink + known set; performs no I/O of its own.
 - **Target routing (§3.11.6).** `target: project` files into the repo PULL reads
-  (the default); `target: maintainer-self` files into a configured maintainer
-  tracker (a different repo, the dogfood case §3.10.5). The sink maps `target` →
-  the destination repo; v1 ships both with `project` as the default and the
-  maintainer repo supplied via runtime/config.
+  (the default); `target: maintainer-self` files into the **fixed upstream
+  maintainer repo** (`safety_governance.MAINTAINER_REPO`, the dogfood case
+  §3.10.5) — **never** the project tracker, with **no fallback**. The sink takes
+  the destination `repo` from its caller; scheduling's
+  `run_tick._repo_for_target` supplies `MAINTAINER_REPO` for `maintainer-self`
+  and the gh-default (project) repo for `project`.
 - **Trust interaction (§3.11.7).** Filing is the `file` effect. `file_discoveries`
   itself is pure (it always files through the sink it is handed); the
   trust-ladder GATE lives in `scheduling.run_tick`, which only calls
