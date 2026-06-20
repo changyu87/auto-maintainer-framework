@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.9
+version: 0.2.10
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -199,10 +199,29 @@ read-product slots, so a tick that skips a producing state via a signal branch
 of crashing with a `ContractError`. Re-normalizes from the updated source; no
 build change beyond `_PLUGIN_VERSION → 0.2.28`.
 
-Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
-the self-path bootstrap, importing `safety_governance` from `lib/`),
-`skills/configure/SKILL.md`, and `agents/auto-maintainer-implementer.md`; the
-plugin version is `0.2.19`; still **no `.rabbit` leak**; still idempotent.
+**Plugin minor v0.3.0 — configurables overhaul (the user-facing config surface).**
+Ships the central-config + wiring CLIs:
+- `lib/safety_governance.py` + `lib/configure.py` re-normalize from source (config
+  schema 2.0.0: `config.json` replaces `governance.json`, per-tick budget removed,
+  fixed `MAINTAINER_REPO`, `heartbeat`/`backoff` knobs; `configure.py --describe` /
+  `--interval-minutes` / `--backoff-threshold`).
+- TWO new libs join `_NORMALIZED_LIBS`: `lib/route_config.py` + `lib/adapter_map_config.py`
+  (the wiring-config editors), each with the self-path import bootstrap so they
+  resolve their sibling libs (`adapter_wiring`, `agent_dispatch`, `run_tick`,
+  `work_intake`, `implement`, …) from `lib/` alone.
+- The new ship skills `skills/route/`, `skills/adapter-map/`, plus the updated
+  `skills/configure/` (`--setup`) and `skills/start/` (config-driven interval) are
+  auto-collected by the ship convention.
+- **Version bump** `_PLUGIN_VERSION → 0.3.0` — a MINOR (new CLIs + the breaking
+  config schema 2.0.0), superseding the un-logged `0.2.29` (the implementer
+  `discovered_work.body` fix, PR #192). The stale `test_version_bumped_to_0_2_28`
+  assertion is updated to the current version.
+
+Added invariants (TDD targets): the built tree contains `lib/configure.py`,
+`lib/route_config.py`, and `lib/adapter_map_config.py` (each with the self-path
+bootstrap resolving siblings from `lib/`), `skills/{configure,route,adapter-map}/SKILL.md`,
+and `agents/auto-maintainer-implementer.md`; the plugin version is `0.3.0`; still
+**no `.rabbit` leak**; still idempotent.
 
 ## Distribution & test flow — GitHub only
 

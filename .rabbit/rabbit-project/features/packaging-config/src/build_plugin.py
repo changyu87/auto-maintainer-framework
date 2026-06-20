@@ -81,7 +81,7 @@ The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
 
-Version: 0.2.28
+Version: 0.3.0
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the framework adopts a different
   distribution channel than a self-hosted Claude Code plugin marketplace, or
@@ -100,7 +100,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.2.29"
+_PLUGIN_VERSION = "0.3.0"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -226,6 +226,26 @@ _NORMALIZED_LIBS = {
         ),
         "import fsm_contracts as fc",
         _SELF_PATH_BOOTSTRAP_WITH_IMPORTS,
+    ),
+    # route_config + adapter_map_config are scheduling's wiring-config editor
+    # CLIs (the v0.3.0 configurables overhaul). Each imports its sibling
+    # adapter_wiring (its FIRST sibling import, the bootstrap anchor) plus
+    # run_tick (adapter_map_config also imports agent_dispatch/work_intake/
+    # implement), and each already imports os/sys at module top, so each takes
+    # the PLAIN self-path bootstrap (the same as run_tick/status/start/configure)
+    # inserted before the adapter_wiring import — resolving every sibling from
+    # the co-located lib/ alone.
+    "route_config.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "route_config.py"),
+        "import adapter_wiring as aw  # noqa: E402",
+        _SELF_PATH_BOOTSTRAP,
+    ),
+    "adapter_map_config.py": (
+        os.path.join(
+            _FEATURES_REL, "scheduling", "src", "adapter_map_config.py"
+        ),
+        "import adapter_wiring as aw  # noqa: E402",
+        _SELF_PATH_BOOTSTRAP,
     ),
 }
 

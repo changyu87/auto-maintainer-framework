@@ -1,57 +1,66 @@
 #!/usr/bin/env python3
 """safety-governance — the cross-cutting governance layer (DESIGN §3.8), slice 1.
 
-A pure, deterministic decision library over a machine-first, versioned
-governance config. Three decision surfaces plus one effectful halt helper:
+A pure, deterministic decision library over a machine-first, versioned CENTRAL
+config (config.json). Decision surfaces plus one effectful halt helper:
 
-  1. Governance config + loader — GOVERNANCE_SCHEMA_VERSION, DEFAULT_GOVERNANCE,
-     load_governance(project_dir). The config is project-local at
-     ${project_dir}/.auto-maintainer/governance.json (mirrors route.json,
-     §3.10.2); an absent file yields the documented defaults, and a present
-     file is backfilled key-by-key from the defaults. A null/absent ceiling
-     means NO LIMIT for that budget dimension.
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.0.0),
+     DEFAULT_GOVERNANCE, load_config(project_dir). The config is project-local at
+     ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
+     §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
+     defaults, and a present file is backfilled key-by-key from the defaults. A
+     null/absent per_day ceiling means NO LIMIT (the budget gate is a no-op).
+     A legacy governance.json is MIGRATED once (see load_config). load_governance
+     is a thin alias delegating to load_config during the coexistence window.
 
-  2. Trust-ladder gate (§3.8.2, §2.3) — permits(effect_kind, mode) over the
+  2. Maintainer-self REPORT destination — MAINTAINER_REPO, a FIXED module
+     constant (§3.11.6), NOT a config field. maintainer-self discoveries (the
+     loop's OWN defects, the dogfood case) route there ALWAYS — never the project
+     tracker, no fallback. run_tick._repo_for_target imports this constant.
+
+  3. Trust-ladder gate (§3.8.2, §2.3) — permits(effect_kind, mode) over the
      closed effect set {implement, open_pr, merge, file} and the closed mode
      set {dry-run, propose, gated-merge}. dry-run performs nothing; propose
      allows implement/open_pr/file but never merge; gated-merge allows all.
      An unknown mode or effect raises ValueError (closed vocabulary).
 
-  3. Budget readiness gate (§3.8.4) — auto-resuming, NEVER a latch.
-     window_key(now) is the LOCAL-tz calendar date of the injected tz-aware
-     `now` (the lib never reads the wall clock). evaluate_budget(...) REPORTS
-     allowance over an injected spend; record_spend(...) ADVANCES the window's
-     spend. Window rollover (a new local day) resets spent_tokens — this is
-     the auto-resume, with no human /start. A null ceiling never blocks.
+  4. Merge guardrails (§3.8.1) — merge_guardrails(pr_meta, default_branch,
+     delete_branch) a pure declarative backstop BELOW the trust ladder.
 
-  4. No-AskUserQuestion -> ABORTED (§3.8.3) — abort_on_would_block(...) latches
+  5. Budget readiness gate (§3.8.4) — auto-resuming, NEVER a latch. A PER-DAY
+     token ceiling only (the per-tick ceiling is REMOVED). window_key(now) is the
+     LOCAL-tz calendar date of the injected tz-aware `now` (the lib never reads
+     the wall clock). evaluate_budget(...) REPORTS allowance; record_spend(...)
+     ADVANCES the window's spend. Window rollover (a new local day) resets
+     spent_tokens — the auto-resume, no human /start. A null ceiling never blocks.
+
+  6. No-AskUserQuestion -> ABORTED (§3.8.3) — abort_on_would_block(...) latches
      ABORTED via lifecycle-dispositions (consumed unchanged) and emits an
-     escalation through an injectable seam (the real issue-comment sink is
-     §3.9.3, owned by observability; stubbed here). ABORTED is a TRUE latch —
-     faults do NOT auto-resume, unlike the budget gate.
+     escalation through an injectable seam. ABORTED is a TRUE latch — faults do
+     NOT auto-resume, unlike the budget gate.
 
 Determinism (spec Invariants): deterministic given the injected `now` + the
-injected spend — no model, no network, no wall clock except through the
-injected `now`, and no filesystem write of its own except the ABORTED marker,
-which is delegated to lifecycle-dispositions.
+injected spend — no model, no network, no wall clock except through the injected
+`now`, and no filesystem write except the durable config (migration) and the
+ABORTED marker, which is delegated to lifecycle-dispositions.
 
 Budget-accounting contract (the evaluate/record split):
   - evaluate_budget is a PURE decision. It computes the current window from
     `now`, rolls the returned budget_state over to that window (resetting spend
-    on a new day), and reports {allowed, reason, budget_state}. It does NOT add
-    `tick_spend` to the spend — `tick_spend` is only weighed against the
-    per-tick ceiling. It does NOT mutate its input state.
+    on a new day), and reports {allowed, reason, budget_state}. It does NOT
+    mutate its input state. The optional tick_spend argument is TOLERATED for
+    backward compatibility but ignored (the per-tick ceiling is removed).
   - record_spend ADVANCES spent_tokens by `tokens` within the current window,
     rolling over first when `now` falls in a new local day. The caller invokes
     record_spend on an allowed acting tick to persist the spend. It does NOT
     mutate its input state; it returns the new state to persist.
 
-Version: 0.1.0
+Version: 0.2.0
 Owner: changyu87
-Deprecation criterion: Superseded when the governance config schema reaches a
-  breaking major version, or when trust-ladder / budget enforcement moves into
-  a different layer than a project-local governance config consulted at tick
-  entry. See docs/spec.md.
+Deprecation criterion: Superseded when trust-ladder / budget enforcement moves
+  into a different layer than a project-local central config (config.json)
+  consulted at tick entry, or when the config schema reaches its next breaking
+  major (3.0.0). See docs/spec.md.
 """
 
 import json
@@ -71,74 +80,122 @@ import lifecycle_dispositions as ld
 
 
 # --------------------------------------------------------------------------
-# 1. Governance config schema + loader (this feature OWNS the schema).
+# 1. Central config schema + loader (this feature OWNS the schema).
 # --------------------------------------------------------------------------
 
-# The versioned governance config schema. Bumped on a breaking change to the
-# field set; distinct from the feature version.
-GOVERNANCE_SCHEMA_VERSION = "1.1.0"
+# The versioned central-config schema. Bumped on a breaking change to the field
+# set; distinct from the feature version. 2.0.0: config.json rename, per-tick
+# ceiling + maintainer_repo removed, heartbeat + backoff knobs added.
+GOVERNANCE_SCHEMA_VERSION = "2.0.0"
 
-# The documented defaults (spec "Governance config schema"). Trust default is
-# `propose` (§2.3). Both per_tick_tokens and per_day_tokens default null (NO
-# LIMIT) per an explicit user decision; a finite ceiling is opt-in via
-# governance.json (§3.8.4's "a real ceiling" intent is satisfied by config, not
-# by the default). window_tz `local` is the host's local timezone.
+# The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
+# config field. The loop's OWN defects route here ALWAYS, never the project
+# tracker, no fallback. run_tick._repo_for_target imports this. Revisit only if
+# the upstream home repo moves or per-install self-tracking is reintroduced.
+MAINTAINER_REPO = "changyu87/auto-maintainer-framework"
+
+# The documented defaults (spec "Central config schema"). Trust default is
+# `propose` (§2.3). per_day_tokens defaults null (NO LIMIT) per an explicit user
+# decision; a finite ceiling is opt-in. window_tz `local` is the host's local
+# timezone. heartbeat.interval_minutes (tick cadence, §3.3.2) defaults 3;
+# backoff.threshold (consecutive-blocked count K, §3.8.5) defaults 5.
 DEFAULT_GOVERNANCE = {
     "schema_version": GOVERNANCE_SCHEMA_VERSION,
     "mode": "propose",
     "budget": {
-        "per_tick_tokens": None,
         "per_day_tokens": None,
         "window_tz": "local",
     },
-    # The destination repo (owner/repo) for REPORT discoveries whose target is
-    # `maintainer-self` (§3.11.6). Default null: with no maintainer repo set,
-    # maintainer-self discoveries fall back to the project tracker. Added in
-    # schema 1.1.0 (additive — optional, default null).
-    "maintainer_repo": None,
+    "heartbeat": {
+        "interval_minutes": 3,
+    },
+    "backoff": {
+        "threshold": 5,
+    },
 }
 
-_GOVERNANCE_RELPATH = os.path.join(".auto-maintainer", "governance.json")
-
-
-def load_governance(project_dir):
-    """Load the project-local governance config, backfilled from defaults.
-
-    Reads ${project_dir}/.auto-maintainer/governance.json when present; an
-    absent file yields the documented defaults. Any missing top-level or
-    budget key is filled from DEFAULT_GOVERNANCE. An explicit `null` ceiling
-    in the file is PRESERVED (NO LIMIT); a finite ceiling is opt-in.
-    """
-    path = os.path.join(project_dir, _GOVERNANCE_RELPATH)
-    if not os.path.isfile(path):
-        return _copy_defaults()
-    with open(path, "r") as f:
-        raw = json.load(f)
-
-    config = _copy_defaults()
-    if "schema_version" in raw:
-        config["schema_version"] = raw["schema_version"]
-    if "mode" in raw:
-        config["mode"] = raw["mode"]
-    budget = raw.get("budget", {})
-    # Backfill per key; an explicit key (including a `null` value) overrides the
-    # default, while an absent key keeps the default.
-    for key in ("per_tick_tokens", "per_day_tokens", "window_tz"):
-        if key in budget:
-            config["budget"][key] = budget[key]
-    # maintainer_repo is a known top-level key, backfilled like the others: an
-    # explicit value in the file is PRESERVED, an absent key keeps the default.
-    if "maintainer_repo" in raw:
-        config["maintainer_repo"] = raw["maintainer_repo"]
-    return config
+_CONFIG_RELPATH = os.path.join(".auto-maintainer", "config.json")
+_LEGACY_RELPATH = os.path.join(".auto-maintainer", "governance.json")
 
 
 def _copy_defaults():
-    """A deep-enough copy of DEFAULT_GOVERNANCE (nested budget dict copied) so
-    callers never mutate the module-level constant."""
+    """A deep-enough copy of DEFAULT_GOVERNANCE (nested dicts copied) so callers
+    never mutate the module-level constant."""
     d = dict(DEFAULT_GOVERNANCE)
     d["budget"] = dict(DEFAULT_GOVERNANCE["budget"])
+    d["heartbeat"] = dict(DEFAULT_GOVERNANCE["heartbeat"])
+    d["backoff"] = dict(DEFAULT_GOVERNANCE["backoff"])
     return d
+
+
+def _overlay(raw):
+    """Backfill `raw` onto a fresh defaults copy, returning the merged config.
+
+    Only KNOWN keys are surfaced — the removed per_tick_tokens (under budget) and
+    a removed top-level maintainer_repo are silently dropped (tolerated, ignored).
+    An explicit key (including a `null` value) overrides the default; an absent
+    key keeps the default.
+    """
+    config = _copy_defaults()
+    if "mode" in raw:
+        config["mode"] = raw["mode"]
+    budget = raw.get("budget", {})
+    for key in ("per_day_tokens", "window_tz"):
+        if key in budget:
+            config["budget"][key] = budget[key]
+    heartbeat = raw.get("heartbeat", {})
+    if "interval_minutes" in heartbeat:
+        config["heartbeat"]["interval_minutes"] = heartbeat["interval_minutes"]
+    backoff = raw.get("backoff", {})
+    if "threshold" in backoff:
+        config["backoff"]["threshold"] = backoff["threshold"]
+    return config
+
+
+def load_config(project_dir):
+    """Load the project-local central config, backfilled from defaults.
+
+    Resolution order:
+      1. ${project_dir}/.auto-maintainer/config.json present -> read + backfill.
+      2. config.json absent but legacy governance.json present -> MIGRATE ONCE:
+         map the surviving fields (mode, budget.per_day_tokens, budget.window_tz),
+         DROP per_tick_tokens + maintainer_repo, backfill heartbeat/backoff,
+         WRITE config.json, and rename the legacy file to
+         governance.json.migrated (non-destructive). Returns the migrated config.
+      3. Neither present -> the documented defaults (no file written).
+
+    The removed per_tick_tokens / maintainer_repo keys, if still present in a
+    config.json, are TOLERATED and dropped (never surfaced on the loaded config).
+    """
+    config_path = os.path.join(project_dir, _CONFIG_RELPATH)
+    if os.path.isfile(config_path):
+        with open(config_path, "r") as f:
+            raw = json.load(f)
+        return _overlay(raw)
+
+    legacy_path = os.path.join(project_dir, _LEGACY_RELPATH)
+    if os.path.isfile(legacy_path):
+        with open(legacy_path, "r") as f:
+            legacy = json.load(f)
+        # Migrate: _overlay already maps the surviving fields and drops the
+        # removed ones. Persist the migrated config, then rename the legacy file.
+        config = _overlay(legacy)
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.rename(legacy_path, legacy_path + ".migrated")
+        return config
+
+    return _copy_defaults()
+
+
+def load_governance(project_dir):
+    """Thin alias delegating to load_config during the coexistence window.
+
+    Consumers should migrate to load_config; this name is honored until they do.
+    """
+    return load_config(project_dir)
 
 
 # --------------------------------------------------------------------------
@@ -267,29 +324,22 @@ def _rolled_state(budget_state, now):
 
 
 def evaluate_budget(config, budget_state, now, tick_spend=0):
-    """Report whether the tick may act under the budget ceilings.
+    """Report whether the tick may act under the per-day budget ceiling.
 
     Pure decision (no filesystem, no latch). Returns
     {allowed, reason, budget_state} where budget_state is rolled over to
-    `now`'s window (spend reset on a new local day). Order of checks:
-      - per_day: finite ceiling and rolled spent_tokens >= it -> blocked,
-        reason "per_day_exhausted".
-      - per_tick: finite ceiling and `tick_spend` > it -> blocked, reason
-        "per_tick_exceeded".
-      - else allowed, reason "ok".
-    A null ceiling never blocks its dimension. Does NOT add tick_spend to the
-    spend (see the module-level budget-accounting contract).
+    `now`'s window (spend reset on a new local day). A finite per_day ceiling
+    with rolled spent_tokens >= it blocks with reason "per_day_exhausted"; a
+    null per_day ceiling never blocks (reason "ok"). `tick_spend` is TOLERATED
+    for backward compatibility but ignored — the per-tick ceiling is REMOVED.
+    Does NOT mutate its input state.
     """
+    del tick_spend  # the per-tick ceiling is removed; argument tolerated, ignored
     rolled = _rolled_state(budget_state, now)
-    budget = config["budget"]
-    per_day = budget.get("per_day_tokens")
-    per_tick = budget.get("per_tick_tokens")
+    per_day = config["budget"].get("per_day_tokens")
 
     if per_day is not None and rolled["spent_tokens"] >= per_day:
         return {"allowed": False, "reason": "per_day_exhausted",
-                "budget_state": rolled}
-    if per_tick is not None and tick_spend > per_tick:
-        return {"allowed": False, "reason": "per_tick_exceeded",
                 "budget_state": rolled}
     return {"allowed": True, "reason": "ok", "budget_state": rolled}
 
