@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-13T03:57:44Z",
   "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-20",
   "spec_no_change_reason": "spec.md already updated to v0.6.0 documenting the guided configure --setup walk-through in commit 7b6dbaa; this cycle adds the skill --setup orchestration + describe-catalog-completeness test to catch implementation up to the committed spec"
 }
