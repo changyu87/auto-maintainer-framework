@@ -146,11 +146,12 @@ def _read_text(path):
 # prompt-cron heartbeat, consuming start.py --clear-only for the latch-clear.
 # --------------------------------------------------------------------------
 
-def test_ship_start_skill_exists_and_names_start_v021():
+def test_ship_start_skill_exists_and_names_start_v030():
     assert os.path.isfile(_START_SKILL), _START_SKILL
     fields = _parse_frontmatter(_START_SKILL)
     assert fields.get("name") == "start", fields
-    assert fields.get("version") == "0.2.1", fields
+    # v0.3.0: config-driven heartbeat interval via start.py --print-interval.
+    assert fields.get("version") == "0.3.0", fields
 
 
 def test_ship_start_skill_carries_lifecycle_metadata():
