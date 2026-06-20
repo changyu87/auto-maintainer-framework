@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.7
+version: 0.2.8
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -183,6 +183,14 @@ memory); `lib/safety_governance.py` + `lib/configure.py` re-copy/normalize with
 dispatch / `--step` again only on `invalid_output` protocol clarification, from
 the REPORT live-demo finding). Collected automatically by the `ship/` convention;
 no build change beyond `_PLUGIN_VERSION → 0.2.26`.
+
+**Plugin patch v0.2.27** — re-ship the REPORT silent-failure fix found in the
+live demo: `lib/work_intake.py` (`gh_issue_file_sink` now ensures the
+`filed-by:autonomous-maintainer` label exists before `gh issue create`, so filing
+no longer errors on a missing label) and `lib/run_tick.py` (the REPORT flush now
+surfaces `report_errors=<n>`, so a sink failure is never silent). Both
+re-normalize/re-copy from their updated sources; no build change beyond
+`_PLUGIN_VERSION → 0.2.27`.
 
 Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
 the self-path bootstrap, importing `safety_governance` from `lib/`),
