@@ -70,7 +70,7 @@ import lifecycle_dispositions as ld
 
 # The versioned governance config schema. Bumped on a breaking change to the
 # field set; distinct from the feature version.
-GOVERNANCE_SCHEMA_VERSION = "1.0.0"
+GOVERNANCE_SCHEMA_VERSION = "1.1.0"
 
 # The documented defaults (spec "Governance config schema"). Trust default is
 # `propose` (§2.3). Both per_tick_tokens and per_day_tokens default null (NO
@@ -85,6 +85,11 @@ DEFAULT_GOVERNANCE = {
         "per_day_tokens": None,
         "window_tz": "local",
     },
+    # The destination repo (owner/repo) for REPORT discoveries whose target is
+    # `maintainer-self` (§3.11.6). Default null: with no maintainer repo set,
+    # maintainer-self discoveries fall back to the project tracker. Added in
+    # schema 1.1.0 (additive — optional, default null).
+    "maintainer_repo": None,
 }
 
 _GOVERNANCE_RELPATH = os.path.join(".auto-maintainer", "governance.json")
@@ -115,6 +120,10 @@ def load_governance(project_dir):
     for key in ("per_tick_tokens", "per_day_tokens", "window_tz"):
         if key in budget:
             config["budget"][key] = budget[key]
+    # maintainer_repo is a known top-level key, backfilled like the others: an
+    # explicit value in the file is PRESERVED, an absent key keeps the default.
+    if "maintainer_repo" in raw:
+        config["maintainer_repo"] = raw["maintainer_repo"]
     return config
 
 
