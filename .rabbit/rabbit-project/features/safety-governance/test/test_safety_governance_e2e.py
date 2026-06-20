@@ -70,7 +70,7 @@ _DAY2_MORNING = datetime(2026, 5, 2, 1, 0, 0, tzinfo=_TZ)
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "1.0.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "1.1.0"
     d = sg.DEFAULT_GOVERNANCE
     assert d["mode"] == "propose"
     assert d["budget"]["per_tick_tokens"] is None
@@ -78,6 +78,9 @@ def test_schema_version_and_defaults():
     # ceiling is opt-in via governance.json.
     assert d["budget"]["per_day_tokens"] is None
     assert d["budget"]["window_tz"] == "local"
+    # maintainer_repo defaults to null (no maintainer tracker configured);
+    # added in schema 1.1.0 (additive).
+    assert d["maintainer_repo"] is None
 
 
 # ==========================================================================
@@ -131,6 +134,38 @@ def test_load_governance_preserves_explicit_null_ceiling():
         # Untouched keys still backfill.
         assert config["budget"]["window_tz"] == "local"
         assert config["mode"] == "propose"
+
+
+# ==========================================================================
+# E2E Behaviour: maintainer_repo defaults to null when absent from the file,
+# and an explicit value is PRESERVED through load_governance (a known top-level
+# key, backfilled like the others). run_tick._repo_for_target routes
+# maintainer-self -> this repo (§3.11.6).
+# ==========================================================================
+
+def test_load_governance_maintainer_repo_defaults_null_when_absent():
+    with tempfile.TemporaryDirectory() as project_dir:
+        amdir = os.path.join(project_dir, ".auto-maintainer")
+        os.makedirs(amdir)
+        with open(os.path.join(amdir, "governance.json"), "w") as f:
+            json.dump({"mode": "propose"}, f)
+
+        config = sg.load_governance(project_dir)
+        assert config["maintainer_repo"] is None
+
+
+def test_load_governance_preserves_explicit_maintainer_repo():
+    with tempfile.TemporaryDirectory() as project_dir:
+        amdir = os.path.join(project_dir, ".auto-maintainer")
+        os.makedirs(amdir)
+        with open(os.path.join(amdir, "governance.json"), "w") as f:
+            json.dump({"maintainer_repo": "octo/tooling"}, f)
+
+        config = sg.load_governance(project_dir)
+        # Explicit value preserved (round-trip), other keys still backfilled.
+        assert config["maintainer_repo"] == "octo/tooling"
+        assert config["mode"] == "propose"
+        assert config["budget"]["window_tz"] == "local"
 
 
 # ==========================================================================
