@@ -254,6 +254,89 @@ def test_gh_issue_file_sink_omits_repo_flag_when_unset():
 
 
 # ==========================================================================
+# E2E Behaviour (live-found bug): `gh issue create --label <L>` FAILS if label
+# L is absent in the repo. The sink therefore first ENSURES the provenance
+# label exists via `gh label create` (idempotent, check=False so an
+# "already exists" non-zero exit is TOLERATED, never raised) BEFORE the
+# `gh issue create`. Both gh calls honor --repo and the injectable runner.
+# ==========================================================================
+
+def test_gh_issue_file_sink_ensures_label_before_issue_create():
+    calls = []
+
+    def fake_runner(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[:3] == ["gh", "label", "create"]:
+            return _FakeCompleted("")
+        return _FakeCompleted("https://github.com/acme/widget/issues/42\n")
+
+    out = wi.gh_issue_file_sink(
+        _discovery(dedup_key="am-lbl"), repo="acme/widget", runner=fake_runner)
+
+    # First gh call is the idempotent label-ensure, BEFORE the issue create.
+    label_cmd, label_kwargs = calls[0]
+    assert label_cmd[:3] == ["gh", "label", "create"]
+    assert label_cmd[3] == "filed-by:autonomous-maintainer"
+    assert "--description" in label_cmd
+    # check=False so an "already exists" non-zero exit is tolerated.
+    assert label_kwargs.get("check") is False
+    # --repo carries through to the label-ensure.
+    assert "--repo" in label_cmd
+    assert label_cmd[label_cmd.index("--repo") + 1] == "acme/widget"
+
+    # Second gh call is the issue create (check=True), carrying --repo too.
+    create_cmd, create_kwargs = calls[1]
+    assert create_cmd[:3] == ["gh", "issue", "create"]
+    assert create_kwargs.get("check") is True
+    assert create_cmd[create_cmd.index("--repo") + 1] == "acme/widget"
+
+    assert out["tracker_ref"] == "acme/widget#42"
+
+
+def test_gh_issue_file_sink_tolerates_nonzero_label_create_exit():
+    """An "already exists" label-create exits non-zero; check=False means the
+    runner does NOT raise, so the issue create still runs and returns a ref."""
+    calls = []
+
+    def fake_runner(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "label", "create"]:
+            # Emulate `gh label create` on a pre-existing label: returns
+            # non-zero. With check=False subprocess.run does NOT raise; the
+            # fake mirrors that by simply returning a non-zero result.
+            r = _FakeCompleted("label already exists")
+            r.returncode = 1
+            return r
+        return _FakeCompleted("https://github.com/acme/widget/issues/8\n")
+
+    out = wi.gh_issue_file_sink(
+        _discovery(dedup_key="am-exists"), repo="acme/widget",
+        runner=fake_runner)
+
+    # The non-zero label-create did NOT abort filing: issue create still ran.
+    assert calls[0][:3] == ["gh", "label", "create"]
+    assert calls[1][:3] == ["gh", "issue", "create"]
+    assert out["tracker_ref"] == "acme/widget#8"
+    assert out["url"] == "https://github.com/acme/widget/issues/8"
+
+
+def test_gh_issue_file_sink_label_ensure_omits_repo_when_unset():
+    calls = []
+
+    def fake_runner(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "label", "create"]:
+            return _FakeCompleted("")
+        return _FakeCompleted("https://github.com/acme/widget/issues/3\n")
+
+    wi.gh_issue_file_sink(_discovery(dedup_key="k"), runner=fake_runner)
+
+    assert calls[0][:3] == ["gh", "label", "create"]
+    assert "--repo" not in calls[0]
+    assert "--repo" not in calls[1]
+
+
+# ==========================================================================
 # E2E Behaviour (provenance, end to end): a discovery filed through the real
 # sink assembly carries BOTH the provenance label and the am-dedup marker, and
 # file_discoveries records the parsed tracker_ref it returns.
