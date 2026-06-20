@@ -432,8 +432,11 @@ def _seed_context(state_path, journal_path, route):
     slot EXIT reads, and — when the active route includes them — the work_orders
     slot TRIAGE writes, the execution_plan slot PRIORITIZE writes, the handoffs
     slot IMPLEMENT writes, the verdicts slot VERIFY writes, and the
-    integration_result slot INTEGRATE writes. tick_outcome is seeded "empty" so
-    EXIT selects IDLE after the read stages (read-and-idle): the dry-run
+    integration_result slot INTEGRATE writes. Each producible read-product slot
+    is WRITTEN with a schema-valid empty default (skipped-state safety): a route
+    that SKIPS its producing state via a signal branch still leaves the slot
+    readable so the terminal persist never crashes. tick_outcome is seeded
+    "empty" so EXIT selects IDLE after the read stages (read-and-idle): the dry-run
     IMPLEMENT is INERT, so even an act-path tick leaves no remaining work and
     still idles.
     """
@@ -442,30 +445,54 @@ def _seed_context(state_path, journal_path, route):
     ctx.register_slot("state_path", {"type": "string"}, version="1.0.0")
     ctx.register_slot("journal_path", {"type": "string"}, version="1.0.0")
     ctx.register_slot("tick_outcome", {"type": "string"}, version="1.0.0")
+    # Producible read-product slots are SEEDED EMPTY (skipped-state safety): each
+    # is not only registered but WRITTEN with a schema-valid empty default, so a
+    # route that SKIPS its producing state via a signal branch (e.g. VERIFY EMPTY
+    # -> PERSIST skips INTEGRATE, or TRIAGE EMPTY skips IMPLEMENT) still leaves the
+    # slot readable. Without the seed the terminal's ctx.read(<slot>) raised a
+    # ContractError("slot has not been written") and CRASHED the whole tick. A
+    # state that DOES run overwrites its seeded empty unchanged. The object slots
+    # use their required-key empty shapes (NOT bare {}) so the persisted value
+    # matches what a running state produces.
     ctx.register_slot(
         wi.WORK_ITEMS_SLOT["name"], wi.WORK_ITEMS_SLOT["schema"],
         version=wi.WORK_ITEMS_SLOT["version"])
+    ctx.write(wi.WORK_ITEMS_SLOT["name"], [])
     if "TRIAGE" in route["states"]:
         ctx.register_slot(
             wi.WORK_ORDERS_SLOT["name"], wi.WORK_ORDERS_SLOT["schema"],
             version=wi.WORK_ORDERS_SLOT["version"])
+        ctx.write(wi.WORK_ORDERS_SLOT["name"], [])
     if "PRIORITIZE" in route["states"]:
         ctx.register_slot(
             pr.EXECUTION_PLAN_SLOT["name"], pr.EXECUTION_PLAN_SLOT["schema"],
             version=pr.EXECUTION_PLAN_SLOT["version"])
+        ctx.write(pr.EXECUTION_PLAN_SLOT["name"], {
+            "schema_version": pr.EXECUTION_PLAN_SCHEMA_VERSION,
+            "ordered": [],
+            "status": {},
+        })
     if "IMPLEMENT" in route["states"]:
         ctx.register_slot(
             im.HANDOFFS_SLOT["name"], im.HANDOFFS_SLOT["schema"],
             version=im.HANDOFFS_SLOT["version"])
+        ctx.write(im.HANDOFFS_SLOT["name"], [])
     if "VERIFY" in route["states"]:
         ctx.register_slot(
             vi.VERDICTS_SLOT["name"], vi.VERDICTS_SLOT["schema"],
             version=vi.VERDICTS_SLOT["version"])
+        ctx.write(vi.VERDICTS_SLOT["name"], [])
     if "INTEGRATE" in route["states"]:
         ctx.register_slot(
             vi.INTEGRATION_RESULT_SLOT["name"],
             vi.INTEGRATION_RESULT_SLOT["schema"],
             version=vi.INTEGRATION_RESULT_SLOT["version"])
+        ctx.write(vi.INTEGRATION_RESULT_SLOT["name"], {
+            "schema_version": vi.INTEGRATION_RESULT_SCHEMA_VERSION,
+            "merged": [],
+            "skipped": [],
+            "errors": [],
+        })
     ctx.write("state_path", state_path)
     ctx.write("journal_path", journal_path)
     ctx.write("counter", ds.DurableState(state_path).load()["counter"])
