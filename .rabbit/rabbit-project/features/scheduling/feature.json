@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-20",
   "spec_no_change_reason": "Spec SEEDED-EMPTY invariant + version bump 0.12.2->0.12.3 were committed ahead of this TDD cycle (commit 1bb4cf5); this cycle places the run_tick.py _seed_context empty-write implementation + tests only."
 }
