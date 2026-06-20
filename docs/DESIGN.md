@@ -369,7 +369,9 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
   heartbeat enqueues a **prompt** so the session is present to fulfill subagent
   dispatches.)*
 - **3.3.2** Heartbeat install/uninstall bootstrap — the "configure" step wires the
-  clock; the user authorizes it. **[v1]**
+  clock; the user authorizes it. The tick **interval is config-driven**
+  (`heartbeat.interval_minutes`, default 3) via the central config, not hardcoded.
+  **[v1]**
 - **3.3.3** Immediate-refire decision (work-remains -> one-shot; queue-empty ->
   idle) with at-most-one-refire dedup. **[v1]**
 - **3.3.4** Restart-and-resume (RESTART_NEEDED marker -> SessionStart auto-resume).
@@ -520,13 +522,16 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
   2.3). **[v1]**
 - **3.8.3** No `AskUserQuestion` in autonomous mode -> ABORTED marker + escalation
   instead of blocking prompts. **[v1]**
-- **3.8.4** Budget caps (per-tick / per-day token ceiling, hard stop). **[v1]**
+- **3.8.4** Budget cap — a **per-day** token ceiling that idles the loop and
+  **auto-resumes** at the next local-day window (never a hard halt). **[v1]**
   *Rationale:* an unbounded loop is a financial hazard; needs a real ceiling,
-  not judgment.
+  not judgment. *(The per-tick ceiling is removed — per-day suffices; and the
+  shipped readiness-gate idles-and-resumes rather than hard-stopping, so the
+  earlier "hard stop" wording is superseded.)*
 - **3.8.5** Backoff — per-item, **bounded-retry → escalate → defer; NEVER
   silent-leak, NEVER loop-halt**. A valid (accepted) work order is worked toward
   an end: it is RE-ATTEMPTED each tick until it either succeeds (PR opened /
-  merged) OR a per-item consecutive-`blocked` counter reaches a threshold K, at
+  merged) OR a per-item consecutive-`blocked` counter reaches a **configurable** threshold K (`backoff.threshold`, default 5), at
   which point the loop **escalates** (issue-comment, §3.9.3 — "attempted K times,
   blocked: <reason>; needs human attention") and marks the item **deferred**. A
   deferred item is skipped from re-dispatch (no thrash) but its issue **stays
@@ -557,9 +562,14 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
   needs no extra integration; richer sinks are additive.
 
 ### 3.10 Config, Persona & Packaging
-- **3.10.1** `userConfig` prompted at enable (tracker token, mode, budget). **[v1]**
-- **3.10.2** Project-local config file (port -> adapter wiring; read via
-  `CLAUDE_PROJECT_DIR`). **[v1]**
+- **3.10.1** `userConfig` — a central machine-first `config.json` (mode, per-day
+  budget, heartbeat interval, backoff threshold) with a guided **`--setup`**
+  walk-through CLI; a power user may hand-edit the file directly. Supersedes the
+  prior scattered `governance.json` (rename-and-migrated). **[v1]**
+- **3.10.2** Project-local **wiring** config (`route.json` + `adapter-map.json`,
+  port -> adapter wiring; read via `CLAUDE_PROJECT_DIR`), each with its own guided
+  CLI (`/auto-maintainer:route`, `/auto-maintainer:adapter-map`) — defaults
+  recommended, every edit validated before write. **[v1]**
 - **3.10.3** Persona via SessionStart hook + skill bodies (the CLAUDE.md
   substitute). **[v1]**
 - **3.10.4** `.claude-plugin/plugin.json` + marketplace layout + install / configure
@@ -599,7 +609,10 @@ top-level feature is required.
 - **3.11.6** Tracker routing — `DiscoveredIssue.target` selects the destination:
   `project` defects go to the project tracker PULL reads; `maintainer-self`
   defects (bugs in the loop's own adapters or tooling — the dogfood case 3.10.5)
-  go to a configured maintainer tracker, a different repo. **[v1]**
+  go to the **fixed upstream maintainer repo** (`changyu87/auto-maintainer-framework`),
+  **never** the project tracker — the auto-maintainer's own defects belong to the
+  auto-maintainer, not whatever project it currently maintains. This is a fixed
+  constant (not configurable) with **no project fallback**. **[v1]**
 - **3.11.7** Trust-ladder interaction — filing is a non-destructive write: permitted
   at `propose` and `gated-merge`; at `dry-run` the intent is logged, not filed
   (3.8.2). **[v1]**
