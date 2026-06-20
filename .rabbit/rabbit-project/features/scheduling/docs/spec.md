@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.10.0
+version: 0.11.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -590,6 +590,51 @@ paths. It consumes `work_intake` (`DiscoveredIssue` / `file_discoveries` /
 - **Unchanged.** A tick with NO discoveries flushes nothing (`reported=0/0`) and
   is otherwise byte-identical. Read products stay #64 per-tick ephemeral; the
   REPORT ledger + budget window + acted-ledger are the durable cross-tick facts.
+
+## Backoff: bounded-retry → escalate → defer for blocked work orders (§3.8.5)
+
+A valid work order the doer reports `blocked` must be **worked toward an end, not
+silently leaked, and must never halt the loop** (DESIGN §3.8.5). This slice adds
+that to `run_tick`'s acting-state governance. It consumes `observability`
+(`escalate`) UNCHANGED; edits live ONLY in scheduling.
+
+- **The leak fix.** `_record_acted_ledger` now records ONLY *completed* outcomes
+  (`opened` / `closed`) into the acted-ledger — **never `blocked`**. Previously a
+  blocked work order was written to the acted-ledger and then filtered out as
+  "already acted" forever (silent leak). A blocked item now stays retryable.
+- **Backoff ledger (durable, keyed on `work_item_id`).** `BACKOFF_LEDGER_KEY =
+  "backoff"` maps `{work_item_id: {blocked_count, deferred_at_updated_at}}` (a
+  durable cross-tick fact like the acted-ledger). `persisted_backoff_ledger` reads
+  it (default `{}`).
+- **On resume of an acting state**, for each handoff (mapped from
+  `work_order_id` → `work_item_id` via the dispatched work_orders):
+  - `opened`/`closed` → recorded in the acted-ledger (existing) AND its backoff
+    entry is cleared (a success resets the counter).
+  - `blocked` → `backoff[work_item_id].blocked_count += 1`. If the count reaches
+    the threshold `BACKOFF_THRESHOLD` (= 3), the item is **deferred**:
+    `deferred_at_updated_at` is set to the item's current issue `updated_at`
+    (looked up from the tick's `work_items`), and an **escalation** is posted via
+    `observability.escalate(<issue ref>, "auto-maintainer attempted N times,
+    blocked: <reason>; needs human attention", …)` through an injectable sink
+    (tests stub it; never raises). Below the threshold the item is NOT deferred —
+    it simply retries next tick.
+- **IMPLEMENT per_item filter — skip deferred-unchanged.** In addition to
+  skipping already-acted work_orders (existing acted-ledger filter), the per_item
+  set now also drops any work_order whose `work_item_id` is **deferred** in the
+  backoff ledger AND whose issue `updated_at` (looked up from the tick's
+  `work_items`) **equals** `deferred_at_updated_at` (deferred + unchanged → no
+  re-dispatch, no thrash). If the issue's `updated_at` has **advanced** (a human
+  commented / edited / relabelled / reopened), the item is NOT skipped — it
+  **re-enters**, and its backoff entry is reset (`blocked_count → 0`, deferral
+  cleared) so it gets a fresh K attempts. This is the durable, GitHub-native,
+  session-independent retry trigger (no manual control).
+- **Strictly per-item; never loop-halting.** Backoff only suppresses re-dispatch
+  of the one deferred item; the tick loop runs all other work and reaches its
+  terminal normally. A *systemic* fault remains the separate `ABORTED` path
+  (§3.8.3), untouched here.
+- **End states.** A valid work order ends either **implemented** (`opened`/
+  `closed`) or **escalated-to-human + deferred** (K honest attempts, a visible
+  issue comment, issue stays open) — never silently dropped.
 
 ## Known gaps / deferred
 
