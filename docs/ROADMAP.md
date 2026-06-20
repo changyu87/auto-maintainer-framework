@@ -167,6 +167,31 @@ reports only what THIS tick's route produced — a route without TRIAGE reports
 7. Then a real **TRIAGE** subagent, `verify-integrate` (guardrails §3.8.1 +
    backoff §3.8.5), `outbound-report` (REPORT + loopback §3.11.5).
 
+## Configurables overhaul — DONE (2026-06-20, plugin v0.3.0, PRs #193–#198)
+
+A user-driven refactor of the whole config surface, spec-checked first (DESIGN
+§3.8.4/§3.8.5/§3.3.2/§3.10.1/§3.10.2/§3.11.6 edited, PR #193):
+
+1. **Central `config.json`** (schema 2.0.0) replaces the scattered `governance.json`
+   (rename-and-migrated; `load_config` + `load_governance` alias). safety-governance
+   owns it. (PR #194)
+2. **Per-tick budget removed** — only `per_day_tokens` remains. (PR #194)
+3. **Fixed `MAINTAINER_REPO`** constant (`changyu87/auto-maintainer-framework`) —
+   `maintainer-self` discoveries always route upstream, never the project tracker,
+   no fallback; the `maintainer_repo` config field is gone. (PRs #194/#195/#196)
+4. **Config-driven knobs** — `heartbeat.interval_minutes` (default 3, #17 resolved)
+   + `backoff.threshold` (default 5), owned by safety-governance, read by scheduling.
+   (PRs #194/#195)
+5. **Guided CLIs** — `/auto-maintainer:configure --setup` walk-through (over the
+   `configure.py --describe` catalog), and `/auto-maintainer:route` +
+   `/auto-maintainer:adapter-map` wiring editors (in scheduling — owns defaults +
+   per-port knowledge; validate via adapter-wiring before writing; adapter-map's
+   "agent-type-only" fills from `AGENT_PORT_TEMPLATES`). (PR #197)
+6. **Re-shipped** plugin **v0.3.0** (PR #198; route_config/adapter_map_config libs +
+   the new skills; stale `test_version_bumped_to_0_2_28` fixed). LIVE TEST PENDING
+   (GitHub marketplace flow): `--setup`, `/route`, `/adapter-map`, governance.json→config.json
+   migration, a tick reading interval(3)/threshold(5), maintainer-self routing.
+
 ## Deferred (NOT in the v1 feature set)
 
 Per DESIGN.md §3 tags and §4: parallel dispatch, recursive decompose, dedup-vs-open
