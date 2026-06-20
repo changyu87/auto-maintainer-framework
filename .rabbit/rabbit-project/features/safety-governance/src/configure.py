@@ -17,7 +17,9 @@ user's requested values to this CLI and never hand-rolls JSON.
 Mode is validated through ``safety_governance.permits`` (the closed mode set
 {dry-run, propose, gated-merge}); an unknown mode raises ValueError. A budget
 ceiling is a non-negative int, or one of {none, null, unlimited, ""} meaning NO
-LIMIT (stored as JSON null) for that dimension.
+LIMIT (stored as JSON null) for that dimension. ``--maintainer-repo`` sets the
+maintainer-self REPORT destination (``owner/repo``); the same none/null
+vocabulary clears it to JSON null (fall back to the project tracker).
 
 Version: 0.1.0
 Owner: rabbit-workflow team
@@ -60,7 +62,19 @@ def _parse_ceiling(raw):
     return value
 
 
-def configure(project_dir, *, mode=None, per_day_tokens=_UNSET, per_tick_tokens=_UNSET):
+def _parse_maintainer_repo(raw):
+    """Parse a --maintainer-repo CLI value -> None (cleared) or owner/repo str.
+
+    none/null/unlimited/"" clear it to null (fall back to the project tracker);
+    any other value is taken verbatim as the owner/repo string.
+    """
+    if str(raw).strip().lower() in ("none", "null", "unlimited", ""):
+        return None
+    return raw
+
+
+def configure(project_dir, *, mode=None, per_day_tokens=_UNSET, per_tick_tokens=_UNSET,
+              maintainer_repo=_UNSET):
     """Apply the requested changes to governance.json and return the new config.
 
     Loads the current (backfilled) config, applies only the mentioned fields,
@@ -82,6 +96,9 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET, per_tick_tokens=
         budget["per_day_tokens"] = per_day_tokens
     if per_tick_tokens is not _UNSET:
         budget["per_tick_tokens"] = per_tick_tokens
+
+    if maintainer_repo is not _UNSET:
+        gov["maintainer_repo"] = maintainer_repo
 
     path = _config_path(project_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -119,6 +136,12 @@ def main(argv=None):
         help="per-tick token ceiling: a non-negative int, or none/null/unlimited",
     )
     parser.add_argument(
+        "--maintainer-repo",
+        default=None,
+        help="maintainer-self REPORT destination: owner/repo, or "
+        "none/null to clear (fall back to the project tracker)",
+    )
+    parser.add_argument(
         "--show",
         action="store_true",
         help="print the current config without changing it",
@@ -126,7 +149,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     project_dir = _resolve_project_dir(args.project_dir)
 
-    mutating = args.mode is not None or args.per_day_tokens is not None or args.per_tick_tokens is not None
+    mutating = (
+        args.mode is not None
+        or args.per_day_tokens is not None
+        or args.per_tick_tokens is not None
+        or args.maintainer_repo is not None
+    )
 
     # --show, or no mutating flags at all: print the current config and stop.
     if args.show or not mutating:
@@ -136,11 +164,16 @@ def main(argv=None):
     try:
         per_day = _parse_ceiling(args.per_day_tokens) if args.per_day_tokens is not None else _UNSET
         per_tick = _parse_ceiling(args.per_tick_tokens) if args.per_tick_tokens is not None else _UNSET
+        maintainer_repo = (
+            _parse_maintainer_repo(args.maintainer_repo)
+            if args.maintainer_repo is not None else _UNSET
+        )
         gov = configure(
             project_dir,
             mode=args.mode,
             per_day_tokens=per_day,
             per_tick_tokens=per_tick,
+            maintainer_repo=maintainer_repo,
         )
     except ValueError as exc:
         print(f"configure: error: {exc}", file=sys.stderr)

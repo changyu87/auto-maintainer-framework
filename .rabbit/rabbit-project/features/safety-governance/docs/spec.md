@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.3.0
+version: 0.4.0
 owner: changyu87
 deprecation_criterion: Superseded when the governance config schema reaches a breaking major version, or when trust-ladder / budget enforcement moves into a different layer than a project-local governance config consulted at tick entry.
 ---
@@ -29,17 +29,25 @@ Machine-first, versioned; project-local at
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "mode": "propose",
   "budget": {
     "per_tick_tokens": null,
     "per_day_tokens": null,
     "window_tz": "local"
-  }
+  },
+  "maintainer_repo": null
 }
 ```
 
 - `mode` — `dry-run` | `propose` | `gated-merge`. **Default `propose`** (§2.3).
+- `maintainer_repo` — the destination repo (`owner/repo`) for REPORT discoveries
+  whose `target` is `maintainer-self` (bugs in the loop's OWN tooling — the
+  dogfood case §3.10.5 / §3.11.6). **Default `null`**: with no maintainer repo
+  set, `maintainer-self` discoveries fall back to the project tracker.
+  `load_governance` PRESERVES an explicit value (a known top-level key, backfilled
+  like the others); `run_tick._repo_for_target` routes `maintainer-self` → this
+  repo. Schema bumped to **1.1.0** (additive — optional, default null).
 - `budget.per_tick_tokens` / `budget.per_day_tokens` — integer ceilings, or
   **`null`/omitted = NO LIMIT** (unbounded; the gate is a no-op for that
   dimension). Both default to **`null` (NO LIMIT)** per an explicit user
@@ -153,6 +161,9 @@ the trust `mode` and budget ceilings without hand-editing JSON.
     `none`/`null`/`unlimited`/`""` meaning NO LIMIT (stored as JSON `null`). A
     dimension not mentioned is preserved unchanged (other durable keys preserved
     too).
+  - `--maintainer-repo <owner/repo>` sets `maintainer_repo` (the
+    `maintainer-self` REPORT destination); `none`/`null`/`""` clears it to
+    `null` (fall back to the project tracker).
   - Project dir resolves from `--project-dir`, else `$CLAUDE_PROJECT_DIR`, else
     cwd. `--show` (or no mutating flag) prints the current config and writes
     nothing.

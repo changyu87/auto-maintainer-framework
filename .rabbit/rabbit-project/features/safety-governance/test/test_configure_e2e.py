@@ -75,7 +75,7 @@ def test_cli_sets_mode_and_writes_file():
         assert rc == 0
         gov = _read_gov(project_dir)
         assert gov["mode"] == "dry-run"
-        assert gov["schema_version"] == "1.0.0"
+        assert gov["schema_version"] == "1.1.0"
 
 
 # ==========================================================================
@@ -176,6 +176,61 @@ def test_cli_no_flags_writes_nothing():
         rc = configure.main(["--project-dir", project_dir])
         assert rc == 0
         assert not os.path.exists(_gov_path(project_dir))
+
+
+# ==========================================================================
+# E2E Behaviour: --maintainer-repo sets maintainer_repo to owner/repo, and a
+# later `none` clears it back to JSON null (fall back to the project tracker).
+# ==========================================================================
+
+def test_cli_maintainer_repo_set_then_clear():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--maintainer-repo", "octo/tooling"])
+        assert rc == 0
+        assert _read_gov(project_dir)["maintainer_repo"] == "octo/tooling"
+
+        rc = configure.main(
+            ["--project-dir", project_dir, "--maintainer-repo", "none"])
+        assert rc == 0
+        assert _read_gov(project_dir)["maintainer_repo"] is None
+
+
+# ==========================================================================
+# E2E Behaviour: a maintainer-repo-only write preserves the previously-set mode
+# and budget (load-modify-save preserves unmentioned keys).
+# ==========================================================================
+
+def test_cli_maintainer_repo_preserves_other_keys():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir, "--mode", "gated-merge",
+             "--per-tick-tokens", "5000"]) == 0
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--maintainer-repo", "octo/tooling"]) == 0
+        gov = _read_gov(project_dir)
+        assert gov["maintainer_repo"] == "octo/tooling"
+        assert gov["mode"] == "gated-merge"
+        assert gov["budget"]["per_tick_tokens"] == 5000
+
+
+# ==========================================================================
+# E2E Behaviour: --show includes maintainer_repo (default null when unset).
+# ==========================================================================
+
+def test_cli_show_includes_maintainer_repo(capsys=None):
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = configure.main(["--project-dir", project_dir, "--show"])
+        assert rc == 0
+        shown = json.loads(buf.getvalue())
+        assert "maintainer_repo" in shown
+        assert shown["maintainer_repo"] is None
 
 
 # ==========================================================================
