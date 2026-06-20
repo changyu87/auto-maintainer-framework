@@ -1,13 +1,13 @@
 {
   "name": "safety-governance",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/safety-governance/src/**"
   ],
   "created": "2026-06-13T03:57:44Z",
-  "deprecation_criterion": "Superseded when the governance config schema reaches a breaking major version, or when trust-ladder / budget enforcement moves into a different layer than a project-local governance config consulted at tick entry.",
-  "tdd_state": "test-green",
+  "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
+  "tdd_state": "impl",
   "updated": "2026-06-20",
-  "spec_no_change_reason": "spec.md already documents maintainer_repo + schema 1.1.0 (committed earlier this cycle); implementation only catches code up to the documented schema"
+  "spec_no_change_reason": "spec.md already updated to schema 2.0.0 (central config.json rename, per-tick removed, fixed MAINTAINER_REPO, heartbeat+backoff) in commit 76c29ea; this cycle catches tests+implementation up to the committed spec"
 }
