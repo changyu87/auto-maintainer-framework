@@ -439,13 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (v1 polish pack): version bumped to 0.2.25 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. The spec permits
-# a patch bump on each re-ship of the plugin tree (0.2.25 re-ships run_tick.py
-# with backoff + skip-unchanged re-triage and safety_governance.py/configure.py
-# with maintainer_repo).
+# Re-ship (v0.2.26, hardened tick executor skill): version bumped to 0.2.26 in
+# BOTH plugin.json and marketplace.json, and the two are consistent. The spec
+# permits a patch bump on each re-ship of the plugin tree (0.2.26 re-ships the
+# tick executor skill skills/tick/SKILL.md at v0.4.0 with the --step/--resume
+# protocol clarification).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_25_and_consistent():
+def test_version_bumped_to_0_2_26_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +457,10 @@ def test_version_bumped_to_0_2_25_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.25", \
-            f"plugin.json version must be 0.2.25, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.25", \
-            "marketplace.json plugin entry version must be 0.2.25"
+        assert pdata.get("version") == "0.2.26", \
+            f"plugin.json version must be 0.2.26, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.26", \
+            "marketplace.json plugin entry version must be 0.2.26"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1557,15 +1557,16 @@ def test_shipped_start_skill_is_v0_2_1_clear_only_executor_3min():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (v0.2.19, configure-lib slice): the reworked tick executor skill
-# (scheduling v0.3.0, collected via ship/) ships at skills/tick/SKILL.md. The
+# Re-ship (v0.2.26, hardened tick executor skill): the tick executor skill
+# (scheduling v0.4.0, collected via ship/) ships at skills/tick/SKILL.md with the
+# --step/--resume protocol clarification (the REPORT live-demo finding). The
 # dispatched subagent writes its OWN output file (the prompt's ## Handoff names
 # the path); the executor never marshals the dispatch result. So the skill
 # references `run_tick.py --resume` (the runner reads the subagent-written files
 # from its checkpoint), and it does NOT reference the old dispatch-result.json
 # marshalling path.
 # ---------------------------------------------------------------------------
-def test_shipped_tick_skill_is_v0_3_0_resume_no_file_arg():
+def test_shipped_tick_skill_is_v0_4_0_resume_no_file_arg():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1575,8 +1576,8 @@ def test_shipped_tick_skill_is_v0_3_0_resume_no_file_arg():
         assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.3.0\n" in body, \
-            "shipped tick skill frontmatter version must be 0.3.0"
+        assert "\nversion: 0.4.0\n" in body, \
+            "shipped tick skill frontmatter version must be 0.4.0"
         assert "run_tick.py --resume" in body, \
             "shipped tick skill must reference run_tick.py --resume"
         assert "dispatch-result.json" not in body, \
