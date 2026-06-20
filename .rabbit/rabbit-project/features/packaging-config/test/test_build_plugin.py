@@ -217,6 +217,41 @@ def test_sessionstart_hook_executes_and_emits_context():
 
 
 # ---------------------------------------------------------------------------
+# Slice 2 spec (#16): the shipped plugin carries its OWN README.md at the plugin
+# root (plugins/auto-maintainer/README.md) so a user inspecting the installed
+# plugin (or the cache) finds usage docs there too — per the Claude Code plugin
+# docs best practice ("Add a README.md with installation and usage
+# instructions"). It must name the plugin, document the /reload-plugins install
+# step and the /auto-maintainer:status skill, and note the current packaging
+# skeleton status.
+# ---------------------------------------------------------------------------
+def test_plugin_internal_readme_present_with_expected_content():
+    out_root = _build_into_temp()
+    try:
+        plugin_root = os.path.join(out_root, "plugins", "auto-maintainer")
+        rm = os.path.join(plugin_root, "README.md")
+        assert os.path.isfile(rm), \
+            "plugins/auto-maintainer/README.md must ship inside the plugin"
+        with open(rm, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "auto-maintainer" in body, \
+            "plugin README must name the plugin"
+        assert "/reload-plugins" in body, \
+            "plugin README must document the /reload-plugins install step"
+        assert "/auto-maintainer:status" in body, \
+            "plugin README must document the /auto-maintainer:status skill"
+        assert "skeleton" in body, \
+            "plugin README must note the current packaging-skeleton status"
+        # the README is an asset, not dev infra, so the clean-ship invariant
+        # applies: no reference back to the source feature tree.
+        assert ".rabbit" not in body, "plugin README leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "plugin README references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Spec: /auto-maintainer:status skill ships at skills/status/SKILL.md.
 # ---------------------------------------------------------------------------
 def test_status_skill_present():
