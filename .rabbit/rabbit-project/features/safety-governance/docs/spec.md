@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.5.0
+version: 0.6.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -204,6 +204,19 @@ the trust `mode` and budget ceilings without hand-editing JSON.
   resulting config. It never edits `config.json` directly. This is the
   arming surface for the model-backed doer: `--mode dry-run` keeps it inert,
   `--mode propose` arms it to open PRs.
+- **Guided `--setup` walk-through** (§3.10.1 userConfig). The same skill supports
+  a `--setup` mode (the user runs `/auto-maintainer:configure --setup`, or asks
+  to be "walked through" the config). The skill orchestrates **over the
+  machine-first catalog**, dispatching NO subagent:
+  1. Run `configure.py --describe` → the field catalog
+     (`key`/`label`/`controls`/`default`/`current`/`type`/`validator`).
+  2. For EACH field in catalog order, present the user what it controls, its
+     default, and its current value, and ask for a new value or to keep current.
+  3. Apply the chosen values in ONE `configure.py` invocation (the deterministic
+     writer validates + writes `config.json`), then `--show` the result.
+  The catalog is the **single source of truth** — the skill never hardcodes
+  field names or prose (SKILL.md authoring §4: derive from source, do not
+  paraphrase). A power user may still hand-edit `config.json` directly.
 
 ## Invariants
 
@@ -235,9 +248,9 @@ the trust `mode` and budget ceilings without hand-editing JSON.
 - **Loopback / provenance guard** (§3.11.5, `filed_by` stamp recognized by the
   TRIAGE gates) → with `outbound-report` (nothing files until REPORT exists).
 - **Blast-radius / learned scope** (§3.8.6) → v2.
-- **`userConfig` guided `--setup` walk-through** (§3.10.1) — `configure.py
-  --describe` now ships the machine-first field catalog (the single source of
-  truth); the `--setup` orchestration skill that walks the user field-by-field
-  over that catalog is authored separately (next phase), via skill-creator.
+- **`userConfig` guided `--setup` walk-through** (§3.10.1) — IMPLEMENTED (see
+  "Guided `--setup` walk-through" above): the configure skill walks the user
+  field-by-field over the `configure.py --describe` catalog and writes via the
+  deterministic writer.
 - **Per-day window basis other than local-tz**, and a real escalation sink
   (§3.9.3, observability) → later refinements.

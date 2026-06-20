@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.13.0
+version: 0.14.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -702,15 +702,76 @@ the loop only re-triages NEW or CHANGED issues. Edits live ONLY in scheduling
   byte-identical to today. Pure-script routes and non-`work_items` agent-states
   are unaffected.
 
+## Wiring config CLIs (route + adapter-map) — §3.4.3 / §3.10.2
+
+scheduling owns the maintainer's `DEFAULT_ROUTE` + `DEFAULT_ADAPTER_MAP` and every
+port's runtime details, so it also ships the two guided **wiring CLIs** that let a
+user edit the project-local override files without hand-writing JSON. Both VALIDATE
+through `adapter-wiring` before writing — `adapter-wiring` stays the dependency-free
+validator; scheduling supplies the defaults + per-port knowledge those CLIs need
+(which is exactly why they live here, not in adapter-wiring).
+
+### route CLI — `src/route_config.py` + `/auto-maintainer:route`
+
+- `src/route_config.py` (deterministic, script-tier — spec-rules §1): a
+  load-modify-VALIDATE-save of `${project_dir}/.auto-maintainer/route.json`.
+  - `--show` — print the active route (override `route.json` if present, else
+    `DEFAULT_ROUTE`) + its source via `route_source` (#59), a readable derivative
+    of the machine-first route.
+  - Deterministic edit ops — insert/append/remove a state; add/remove an edge
+    `{state, signal, next}`. Each edit is applied to the route dict and then
+    VALIDATED by building the loop (`adapter_wiring.build_loop` over the edited
+    route + the active adapter-map: resolve + signals + data-readiness + anchor
+    invariants) BEFORE writing. A failing edit is REJECTED (non-zero exit, file
+    NOT written) — an invalid route can never be saved.
+  - `--describe` — emit a machine-first catalog of the current states/edges + the
+    editable operations (for the skill to drive).
+- `/auto-maintainer:route` skill — **recommends keeping the default route**; if the
+  user wants to insert/reorder/remove states (e.g. enable the close-the-loop
+  chain), it walks them through the change and calls `route_config.py` to validate
+  + write. Dispatches NO subagent.
+
+### adapter-map CLI — `src/adapter_map_config.py` + `/auto-maintainer:adapter-map`
+
+- `src/adapter_map_config.py` (deterministic): a load-modify-VALIDATE-save of
+  `${project_dir}/.auto-maintainer/adapter-map.json`.
+  - `--show` — print the active map (override else `DEFAULT_ADAPTER_MAP`).
+  - Set a port to a script factory address (string) OR to an **agent** entry. For
+    an agent entry on a **KNOWN agent-capable port** the user supplies **only the
+    `subagent_type`**; the CLI fills the rest from `AGENT_PORT_TEMPLATES[port]` —
+    `writes` slot, `cardinality`, `effect` (present only for acting ports), and a
+    concrete `output_example` (a concrete example value in the slot's top-level
+    type — NEVER a schema descriptor, per the agent-adapter rule). For an
+    unknown/custom port the CLI additionally requires `writes` + (if acting)
+    `effect` + an `output_example`, since they cannot be inferred.
+  - The resulting map is VALIDATED by resolving it
+    (`adapter_wiring.resolve_states` / `build_loop`, which deep-validates agent
+    entries via `agent-dispatch`) BEFORE writing; an invalid entry is REJECTED
+    (no write).
+- `/auto-maintainer:adapter-map` skill — **recommends the default map**; to wire an
+  agent to a port the user gives the `subagent_type` (+ port), the skill calls
+  `adapter_map_config.py` which fills the entry + validates + writes. Dispatches
+  NO subagent.
+
+### `AGENT_PORT_TEMPLATES` (scheduling-owned)
+
+A table mapping each known agent-capable port (e.g. `TRIAGE`, `IMPLEMENT`) →
+`{writes, cardinality, effect?, output_example}`, built from the ports' own slot
+owners (work-intake `WORK_ORDERS_SLOT`, implement `HANDOFFS_SLOT`, …) so a bare
+`subagent_type` is enough to produce a valid agent entry. This per-port knowledge
+is why the adapter-map CLI lives in scheduling (which imports those slot owners),
+not in dependency-free adapter-wiring.
+
 ## Known gaps / deferred
 
 - The executor (the session-side actor that performs the Agent dispatch and
   feeds `resume_dispatch` back to `run_tick`) now ships as the `tick` skill
   (`ship/skills/tick/SKILL.md`); `run_tick` itself still only emits the dispatch
   requests and applies provided results (it never calls the Agent tool).
-- Configurable **route** via `route.json` + the `/auto-maintainer:route` CLI
-  (Phase 4). The tick **interval is now config-driven**
-  (`heartbeat.interval_minutes`, default 3) — #17 resolved.
+- Configurable **route** + **adapter-map** via the `/auto-maintainer:route` and
+  `/auto-maintainer:adapter-map` CLIs — IMPLEMENTED (see "Wiring config CLIs"
+  above). The tick **interval is config-driven** (`heartbeat.interval_minutes`,
+  default 3) — #17 resolved.
 - System-cron scheduler backend (§3.3.1) — slice 1 is in-session heartbeat only.
 - TRIAGE/IMPLEMENT/VERIFY/INTEGRATE — the loop now PULLs (read-and-idle); acting
   on `work_items` lands with later features, at which point EXIT becomes

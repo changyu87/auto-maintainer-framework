@@ -282,6 +282,42 @@ def test_cli_describe_emits_field_catalog():
 
 
 # ==========================================================================
+# E2E Behaviour: the --describe catalog is COMPLETE — exactly one entry per
+# user-facing knob, each carrying every required field (key/label/controls/
+# default/current/type/validator), and no extras. This is the single source of
+# truth the guided --setup walk-through reads, so it must enumerate every knob.
+# ==========================================================================
+
+def test_describe_catalog_is_complete_one_entry_per_knob():
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = configure.main(["--project-dir", project_dir, "--describe"])
+        assert rc == 0
+        catalog = json.loads(buf.getvalue())
+        keys = [entry["key"] for entry in catalog]
+        # Exactly one entry per writable knob — no duplicates, no omissions.
+        expected_keys = {
+            "mode",
+            "budget.per_day_tokens",
+            "heartbeat.interval_minutes",
+            "backoff.threshold",
+        }
+        assert set(keys) == expected_keys, (
+            f"catalog knobs {set(keys)} != expected {expected_keys}")
+        assert len(keys) == len(set(keys)), "duplicate keys in catalog"
+        # Every entry carries exactly the seven required fields (no more).
+        required = {"key", "label", "controls", "default",
+                    "current", "type", "validator"}
+        for entry in catalog:
+            assert set(entry.keys()) == required, (
+                f"catalog entry fields {set(entry.keys())} != {required}: "
+                f"{entry}")
+
+
+# ==========================================================================
 # Behaviour: the shipped /auto-maintainer:configure skill exists and carries
 # frontmatter with the lifecycle/identity keys.
 # ==========================================================================
@@ -305,3 +341,80 @@ def test_shipped_configure_skill_frontmatter_keys():
     for key in ("name", "description", "version", "owner",
                 "deprecation_criterion"):
         assert key in fm, f"frontmatter missing required key: {key}"
+
+
+def _skill_body():
+    with open(_SKILL_PATH, "r") as f:
+        text = f.read()
+    _, _fm, body = text.split("---", 2)
+    return body
+
+
+# ==========================================================================
+# E2E Behaviour (guided --setup walk-through, spec "Guided --setup
+# walk-through"): the configure skill is bumped to 0.6.0 and its description
+# advertises the guided --setup / walk-me-through entrypoint so the skill
+# triggers when the user asks to be walked through the config.
+# ==========================================================================
+
+def test_skill_version_bumped_to_0_6_0():
+    fm = _skill_frontmatter()
+    assert fm["version"] == "0.6.0", (
+        f"configure skill must be bumped to 0.6.0, got {fm['version']}")
+
+
+def test_skill_description_advertises_setup_walkthrough():
+    fm = _skill_frontmatter()
+    desc = fm["description"].lower()
+    assert "--setup" in desc or "setup" in desc, (
+        "description must advertise the guided --setup entrypoint")
+    assert "walk" in desc, (
+        "description must mention walking the user through the config")
+
+
+# ==========================================================================
+# E2E Behaviour: the skill body documents the guided --setup walk-through that
+# orchestrates over the machine-first --describe catalog, field-by-field, and
+# applies the chosen values in ONE configure.py invocation then --show.
+# ==========================================================================
+
+def test_skill_body_documents_describe_driven_setup():
+    body = _skill_body()
+    assert "--setup" in body, "skill body must document the --setup mode"
+    assert "--describe" in body, (
+        "skill body must read the --describe field catalog")
+    # The catalog field names are the contract surface the walk-through reads.
+    for token in ("key", "label", "controls", "default", "current"):
+        assert token in body, (
+            f"skill body must reference the catalog field '{token}'")
+    assert "--show" in body, (
+        "skill body must --show the result after applying")
+
+
+# ==========================================================================
+# E2E Behaviour: the guided walk-through dispatches NO subagent (spec: "The
+# skill orchestrates over the machine-first catalog, dispatching NO subagent").
+# ==========================================================================
+
+def test_skill_body_dispatches_no_subagent():
+    body = _skill_body()
+    lowered = body.lower()
+    assert "subagent" not in lowered or "no subagent" in lowered, (
+        "guided --setup must dispatch no subagent")
+    assert "agent(" not in lowered, (
+        "skill body must not dispatch an Agent()")
+
+
+# ==========================================================================
+# E2E Behaviour: the walk-through does not hardcode field names/prose; it
+# derives them from the catalog (SKILL.md authoring §4: derive from source, do
+# not paraphrase). The body must state the catalog is the single source of
+# truth and that it does not hardcode field names.
+# ==========================================================================
+
+def test_skill_body_states_catalog_is_source_of_truth():
+    body = _skill_body().lower()
+    assert "source of truth" in body, (
+        "skill body must state the catalog is the single source of truth")
+    assert "hardcode" in body or "hard-code" in body or "hard code" in body, (
+        "skill body must state it does not hardcode field names")
