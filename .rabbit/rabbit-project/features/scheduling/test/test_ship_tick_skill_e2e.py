@@ -146,11 +146,12 @@ def _read_text(path):
 # prompt-cron heartbeat, consuming start.py --clear-only for the latch-clear.
 # --------------------------------------------------------------------------
 
-def test_ship_start_skill_exists_and_names_start_v021():
+def test_ship_start_skill_exists_and_names_start_v030():
     assert os.path.isfile(_START_SKILL), _START_SKILL
     fields = _parse_frontmatter(_START_SKILL)
     assert fields.get("name") == "start", fields
-    assert fields.get("version") == "0.2.1", fields
+    # v0.3.0: config-driven heartbeat interval via start.py --print-interval.
+    assert fields.get("version") == "0.3.0", fields
 
 
 def test_ship_start_skill_carries_lifecycle_metadata():
@@ -174,11 +175,15 @@ def test_ship_start_skill_body_drives_executor_and_clear_only_and_heartbeat():
     assert "recurring" in body.lower(), "start skill must schedule a recurring heartbeat"
 
 
-def test_ship_start_skill_heartbeat_is_three_minutes():
-    """v0.2.1: the heartbeat interval is now ~3 minutes (testability)."""
+def test_ship_start_skill_heartbeat_interval_is_config_driven():
+    """The heartbeat interval is config-driven (§3.3.2, #17 resolved): the skill
+    schedules at the cadence start.py emits via --print-interval (configured
+    heartbeat.interval_minutes, default 3), NOT a hardcoded ~3-minute value."""
     body = _read_text(_START_SKILL)
-    assert "3-minute" in body or "3 minute" in body or "3 min" in body, \
-        "start skill must schedule a ~3-minute heartbeat"
+    assert "--print-interval" in body, \
+        "start skill must read the interval from start.py --print-interval"
+    assert "hardcoded" not in body.lower(), \
+        "start skill must not claim a hardcoded interval"
 
 
 # --------------------------------------------------------------------------

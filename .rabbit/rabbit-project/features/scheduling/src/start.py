@@ -29,7 +29,7 @@ the FRESH start goes through this script.
 scheduling CONSUMES run_tick + lifecycle-dispositions UNCHANGED; it never edits
 or forks them.
 
-Version: 0.2.0
+Version: 0.3.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the control surface is replaced.
@@ -48,6 +48,7 @@ if _SRC not in sys.path:
 
 import run_tick as rt  # noqa: E402
 import lifecycle_dispositions as ld  # noqa: E402
+import safety_governance as sg  # noqa: E402
 
 
 class StartRefused(Exception):
@@ -92,6 +93,20 @@ def _clear_or_refuse(runtime_dir, clear_only=False):
             sys.stdout.write(
                 "[start] cleared latched STOPPED disposition -> IDLE "
                 "(human resume)\n")
+
+
+def heartbeat_interval_minutes(project_dir=None):
+    """The configured heartbeat (tick) cadence in minutes (§3.3.2).
+
+    Read from the central config's heartbeat.interval_minutes via sg.load_config
+    (project-local config.json, else the documented default 3). The /start skill
+    schedules the recurring heartbeat at THIS cadence, so the interval is
+    config-driven (#17 resolved) rather than hardcoded. Resolves project_dir the
+    same way run_tick does when not injected (the installed case).
+    """
+    if project_dir is None:
+        project_dir = rt._resolve_project_dir()
+    return sg.load_config(project_dir)["heartbeat"]["interval_minutes"]
 
 
 def start(runtime_dir=None, state_path=None, journal_path=None, source=None,
@@ -145,7 +160,18 @@ if __name__ == "__main__":
         "--clear-only", action="store_true",
         help="Only clear a latched STOPPED (or refuse on ABORTED); do NOT run "
              "tick #1 (deferred to the executor skill).")
+    parser.add_argument(
+        "--print-interval", action="store_true",
+        help="Print the configured heartbeat interval in minutes "
+             "(heartbeat.interval_minutes, default 3) and exit. The /start skill "
+             "schedules the recurring heartbeat at this cadence; runs no tick.")
     args = parser.parse_args()
+
+    # --print-interval is a pure read: emit the configured cadence and exit,
+    # without touching the disposition or running a tick.
+    if args.print_interval:
+        sys.stdout.write(f"{heartbeat_interval_minutes()}\n")
+        sys.exit(0)
 
     try:
         start(clear_only=args.clear_only)

@@ -206,11 +206,15 @@ def _write_governance(project_dir, payload):
         json.dump(payload, f)
 
 
-def _setup_agent_project(mode="propose"):
+def _setup_agent_project(mode="propose", backoff_threshold=3):
     project_dir = tempfile.mkdtemp(prefix="sched-skip-")
     _write_project_route(project_dir, _AGENT_ROUTE)
     _write_project_map(project_dir, _agent_map())
-    _write_governance(project_dir, {"mode": mode})
+    # The backoff threshold is config-driven (default 5). These triage-memory
+    # tests reach the deferral via 3 blocks, so pin it to 3 here.
+    _write_governance(
+        project_dir,
+        {"mode": mode, "backoff": {"threshold": backoff_threshold}})
     runtime_dir = os.path.join(project_dir, ".auto-maintainer")
     state_path = os.path.join(runtime_dir, "durable-state.json")
     journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")

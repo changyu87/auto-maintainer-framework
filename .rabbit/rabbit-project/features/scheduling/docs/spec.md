@@ -1,8 +1,8 @@
 ---
 feature: scheduling
-version: 0.12.3
+version: 0.13.0
 owner: changyu87
-deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
+deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
 
 # scheduling
@@ -91,12 +91,15 @@ scheduling consumes `safety-governance` UNCHANGED to make the maintainer loop
 governance-aware. This slice **loads + surfaces + persists** governance state;
 enforcement of act-skip is **deferred** to the acting doer (next milestone).
 
-- **Load once per tick.** `run_tick` calls `sg.load_governance(project_dir)`
-  (project-local `${project_dir}/.auto-maintainer/governance.json`, else the
-  documented defaults) and threads the loaded config into the factory `runtime`
-  dict under a `governance` key — so future acting adapters can consult
-  `permits`/budget — without disturbing the existing runtime keys
-  (`project_dir`/`runtime_dir`/`source`/`now`).
+- **Load once per tick.** `run_tick` calls `sg.load_config(project_dir)`
+  (project-local `${project_dir}/.auto-maintainer/config.json`, else the
+  documented defaults; `load_governance` remains a thin alias) and threads the
+  loaded config into the factory `runtime` dict under a `governance` key — so
+  acting adapters can consult `permits`/budget — without disturbing the existing
+  runtime keys (`project_dir`/`runtime_dir`/`source`/`now`). It also READS
+  `backoff.threshold` (default 5) from this config for the backoff gate, and the
+  `/start` heartbeat reads `heartbeat.interval_minutes` (default 3) for its
+  cadence (both owned by safety-governance, consumed here via the contract).
 - **Durable, cross-tick budget window (#69-style surface, durable like the
   counter).** A new durable key `budget` stores `{window_key, spent_tokens}`.
   Each tick resolves a tz-aware `now` (the injected `now` when it is tz-aware,
@@ -176,14 +179,16 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      tick #1 **through the executor** by invoking the `/auto-maintainer:tick`
      skill — NOT `start.py`'s in-process `run_tick` — so an AGENT route's
      agent-state dispatches are fulfilled (DESIGN §2.8 in-session executor model).
-     It then schedules a recurring ~3-min heartbeat as a **prompt** job (so the
+     It then schedules a recurring heartbeat as a **prompt** job (so the
      session is present to fulfill agent dispatches) whose prompt fires the
      `/auto-maintainer:tick` executor each interval — NOT a bare `run_tick.py`
      command, which cannot dispatch agent-states. The latch is cleared ONCE at
      start; the heartbeat does not re-clear it (re-clearing each interval would
-     defeat a `/stop` that lands between heartbeats). **Interval hardcoded to
-     ~3 min** for testability (#17). Heartbeat is **session-only** for slice 1
-     (durable + restart-resume deferred, #31).
+     defeat a `/stop` that lands between heartbeats). **The interval is
+     config-driven** — `start.py` emits the configured `heartbeat.interval_minutes`
+     (default 3, from the central config) and the `/start` skill schedules at that
+     cadence. Heartbeat is **session-only** for slice 1 (durable + restart-resume
+     deferred, #31).
    - `/auto-maintainer:stop` — invokes `stop.py` (latch STOPPED) then cancels the
      heartbeat (CronDelete).
    - `/auto-maintainer:status` — invokes `status.py` and reports the real
@@ -206,8 +211,8 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 ## What you'll see (installed plugin)
 
 `/auto-maintainer:start` → tick #1 pulls the repo's open issues into `work_items`
-(trace shows the count), PERSISTs them, and EXITs **IDLE**. Every ~3 min the
-heartbeat re-pulls the current open issues. `/auto-maintainer:status` shows the
+(trace shows the count), PERSISTs them, and EXITs **IDLE**. Every
+`heartbeat.interval_minutes` (default 3) the heartbeat re-pulls the current open issues. `/auto-maintainer:status` shows the
 disposition + last-pull count. `/stop` latches STOPPED + cancels the heartbeat.
 
 ## Current behaviour
@@ -604,9 +609,10 @@ paths. It consumes `work_intake` (`DiscoveredIssue` / `file_discoveries` /
 - **Injectable sink seam.** `DEFAULT_REPORT_SINK = work_intake.gh_issue_file_sink`
   (mirrors `DEFAULT_PULL_SOURCE`); tests override it with a stub so no network.
   The sink's destination repo is resolved per `DiscoveredIssue.target`:
-  `project` → the project repo (gh default); `maintainer-self` → a configured
-  maintainer repo (`governance.maintainer_repo` when set, else falls back to the
-  project repo for v1).
+  `project` → the project repo (gh default); `maintainer-self` → the **fixed**
+  `safety_governance.MAINTAINER_REPO` (the upstream maintainer repo) — **never**
+  the project repo, with **no fallback** (§3.11.6). The former
+  `governance.maintainer_repo` config field is gone.
 - **Surfacing — including ERRORS (never silent, live-found).** The trace and
   `status.py` show `reported=<filed>/<skipped>` (always, #69 style), and when any
   discovery FAILED to file the trace appends `report_errors=<n>`; the `tick_end`
@@ -641,7 +647,8 @@ that to `run_tick`'s acting-state governance. It consumes `observability`
   - `opened`/`closed` → recorded in the acted-ledger (existing) AND its backoff
     entry is cleared (a success resets the counter).
   - `blocked` → `backoff[work_item_id].blocked_count += 1`. If the count reaches
-    the threshold `BACKOFF_THRESHOLD` (= 3), the item is **deferred**:
+    the configured threshold (`backoff.threshold`, default 5, read from the
+    central config via `sg.load_config`), the item is **deferred**:
     `deferred_at_updated_at` is set to the item's current issue `updated_at`
     (looked up from the tick's `work_items`), and an **escalation** is posted via
     `observability.escalate(<issue ref>, "auto-maintainer attempted N times,
@@ -701,8 +708,9 @@ the loop only re-triages NEW or CHANGED issues. Edits live ONLY in scheduling
   feeds `resume_dispatch` back to `run_tick`) now ships as the `tick` skill
   (`ship/skills/tick/SKILL.md`); `run_tick` itself still only emits the dispatch
   requests and applies provided results (it never calls the Agent tool).
-- Configurable interval + route (config feature) — interval hardcoded to ~3 min
-  for testability (auto-maintainer-framework#17).
+- Configurable **route** via `route.json` + the `/auto-maintainer:route` CLI
+  (Phase 4). The tick **interval is now config-driven**
+  (`heartbeat.interval_minutes`, default 3) — #17 resolved.
 - System-cron scheduler backend (§3.3.1) — slice 1 is in-session heartbeat only.
 - TRIAGE/IMPLEMENT/VERIFY/INTEGRATE — the loop now PULLs (read-and-idle); acting
   on `work_items` lands with later features, at which point EXIT becomes
