@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.12.1
+version: 0.12.2
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -593,9 +593,16 @@ paths. It consumes `work_intake` (`DiscoveredIssue` / `file_discoveries` /
   `project` → the project repo (gh default); `maintainer-self` → a configured
   maintainer repo (`governance.maintainer_repo` when set, else falls back to the
   project repo for v1).
-- **Surfacing.** The trace and `status.py` gain a `reported=<filed>/<skipped>`
-  token (always shown, #69 style); the counts are also added to the `tick_end`
-  event's `detail` (NO new event kind — reuses the existing terminal event).
+- **Surfacing — including ERRORS (never silent, live-found).** The trace and
+  `status.py` show `reported=<filed>/<skipped>` (always, #69 style), and when any
+  discovery FAILED to file the trace appends `report_errors=<n>`; the `tick_end`
+  event `detail` carries `reported_filed` / `reported_skipped` /
+  `reported_errored`. `_flush_report` returns the errored count too (from
+  `ReportResult.errors`). This is the fix for a real silent failure: a filing
+  error (e.g. a missing tracker label) was caught into `ReportResult.errors` but
+  the surface only showed `reported=0/0`, so a total filing failure looked like
+  "no discoveries". Filing errors are now visible. (NO new event kind — the
+  terminal `tick_end` carries the errored count.)
 - **Unchanged.** A tick with NO discoveries flushes nothing (`reported=0/0`) and
   is otherwise byte-identical. Read products stay #64 per-tick ephemeral; the
   REPORT ledger + budget window + acted-ledger are the durable cross-tick facts.
