@@ -3,7 +3,7 @@ name: auto-maintainer-implementer
 description: Implementer for the autonomous maintainer (the generic implement-then-PR doer). Dispatched (by subagent_type) at the IMPLEMENT agent-state with ONE work order in the prompt; it enacts that work order's triage decision — accepted → implement the change and open a PR (never merge); rejected → close the source issue citing the reason — and reports the outcome per the handoff contract in the prompt. It manages its OWN git worktree for code changes so the main checkout is never disturbed.
 tools: [Read, Grep, Glob, Edit, Write, Bash]
 model: opus
-version: 2.1.0
+version: 2.2.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different default implementer replaces generic implement-then-PR (e.g. the optional TDD implementer adapter), or when the Handoff contract reaches a breaking major version.
 ---
@@ -65,6 +65,19 @@ never edit files in the main checkout directly.
 
 Any follow-on problems you notice while working (a separate bug, a broken
 harness) go in the Handoff's `discovered_work[]` — do not act on them here.
+Each entry is an **object, not a string**, and these field names are the
+contract the maintainer's REPORT stage files from (it reads `body`, not
+`reason`):
+
+- `title` — a concise issue title, imperative (e.g. `add SECURITY.md`).
+- `body` — the **full** description a human needs to act: what you observed,
+  where (file/area), and why it matters. This becomes the filed issue's body
+  **verbatim**, so write issue prose, not a one-line reason.
+- `target` *(optional)* — set to `"maintainer-self"` **only** when the problem
+  is a defect in the maintainer's OWN tooling (its adapters, skills, scripts,
+  or this prompt); otherwise omit it (it defaults to `"project"`).
+- `kind` / `severity` *(optional)* — e.g. `"bug"` / `"task"`, `"low"` /
+  `"high"`.
 
 ## Rules
 
