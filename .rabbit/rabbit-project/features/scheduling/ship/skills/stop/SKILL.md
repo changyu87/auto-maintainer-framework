@@ -25,19 +25,23 @@ loop does.
    `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code to the installed plugin's root,
    so the script resolves regardless of the session's working directory. The
    script writes the durable `STOPPED` disposition marker via the
-   lifecycle-dispositions API: the next tick's GUARD reads `STOPPED`, halts
-   before doing any work, and no issues are pulled. Do not hand-roll any
-   Python or write the marker yourself — `stop.py` owns the state write; this
+   lifecycle-dispositions API AND clears the durable **loop-intent** marker: the
+   next tick's GUARD reads `STOPPED`, halts before doing any work, and no issues
+   are pulled, and the next session's `SessionStart` auto-resume hook finds no
+   loop-intent so it does NOT re-arm the heartbeat. Do not hand-roll any
+   Python or write the markers yourself — `stop.py` owns the state writes; this
    skill only runs it. Print the confirmation line it emits.
 
-2. Cancel the recurring ~1-minute heartbeat that `/auto-maintainer:start`
-   scheduled (CronDelete), so no further wake fires. This is the one inherently
+2. Cancel the recurring heartbeat that `/auto-maintainer:start` scheduled
+   (CronDelete), so no further wake fires. This is the one inherently
    agent-mediated step: Claude Code exposes no plugin-level cron API, so the
    session scheduler cancels the wake.
 
 3. Confirm to the user that the loop is stopped and will not tick until they
    run `/auto-maintainer:start` again.
 
-The `STOPPED` latch and the heartbeat cancellation are independent safeguards:
-the latch freezes the loop even if a stray wake fires, and the cancellation
-removes the wake. Both are applied so a stop is durable across a restart.
+Three safeguards make a stop durable: the `STOPPED` latch freezes the loop even
+if a stray wake fires, the heartbeat cancellation removes the current session's
+wake, and clearing the durable loop-intent stops the next session's
+`SessionStart` hook from auto-resuming. All three are applied so a stop holds
+both within the session and across a restart.

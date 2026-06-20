@@ -37,18 +37,22 @@ if _SRC not in sys.path:
 
 import run_tick as rt  # noqa: E402
 import lifecycle_dispositions as ld  # noqa: E402
+import heartbeat as hb  # noqa: E402
 
 
 def stop():
     """Latch the loop STOPPED and return the runtime dir the marker landed in.
 
     Resolves the runtime dir via run_tick's resolver, writes disposition
-    STOPPED through the lifecycle-dispositions API, and prints a one-line
-    confirmation. Idempotent: calling it when already STOPPED simply re-writes
-    the same marker.
+    STOPPED through the lifecycle-dispositions API, clears the durable
+    loop-intent (so a future session's SessionStart hook does NOT auto-resume
+    the heartbeat), and prints a one-line confirmation. Idempotent: calling it
+    when already STOPPED simply re-writes the same marker and re-clears intent.
     """
     runtime_dir, _state_path, _journal_path = rt.resolve_runtime_paths()
     ld.write_disposition(runtime_dir, ld.Disposition.STOPPED)
+    # Clear the durable loop-intent: a stop must NOT auto-resume next session.
+    hb.clear_loop_intent(runtime_dir)
     sys.stdout.write(
         f"[stop] disposition={ld.Disposition.STOPPED} runtime_dir={runtime_dir}\n")
     return runtime_dir

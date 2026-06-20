@@ -235,6 +235,19 @@ _NORMALIZED_LIBS = {
     # the PLAIN self-path bootstrap (the same as run_tick/status/start/configure)
     # inserted before the adapter_wiring import — resolving every sibling from
     # the co-located lib/ alone.
+    # heartbeat.py is scheduling's durable loop-intent + cross-session
+    # auto-resume decision lib (the #31 durable heartbeat). It imports its
+    # sibling lifecycle_dispositions (its only sibling import, the bootstrap
+    # anchor) and imports os + sys at module top BEFORE that anchor, so it takes
+    # the PLAIN self-path bootstrap (the same as run_tick/start/configure) —
+    # resolving lifecycle_dispositions from the co-located lib/ alone. The
+    # shipped session-start-resume.py hook imports heartbeat from lib/ via its
+    # own ../lib path insert.
+    "heartbeat.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "heartbeat.py"),
+        "import lifecycle_dispositions as ld  # noqa: E402",
+        _SELF_PATH_BOOTSTRAP,
+    ),
     "route_config.py": (
         os.path.join(_FEATURES_REL, "scheduling", "src", "route_config.py"),
         "import adapter_wiring as aw  # noqa: E402",

@@ -1,5 +1,38 @@
 # scheduling — Changelog
 
+## contract 0.8.0 — 2026-06-20
+
+- **Durable heartbeat + SessionStart auto-resume (#31, DESIGN §3.3.2 / §3.3.4).**
+  The warm-only heartbeat (a session-scheduled prompt) ended with the Claude
+  session and did not auto-resume next session. It is now DURABLE — not by
+  keeping a clock alive (a plugin cannot) but by persisting a durable
+  **loop-intent** marker and re-arming the in-session heartbeat from a
+  `SessionStart` hook on the next session.
+  - **New lib `heartbeat.py`** owns three runtime-dir markers alongside the
+    lifecycle disposition/lock markers (which it only READS, never edits):
+    `loop-intent` (set `running` by `/start`, cleared by `/stop`),
+    `last-resume-session` (the cross-session arm-once dedup), plus the pure
+    decision `should_auto_resume(runtime_dir, session_id)` — True only when
+    intent is `running`, the loop is NOT latched `STOPPED`/`ABORTED` and NOT owed
+    a `RESTART_NEEDED`, and this session has not already armed. The decision is a
+    pure function of on-disk state + session id, so it is deterministic and
+    unit-testable with no session/clock/scheduler.
+  - **`start.py`** records the durable loop-intent after the latch-clear/refuse
+    succeeds (in BOTH default and `--clear-only` modes; a refused `ABORTED` start
+    records nothing). **`stop.py`** clears the loop-intent (so a stopped loop does
+    NOT auto-resume) in addition to latching `STOPPED`.
+  - **New shipped SessionStart hook `session-start-resume.py`** (scheduling
+    `ship/hooks/`): reads intent + disposition, asks `should_auto_resume`, stamps
+    the dedup, and emits `additionalContext` instructing the session to re-run
+    `/auto-maintainer:start` to re-arm the heartbeat — at most once per session.
+    A hook never breaks the session (any error -> silent). Registered as a second
+    `SessionStart` command in the shipped `hooks.json` (packaging-config asset),
+    alongside the persona hook.
+  - **build_plugin.py** ships `heartbeat.py` into `lib/` with the plain self-path
+    bootstrap (resolving its sibling `lifecycle_dispositions` from `lib/` alone);
+    the hook resolves `heartbeat` from `../lib`. Build stays deterministic +
+    byte-stable. scheduling consumes lifecycle-dispositions UNCHANGED.
+
 ## contract 0.7.0 — 2026-06-10
 
 - **Doer governance for ACTING agent-states: acted-ledger + budget pre-gate +

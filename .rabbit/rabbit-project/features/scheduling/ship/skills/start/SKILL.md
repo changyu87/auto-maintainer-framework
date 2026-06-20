@@ -40,6 +40,19 @@ deterministic `${CLAUDE_PLUGIN_ROOT}/lib/start.py` owns that decision
 The latch is cleared ONCE at start; the recurring heartbeat does NOT re-clear it
 (re-clearing each interval would defeat a `/stop` that lands between heartbeats).
 
+## Why the heartbeat is durable across sessions
+
+The recurring heartbeat is session-mediated, so it ends when the Claude session
+ends. To make it DURABLE (DESIGN §3.3.2 / §3.3.4), `start.py` records a durable
+**loop-intent** marker when it clears the latch — "the human wants the loop
+ticking" — which survives the session ending. On the NEXT session the plugin's
+`SessionStart` auto-resume hook reads that marker and, unless the loop is latched
+(`STOPPED`/`ABORTED`) or owes a restart, asks the session to re-run this `/start`
+skill to re-arm the heartbeat — at most once per session (cross-session dedup).
+`/auto-maintainer:stop` clears the loop-intent, so a stopped loop does NOT
+auto-resume. You do not need to do anything for this: `start.py` records the
+intent for you in step 1.
+
 ## Steps
 
 1. Clear the latch (no tick yet) with the deterministic starter:

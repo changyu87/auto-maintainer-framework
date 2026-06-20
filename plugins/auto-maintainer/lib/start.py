@@ -53,6 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run_tick as rt  # noqa: E402
 import lifecycle_dispositions as ld  # noqa: E402
 import safety_governance as sg  # noqa: E402
+import heartbeat as hb  # noqa: E402
 
 
 class StartRefused(Exception):
@@ -138,6 +139,13 @@ def start(runtime_dir=None, state_path=None, journal_path=None, source=None,
         journal_path = journal_path if journal_path is not None else _journal
 
     _clear_or_refuse(runtime_dir, clear_only=clear_only)
+
+    # The latch-clear/refuse succeeded (ABORTED would have raised above), so the
+    # human wants the loop ticking: durably record the loop-intent so a future
+    # session's SessionStart hook auto-resumes the heartbeat (§3.3.2/§3.3.4).
+    # Recorded in BOTH modes — --clear-only is the executor-model start, which
+    # still arms the durable heartbeat even though tick #1 is deferred.
+    hb.record_loop_intent(runtime_dir)
 
     if clear_only:
         return None

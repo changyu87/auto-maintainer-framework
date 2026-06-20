@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -10,5 +10,5 @@
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
   "tdd_state": "test-green",
   "updated": "2026-06-20",
-  "spec_no_change_reason": "spec.md (v0.14.0) + contract.md were bumped ahead of this cycle in a prior commit describing the wiring-config CLIs (route_config.py / adapter_map_config.py / AGENT_PORT_TEMPLATES + the route/adapter-map ship skills); this cycle implements the code + tests to match the already-updated spec."
+  "spec_no_change_reason": "Durable heartbeat + SessionStart auto-resume (#31): adds heartbeat.py (durable loop-intent + cross-session arm-once auto-resume decision), wires start.py/stop.py to record/clear the intent, ships a SessionStart resume hook, and registers it in hooks.json — fulfilling the already-documented DESIGN §3.3.2/§3.3.4 heartbeat-durability intent; CHANGELOG bumped to contract 0.8.0."
 }
