@@ -388,8 +388,15 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 - **3.4.3** Override + routing mechanism (project config maps each port to a
   script; `route.json` defines the transition table and may insert or reorder
   adapter states between the core anchors). **[v1]**
-- **3.4.4** Adapter SDK + authoring docs. **[v2]** *Rationale:* v1 ships working
-  defaults; formal SDK ergonomics follow once contracts are battle-tested.
+- **3.4.4** Adapter SDK + authoring docs. **[v2 — SHIPPED]** *Rationale:* v1
+  ships working defaults; formal SDK ergonomics follow once contracts are
+  battle-tested. *Realized as scheduling's `adapter_scaffold.py` + the
+  `/auto-maintainer:scaffold` skill (#52): emits a skeleton conforming to the
+  §3.4.3 adapter factory convention, wires the port→adapter map + route, and
+  runs the contract-conformance validator (reusing adapter-wiring's
+  `build_loop`/`validate_wiring` → tick-orchestrator's `validate_signals` +
+  `validate_data_readiness` + fsm-contracts) so BYO-adapter is a CHECKED,
+  atomically-rolled-back operation.*
 - **3.4.5** Built-in non-GitHub trackers (Jira / Linear). **[deferred]**
   *Rationale:* the *port* exists in v1; extra built-in adapters are additive.
 - **3.4.6** Agent-adapter contract (in-session subagent dispatch, per section

@@ -142,8 +142,12 @@ executed (execution is a later slice).
 
 ## Known gaps / deferred
 
-- The convenience **adapter scaffold/authoring tool** (§3.4.4, #52) — v2; this
-  feature is the mechanism the tool will sit on.
+- The convenience **adapter scaffold/authoring tool** (§3.4.4, #52) — SHIPPED in
+  `scheduling` (`src/adapter_scaffold.py` + the `/auto-maintainer:scaffold`
+  skill): it emits a skeleton conforming to this feature's factory convention,
+  wires the port→adapter map + route, and runs the contract-conformance
+  validator by CONSUMING this feature's `build_loop` / `validate_wiring`
+  UNCHANGED. This feature is the mechanism the tool sits on.
 - `userConfig` prompts (token/mode/budget, §3.10.1) — config feature.
 - Hot-reload of route/map mid-run; multiple named routes — later.
 - The **default route + default adapter-map + built-in adapter factories** are

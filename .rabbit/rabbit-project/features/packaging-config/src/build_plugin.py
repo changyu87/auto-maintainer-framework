@@ -31,6 +31,9 @@ Sources:
       .rabbit/rabbit-project/features/safety-governance/src/safety_governance.py
       .rabbit/rabbit-project/features/safety-governance/src/configure.py
       .rabbit/rabbit-project/features/verify-integrate/src/verify_integrate.py
+      .rabbit/rabbit-project/features/scheduling/src/route_config.py
+      .rabbit/rabbit-project/features/scheduling/src/adapter_map_config.py
+      .rabbit/rabbit-project/features/scheduling/src/adapter_scaffold.py
     The six pure libs are copied byte-for-byte; run_tick.py, status.py,
     stop.py, start.py, work_intake.py, adapter_wiring.py, prioritize.py,
     implement.py, safety_governance.py, configure.py, and verify_integrate.py
@@ -243,6 +246,19 @@ _NORMALIZED_LIBS = {
     "adapter_map_config.py": (
         os.path.join(
             _FEATURES_REL, "scheduling", "src", "adapter_map_config.py"
+        ),
+        "import adapter_wiring as aw  # noqa: E402",
+        _SELF_PATH_BOOTSTRAP,
+    ),
+    # adapter_scaffold is scheduling's BYO-adapter authoring/scaffold tool
+    # (DESIGN §3.4.4). It imports its sibling adapter_wiring (its FIRST sibling
+    # import, the bootstrap anchor) plus run_tick/route_config/adapter_map_config,
+    # and already imports os/sys at module top, so it takes the PLAIN self-path
+    # bootstrap (the same as route_config/adapter_map_config) inserted before the
+    # adapter_wiring import — resolving every sibling from the co-located lib/.
+    "adapter_scaffold.py": (
+        os.path.join(
+            _FEATURES_REL, "scheduling", "src", "adapter_scaffold.py"
         ),
         "import adapter_wiring as aw  # noqa: E402",
         _SELF_PATH_BOOTSTRAP,

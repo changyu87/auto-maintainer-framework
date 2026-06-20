@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.14.0
+version: 0.15.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -761,6 +761,47 @@ owners (work-intake `WORK_ORDERS_SLOT`, implement `HANDOFFS_SLOT`, …) so a bar
 `subagent_type` is enough to produce a valid agent entry. This per-port knowledge
 is why the adapter-map CLI lives in scheduling (which imports those slot owners),
 not in dependency-free adapter-wiring.
+
+### adapter-scaffold tool — `src/adapter_scaffold.py` + `/auto-maintainer:scaffold` (§3.4.4, #52)
+
+- `src/adapter_scaffold.py` (deterministic, script-tier — spec-rules §1): the
+  **BYO-adapter authoring/scaffold tool** — the provider-supplied convenience
+  (DESIGN §3.4.4) that makes bring-your-own-adapter a **CHECKED** operation. It
+  is the SDK ergonomic that follows once the contracts are battle-tested: it
+  sits on the §3.4.3 adapter-wiring mechanism and templates the full adapter
+  contract shape proven by the shipped reference adapters (manifest + factory).
+- It does three things in one command (`new --port P --after A --before B`):
+  1. **EMITS a skeleton** SCRIPT adapter to
+     `${CLAUDE_PROJECT_DIR}/.auto-maintainer/adapters/<port_lower>.py` —
+     a self-contained module with a fsm-contracts `StateManifest`,
+     `run(TickContext) -> StateResult`, and `factory(runtime) ->
+     (StateManifest, run)` (the adapter-wiring factory convention). The
+     skeleton reads NOTHING, writes its own fresh product slot, and emits
+     `OK`/`EMPTY` — the minimal signal-valid + data-ready shape — with a
+     `# TODO` for the author's logic.
+  2. **WIRES** the port into the adapter-map (`port -> "<module>:factory"`)
+     AND the route (insert the new state between `--after`/`--before`),
+     reusing the sibling `route_config` / `adapter_map_config` load-modify-save
+     helpers. The per-edit validate is skipped; the COMBINED result is
+     validated once.
+  3. **VALIDATES** the resulting wiring via `adapter_wiring.build_loop` /
+     `validate_wiring` — the SAME load-time validator the loop runs
+     (`tick_orchestrator.validate_signals` + `validate_data_readiness` +
+     the fsm-contracts route schema + anchor invariants), with the project's
+     adapters dir on `sys.path` so the emitted `"<module>:factory"` resolves
+     by import.
+- **Checked + atomic:** on ANY failure (an unknown insertion point, a port that
+  is already a route state, or wiring that does not validate) the operation is
+  **REJECTED** (non-zero exit) and **FULLY ROLLED BACK** — the emitted adapter
+  file is removed and the route/map overrides are restored to their prior bytes,
+  so a failed scaffold leaves NO partial config behind. `--emit --port P` is a
+  read-only preview that writes nothing.
+- It authors **NEW** ports only; swapping an EXISTING port's implementation stays
+  `adapter_map_config`'s job (`set-script` / `set-agent`).
+- The `/auto-maintainer:scaffold` skill (`ship/skills/scaffold/SKILL.md`) is a
+  guided front-end: it previews with `--emit`, takes the port + insertion point
+  from the user, runs `new`, reports any rejection verbatim, and points the user
+  at the emitted file's `# TODO`. Dispatches NO subagent.
 
 ## Known gaps / deferred
 
