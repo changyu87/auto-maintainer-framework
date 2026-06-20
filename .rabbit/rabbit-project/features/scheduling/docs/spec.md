@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.12.2
+version: 0.12.3
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -70,6 +70,20 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
   trace and in `status.py` (always shown, including 0, #69), in the order
   `work_items work_orders execution_plan handoffs`. (Durable state keeps cross-tick
   facts; the read-product snapshot is overwritten every tick.)
+- **Producible read-product slots are SEEDED EMPTY (skipped-state safety,
+  live-found).** `_seed_context` not only registers but WRITES a schema-valid
+  empty default for every producible read-product slot it registers
+  (`work_orders`, `execution_plan`, `handoffs`, `verdicts`, `integration_result`).
+  A route may SKIP a producing state via a signal branch — e.g. `VERIFY EMPTY →
+  PERSIST` skips INTEGRATE/CLEANUP, or `TRIAGE EMPTY → VERIFY` skips IMPLEMENT — so
+  that state never writes its slot. Without a seeded default, the terminal's
+  `ctx.read(<slot>)` (run to persist the #64 snapshot) raised a `ContractError`
+  ("slot has not been written") and CRASHED the whole tick. Seeding empties makes
+  a skipped producer persist its product EMPTY (the #64-correct value) instead of
+  crashing. A state that DOES run overwrites its seeded empty as before; the
+  empties also flow through the agent checkpoint/restore so a multi-resume tick is
+  equally safe. Regression-tested on a `VERIFY EMPTY → PERSIST` route (no open
+  loop PRs) and a `TRIAGE EMPTY` route (no work orders).
 
 ## Governance wiring (slice 1: load + surface + persist)
 
