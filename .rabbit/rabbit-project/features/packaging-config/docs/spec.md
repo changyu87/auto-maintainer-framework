@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.8
+version: 0.2.9
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -191,6 +191,13 @@ no longer errors on a missing label) and `lib/run_tick.py` (the REPORT flush now
 surfaces `report_errors=<n>`, so a sink failure is never silent). Both
 re-normalize/re-copy from their updated sources; no build change beyond
 `_PLUGIN_VERSION → 0.2.27`.
+
+**Plugin patch v0.2.28** — re-ship the skipped-state terminal-crash fix:
+`lib/run_tick.py` now seeds schema-valid empty defaults for the producible
+read-product slots, so a tick that skips a producing state via a signal branch
+(`VERIFY EMPTY → PERSIST`, `TRIAGE EMPTY → …`) persists the product empty instead
+of crashing with a `ContractError`. Re-normalizes from the updated source; no
+build change beyond `_PLUGIN_VERSION → 0.2.28`.
 
 Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
 the self-path bootstrap, importing `safety_governance` from `lib/`),
