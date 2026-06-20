@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -9,6 +9,6 @@
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
   "tdd_state": "test-green",
-  "updated": "2026-06-14",
-  "spec_no_change_reason": "Spec for the VERIFY/INTEGRATE/CLEANUP wiring slice was already committed (ef78d4a) ahead of this TDD cycle; this cycle only adds the implementation + tests."
+  "updated": "2026-06-20",
+  "spec_no_change_reason": "Spec section for backoff (\u00a73.8.5) + version bump to 0.11.0 were committed ahead of this TDD cycle; this cycle adds implementation + tests only."
 }
