@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-13T03:57:44Z",
   "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-20",
   "spec_no_change_reason": "spec.md already updated to schema 2.0.0 (central config.json rename, per-tick removed, fixed MAINTAINER_REPO, heartbeat+backoff) in commit 76c29ea; this cycle catches tests+implementation up to the committed spec"
 }
