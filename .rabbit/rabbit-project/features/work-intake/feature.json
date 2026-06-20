@@ -1,6 +1,6 @@
 {
   "name": "work-intake",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/work-intake/src/**",
@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T07:47:37Z",
   "deprecation_criterion": "Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version).",
-  "tdd_state": "test-green",
-  "updated": "2026-06-14",
-  "spec_no_change_reason": "Spec already updated in commit 9c2d521 (loopback excludes loop-filed at PULL, not reject); this cycle implements that spec."
+  "tdd_state": "test-red",
+  "updated": "2026-06-20",
+  "spec_no_change_reason": "spec.md already documents the gh label-ensure-before-create fix at v0.3.2 (gh_issue_file_sink bullet); this cycle implements that spec. feature.json version synced 0.3.1->0.3.2."
 }
