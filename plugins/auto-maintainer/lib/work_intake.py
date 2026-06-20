@@ -497,6 +497,16 @@ def gh_issue_file_sink(discovery, repo=None, runner=subprocess.run):
     body = discovery.body
     marker = _am_dedup_marker(discovery.dedup_key)
     body = f"{body}\n\n{marker}" if body else marker
+    # `gh issue create --label <L>` FAILS if label L is absent in the repo, and
+    # a fresh repo has no provenance label — so every filing errored (silently,
+    # since file_discoveries catches sink errors). ENSURE the label exists first
+    # via an idempotent `gh label create`. check=False: an "already exists"
+    # non-zero exit is TOLERATED, never raised (the label simply already exists).
+    label_cmd = ["gh", "label", "create", FILED_BY_LABEL,
+                 "--description", "filed by the autonomous maintainer"]
+    if repo:
+        label_cmd += ["--repo", repo]
+    runner(label_cmd, capture_output=True, text=True, check=False)
     cmd = ["gh", "issue", "create",
            "--title", discovery.title,
            "--body", body,

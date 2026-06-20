@@ -628,11 +628,13 @@ def persisted_triage_memory(state_path):
 
 
 def persisted_last_reported(state_path):
-    """The last tick's REPORT outcome {filed, skipped} persisted under
-    LAST_REPORTED_KEY, or {"filed": 0, "skipped": 0} when no tick ran a flush.
-    Lets status.py surface reported=<filed>/<skipped> without re-running."""
+    """The last tick's REPORT outcome {filed, skipped, errored} persisted under
+    LAST_REPORTED_KEY, or {"filed": 0, "skipped": 0, "errored": 0} when no tick
+    ran a flush. Lets status.py surface reported=<filed>/<skipped> without
+    re-running. Backward-compatible: a doc persisted before errored was added (no
+    `errored` key) still reads, and consumers default errored to 0."""
     doc = ds.DurableState(state_path).load()
-    return doc.get(LAST_REPORTED_KEY, {"filed": 0, "skipped": 0})
+    return doc.get(LAST_REPORTED_KEY, {"filed": 0, "skipped": 0, "errored": 0})
 
 
 def persisted_report_ledger(state_path):
@@ -1270,22 +1272,27 @@ def _repo_for_target(target, gov):
 
 def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink):
     """Flush the tick's discoveries through work-intake's REPORT port at the
-    terminal (out-of-band). Returns (filed_count, skipped_count).
+    terminal (out-of-band). Returns (filed_count, skipped_count, errored_count).
 
     Gathers + normalizes the discoveries, then trust-gates filing on
     sg.permits('file', mode):
       - NOT permitted (dry-run): does NOT file and leaves the ledger UNTOUCHED so
-        a later armed tick files them; returns (0, <would-file count>) — the
+        a later armed tick files them; returns (0, <would-file count>, 0) — the
         intent (the would-file count) is surfaced via the returned skipped count.
       - permitted (propose / gated-merge): files each not-yet-known discovery via
         wi.file_discoveries (the per-target repo bound onto the injected sink),
         then RECORDS each filed {dedup_key: {tracker_ref, url}} into the durable
         REPORT_LEDGER_KEY (load-modify-save just that key). Returns
-        (len(filed), len(skipped_existing)).
+        (len(filed), len(skipped_existing), len(errors)).
+
+    The errored count (from ReportResult.errors) makes a filing failure VISIBLE:
+    a sink error (e.g. a missing tracker label) was caught into errors but the
+    surface only showed reported=0/0, so a total filing failure looked like "no
+    discoveries". Surfacing errored is the fix.
     """
     pairs = _gather_discoveries(handoffs, discoveries_slot)
     if not pairs:
-        return 0, 0
+        return 0, 0, 0
     normalized = [_normalize_discovery(raw, fallback_wo_id=wo_id)
                   for raw, wo_id in pairs]
     known = set(persisted_report_ledger(state_path))
@@ -1294,7 +1301,7 @@ def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink):
         # dry-run: log the intent (the would-file count) but DO NOT file and DO
         # NOT touch the ledger — a later armed tick files them.
         would_file = len([d for d in normalized if d.dedup_key not in known])
-        return 0, would_file
+        return 0, would_file, 0
 
     def _routed_sink(discovery):
         return sink(discovery, repo=_repo_for_target(discovery.target, gov))
@@ -1315,7 +1322,7 @@ def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink):
         doc[REPORT_LEDGER_KEY] = ledger
         ds.DurableState(state_path).save(doc)
 
-    return len(result.filed), len(result.skipped_existing)
+    return len(result.filed), len(result.skipped_existing), len(result.errors)
 
 
 def _gate_acting_state(name, agentstate, slot_values, tick_id, mode,
@@ -2015,7 +2022,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         # slot) at the terminal, AFTER the read products are persisted, on BOTH
         # the pure-script and agent-driver done paths. Trust-gated + journaled
         # idempotent inside _flush_report.
-        reported_filed, reported_skipped = _flush_report(
+        reported_filed, reported_skipped, reported_errored = _flush_report(
             state_path, tick_handoffs, discoveries, mode, gov,
             report_sink or DEFAULT_REPORT_SINK)
     else:
@@ -2027,7 +2034,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         doc[BUDGET_KEY] = new_budget_state
         ds.DurableState(state_path).save(doc)
         # No route body ran on a halt: nothing to report.
-        reported_filed, reported_skipped = 0, 0
+        reported_filed, reported_skipped, reported_errored = 0, 0, 0
 
     disposition = ld.read_disposition(runtime_dir)
     work_items_count = persisted_work_items_count(state_path)
@@ -2042,8 +2049,12 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     gov_fields = governance_fields(gov, new_budget_state, budget)
     # The outbound REPORT surface (#69 style — always shown): reported=<filed>/
     # <skipped>. Placed after the governance fields; all current fields/order are
-    # preserved. A no-discovery tick shows reported=0/0.
+    # preserved. A no-discovery tick shows reported=0/0. When any discovery FAILED
+    # to file (errored>0), append report_errors=<n> so a filing failure is VISIBLE
+    # rather than masquerading as reported=0/0 "no discoveries".
     reported_field = f"reported={reported_filed}/{reported_skipped}"
+    if reported_errored > 0:
+        reported_field += f" report_errors={reported_errored}"
     # The skip-unchanged re-triage surface (§3.5.3 — always shown): triaged=
     # <judged>/<pulled>. When a work_items agent-state (TRIAGE) ran this tick, the
     # filter persisted this tick's judged/pulled under LAST_TRIAGED_KEY; read it.
@@ -2062,7 +2073,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # re-running (load-modify-save just LAST_REPORTED_KEY, preserving all else).
     doc = ds.DurableState(state_path).load()
     doc[LAST_REPORTED_KEY] = {"filed": reported_filed,
-                              "skipped": reported_skipped}
+                              "skipped": reported_skipped,
+                              "errored": reported_errored}
     ds.DurableState(state_path).save(doc)
     sys.stdout.write(
         f"[tick] path={'->'.join(result.path)} work_items={work_items_count} "
@@ -2083,7 +2095,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "execution_plan": execution_plan_count,
         "handoffs": handoffs_count,
         "reported_filed": reported_filed,
-        "reported_skipped": reported_skipped})
+        "reported_skipped": reported_skipped,
+        "reported_errored": reported_errored})
 
     if return_run_result:
         return result

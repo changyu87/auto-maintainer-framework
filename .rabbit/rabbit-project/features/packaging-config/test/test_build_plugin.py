@@ -439,13 +439,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (v0.2.26, hardened tick executor skill): version bumped to 0.2.26 in
+# Re-ship (v0.2.27, REPORT silent-failure fix): version bumped to 0.2.27 in
 # BOTH plugin.json and marketplace.json, and the two are consistent. The spec
-# permits a patch bump on each re-ship of the plugin tree (0.2.26 re-ships the
-# tick executor skill skills/tick/SKILL.md at v0.4.0 with the --step/--resume
-# protocol clarification).
+# permits a patch bump on each re-ship of the plugin tree (0.2.27 re-ships the
+# REPORT silent-failure fix: lib/work_intake.py label-ensure + lib/run_tick.py
+# report_errors surfacing).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_26_and_consistent():
+def test_version_bumped_to_0_2_27_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +457,10 @@ def test_version_bumped_to_0_2_26_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.26", \
-            f"plugin.json version must be 0.2.26, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.26", \
-            "marketplace.json plugin entry version must be 0.2.26"
+        assert pdata.get("version") == "0.2.27", \
+            f"plugin.json version must be 0.2.27, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.2.27", \
+            "marketplace.json plugin entry version must be 0.2.27"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
