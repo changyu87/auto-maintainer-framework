@@ -467,8 +467,15 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 ### 3.5 TRIAGE Pipeline
 - **3.5.1** Intake / normalize to a canonical WorkItem. **[v1]**
 - **3.5.2** Validity gate (well-formed, in-scope, non-spam, not stale). **[v1]**
-- **3.5.3** Dedup vs closed (already-resolved guard); back with native
-  mark-as-duplicate where available. **[v1]**
+- **3.5.3** Dedup vs closed (already-resolved guard) + **skip-unchanged
+  re-triage**. A durable per-issue record keyed on the issue's `updated_at`
+  remembers the last triage decision; an issue **unchanged** since it was last
+  triaged is **not re-judged** — only NEW or CHANGED issues (advanced
+  `updated_at`) are dispatched to TRIAGE, so the loop does not pay the model cost
+  of re-deciding the same items every tick. The SAME `updated_at` signal drives
+  the backoff re-entry (§3.8.5): a changed issue re-enters TRIAGE and resets any
+  deferral. Dedup-vs-closed: an already-closed/resolved issue is not re-surfaced.
+  Back with native mark-as-duplicate where available. **[v1]**
 - **3.5.4** Dedup vs open (merge overlapping open items into one). **[v2]**
   *Rationale:* useful but a known gap even in rabbit today; not a correctness
   blocker.
@@ -516,8 +523,26 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 - **3.8.4** Budget caps (per-tick / per-day token ceiling, hard stop). **[v1]**
   *Rationale:* an unbounded loop is a financial hazard; needs a real ceiling,
   not judgment.
-- **3.8.5** Backoff / circuit-breaker (consecutive-failure + per-item defer counts
-  -> stop thrashing). **[v1]**
+- **3.8.5** Backoff — per-item, **bounded-retry → escalate → defer; NEVER
+  silent-leak, NEVER loop-halt**. A valid (accepted) work order is worked toward
+  an end: it is RE-ATTEMPTED each tick until it either succeeds (PR opened /
+  merged) OR a per-item consecutive-`blocked` counter reaches a threshold K, at
+  which point the loop **escalates** (issue-comment, §3.9.3 — "attempted K times,
+  blocked: <reason>; needs human attention") and marks the item **deferred**. A
+  deferred item is skipped from re-dispatch (no thrash) but its issue **stays
+  open and visibly flagged** — never silently dropped. It **re-enters
+  automatically when the issue CHANGES** (its `updated_at` advances past the
+  deferral — a new comment / body edit / relabel / reopen), which resets the
+  counter; this is the durable, GitHub-native, session-independent retry signal
+  (no manual control needed). Backoff is **strictly per-item** — the tick loop
+  continues with all other work and never halts on a deferred item (a *systemic*
+  fault is the separate `ABORTED` path, §3.8.3). **Corollary (a correctness
+  fix):** the acted-ledger (§3.2.4 idempotency) records ONLY *completed* outcomes
+  (`opened` / `closed`), **never `blocked`** — a blocked item must stay retryable,
+  not be filtered out as "done". The two legitimate end-states for a valid issue
+  are therefore: **implemented**, or **escalated-to-human + held** (K honest
+  attempts then a visible ask for help) — never silently leaked, never
+  loop-killing. **[v1]**
 - **3.8.6** Blast-radius caps / learned scope inference. **[v2]** *Rationale:*
   basic guardrails (3.8.1) suffice for serial v1; inference is hard and tied to the
   parallel tier.
