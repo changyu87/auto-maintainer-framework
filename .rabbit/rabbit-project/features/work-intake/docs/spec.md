@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.3.1
+version: 0.3.2
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -146,6 +146,14 @@ idempotency live in scheduling).
   appended to the body (so a later PULL/TRIAGE — and a dedup re-scan — can
   recognize the filing). The sink is INJECTABLE so tests pass a stub (no
   network, deterministic; a failure is locatable to the file boundary).
+  - **It ENSURES the provenance label exists first (live-found bug).**
+    `gh issue create --label <L>` FAILS if label `L` is absent in the repo — and
+    a fresh repo has no `filed-by:autonomous-maintainer` label, so every filing
+    errored (silently, since `file_discoveries` catches sink errors). The sink
+    therefore first runs `gh label create filed-by:autonomous-maintainer
+    --description "filed by the autonomous maintainer"` (idempotent — a non-zero
+    "already exists" exit is tolerated, NOT raised) before the issue create. Both
+    `gh` calls honor `--repo` and the injectable `runner`.
 - **`file_discoveries(discoveries, sink, known_dedup_keys) -> ReportResult`** —
   pure orchestration: for each `DiscoveredIssue`, if its `dedup_key` is in
   `known_dedup_keys` it goes to `skipped_existing` (no sink call); otherwise the
