@@ -439,13 +439,12 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (v0.2.28, skipped-state terminal-crash fix): version bumped to 0.2.28
-# in BOTH plugin.json and marketplace.json, and the two are consistent. The spec
-# permits a patch bump on each re-ship of the plugin tree (0.2.28 re-ships the
-# skipped-state terminal-crash fix: lib/run_tick.py seeds schema-valid empty
-# defaults for the producible read-product slots).
+# Minor (v0.3.0, configurables overhaul): version bumped to 0.3.0 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. v0.3.0 is a
+# MINOR — it ships the new wiring CLIs (route_config.py + adapter_map_config.py)
+# plus the breaking config schema 2.0.0, superseding the un-logged 0.2.29.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_2_28_and_consistent():
+def test_version_bumped_to_0_3_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -457,10 +456,10 @@ def test_version_bumped_to_0_2_28_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.2.28", \
-            f"plugin.json version must be 0.2.28, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.2.28", \
-            "marketplace.json plugin entry version must be 0.2.28"
+        assert pdata.get("version") == "0.3.0", \
+            f"plugin.json version must be 0.3.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.3.0", \
+            "marketplace.json plugin entry version must be 0.3.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1528,13 +1527,15 @@ def test_shipped_run_tick_imports_observability_from_lib_alone():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (file-based-handoff context isolation): the reworked start skill
-# (scheduling v0.2.1, collected via ship/) ships at skills/start/SKILL.md. Assert
-# its frontmatter version is 0.2.1, the body references the deterministic
-# latch-clear flag `--clear-only`, drives the first tick through the executor
-# `/auto-maintainer:tick`, and schedules a ~3-minute heartbeat.
+# Minor (v0.3.0, configurables overhaul): the reworked start skill (scheduling
+# v0.3.0, collected via ship/) ships at skills/start/SKILL.md. Assert its
+# frontmatter version is 0.3.0, the body references the deterministic latch-clear
+# flag `--clear-only`, drives the first tick through the executor
+# `/auto-maintainer:tick`, and schedules a CONFIG-DRIVEN heartbeat interval
+# (heartbeat.interval_minutes, read via start.py --print-interval) rather than a
+# hardcoded cadence.
 # ---------------------------------------------------------------------------
-def test_shipped_start_skill_is_v0_2_1_clear_only_executor_3min():
+def test_shipped_start_skill_is_v0_3_0_clear_only_executor_config_interval():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1544,14 +1545,16 @@ def test_shipped_start_skill_is_v0_2_1_clear_only_executor_3min():
         assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.2.1\n" in body, \
-            "shipped start skill frontmatter version must be 0.2.1"
+        assert "\nversion: 0.3.0\n" in body, \
+            "shipped start skill frontmatter version must be 0.3.0"
         assert "--clear-only" in body, \
             "shipped start skill must reference the --clear-only latch-clear flag"
         assert "/auto-maintainer:tick" in body, \
             "shipped start skill must drive the first tick through the executor"
-        assert "3-minute" in body or "3 minutes" in body, \
-            "shipped start skill must schedule a ~3-minute heartbeat"
+        assert "heartbeat.interval_minutes" in body, \
+            "shipped start skill must read the config-driven heartbeat interval"
+        assert "--print-interval" in body, \
+            "shipped start skill must read the interval via start.py --print-interval"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
@@ -1865,5 +1868,161 @@ def test_shipped_verify_integrate_imports_siblings_from_lib_alone():
         assert proc.returncode == 0, \
             f"shipped verify_integrate cannot resolve siblings: {proc.stderr}"
         assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Minor (v0.3.0, configurables overhaul): the two new wiring-config CLIs —
+# route_config.py + adapter_map_config.py — ship under lib/ as normalized
+# control libs. Each imports its sibling adapter_wiring (its FIRST sibling
+# import, the bootstrap anchor) plus run_tick (and adapter_map_config also
+# agent_dispatch/work_intake/implement), and each already imports os/sys at
+# module top, so each takes the PLAIN self-path bootstrap (the same as
+# run_tick/status/start/configure).
+# ---------------------------------------------------------------------------
+def test_route_and_adapter_map_config_libs_present():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        for fname in ("route_config.py", "adapter_map_config.py"):
+            assert os.path.isfile(os.path.join(lib, fname)), \
+                f"lib/{fname} must ship in the plugin tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Minor (v0.3.0): the shipped route_config.py + adapter_map_config.py must be
+# byte-identical to the build's OWN normalization of their scheduling sources.
+# Each imports `import adapter_wiring as aw` (first sibling import, the anchor)
+# and already imports os/sys at module top, so each is normalized via the PLAIN
+# self-path bootstrap (no with-imports variant) inserted before that anchor —
+# the SAME shape as run_tick/status/start/configure.
+# ---------------------------------------------------------------------------
+def test_shipped_route_adapter_map_config_are_normalized_source_bytes():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        mapping = {
+            "route_config.py": os.path.join(
+                _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+                "scheduling", "src", "route_config.py",
+            ),
+            "adapter_map_config.py": os.path.join(
+                _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+                "scheduling", "src", "adapter_map_config.py",
+            ),
+        }
+        for fname, src in mapping.items():
+            dst = os.path.join(lib, fname)
+            assert os.path.isfile(dst), f"missing shipped lib: {dst}"
+            with open(dst, encoding="utf-8") as fh:
+                shipped = fh.read()
+            _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS[fname]
+            expected = mod._normalize_lib(src, anchor, bootstrap)
+            assert shipped == expected, \
+                f"shipped {fname} is not the normalized source bytes"
+            # the PLAIN bootstrap (the file already imports os/sys at top, so the
+            # with-imports variant is NOT used), anchored before the first
+            # sibling import (adapter_wiring).
+            bootstrap_marker = (
+                "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))"
+            )
+            assert bootstrap_marker in shipped, \
+                f"shipped {fname} must carry the self-path bootstrap"
+            assert "import os  # noqa: E402" not in shipped, \
+                f"shipped {fname} must use the PLAIN bootstrap (no with-imports)"
+            assert shipped.index(bootstrap_marker) < \
+                shipped.index("import adapter_wiring as aw"), \
+                f"bootstrap must precede the adapter_wiring import in {fname}"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Minor (v0.3.0): the build-rewritten route_config + adapter_map_config libs
+# must not leak a path back into the source feature tree — the headline
+# clean-ship invariant applies to them too.
+# ---------------------------------------------------------------------------
+def test_shipped_route_adapter_map_config_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        for fname in ("route_config.py", "adapter_map_config.py"):
+            with open(os.path.join(lib, fname), encoding="utf-8") as fh:
+                body = fh.read()
+            assert ".rabbit" not in body, f"shipped {fname} leaks .rabbit"
+            assert "rabbit-project" not in body, \
+                f"shipped {fname} references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Minor (v0.3.0), critical self-containment: the shipped route_config.py imports
+# `import adapter_wiring as aw` + `import run_tick as rt`, and
+# adapter_map_config.py imports adapter_wiring + agent_dispatch + work_intake +
+# implement + run_tick — all flat siblings in lib/. Importing each with ONLY the
+# plugin lib/ on sys.path must resolve those siblings from lib/ alone. Claude
+# copies just the plugin dir into its cache, so a shipped wiring CLI that could
+# not find its siblings in lib/ would fail to import once installed. Prove it in
+# a subprocess whose sys.path is restricted to the shipped lib/ dir alone.
+# ---------------------------------------------------------------------------
+def test_shipped_route_adapter_map_config_are_self_contained():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        for mod_name in ("route_config", "adapter_map_config"):
+            probe = (
+                "import sys; "
+                f"sys.path.insert(0, {lib!r}); "
+                f"import {mod_name}; "
+                f"import adapter_wiring, run_tick; "
+                f"assert {mod_name}.aw is adapter_wiring; "
+                f"assert {mod_name}.rt is run_tick; "
+                "print('OK')"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", probe],
+                capture_output=True, text=True,
+                env={"PYTHONPATH": ""},
+                cwd=out_root,
+            )
+            assert proc.returncode == 0, \
+                f"shipped {mod_name} not self-contained: {proc.stderr}"
+            assert proc.stdout.strip() == "OK"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Minor (v0.3.0): the new wiring skills /auto-maintainer:route and
+# /auto-maintainer:adapter-map ship at skills/route/SKILL.md and
+# skills/adapter-map/SKILL.md via the ship/ convention (scheduling's
+# ship/skills/{route,adapter-map}/). They are collected automatically with NO
+# build change.
+# ---------------------------------------------------------------------------
+def test_ship_collection_route_and_adapter_map_skills_present():
+    out_root = _build_into_temp()
+    try:
+        skills = os.path.join(
+            out_root, "plugins", "auto-maintainer", "skills"
+        )
+        cases = (("route", "route"), ("adapter-map", "adapter-map"))
+        for dirname, fm_name in cases:
+            sk = os.path.join(skills, dirname, "SKILL.md")
+            assert os.path.isfile(sk), \
+                f"ship/ collection must place skills/{dirname}/SKILL.md"
+            with open(sk, encoding="utf-8") as fh:
+                body = fh.read()
+            assert body.lstrip().startswith("---"), \
+                f"skills/{dirname}/SKILL.md must carry YAML frontmatter"
+            assert f"\nname: {fm_name}\n" in body, \
+                f"skills/{dirname}/SKILL.md frontmatter name must be `{fm_name}`"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
