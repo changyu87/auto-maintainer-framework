@@ -1,8 +1,8 @@
 ---
 feature: safety-governance
-version: 0.1.0
+version: 0.5.0
 owner: changyu87
-deprecation_criterion: Superseded when the governance config schema reaches a breaking major version, or when trust-ladder / budget enforcement moves into a different layer than a project-local governance config consulted at tick entry. See spec.md / feature.json.
+deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0). See spec.md / feature.json.
 ---
 
 # safety-governance — Contract
@@ -11,24 +11,26 @@ deprecation_criterion: Superseded when the governance config schema reaches a br
 {
   "provides": {
     "files": [
-      "Governance config schema (versioned, machine-first: mode + budget) + loader for project-local ${CLAUDE_PROJECT_DIR}/.auto-maintainer/governance.json with defaults",
+      "Central config schema (versioned 2.0.0, machine-first: mode + budget.per_day_tokens + budget.window_tz + heartbeat.interval_minutes + backoff.threshold) + load_config(project_dir) for project-local ${CLAUDE_PROJECT_DIR}/.auto-maintainer/config.json with defaults (legacy governance.json migrated once); load_governance is a thin alias",
+      "MAINTAINER_REPO: a FIXED module constant ('changyu87/auto-maintainer-framework') for maintainer-self REPORT routing (§3.11.6) — not a config field",
       "Trust-ladder gate: permits(effect_kind, mode) over dry-run|propose|gated-merge",
-      "Budget readiness gate (per-tick/per-day token ceiling, local-tz day window, null=unlimited): window rollover reset + over-ceiling idle (auto-resume, no latch), over an injectable spend seam",
+      "Merge guardrails (§3.8.1): merge_guardrails(pr_meta, default_branch, delete_branch) -> {ok, violations}, a pure declarative backstop below the trust ladder",
+      "Budget readiness gate (per-day token ceiling, local-tz day window, null=unlimited): window rollover reset + over-ceiling idle (auto-resume, no latch), over an injectable spend seam",
       "No-AskUserQuestion->ABORTED helper: latches ABORTED + emits an escalation seam"
     ],
-    "scripts": [],
-    "skills": []
+    "scripts": ["src/configure.py — deterministic central-config writer (load_config-modify-save of config.json; --mode/--per-day-tokens/--interval-minutes/--backoff-threshold/--describe/--show)"],
+    "skills": ["ship/skills/configure/SKILL.md — /auto-maintainer:configure relay over configure.py"]
   },
   "reads": {
-    "files": ["${CLAUDE_PROJECT_DIR}/.auto-maintainer/governance.json (project-local override; absent => defaults)"],
+    "files": ["${CLAUDE_PROJECT_DIR}/.auto-maintainer/config.json (project-local override; absent => defaults; legacy governance.json migrated once)"],
     "external": []
   },
   "invokes": {"scripts": [], "agents": [], "external": []},
   "never": [
     "latches a halt disposition for budget exhaustion (budget is an auto-resuming readiness gate, not a latch; only faults/ABORTED latch)",
     "modifies lifecycle-dispositions (consumes it unchanged to latch ABORTED)",
-    "performs declarative VCS guardrails (§3.8.1), backoff/circuit-breaker (§3.8.5), or the loopback/provenance guard (§3.11.5) — deferred to consumer milestones",
-    "calls a model, the network, the filesystem (beyond durable budget state), or the wall clock except through the injectable now",
+    "performs backoff/circuit-breaker enforcement (§3.8.5) or the loopback/provenance guard (§3.11.5) — deferred to consumer milestones",
+    "calls a model, the network, the filesystem (beyond the durable central config + budget state), or the wall clock except through the injectable now",
     "prompts userConfig values or implements the real issue-comment escalation sink (§3.9.3 / §3.10.1, deferred)",
     "edits files in other features"
   ]

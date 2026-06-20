@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-"""End-to-end + unit conformance tests for safety-governance (slice 1).
+"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.0.0).
 
-Every behaviour in docs/spec.md has a test here. The feature provides four
-deterministic decision surfaces over a machine-first, versioned governance
-config (DESIGN §3.8):
+Every behaviour in docs/spec.md has a test here. The feature provides
+deterministic decision surfaces over a machine-first, versioned CENTRAL config
+(config.json) — DESIGN §3.8:
 
-  1. Governance config + loader — GOVERNANCE_SCHEMA_VERSION, DEFAULT_GOVERNANCE,
-     load_governance(project_dir): reads project-local
-     ${project_dir}/.auto-maintainer/governance.json (absent => defaults),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.0.0),
+     DEFAULT_GOVERNANCE, load_config(project_dir): reads project-local
+     ${project_dir}/.auto-maintainer/config.json (absent => defaults),
      backfilling missing keys from defaults. null/absent ceiling => NO LIMIT.
-  2. Trust-ladder gate — permits(effect_kind, mode) over the closed effect set
+     A legacy governance.json is migrated once. load_governance is a thin alias.
+  2. Maintainer-self REPORT destination — a FIXED module constant MAINTAINER_REPO
+     (not a config field).
+  3. Trust-ladder gate — permits(effect_kind, mode) over the closed effect set
      {implement, open_pr, merge, file} and the closed mode set
      {dry-run, propose, gated-merge}. Unknown mode/effect => ValueError.
-  3. Budget readiness gate (auto-resuming, NEVER a latch) — window_key(now),
-     evaluate_budget(config, budget_state, now, tick_spend) reporting allowance,
-     record_spend(budget_state, now, tokens) advancing the window's spend.
-  4. No-AskUserQuestion -> ABORTED helper — abort_on_would_block(runtime_dir,
+  4. Budget readiness gate (auto-resuming, NEVER a latch) — window_key(now),
+     evaluate_budget(config, budget_state, now) reporting per-day allowance
+     (per-tick ceiling REMOVED), record_spend(budget_state, now, tokens)
+     advancing the window's spend.
+  5. No-AskUserQuestion -> ABORTED helper — abort_on_would_block(runtime_dir,
      reason, escalate) latches ABORTED via lifecycle-dispositions and invokes
      the escalation seam.
 
 Determinism: `now` is always injected (tz-aware). No model, no network, no
-wall clock, no filesystem writes except the ABORTED marker delegated to
-lifecycle-dispositions.
+wall clock, no filesystem writes except the durable config (migration) and the
+ABORTED marker delegated to lifecycle-dispositions.
 
 Owner: changyu87
 """
@@ -64,108 +68,200 @@ _DAY1_EVENING = datetime(2026, 5, 1, 23, 0, 0, tzinfo=_TZ)
 _DAY2_MORNING = datetime(2026, 5, 2, 1, 0, 0, tzinfo=_TZ)
 
 
+def _config_path(project_dir):
+    return os.path.join(project_dir, ".auto-maintainer", "config.json")
+
+
+def _gov_path(project_dir):
+    return os.path.join(project_dir, ".auto-maintainer", "governance.json")
+
+
+def _write_json(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(payload, f)
+
+
 # ==========================================================================
-# Behaviour: the governance config schema is versioned and machine-first.
-# DEFAULT_GOVERNANCE matches the spec's documented defaults.
+# Behaviour: the central config schema is versioned (2.0.0) and machine-first.
+# DEFAULT_GOVERNANCE matches the spec's documented defaults: mode=propose,
+# budget.per_day_tokens=null, budget.window_tz=local, heartbeat.interval_minutes=3,
+# backoff.threshold=5. The per_tick_tokens and maintainer_repo fields are REMOVED.
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "1.1.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.0.0"
     d = sg.DEFAULT_GOVERNANCE
+    assert d["schema_version"] == "2.0.0"
     assert d["mode"] == "propose"
-    assert d["budget"]["per_tick_tokens"] is None
     # Default per_day is NO LIMIT (null) per explicit user decision; a finite
-    # ceiling is opt-in via governance.json.
+    # ceiling is opt-in via config.json.
     assert d["budget"]["per_day_tokens"] is None
     assert d["budget"]["window_tz"] == "local"
-    # maintainer_repo defaults to null (no maintainer tracker configured);
-    # added in schema 1.1.0 (additive).
-    assert d["maintainer_repo"] is None
+    # heartbeat + backoff knobs, owned here, read by scheduling.
+    assert d["heartbeat"]["interval_minutes"] == 3
+    assert d["backoff"]["threshold"] == 5
+    # per_tick_tokens + maintainer_repo are REMOVED from the schema.
+    assert "per_tick_tokens" not in d["budget"]
+    assert "maintainer_repo" not in d
 
 
 # ==========================================================================
-# E2E Behaviour: absent governance.json => documented defaults.
+# Behaviour: maintainer-self REPORT destination is a FIXED module constant
+# (§3.11.6), NOT a config field.
 # ==========================================================================
 
-def test_load_governance_defaults_when_absent():
+def test_maintainer_repo_is_fixed_constant():
+    assert sg.MAINTAINER_REPO == "changyu87/auto-maintainer-framework"
+
+
+# ==========================================================================
+# E2E Behaviour: absent config.json => documented defaults.
+# ==========================================================================
+
+def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
-        config = sg.load_governance(project_dir)
+        config = sg.load_config(project_dir)
+        assert config["schema_version"] == "2.0.0"
         assert config["mode"] == "propose"
-        # Default per_day is null (NO LIMIT); a finite ceiling is opt-in.
         assert config["budget"]["per_day_tokens"] is None
-        assert config["budget"]["per_tick_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
+        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["backoff"]["threshold"] == 5
+        # Absent file writes nothing.
+        assert not os.path.exists(_config_path(project_dir))
 
 
 # ==========================================================================
-# E2E Behaviour: a project-local override is read; missing keys are backfilled
-# from defaults; a present null ceiling is preserved (not overwritten).
+# E2E Behaviour: a project-local config.json override is read; missing keys are
+# backfilled from defaults; a present null ceiling is preserved.
 # ==========================================================================
 
-def test_load_governance_override_read_and_backfilled():
+def test_load_config_override_read_and_backfilled():
     with tempfile.TemporaryDirectory() as project_dir:
-        amdir = os.path.join(project_dir, ".auto-maintainer")
-        os.makedirs(amdir)
-        # Override mode + per_day_tokens; omit per_tick_tokens + window_tz so
-        # they backfill from defaults. Also set per_tick null explicitly below
-        # in a separate test.
-        with open(os.path.join(amdir, "governance.json"), "w") as f:
-            json.dump({"mode": "gated-merge",
-                       "budget": {"per_day_tokens": 500000}}, f)
-
-        config = sg.load_governance(project_dir)
+        _write_json(_config_path(project_dir),
+                    {"mode": "gated-merge",
+                     "budget": {"per_day_tokens": 500000}})
+        config = sg.load_config(project_dir)
         assert config["mode"] == "gated-merge"
         assert config["budget"]["per_day_tokens"] == 500000
         # backfilled from defaults:
-        assert config["budget"]["per_tick_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
+        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["backoff"]["threshold"] == 5
 
 
-def test_load_governance_preserves_explicit_null_ceiling():
+def test_load_config_preserves_explicit_null_ceiling():
     with tempfile.TemporaryDirectory() as project_dir:
-        amdir = os.path.join(project_dir, ".auto-maintainer")
-        os.makedirs(amdir)
-        with open(os.path.join(amdir, "governance.json"), "w") as f:
-            json.dump({"budget": {"per_day_tokens": None}}, f)
-
-        config = sg.load_governance(project_dir)
-        # Explicit null per_day must survive backfill as null (NO LIMIT).
+        _write_json(_config_path(project_dir),
+                    {"budget": {"per_day_tokens": None}})
+        config = sg.load_config(project_dir)
         assert config["budget"]["per_day_tokens"] is None
-        # Untouched keys still backfill.
         assert config["budget"]["window_tz"] == "local"
         assert config["mode"] == "propose"
 
 
 # ==========================================================================
-# E2E Behaviour: maintainer_repo defaults to null when absent from the file,
-# and an explicit value is PRESERVED through load_governance (a known top-level
-# key, backfilled like the others). run_tick._repo_for_target routes
-# maintainer-self -> this repo (§3.11.6).
+# E2E Behaviour: a config.json still carrying the removed per_tick_tokens key is
+# TOLERATED — the key is ignored, never surfaced on the loaded config.
 # ==========================================================================
 
-def test_load_governance_maintainer_repo_defaults_null_when_absent():
+def test_load_config_tolerates_and_drops_per_tick_tokens():
     with tempfile.TemporaryDirectory() as project_dir:
-        amdir = os.path.join(project_dir, ".auto-maintainer")
-        os.makedirs(amdir)
-        with open(os.path.join(amdir, "governance.json"), "w") as f:
-            json.dump({"mode": "propose"}, f)
+        _write_json(_config_path(project_dir),
+                    {"mode": "propose",
+                     "budget": {"per_day_tokens": 1000,
+                                "per_tick_tokens": 50}})
+        config = sg.load_config(project_dir)
+        assert config["budget"]["per_day_tokens"] == 1000
+        assert "per_tick_tokens" not in config["budget"]
 
-        config = sg.load_governance(project_dir)
-        assert config["maintainer_repo"] is None
 
+# ==========================================================================
+# E2E Behaviour: heartbeat.interval_minutes and backoff.threshold overrides are
+# read and surfaced; absent sub-keys backfill from defaults.
+# ==========================================================================
 
-def test_load_governance_preserves_explicit_maintainer_repo():
+def test_load_config_reads_heartbeat_and_backoff_overrides():
     with tempfile.TemporaryDirectory() as project_dir:
-        amdir = os.path.join(project_dir, ".auto-maintainer")
-        os.makedirs(amdir)
-        with open(os.path.join(amdir, "governance.json"), "w") as f:
-            json.dump({"maintainer_repo": "octo/tooling"}, f)
-
-        config = sg.load_governance(project_dir)
-        # Explicit value preserved (round-trip), other keys still backfilled.
-        assert config["maintainer_repo"] == "octo/tooling"
+        _write_json(_config_path(project_dir),
+                    {"heartbeat": {"interval_minutes": 10},
+                     "backoff": {"threshold": 8}})
+        config = sg.load_config(project_dir)
+        assert config["heartbeat"]["interval_minutes"] == 10
+        assert config["backoff"]["threshold"] == 8
+        # other defaults still present
         assert config["mode"] == "propose"
+
+
+# ==========================================================================
+# E2E Behaviour: MIGRATION — config.json absent but legacy governance.json
+# present => migrate once. Surviving fields (mode, budget.per_day_tokens,
+# budget.window_tz) are mapped; per_tick_tokens + maintainer_repo are DROPPED;
+# heartbeat/backoff backfilled; config.json WRITTEN; the legacy file renamed to
+# governance.json.migrated (non-destructive).
+# ==========================================================================
+
+def test_migration_governance_json_to_config_json():
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_gov_path(project_dir),
+                    {"schema_version": "1.1.0",
+                     "mode": "gated-merge",
+                     "budget": {"per_day_tokens": 200000,
+                                "per_tick_tokens": 5000,
+                                "window_tz": "local"},
+                     "maintainer_repo": "octo/legacy"})
+
+        config = sg.load_config(project_dir)
+        # surviving fields mapped:
+        assert config["mode"] == "gated-merge"
+        assert config["budget"]["per_day_tokens"] == 200000
         assert config["budget"]["window_tz"] == "local"
+        # dropped fields gone:
+        assert "per_tick_tokens" not in config["budget"]
+        assert "maintainer_repo" not in config
+        # backfilled:
+        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["backoff"]["threshold"] == 5
+        # config.json written; legacy renamed (non-destructive).
+        assert os.path.exists(_config_path(project_dir))
+        assert not os.path.exists(_gov_path(project_dir))
+        assert os.path.exists(_gov_path(project_dir) + ".migrated")
+        # the written config.json round-trips to the same values.
+        with open(_config_path(project_dir)) as f:
+            on_disk = json.load(f)
+        assert on_disk["mode"] == "gated-merge"
+        assert on_disk["budget"]["per_day_tokens"] == 200000
+        assert "per_tick_tokens" not in on_disk.get("budget", {})
+
+
+def test_migration_prefers_config_json_when_both_present():
+    # When config.json already exists, governance.json is NOT consulted and NOT
+    # renamed (no migration occurs).
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"mode": "dry-run"})
+        _write_json(_gov_path(project_dir), {"mode": "gated-merge"})
+        config = sg.load_config(project_dir)
+        assert config["mode"] == "dry-run"
+        # governance.json left untouched (still present, not renamed).
+        assert os.path.exists(_gov_path(project_dir))
+        assert not os.path.exists(_gov_path(project_dir) + ".migrated")
+
+
+# ==========================================================================
+# E2E Behaviour: load_governance is a thin alias delegating to load_config
+# (coexistence window for consumers still calling the old name).
+# ==========================================================================
+
+def test_load_governance_alias_delegates_to_load_config():
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"mode": "gated-merge",
+                     "budget": {"per_day_tokens": 500000}})
+        via_alias = sg.load_governance(project_dir)
+        assert via_alias["mode"] == "gated-merge"
+        assert via_alias["budget"]["per_day_tokens"] == 500000
+        assert via_alias["heartbeat"]["interval_minutes"] == 3
 
 
 # ==========================================================================
@@ -222,14 +318,10 @@ def test_window_key_is_injected_now_local_date():
 # ==========================================================================
 
 def test_evaluate_budget_per_day_exhaustion_blocks():
-    # An EXPLICIT finite per_day ceiling (opt-in via governance.json); the
-    # default is null (NO LIMIT), so exhaustion is exercised with a finite
-    # config built locally, not by relying on the default.
     config = {
-        "schema_version": "1.0.0",
+        "schema_version": "2.0.0",
         "mode": "propose",
-        "budget": {"per_tick_tokens": None, "per_day_tokens": 200000,
-                   "window_tz": "local"},
+        "budget": {"per_day_tokens": 200000, "window_tz": "local"},
     }
     # Below ceiling within today's window -> allowed.
     state = {"window_key": "2026-05-01", "spent_tokens": 100000}
@@ -253,13 +345,10 @@ def test_evaluate_budget_per_day_exhaustion_blocks():
 # ==========================================================================
 
 def test_evaluate_budget_window_rollover_resets_and_resumes():
-    # Explicit finite per_day ceiling (the default is null/NO LIMIT, which
-    # would never block, so rollover-after-exhaustion needs a finite config).
     config = {
-        "schema_version": "1.0.0",
+        "schema_version": "2.0.0",
         "mode": "propose",
-        "budget": {"per_tick_tokens": None, "per_day_tokens": 200000,
-                   "window_tz": "local"},
+        "budget": {"per_day_tokens": 200000, "window_tz": "local"},
     }
     # Exhausted on day 1.
     state = {"window_key": "2026-05-01", "spent_tokens": 200000}
@@ -277,48 +366,40 @@ def test_evaluate_budget_window_rollover_resets_and_resumes():
 
 
 # ==========================================================================
-# E2E Behaviour: finite per_tick — a tick whose spend exceeds the per-tick
-# ceiling is blocked with the documented reason; within-ceiling is allowed.
+# Behaviour: null per_day ceiling never blocks (unbounded). The per-tick ceiling
+# is REMOVED, so even a config still carrying per_tick_tokens never blocks on it.
 # ==========================================================================
 
-def test_evaluate_budget_per_tick_exceeded_blocks():
+def test_evaluate_budget_null_ceiling_never_blocks():
     config = {
-        "schema_version": "1.0.0",
+        "schema_version": "2.0.0",
         "mode": "propose",
-        "budget": {"per_tick_tokens": 5000, "per_day_tokens": None,
+        "budget": {"per_day_tokens": None, "window_tz": "local"},
+    }
+    state = {"window_key": "2026-05-01", "spent_tokens": 10 ** 9}
+    out = sg.evaluate_budget(config, state, _DAY1_MORNING)
+    assert out["allowed"] is True
+    assert out["reason"] == "ok"
+
+
+def test_evaluate_budget_ignores_legacy_per_tick():
+    # A config still carrying per_tick_tokens never causes a per_tick block (the
+    # per-tick ceiling is removed). per_day is what governs.
+    config = {
+        "schema_version": "2.0.0",
+        "mode": "propose",
+        "budget": {"per_day_tokens": None, "per_tick_tokens": 1,
                    "window_tz": "local"},
     }
     state = {"window_key": "2026-05-01", "spent_tokens": 0}
-    over = sg.evaluate_budget(config, state, _DAY1_MORNING, tick_spend=6000)
-    assert over["allowed"] is False
-    assert over["reason"] == "per_tick_exceeded"
-
-    within = sg.evaluate_budget(config, state, _DAY1_MORNING, tick_spend=5000)
-    assert within["allowed"] is True
-    assert within["reason"] == "ok"
-
-
-# ==========================================================================
-# Behaviour: null ceilings never block (unbounded) for either dimension.
-# ==========================================================================
-
-def test_evaluate_budget_null_ceilings_never_block():
-    config = {
-        "schema_version": "1.0.0",
-        "mode": "propose",
-        "budget": {"per_tick_tokens": None, "per_day_tokens": None,
-                   "window_tz": "local"},
-    }
-    state = {"window_key": "2026-05-01", "spent_tokens": 10 ** 9}
-    out = sg.evaluate_budget(config, state, _DAY1_MORNING, tick_spend=10 ** 9)
+    out = sg.evaluate_budget(config, state, _DAY1_MORNING)
     assert out["allowed"] is True
     assert out["reason"] == "ok"
 
 
 # ==========================================================================
-# Behaviour: the DEFAULT config ships per_day=null (NO LIMIT, per explicit user
-# decision), so evaluate_budget NEVER blocks on per_day regardless of how much
-# spend is injected. A finite ceiling is opt-in, not the default.
+# Behaviour: the DEFAULT config ships per_day=null (NO LIMIT), so evaluate_budget
+# NEVER blocks regardless of how much spend is injected.
 # ==========================================================================
 
 def test_default_config_never_blocks_on_per_day():
@@ -345,9 +426,7 @@ def test_evaluate_budget_fresh_state_seeds_window():
 
 # ==========================================================================
 # E2E Behaviour: record_spend accumulates spend within a window; a later
-# now in a new window rolls over first (resets) then records. This pins the
-# documented evaluate/record split: evaluate REPORTS allowance (pure decision,
-# rolls the window for the returned state), record ADVANCES spent_tokens.
+# now in a new window rolls over first (resets) then records.
 # ==========================================================================
 
 def test_record_spend_accumulates_within_window():
@@ -363,8 +442,6 @@ def test_record_spend_accumulates_within_window():
 
 def test_record_spend_rolls_over_window_then_records():
     state = {"window_key": "2026-05-01", "spent_tokens": 3500}
-    # A new local day: the prior window's spend is dropped, then this tick's
-    # tokens are recorded against the new window.
     state = sg.record_spend(state, _DAY2_MORNING, 400)
     assert state["window_key"] == "2026-05-02"
     assert state["spent_tokens"] == 400
@@ -378,27 +455,22 @@ def test_record_spend_rolls_over_window_then_records():
 
 def test_budget_accounting_contract_evaluate_plus_record():
     config = {
-        "schema_version": "1.0.0",
+        "schema_version": "2.0.0",
         "mode": "propose",
-        "budget": {"per_tick_tokens": None, "per_day_tokens": 3000,
-                   "window_tz": "local"},
+        "budget": {"per_day_tokens": 3000, "window_tz": "local"},
     }
     state = {"window_key": "2026-05-01", "spent_tokens": 0}
 
-    # Tick 1: allowed, then record.
     assert sg.evaluate_budget(config, state, _DAY1_MORNING)["allowed"] is True
     state = sg.record_spend(state, _DAY1_MORNING, 2000)
 
-    # Tick 2: still under ceiling, allowed, record pushes over.
     assert sg.evaluate_budget(config, state, _DAY1_MORNING)["allowed"] is True
     state = sg.record_spend(state, _DAY1_MORNING, 1500)  # total 3500 >= 3000
 
-    # Tick 3: now exhausted -> blocked, no latch.
     blocked = sg.evaluate_budget(config, state, _DAY1_EVENING)
     assert blocked["allowed"] is False
     assert blocked["reason"] == "per_day_exhausted"
 
-    # Next local day -> auto-resume.
     resumed = sg.evaluate_budget(config, state, _DAY2_MORNING)
     assert resumed["allowed"] is True
     assert resumed["budget_state"]["spent_tokens"] == 0
@@ -421,18 +493,10 @@ def test_abort_on_would_block_latches_aborted_and_escalates():
             runtime_dir, "AskUserQuestion in autonomous mode",
             escalate=escalate)
 
-        # Disposition latched ABORTED, read back through lifecycle-dispositions.
         assert ld.read_disposition(runtime_dir) == ld.Disposition.ABORTED
-        # Escalation seam invoked with the reason.
         assert captured["reason"] == "AskUserQuestion in autonomous mode"
-        # The returned marker signals the halt (documented + tested).
         assert marker == ld.Disposition.ABORTED
 
-
-# ==========================================================================
-# E2E Behaviour: the escalate seam is optional — default None is a no-op and
-# the helper still latches ABORTED.
-# ==========================================================================
 
 def test_abort_on_would_block_no_escalate_is_noop():
     with tempfile.TemporaryDirectory() as runtime_dir:
@@ -442,23 +506,17 @@ def test_abort_on_would_block_no_escalate_is_noop():
 
 
 # ==========================================================================
-# Invariant: this lib performs NO filesystem write of its own except the
-# ABORTED marker delegated to lifecycle-dispositions. evaluate_budget and
-# record_spend never touch a runtime_dir, and they do not mutate their input
-# state dict in place (callers persist the returned state).
+# Invariant: evaluate_budget and record_spend do not mutate their input state.
 # ==========================================================================
 
 def test_evaluate_budget_does_not_mutate_input_state():
     config = {
-        "schema_version": "1.0.0",
+        "schema_version": "2.0.0",
         "mode": "propose",
-        "budget": {"per_tick_tokens": None, "per_day_tokens": 200000,
-                   "window_tz": "local"},
+        "budget": {"per_day_tokens": 200000, "window_tz": "local"},
     }
     state = {"window_key": "2026-05-01", "spent_tokens": 200000}
     sg.evaluate_budget(config, state, _DAY2_MORNING)
-    # The original durable state object is unchanged; the rolled-over state is
-    # only in the returned dict.
     assert state["window_key"] == "2026-05-01"
     assert state["spent_tokens"] == 200000
 
