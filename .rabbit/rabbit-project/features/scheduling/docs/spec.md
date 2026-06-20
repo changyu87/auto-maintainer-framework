@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.11.0
+version: 0.12.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -635,6 +635,35 @@ that to `run_tick`'s acting-state governance. It consumes `observability`
 - **End states.** A valid work order ends either **implemented** (`opened`/
   `closed`) or **escalated-to-human + deferred** (K honest attempts, a visible
   issue comment, issue stays open) — never silently dropped.
+
+## Skip-unchanged re-triage (§3.5.3)
+
+The triager re-judges every open issue every tick — wasteful when an issue is
+already handled and unchanged. This slice adds a durable **triage memory** so
+the loop only re-triages NEW or CHANGED issues. Edits live ONLY in scheduling
+(`run_tick.py`).
+
+- **Triage memory (durable, keyed on `work_item_id`).** `TRIAGE_MEMORY_KEY =
+  "triage_memory"` maps `{work_item_id: {updated_at, status}}`, where `status` is
+  `done` (the doer opened/closed it) or `deferred` (backoff). It is recorded at
+  the acting-state resume, alongside the acted/backoff ledgers, from the same
+  `work_order_id → work_item_id` mapping + the item's current issue `updated_at`
+  (looked up from the tick's `work_items`).
+- **Filter at TRIAGE dispatch.** When `run_tick` builds the dispatch for an
+  agent-state whose read slots include `work_items` (i.e. TRIAGE), it FILTERS the
+  `work_items` fed to the subagent: an item is dropped iff
+  `triage_memory[work_item_id].status ∈ {done, deferred}` AND its current
+  `updated_at` EQUALS the remembered `updated_at` (handled + unchanged). NEW
+  items (not in memory), CHANGED items (advanced `updated_at`), and `active`
+  items (accepted but not yet done — still being worked) are ALWAYS re-triaged,
+  so a valid issue in flight is never starved. The SAME `updated_at` change
+  signal that re-enters a deferred item (§3.8.5 backoff) also re-triages it.
+- **Surfacing.** The persisted `work_items` read product stays the full PULL set
+  (accurate); the trace adds a `triaged=<judged>/<pulled>` token so the skip is
+  visible.
+- **Unchanged.** With an empty triage memory (first run) nothing is skipped —
+  byte-identical to today. Pure-script routes and non-`work_items` agent-states
+  are unaffected.
 
 ## Known gaps / deferred
 
