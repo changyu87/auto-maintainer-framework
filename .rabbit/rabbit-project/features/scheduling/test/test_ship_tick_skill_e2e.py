@@ -182,17 +182,42 @@ def test_ship_start_skill_heartbeat_is_three_minutes():
 
 
 # --------------------------------------------------------------------------
-# Behaviour — the REWORKED tick skill (v0.3.0, #130 closed): each PAUSED
-# dispatch carries a `description` (always) and, for an acting dispatch, an
-# `isolation` value; the skill passes BOTH through to the Agent tool, and
-# carries the summed subagent_tokens spend to `run_tick.py --resume --spent`.
-# (Still v0.2.0 invariants: #100 — subagent writes its own file; the skill
-# marshals NO content.)
+# Behaviour — the REWORKED tick skill (v0.4.0): step/resume protocol hardening.
+# The skill makes the advance rule unambiguous: `--step` is called EXACTLY ONCE
+# (the first runner command of the tick), the advance after EVERY dispatch is
+# `--resume`, and `--step` is used again ONLY to re-emit a pause after an
+# `invalid_output` — never `--step` mid-tick after a successful dispatch.
+# (Still v0.3.0/#130 invariants: each PAUSED dispatch carries a `description`
+# (always) and, for an acting dispatch, an `isolation`; the skill passes BOTH
+# through to the Agent tool, and carries the summed subagent_tokens spend to
+# `run_tick.py --resume --spent`. Still v0.2.0/#100: subagent writes its own
+# file; the skill marshals NO content.)
 # --------------------------------------------------------------------------
 
-def test_ship_tick_skill_version_is_0_3_0():
+def test_ship_tick_skill_version_is_0_4_0():
     fields = _parse_frontmatter(_TICK_SKILL)
-    assert fields.get("version") == "0.3.0", fields
+    assert fields.get("version") == "0.4.0", fields
+
+
+def test_ship_tick_skill_step_resume_protocol_is_hardened():
+    """v0.4.0: the body unambiguously states the step/resume advance rule —
+    `--step` exactly ONCE to begin, `--resume` after every dispatch, and
+    `--step` again ONLY to re-emit a pause after `invalid_output`; never
+    `--step` mid-tick after a successful dispatch."""
+    body = _read_text(_TICK_SKILL)
+    # --step is called exactly once to begin the tick.
+    assert "exactly ONCE" in body, \
+        "tick skill must state --step is called exactly ONCE to begin the tick"
+    # The advance after every dispatch is --resume, never --step.
+    assert "--resume" in body, "tick skill must reference --resume"
+    assert "after every dispatch" in body.lower(), \
+        "tick skill must state --resume advances after every dispatch"
+    # Never --step mid-tick after a successful dispatch.
+    assert "--step` mid-tick" in body or "--step mid-tick" in body, \
+        "tick skill must forbid --step mid-tick after a successful dispatch"
+    # --step is reused ONLY to re-emit a pause after invalid_output.
+    assert "invalid_output" in body, \
+        "tick skill must name the invalid_output re-emit as the only other --step"
 
 
 def test_ship_tick_skill_resume_takes_no_file_arg_and_subagent_writes_own_file():

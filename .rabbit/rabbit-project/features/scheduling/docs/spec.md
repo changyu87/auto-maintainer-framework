@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.12.0
+version: 0.12.1
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.
 ---
@@ -457,13 +457,22 @@ into a usable, drop-in executor (DESIGN §3.4.6 / §2.8). The build's
 the plugin tree with NO build change.
 
 - **`ship/skills/tick/SKILL.md`** (`/auto-maintainer:tick`, the `tick` executor
-  skill, **v0.3.0**) — drives `run_tick.py --step`/`--resume` and presses the
+  skill, **v0.4.0**) — drives `run_tick.py --step`/`--resume` and presses the
   `Agent` button at each agent-state: it steps the runner, and whenever the runner
   PAUSES at an agent-state, dispatches the named subagent(s) with the runner's
   rendered prompt until the tick completes. The skill decides nothing about the
   route — all tick logic (route, validation, slot writes, signal selection, spend
   metering, crash-safe checkpointing) lives in `run_tick.py`; the skill only
   relays dispatch requests.
+  **Step/resume protocol hardening (v0.4.0).** The skill makes the advance rule
+  unambiguous: `--step` is called EXACTLY ONCE (the first runner command of the
+  tick), the advance after EVERY dispatch is `--resume`, and `--step` is used
+  again ONLY to re-emit a pause after an `invalid_output`. A live REPORT test
+  surfaced the footgun: the executor ran `--step` mid-tick (instead of `--resume`)
+  after a dispatch, which skips the resume that applies the subagent's output and
+  fires the terminal REPORT flush — so discoveries went unfiled (`reported=0/0`).
+  The runner's idempotency absorbed the rest (no duplicate PR), but the missed
+  resume is the hazard the v0.4.0 wording eliminates.
   **Full dispatch parameters (#130 closed):** each PAUSED dispatch record carries
   a `description` (always) and, for an **acting** dispatch, an `isolation` value
   (e.g. `"worktree"`); the skill passes BOTH through to the `Agent` tool

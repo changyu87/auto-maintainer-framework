@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -10,5 +10,5 @@
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
   "tdd_state": "test-green",
   "updated": "2026-06-20",
-  "spec_no_change_reason": "Spec section Skip-unchanged re-triage (\u00a73.5.3) + version bump to 0.12.0 in docs/spec.md were committed ahead of this TDD cycle; this cycle adds implementation + tests only."
+  "spec_no_change_reason": "Spec section 'Shipped executor skill' (tick v0.4.0 step/resume hardening) + version bump to 0.12.1 were committed ahead of this TDD cycle (commit 89227c0); this cycle places the v0.4.0 SKILL.md content + tests only."
 }
