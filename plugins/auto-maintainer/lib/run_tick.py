@@ -764,18 +764,47 @@ def _clock_for_window(window_key):
 #
 # A thin per-tick emitter bound to an observability.EventLog, the injected
 # tz-aware `now` (the SAME clock the budget window keys off — never an implicit
-# wall clock), and the durable counter as the tick_id. It append()s one
-# structured event per tick milestone. observability owns the schema, the closed
-# EVENT_KINDS vocabulary, and the monotonic seq (the file's line count, so a
-# multi-invocation agent tick step->resume->done keeps one monotonic sequence).
+# wall clock), and a UNIQUE-PER-TICK event id. It append()s one structured event
+# per tick milestone. observability owns the schema, the closed EVENT_KINDS
+# vocabulary, and the monotonic seq (the file's line count, so a multi-invocation
+# agent tick step->resume->done keeps one monotonic sequence).
+#
+# The event `tick_id` is DELIBERATELY NOT the durable counter (#112): the counter
+# only advances on a counter-bumping (write/act) route, so on a read-only route
+# it never increments and every read-only tick's events would carry the SAME
+# tick_id (e.g. 0), making `tick_id` useless as a tick discriminator. Instead the
+# event id is DERIVED from the injected `now` (the tz-aware budget clock), which
+# is distinct per tick (the executor injects a fresh `now` each tick) yet STABLE
+# across a paused agent tick's step->resume (both invocations inject the SAME
+# `now`), so a multi-invocation tick keeps ONE tick_id. The id stays
+# deterministic-testable: it is a pure function of the injected `now`, never the
+# wall clock. The durable counter is still the {tick_id} DISPATCH slot value (it
+# seeds the rendered envelope) — only the EVENT-LOG tick_id changed.
 # --------------------------------------------------------------------------
+
+def _event_tick_id(now):
+    """A unique-per-tick event id derived deterministically from the injected
+    `now` (#112).
+
+    `now` is the tz-aware budget clock (`_budget_clock(now)`), reused so the id
+    is a pure function of the injected clock — distinct ticks get distinct ids
+    (a fresh `now` per tick) while a paused agent tick's step and resume, which
+    inject the SAME `now`, share ONE id. Returns the clock's ISO-8601 string
+    prefixed `tick-` (e.g. `tick-2026-06-10T12:00:00+00:00`); falls back to
+    `tick-0` only when `now` is None (no clock to key off)."""
+    if now is None:
+        return "tick-0"
+    return "tick-" + now.isoformat()
+
 
 class _EventEmitter:
     """Appends structured tick events to an observability.EventLog.
 
     `now` is the tz-aware budget clock (the injected `now`), reused so the event
-    `ts` is deterministic. `tick_id` is the durable counter. Every emitted `kind`
-    is a member of observability.EVENT_KINDS — run_tick emits no kind outside it.
+    `ts` is deterministic. `tick_id` is the UNIQUE-PER-TICK event id derived from
+    `now` (#112) — NOT the durable counter (which never advances on a read-only
+    route, so it cannot discriminate read-only ticks). Every emitted `kind` is a
+    member of observability.EVENT_KINDS — run_tick emits no kind outside it.
     """
 
     def __init__(self, runtime_dir, now, tick_id):
@@ -1965,11 +1994,15 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
 
     # The structured event log (observability §3.9.1), opened at
     # ${runtime_dir}/events.jsonl. The event `ts` reuses the tz-aware budget
-    # clock (the injected `now`), so the log is deterministic; the tick_id is the
-    # durable counter. Event emission is purely additive — it writes ALONGSIDE the
-    # tick, never altering the walk/signals/disposition/persistence/trace.
+    # clock (the injected `now`), so the log is deterministic; the event tick_id
+    # is DERIVED from that same clock (#112) — a unique-per-tick id, NOT the
+    # durable counter (which never advances on a read-only route, so it cannot
+    # discriminate read-only ticks). The id is stable across a paused agent tick's
+    # step->resume (both inject the SAME `now`). Event emission is purely additive
+    # — it writes ALONGSIDE the tick, never altering the
+    # walk/signals/disposition/persistence/trace.
     event_now = _budget_clock(now)
-    event_tick_id = ds.DurableState(state_path).load().get("counter", 0)
+    event_tick_id = _event_tick_id(event_now)
     events = _EventEmitter(runtime_dir, event_now, event_tick_id)
     mode = gov.get("mode", "")
     route_src = route_source_label(project_dir)

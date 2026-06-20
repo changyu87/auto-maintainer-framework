@@ -203,6 +203,70 @@ def test_default_tick_tick_end_detail_carries_read_product_counts():
 
 
 # ==========================================================================
+# Behaviour (#112) — the event tick_id is a UNIQUE-PER-TICK id derived from the
+# injected `now`, NOT the durable counter (which never advances on a read-only
+# route, so it cannot discriminate read-only ticks).
+# ==========================================================================
+
+def test_event_tick_id_derives_from_injected_now_not_counter():
+    """On a read-only DEFAULT tick (counter never bumped, so it stays 0) every
+    event still carries a now-derived tick_id (#112) — not the literal durable
+    counter 0."""
+    runtime_dir, state_path, journal_path = _paths()
+    rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
+                journal_path=journal_path, source=_stub_source(), now=_NOW)
+    events = _events(runtime_dir)
+    assert events, "no events emitted"
+    expected_id = "tick-" + _NOW.isoformat()
+    for e in events:
+        assert e["tick_id"] == expected_id, e
+    # The durable counter did NOT advance on this read-only tick, so the OLD
+    # behaviour (counter as tick_id) would have stamped 0 — prove we are not that.
+    assert expected_id != 0
+
+
+def test_distinct_read_only_ticks_get_distinct_tick_ids():
+    """Two read-only ticks on the SAME runtime dir (the counter stays 0 across
+    both) get DISTINCT event tick_ids because each tick injects a distinct `now`
+    — so events from different ticks are groupable/queryable by tick_id (#112)."""
+    runtime_dir, state_path, journal_path = _paths()
+    now1 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    now2 = datetime(2026, 6, 10, 12, 3, 0, tzinfo=timezone.utc)
+    rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
+                journal_path=journal_path, source=_stub_source(), now=now1)
+    rt.run_tick(runtime_dir=runtime_dir, state_path=state_path,
+                journal_path=journal_path, source=_stub_source(), now=now2)
+    events = _events(runtime_dir)
+    id1, id2 = "tick-" + now1.isoformat(), "tick-" + now2.isoformat()
+    assert {e["tick_id"] for e in events} == {id1, id2}
+    # Each tick's events are cleanly groupable by tick_id (no cross-tick bleed):
+    # each group is a full tick_start..tick_end sequence.
+    tick1 = [e for e in events if e["tick_id"] == id1]
+    tick2 = [e for e in events if e["tick_id"] == id2]
+    assert _kinds(tick1)[0] == "tick_start" and _kinds(tick1)[-1] == "tick_end"
+    assert _kinds(tick2)[0] == "tick_start" and _kinds(tick2)[-1] == "tick_end"
+
+
+def test_agent_step_then_resume_share_one_tick_id():
+    """A paused agent tick's step and resume inject the SAME `now`, so all events
+    across the two invocations carry ONE tick_id — a multi-invocation tick is a
+    single tick (#112)."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source(), now=_NOW)
+    _write_outputs(paused, [_CANNED_WORK_ORDERS])
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source(), now=_NOW, resume=True)
+    events = _events(runtime_dir)
+    ids = {e["tick_id"] for e in events}
+    assert ids == {"tick-" + _NOW.isoformat()}, ids
+    # The resume's events (resume..tick_end) carry the SAME id as the step's.
+    assert "resume" in _kinds(events) and "tick_end" in _kinds(events)
+
+
+# ==========================================================================
 # Behaviour C — every emitted kind is in the closed EVENT_KINDS vocabulary.
 # ==========================================================================
 
