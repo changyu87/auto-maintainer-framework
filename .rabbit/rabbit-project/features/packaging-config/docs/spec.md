@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.6
+version: 0.2.7
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -177,6 +177,12 @@ acted-ledger blocked-leak fix) and skip-unchanged re-triage (§3.5.3 triage
 memory); `lib/safety_governance.py` + `lib/configure.py` re-copy/normalize with
 `maintainer_repo` (§3.11.6 maintainer-self routing). No build change beyond
 `_PLUGIN_VERSION → 0.2.25`; all re-collect from their updated sources.
+
+**Plugin patch v0.2.26** — re-ship the hardened tick executor skill
+(`skills/tick/SKILL.md` v0.4.0: the `--step` once / `--resume` after every
+dispatch / `--step` again only on `invalid_output` protocol clarification, from
+the REPORT live-demo finding). Collected automatically by the `ship/` convention;
+no build change beyond `_PLUGIN_VERSION → 0.2.26`.
 
 Added invariants (TDD targets): the built tree contains `lib/configure.py` (with
 the self-path bootstrap, importing `safety_governance` from `lib/`),
