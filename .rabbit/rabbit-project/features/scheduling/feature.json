@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -10,5 +10,5 @@
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
   "tdd_state": "test-green",
   "updated": "2026-06-21",
-  "spec_change_reason": "Adds the acted-ledger re-entry rule (§3.8.5-symmetric leak fix, auto-maintainer-framework#204): an already-'opened' work order re-enters the dispatch set when its auto-PR is closed-and-not-merged AND the source issue's updated_at advanced past the recorded acted_at_updated_at; otherwise it stays locked (merged / still-open / closed-but-unchanged). spec.md + contract.md (-> 0.10.0) describe the new acted-ledger entry field (acted_at_updated_at), the re-entry rule, and the injectable gh_pr_state_source PR-state seam (mirrors verify-integrate's gh_open_pr_source). Edits live ONLY in run_tick.py; siblings consumed unchanged."
+  "spec_change_reason": "#211 aggressive plug-and-play default: start.py seeds the shipped default-config (auto-merge + full acting route + REVIEW) into a fresh install; build ships the default-config assets; plugin v0.5.0."
 }

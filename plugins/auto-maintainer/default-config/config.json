@@ -1,0 +1,14 @@
+{
+  "schema_version": "2.1.0",
+  "mode": "auto-merge",
+  "budget": {
+    "per_day_tokens": null,
+    "window_tz": "local"
+  },
+  "heartbeat": {
+    "interval_minutes": 3
+  },
+  "backoff": {
+    "threshold": 5
+  }
+}

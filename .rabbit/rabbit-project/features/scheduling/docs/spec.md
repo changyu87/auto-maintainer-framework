@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.15.0
+version: 0.16.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -854,3 +854,18 @@ not in dependency-free adapter-wiring.
 - Exact recurring-vs-one-shot scheduling shape and how `/start` records the
   active heartbeat so `/stop` can cancel it deterministically — settle in
   implementation.
+
+## Fresh-install seeding (#211, aggressive plug-and-play default)
+
+`start.py` seeds the shipped **aggressive default config** into a fresh install's
+runtime dir before the disposition decision: `seed_default_config(runtime_dir)`
+copies `config.json` / `route.json` / `adapter-map.json` from the shipped
+`default-config/` dir (sibling of `lib/` in the plugin) into
+`${CLAUDE_PROJECT_DIR}/.auto-maintainer/` ONLY for each file that is ABSENT —
+idempotent, and it NEVER clobbers a config the user has already written/edited.
+A no-op when the source dir is absent (the source tree / tests without an
+injected `source_dir`). This makes a fresh install plug-and-play aggressive
+(`mode: auto-merge` + the full acting route incl. the REVIEW gate) WITHOUT
+changing the conservative code `DEFAULT_ROUTE` / `DEFAULT_GOVERNANCE`, which stay
+the safe fallback if a user deletes their config. Both `/start` modes
+(`--clear-only` and full) seed.
