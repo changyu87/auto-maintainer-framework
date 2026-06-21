@@ -160,6 +160,11 @@ HANDOFFS_KEY = "handoffs"
 # produced (empty when the route omits VERIFY / INTEGRATE), never a stale
 # carry-forward.
 VERDICTS_KEY = "verdicts"
+# REVIEW (the model-backed gate, #209) writes review_verdicts (a list of
+# ReviewVerdict dicts). Like verdicts/integration_result it is a per-tick
+# EPHEMERAL read product (#64): each tick it reflects ONLY what THIS tick's route
+# produced (empty when the route omits REVIEW), never a stale carry-forward.
+REVIEW_VERDICTS_KEY = "review_verdicts"
 INTEGRATION_RESULT_KEY = "integration_result"
 
 # The durable-state document key under which the safety-governance budget window
@@ -382,10 +387,31 @@ def make_verify(runtime):  # noqa: ARG001 - VERIFY binds no governance config
     return vi.VERIFY_MANIFEST, verify.run
 
 
+def make_review(runtime):  # noqa: ARG001 - REVIEW binds no runtime config
+    """REVIEW adapter (verify-integrate): the model-backed correctness/quality
+    gate between VERIFY and INTEGRATE (#209). REVIEW is a NON-ACTING AGENT-state —
+    the real reviewer is the `auto-maintainer-reviewer` subagent, wired by setting
+    the REVIEW port to an agent entry (AGENT_PORT_TEMPLATES['REVIEW']) in the
+    adapter map.
+
+    This deterministic factory is the resolvable DEFAULT for the REVIEW port (so
+    the port resolves for wiring validation even when DEFAULT_ROUTE omits it, the
+    ports-and-adapters promise). Its run is a CONSERVATIVE no-op: it reads the
+    verdicts slot and writes an EMPTY review_verdicts list (signal EMPTY) — i.e.
+    with NO model reviewer wired, NOTHING is approved, so INTEGRATE merges nothing
+    (CI is never the only gate). Wire the agent reviewer to actually approve PRs.
+    Returns REVIEW_MANIFEST + the no-op run callable."""
+    def _run(ctx):
+        ctx.read("verdicts")
+        return fc.StateResult(signal="EMPTY", writes={"review_verdicts": []})
+    return vi.REVIEW_MANIFEST, _run
+
+
 def make_integrate(runtime):
     """INTEGRATE adapter (verify-integrate): the single highest-stakes act-side
-    state. Reads `verdicts`, merges each `ok` verdict's PR via the injectable
-    merge sink ONLY at gated-merge, and writes the `integration_result` slot.
+    state. Reads `verdicts` + the model-backed `review_verdicts`, merges each
+    `ok` AND review-APPROVED verdict's PR via the injectable merge sink ONLY at
+    gated-merge, and writes the `integration_result` slot.
 
     Binds the loaded governance `mode` (runtime['governance']['mode']) so the
     trust ladder gates merge at gated-merge only (sg.permits) and the §3.8.1
@@ -444,7 +470,7 @@ DEFAULT_ROUTE = {
 }
 
 # Every known port -> its built-in factory address. TRIAGE, PRIORITIZE,
-# IMPLEMENT, VERIFY, INTEGRATE, and CLEANUP are included even though
+# IMPLEMENT, VERIFY, REVIEW, INTEGRATE, and CLEANUP are included even though
 # DEFAULT_ROUTE omits them (the ports-and-adapters promise: insert the
 # close-the-loop chain by data, no code change).
 # The terminals are addressed too so adapter-wiring can resolve every state in a
@@ -457,6 +483,7 @@ DEFAULT_ADAPTER_MAP = {
     "PRIORITIZE": "run_tick:make_prioritize",
     "IMPLEMENT": "run_tick:make_implement",
     "VERIFY": "run_tick:make_verify",
+    "REVIEW": "run_tick:make_review",
     "INTEGRATE": "run_tick:make_integrate",
     "CLEANUP": "run_tick:make_cleanup",
     "PERSIST": "run_tick:make_persist",
@@ -488,7 +515,15 @@ _VOCAB = fc.SignalVocabulary([
 # Slots seeded into the TickContext BEFORE the route runs (the data-readiness
 # `initial` set). PULL writes work_items, TRIAGE writes work_orders — those are
 # produced by predecessors, not seeded.
-_INITIAL_SLOTS = ["state_path", "journal_path", "counter", "tick_outcome"]
+#
+# review_verdicts (#209) is in the `initial` set because INTEGRATE READS it but
+# its producer REVIEW is OPTIONAL on a route (a route may run INTEGRATE without a
+# REVIEW stage). _seed_context seeds it empty whenever INTEGRATE/REVIEW is routed
+# (the conservative default: nothing approved = nothing merged), so declaring it
+# initially-available keeps data-readiness honest for an INTEGRATE-without-REVIEW
+# route without requiring REVIEW to be present.
+_INITIAL_SLOTS = ["state_path", "journal_path", "counter", "tick_outcome",
+                  "review_verdicts"]
 
 
 def _seed_context(state_path, journal_path, route):
@@ -549,6 +584,17 @@ def _seed_context(state_path, journal_path, route):
             vi.VERDICTS_SLOT["name"], vi.VERDICTS_SLOT["schema"],
             version=vi.VERDICTS_SLOT["version"])
         ctx.write(vi.VERDICTS_SLOT["name"], [])
+    # review_verdicts (#209): the model-backed REVIEW gate's output. Seeded when
+    # REVIEW is routed (its producer) OR when INTEGRATE is routed (its consumer —
+    # INTEGRATE reads review_verdicts to AND review-approval into its merge
+    # condition, so a route with INTEGRATE but no REVIEW still leaves the slot
+    # readable as empty = nothing approved = nothing merged, the conservative
+    # default).
+    if "REVIEW" in route["states"] or "INTEGRATE" in route["states"]:
+        ctx.register_slot(
+            vi.REVIEW_VERDICTS_SLOT["name"], vi.REVIEW_VERDICTS_SLOT["schema"],
+            version=vi.REVIEW_VERDICTS_SLOT["version"])
+        ctx.write(vi.REVIEW_VERDICTS_SLOT["name"], [])
     if "INTEGRATE" in route["states"]:
         ctx.register_slot(
             vi.INTEGRATION_RESULT_SLOT["name"],
@@ -682,6 +728,14 @@ def persisted_handoffs(state_path):
 def persisted_handoffs_count(state_path):
     """The count of handoffs the last tick produced, from durable state."""
     return len(persisted_handoffs(state_path))
+
+
+def persisted_review_verdicts(state_path):
+    """The last tick's review_verdicts snapshot persisted in durable state (a
+    list of ReviewVerdict dicts), or [] when the active route produced none (no
+    REVIEW / INTEGRATE stage). A per-tick #64 read product (#209)."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(REVIEW_VERDICTS_KEY, [])
 
 
 def persisted_budget_state(state_path):
@@ -915,6 +969,10 @@ _SLOT_SCHEMAS = {
     wi.WORK_ORDERS_SLOT["name"]: wi.WORK_ORDERS_SLOT["schema"],
     pr.EXECUTION_PLAN_SLOT["name"]: pr.EXECUTION_PLAN_SLOT["schema"],
     im.HANDOFFS_SLOT["name"]: im.HANDOFFS_SLOT["schema"],
+    # REVIEW (#209) is an agent-state writing review_verdicts (a `once` dispatch
+    # whose single output IS the whole array slot), so its output file is
+    # validated against the array slot schema.
+    vi.REVIEW_VERDICTS_SLOT["name"]: vi.REVIEW_VERDICTS_SLOT["schema"],
 }
 
 
@@ -2317,6 +2375,13 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         doc[VERDICTS_KEY] = (
             ctx.read(vi.VERDICTS_SLOT["name"])
             if "VERIFY" in route["states"] else [])
+        # review_verdicts (#209): the model-backed REVIEW gate's per-tick read
+        # product. Persisted when REVIEW or INTEGRATE is routed (the slot is
+        # seeded in either case), else empty (NOT a stale carry-forward).
+        doc[REVIEW_VERDICTS_KEY] = (
+            ctx.read(vi.REVIEW_VERDICTS_SLOT["name"])
+            if ("REVIEW" in route["states"]
+                or "INTEGRATE" in route["states"]) else [])
         doc[INTEGRATION_RESULT_KEY] = (
             ctx.read(vi.INTEGRATION_RESULT_SLOT["name"])
             if "INTEGRATE" in route["states"] else {})

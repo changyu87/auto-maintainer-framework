@@ -197,6 +197,8 @@ def test_seed_context_writes_empty_defaults_for_producible_slots():
     assert ctx.read(wi.WORK_ORDERS_SLOT["name"]) == []
     assert ctx.read(im_handoffs_name()) == []
     assert ctx.read(vi.VERDICTS_SLOT["name"]) == []
+    # review_verdicts (#209): seeded empty when REVIEW/INTEGRATE is routed.
+    assert ctx.read(vi.REVIEW_VERDICTS_SLOT["name"]) == []
     ep = ctx.read(pr.EXECUTION_PLAN_SLOT["name"])
     assert ep["ordered"] == [], ep
     assert ep["schema_version"] == pr.EXECUTION_PLAN_SCHEMA_VERSION, ep

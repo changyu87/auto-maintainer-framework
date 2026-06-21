@@ -154,11 +154,13 @@ def _paths():
 
 
 # The full close-the-loop override route: TRIAGE -> PRIORITIZE -> IMPLEMENT ->
-# VERIFY -> INTEGRATE -> CLEANUP between PULL and PERSIST.
+# VERIFY -> REVIEW -> INTEGRATE -> CLEANUP between PULL and PERSIST. REVIEW (the
+# model-backed gate, #209) sits between VERIFY and INTEGRATE; INTEGRATE ANDs
+# review-approval into its merge condition.
 _CLOSE_ROUTE = {
     "schema_version": "1.0.0",
     "states": ["GUARD", "DRAIN", "PULL", "TRIAGE", "PRIORITIZE", "IMPLEMENT",
-               "VERIFY", "INTEGRATE", "CLEANUP", "PERSIST", "EXIT",
+               "VERIFY", "REVIEW", "INTEGRATE", "CLEANUP", "PERSIST", "EXIT",
                "DONE", "HALTED"],
     "edges": [
         {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
@@ -173,8 +175,10 @@ _CLOSE_ROUTE = {
         {"state": "PRIORITIZE", "signal": "EMPTY", "next": "IMPLEMENT"},
         {"state": "IMPLEMENT", "signal": "OK", "next": "VERIFY"},
         {"state": "IMPLEMENT", "signal": "BLOCKED", "next": "VERIFY"},
-        {"state": "VERIFY", "signal": "OK", "next": "INTEGRATE"},
-        {"state": "VERIFY", "signal": "EMPTY", "next": "INTEGRATE"},
+        {"state": "VERIFY", "signal": "OK", "next": "REVIEW"},
+        {"state": "VERIFY", "signal": "EMPTY", "next": "REVIEW"},
+        {"state": "REVIEW", "signal": "OK", "next": "INTEGRATE"},
+        {"state": "REVIEW", "signal": "EMPTY", "next": "INTEGRATE"},
         {"state": "INTEGRATE", "signal": "OK", "next": "CLEANUP"},
         {"state": "CLEANUP", "signal": "OK", "next": "PERSIST"},
         {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
@@ -185,6 +189,31 @@ _CLOSE_ROUTE = {
     ],
     "terminal": ["DONE", "HALTED"],
 }
+
+
+def _patch_approving_review(open_prs=None):
+    """Patch rt.make_review with a stub factory that APPROVES every open PR, so
+    the merge-path wiring tests exercise INTEGRATE past the REVIEW gate. The
+    production default make_review writes EMPTY review_verdicts (nothing approved),
+    so without this an ok PR is never merged (#209). Returns a restore callable."""
+    saved = rt.make_review
+    prs = open_prs if open_prs is not None else [_OK_PR]
+
+    def _make_review(runtime):  # noqa: ARG001
+        def _run(ctx):
+            verdicts = ctx.read("verdicts")
+            rvs = [vi.ReviewVerdict(pr_ref=v["pr_ref"], approved=True).to_dict()
+                   for v in verdicts]
+            signal = "OK" if rvs else "EMPTY"
+            return fc.StateResult(signal=signal,
+                                  writes={"review_verdicts": rvs})
+        return vi.REVIEW_MANIFEST, _run
+
+    rt.make_review = _make_review
+
+    def restore():
+        rt.make_review = saved
+    return restore
 
 
 def _write_project_route(project_dir, route):
@@ -209,16 +238,18 @@ def _write_governance(project_dir, mode):
 def test_default_adapter_map_includes_verify_integrate_cleanup():
     amap = rt.DEFAULT_ADAPTER_MAP
     assert "VERIFY" in amap, amap
+    assert "REVIEW" in amap, amap
     assert "INTEGRATE" in amap, amap
     assert "CLEANUP" in amap, amap
     assert amap["VERIFY"].split(":")[1] == "make_verify", amap["VERIFY"]
+    assert amap["REVIEW"].split(":")[1] == "make_review", amap["REVIEW"]
     assert amap["INTEGRATE"].split(":")[1] == "make_integrate", amap["INTEGRATE"]
     assert amap["CLEANUP"].split(":")[1] == "make_cleanup", amap["CLEANUP"]
 
 
 def test_default_route_omits_verify_integrate_cleanup():
     route = rt.DEFAULT_ROUTE
-    for s in ("VERIFY", "INTEGRATE", "CLEANUP"):
+    for s in ("VERIFY", "REVIEW", "INTEGRATE", "CLEANUP"):
         assert s not in route["states"], route["states"]
 
 
@@ -262,10 +293,14 @@ def test_integrate_factory_binds_governance_mode():
         # sink at gated-merge (mode binding proven through behaviour).
         ctx = fc.TickContext()
         ctx.register_slot("verdicts", {"type": "array"}, version="1.0.0")
+        ctx.register_slot("review_verdicts", {"type": "array"}, version="1.0.0")
         ctx.register_slot("integration_result", {"type": "object"},
                           version="1.0.0")
         ctx.write("verdicts", [vi.derive_verdict(_OK_PR, _DEFAULT_BRANCH)
                                .to_dict()])
+        # The model-backed REVIEW gate must approve before INTEGRATE merges (#209).
+        ctx.write("review_verdicts", [vi.ReviewVerdict(
+            pr_ref="acme/widget#42", approved=True).to_dict()])
         result = run(ctx)
     finally:
         restore()
@@ -286,10 +321,12 @@ def test_close_route_resolves_and_validates_via_build_loop():
     route, states = aw.build_loop(
         _CLOSE_ROUTE, rt.DEFAULT_ADAPTER_MAP, runtime,
         start="GUARD", initial=rt._INITIAL_SLOTS)
-    for s in ("VERIFY", "INTEGRATE", "CLEANUP"):
+    for s in ("VERIFY", "REVIEW", "INTEGRATE", "CLEANUP"):
         assert s in states, (s, list(states))
-    # VERIFY/INTEGRATE/CLEANUP are SCRIPT states (run callables, not AgentState).
-    for s in ("VERIFY", "INTEGRATE", "CLEANUP"):
+    # With the DEFAULT adapter-map, REVIEW resolves to make_review's deterministic
+    # no-op (a SCRIPT state, not AgentState — the agent reviewer is wired by an
+    # adapter-map override). VERIFY/INTEGRATE/CLEANUP are SCRIPT states too.
+    for s in ("VERIFY", "REVIEW", "INTEGRATE", "CLEANUP"):
         assert not isinstance(states[s][1], aw.AgentState), s
 
 
@@ -307,9 +344,9 @@ def test_close_route_runs_end_to_end_propose():
                              source=_stub_source(), return_run_result=True)
     finally:
         restore()
-    assert result.path[:9] == ["GUARD", "DRAIN", "PULL", "TRIAGE", "PRIORITIZE",
-                               "IMPLEMENT", "VERIFY", "INTEGRATE",
-                               "CLEANUP"], result.path
+    assert result.path[:10] == ["GUARD", "DRAIN", "PULL", "TRIAGE", "PRIORITIZE",
+                                "IMPLEMENT", "VERIFY", "REVIEW", "INTEGRATE",
+                                "CLEANUP"], result.path
     assert result.final_state == "DONE", result.path
 
 
@@ -327,18 +364,22 @@ def test_propose_does_not_merge():
 
     merge_calls = []
     restore = _patch_vi_seams(None, merge_calls=merge_calls)
+    restore_rev = _patch_approving_review()
     try:
         rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                     state_path=state_path, journal_path=journal_path,
                     source=_stub_source())
     finally:
+        restore_rev()
         restore()
-    # The sink was NEVER called (no merge at propose).
+    # The sink was NEVER called (no merge at propose, even with review approved).
     assert merge_calls == [], merge_calls
     ir = ds.DurableState(state_path).load().get("integration_result", {})
     assert ir.get("merged", []) == [], ir
-    # The would-merge intent is recorded under skipped.
+    # The would-merge intent is recorded under skipped (the propose NO-OP, NOT a
+    # review-not-approved skip — the reviewer approved it).
     assert len(ir.get("skipped", [])) == 1, ir
+    assert "propose" in ir["skipped"][0]["reason"], ir
 
 
 # --------------------------------------------------------------------------
@@ -355,13 +396,15 @@ def test_gated_merge_merges_via_sink():
 
     merge_calls = []
     restore = _patch_vi_seams(None, merge_calls=merge_calls)
+    restore_rev = _patch_approving_review()
     try:
         rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                     state_path=state_path, journal_path=journal_path,
                     source=_stub_source())
     finally:
+        restore_rev()
         restore()
-    # The sink was called exactly once for the ok PR.
+    # The sink was called exactly once for the ok AND review-approved PR.
     assert merge_calls == ["acme/widget#42"], merge_calls
     ir = ds.DurableState(state_path).load().get("integration_result", {})
     assert len(ir.get("merged", [])) == 1, ir
@@ -381,6 +424,7 @@ def test_seed_context_registers_verdicts_and_integration_result_when_routed():
         {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
     ctx = rt._seed_context(state_path, "/tmp/j.jsonl", _CLOSE_ROUTE)
     assert "verdicts" in ctx.registered_slots(), ctx.registered_slots()
+    assert "review_verdicts" in ctx.registered_slots(), ctx.registered_slots()
     assert "integration_result" in ctx.registered_slots(), ctx.registered_slots()
 
 
@@ -393,6 +437,8 @@ def test_default_route_does_not_seed_verdicts():
         {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
     ctx = rt._seed_context(state_path, "/tmp/j.jsonl", rt.DEFAULT_ROUTE)
     assert "verdicts" not in ctx.registered_slots(), ctx.registered_slots()
+    assert "review_verdicts" not in ctx.registered_slots(), \
+        ctx.registered_slots()
     assert "integration_result" not in ctx.registered_slots(), \
         ctx.registered_slots()
 
@@ -410,3 +456,132 @@ def test_default_route_tick_unchanged():
     doc = ds.DurableState(state_path).load()
     assert "integration_result" not in doc or doc.get("integration_result") in (
         {}, None), doc
+
+
+# --------------------------------------------------------------------------
+# Behaviour 9 (#209) — REVIEW wired as an AGENT-state pauses for the reviewer,
+# resumes by reading its written review_verdicts, and INTEGRATE gates merge on
+# the model's approval. A not-approved verdict blocks merge; an approved one
+# merges (at gated-merge). The model never selects control flow — INTEGRATE's
+# deterministic gate consumes the verdict.
+# --------------------------------------------------------------------------
+
+# A route with REVIEW as the agent gate between VERIFY and INTEGRATE, but WITHOUT
+# IMPLEMENT/TRIAGE/PRIORITIZE agent-states (those stay out so the FIRST pause is
+# REVIEW): GUARD->DRAIN->PULL->VERIFY->REVIEW->INTEGRATE->CLEANUP->PERSIST->EXIT.
+_REVIEW_AGENT_ROUTE = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "PULL", "VERIFY", "REVIEW", "INTEGRATE",
+               "CLEANUP", "PERSIST", "EXIT", "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "VERIFY"},
+        {"state": "PULL", "signal": "EMPTY", "next": "VERIFY"},
+        {"state": "VERIFY", "signal": "OK", "next": "REVIEW"},
+        {"state": "VERIFY", "signal": "EMPTY", "next": "REVIEW"},
+        {"state": "REVIEW", "signal": "OK", "next": "INTEGRATE"},
+        {"state": "REVIEW", "signal": "EMPTY", "next": "INTEGRATE"},
+        {"state": "INTEGRATE", "signal": "OK", "next": "CLEANUP"},
+        {"state": "CLEANUP", "signal": "OK", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+
+def _write_review_agent_map(project_dir):
+    """Write a project-local adapter-map override making REVIEW an agent-state
+    dispatched to auto-maintainer-reviewer (via the AGENT_PORT_TEMPLATES['REVIEW']
+    template), proving the shipped REVIEW agent wiring is valid drop-in config."""
+    import adapter_map_config as amc
+    entry = amc._build_agent_entry(
+        "REVIEW", "auto-maintainer:auto-maintainer-reviewer")
+    amap = dict(rt.DEFAULT_ADAPTER_MAP)
+    amap["REVIEW"] = entry
+    cfg = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(cfg, exist_ok=True)
+    with open(os.path.join(cfg, "adapter-map.json"), "w") as f:
+        json.dump(amap, f)
+
+
+def _drive_review_tick(project_dir, runtime_dir, state_path, journal_path,
+                       approved):
+    """Drive the REVIEW-agent route through run_tick step/resume: the first call
+    PAUSES at REVIEW; we WRITE a canned review_verdicts output (approved or not)
+    to the dispatch's output_path, then resume to the terminal. Returns the
+    integration_result persisted at the terminal."""
+    paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source())
+    assert isinstance(paused, dict), paused
+    assert paused["status"] == "paused", paused
+    assert paused["state"] == "REVIEW", paused
+    d = paused["dispatches"][0]
+    assert d["subagent_type"] == "auto-maintainer:auto-maintainer-reviewer", d
+    assert d["writes"] == "review_verdicts", d
+    # The reviewer reviews the open PRs VERIFY surfaced — derive a verdict per PR.
+    rvs = [vi.ReviewVerdict(pr_ref="acme/widget#42", approved=approved,
+                            severity=("none" if approved else "blocker"),
+                            findings=([] if approved else [
+                                {"kind": "spec", "severity": "blocker",
+                                 "file": "x.py", "line": 1,
+                                 "note": "over-built"}])).to_dict()]
+    with open(d["output_path"], "w") as f:
+        json.dump(rvs, f)
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source(), resume=True)
+    return ds.DurableState(state_path).load().get("integration_result", {})
+
+
+def test_review_agent_pauses_and_approval_gates_merge_gated():
+    project_dir = tempfile.mkdtemp(prefix="sched-revagent-ok-")
+    _write_project_route(project_dir, _REVIEW_AGENT_ROUTE)
+    _write_review_agent_map(project_dir)
+    _write_governance(project_dir, "gated-merge")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+
+    merge_calls = []
+    restore = _patch_vi_seams(None, merge_calls=merge_calls)
+    try:
+        ir = _drive_review_tick(project_dir, runtime_dir, state_path,
+                                journal_path, approved=True)
+    finally:
+        restore()
+    # The reviewer APPROVED -> INTEGRATE merged the ok PR at gated-merge.
+    assert merge_calls == ["acme/widget#42"], merge_calls
+    assert len(ir.get("merged", [])) == 1, ir
+
+
+def test_review_agent_not_approved_blocks_merge_gated():
+    project_dir = tempfile.mkdtemp(prefix="sched-revagent-no-")
+    _write_project_route(project_dir, _REVIEW_AGENT_ROUTE)
+    _write_review_agent_map(project_dir)
+    _write_governance(project_dir, "gated-merge")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+
+    merge_calls = []
+    restore = _patch_vi_seams(None, merge_calls=merge_calls)
+    try:
+        ir = _drive_review_tick(project_dir, runtime_dir, state_path,
+                                journal_path, approved=False)
+    finally:
+        restore()
+    # The reviewer did NOT approve -> INTEGRATE did NOT merge (CI green + mergeable
+    # is no longer sufficient); the sink was never called and the PR is skipped
+    # with the review reason.
+    assert merge_calls == [], merge_calls
+    assert ir.get("merged", []) == [], ir
+    assert len(ir.get("skipped", [])) == 1, ir
+    assert "review" in ir["skipped"][0]["reason"].lower(), ir
