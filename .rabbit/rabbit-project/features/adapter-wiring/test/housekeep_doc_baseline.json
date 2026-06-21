@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded when adapter-wiring's docs are restructured by a later wave that re-baselines this fixture; until then it is the measured-reduction reference for the housekeep doc-slim wave.",
+  "description": "Pre-wave line counts of adapter-wiring docs, captured at commit b263271 (before the housekeep measured doc-reduction wave). The housekeep e2e test asserts the current docs are STRICTLY smaller than these baselines, and that the load-bearing tokens survived the slim.",
+  "baseline_commit": "b263271",
+  "docs": {
+    "docs/spec.md": 172,
+    "docs/contract.md": 82
+  }
+}
