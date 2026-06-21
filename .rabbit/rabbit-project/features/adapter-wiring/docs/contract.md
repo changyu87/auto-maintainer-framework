@@ -53,8 +53,8 @@ contract a third-party adapter implements.
   },
   "reads": {
     "files": [
-      "${project_dir}/.auto-maintainer/route.json (project-local override)",
-      "${project_dir}/.auto-maintainer/adapter-map.json (project-local override)"
+      "${project_dir}/.auto-maintainer/route.json (project-local override; wire_adapter also writes it)",
+      "${project_dir}/.auto-maintainer/adapter-map.json (project-local override; wire_adapter also writes it)"
     ],
     "external": [
       "fsm-contracts (validate_route, StateManifest, CheckResult)",
