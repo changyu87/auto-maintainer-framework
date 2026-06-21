@@ -1586,7 +1586,8 @@ def _repo_for_target(target, gov):
     return None
 
 
-def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink):
+def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink,
+                  work_items=()):
     """Flush the tick's discoveries through work-intake's REPORT port at the
     terminal (out-of-band). Returns (filed_count, skipped_count, errored_count).
 
@@ -1599,7 +1600,13 @@ def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink):
         wi.file_discoveries (the per-target repo bound onto the injected sink),
         then RECORDS each filed {dedup_key: {tracker_ref, url}} into the durable
         REPORT_LEDGER_KEY (load-modify-save just that key). Returns
-        (len(filed), len(skipped_existing), len(errors)).
+        (len(filed), len(skipped_existing)+len(skipped_open), len(errors)).
+
+    `work_items` are the tick's PULLed open tracker items, passed to
+    wi.file_discoveries as `known_open` so a discovery whose subject DUPLICATES
+    an already-open issue is skipped (dedup-vs-open, DESIGN §3.5.4) rather than
+    filed as duplicate noise. Those skips fold into the returned skipped count
+    (so `reported=<filed>/<skipped>` reflects them and they are NOT filed).
 
     The errored count (from ReportResult.errors) makes a filing failure VISIBLE:
     a sink error (e.g. a missing tracker label) was caught into errors but the
@@ -1615,15 +1622,20 @@ def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink):
 
     if not sg.permits("file", mode):
         # dry-run: log the intent (the would-file count) but DO NOT file and DO
-        # NOT touch the ledger — a later armed tick files them.
-        would_file = len([d for d in normalized if d.dedup_key not in known])
+        # NOT touch the ledger — a later armed tick files them. The would-file
+        # count excludes discoveries that already duplicate an OPEN issue.
+        would_file = len([
+            d for d in normalized
+            if d.dedup_key not in known
+            and wi._match_open_issue(d, work_items) is None])
         return 0, would_file, 0
 
     def _routed_sink(discovery):
         return sink(discovery, repo=_repo_for_target(discovery.target, gov))
 
     result = wi.file_discoveries(
-        normalized, sink=_routed_sink, known_dedup_keys=known)
+        normalized, sink=_routed_sink, known_dedup_keys=known,
+        known_open=work_items)
 
     # Record each newly-filed discovery into the durable report-ledger
     # (load-modify-save ONLY REPORT_LEDGER_KEY, preserving every other key).
@@ -1638,7 +1650,8 @@ def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink):
         doc[REPORT_LEDGER_KEY] = ledger
         ds.DurableState(state_path).save(doc)
 
-    return len(result.filed), len(result.skipped_existing), len(result.errors)
+    skipped = len(result.skipped_existing) + len(result.skipped_open)
+    return len(result.filed), skipped, len(result.errors)
 
 
 def _gate_acting_state(name, agentstate, slot_values, tick_id, mode,
@@ -2394,10 +2407,13 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         # discoveries (handoffs[].discovered_work + the optional `discoveries`
         # slot) at the terminal, AFTER the read products are persisted, on BOTH
         # the pure-script and agent-driver done paths. Trust-gated + journaled
-        # idempotent inside _flush_report.
+        # idempotent inside _flush_report. The tick's PULLed open work_items are
+        # passed as known_open so a discovery duplicating an already-open issue is
+        # skipped, not filed as duplicate noise (dedup-vs-open, DESIGN §3.5.4).
         reported_filed, reported_skipped, reported_errored = _flush_report(
             state_path, tick_handoffs, discoveries, mode, gov,
-            report_sink or DEFAULT_REPORT_SINK)
+            report_sink or DEFAULT_REPORT_SINK,
+            work_items=doc.get(WORK_ITEMS_KEY, []))
     else:
         # GUARD short-circuited (STOPPED/ABORTED/RESTART_NEEDED): the tick did no
         # read/PERSIST work, but the budget window is still a durable cross-tick

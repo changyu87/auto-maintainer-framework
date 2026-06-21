@@ -585,6 +585,87 @@ def test_flush_report_returns_errored_triple():
     assert (filed, skipped, errored) == (0, 0, 1), (filed, skipped, errored)
 
 
+# ==========================================================================
+# Behaviour 10 — dedup-vs-open (#224): a discovery whose subject DUPLICATES an
+# already-OPEN work_item is NOT filed (the sink is never called); it folds into
+# the skipped count so reported reflects it. A genuinely-new discovery is filed.
+# This is the REPORT-side of DESIGN §3.5.4 "dedup vs open": the flush now passes
+# the tick's PULLed open work_items to work-intake as known_open.
+# ==========================================================================
+
+def _open_work_item(number, title):
+    """A minimal open work_item dict (the machine-first shape persisted under
+    WORK_ITEMS_KEY that _flush_report passes as known_open)."""
+    return {"schema_version": "1.1.0", "id": f"acme/widget#{number}",
+            "number": number, "title": title, "body": "",
+            "url": f"https://github.com/acme/widget/issues/{number}",
+            "state": "OPEN", "labels": []}
+
+
+def test_flush_report_skips_discovery_matching_open_work_item():
+    root = tempfile.mkdtemp(prefix="sched-report-vsopen-")
+    state_path = os.path.join(root, "state.json")
+    gov = sg.load_governance(tempfile.mkdtemp(prefix="sched-report-vsopen-pd-"))
+    # The discovery's subject matches an already-open issue -> must NOT be filed.
+    dup = {"title": "Serialize same-feature work orders",
+           "body": "they collide on shared metadata", "kind": "task",
+           "severity": "low"}
+    handoff = {"work_order_id": "wo-1", "status": "blocked",
+               "artifact": {"kind": "none", "ref": None},
+               "discovered_work": [dup], "blocked_reason": "x"}
+    open_items = [_open_work_item(214, "Serialize the same-feature work-orders")]
+    sink = _RecordingSink()
+    filed, skipped, errored = rt._flush_report(
+        state_path, [handoff], [], "propose", gov, sink,
+        work_items=open_items)
+    # NOT filed, the sink was never called; the skip folds into skipped count.
+    assert sink.calls == [], sink.calls
+    assert (filed, skipped, errored) == (0, 1, 0), (filed, skipped, errored)
+    # Nothing entered the report ledger (it was never filed).
+    assert rt.persisted_report_ledger(state_path) == {}
+
+
+def test_flush_report_files_new_discovery_with_open_work_items_present():
+    root = tempfile.mkdtemp(prefix="sched-report-vsopen-new-")
+    state_path = os.path.join(root, "state.json")
+    gov = sg.load_governance(
+        tempfile.mkdtemp(prefix="sched-report-vsopen-new-pd-"))
+    # A genuinely-new subject: no open issue is about it -> filed normally even
+    # though unrelated open work_items are present.
+    handoff = {"work_order_id": "wo-1", "status": "opened",
+               "artifact": {"kind": "pr", "ref": "PR#1"},
+               "discovered_work": [dict(_DISCOVERY)], "blocked_reason": None}
+    open_items = [_open_work_item(214, "Serialize the same-feature work-orders")]
+    sink = _RecordingSink()
+    filed, skipped, errored = rt._flush_report(
+        state_path, [handoff], [], "propose", gov, sink,
+        work_items=open_items)
+    assert len(sink.calls) == 1, sink.calls
+    assert (filed, skipped, errored) == (1, 0, 0), (filed, skipped, errored)
+
+
+def test_flush_report_dry_run_would_file_excludes_open_duplicates():
+    root = tempfile.mkdtemp(prefix="sched-report-vsopen-dry-")
+    state_path = os.path.join(root, "state.json")
+    gov = sg.load_governance(
+        tempfile.mkdtemp(prefix="sched-report-vsopen-dry-pd-"))
+    dup = {"title": "Serialize same-feature work orders", "body": "x",
+           "kind": "task", "severity": "low"}
+    new = dict(_DISCOVERY)
+    handoff = {"work_order_id": "wo-1", "status": "opened",
+               "artifact": {"kind": "pr", "ref": "PR#1"},
+               "discovered_work": [dup, new], "blocked_reason": None}
+    open_items = [_open_work_item(214, "Serialize the same-feature work-orders")]
+    sink = _RecordingSink()
+    # dry-run: filing not permitted; the would-file count must exclude the open
+    # duplicate (1 new would-file, not 2).
+    filed, skipped, errored = rt._flush_report(
+        state_path, [handoff], [], "dry-run", gov, sink,
+        work_items=open_items)
+    assert sink.calls == [], sink.calls
+    assert (filed, skipped, errored) == (0, 1, 0), (filed, skipped, errored)
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

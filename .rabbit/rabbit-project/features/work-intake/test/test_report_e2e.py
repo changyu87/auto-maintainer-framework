@@ -184,7 +184,101 @@ def test_file_discoveries_empty_input_is_empty_result():
     result = wi.file_discoveries([], sink=_recording_sink(), known_dedup_keys=())
     assert result.filed == []
     assert result.skipped_existing == []
+    assert result.skipped_open == []
     assert result.errors == []
+
+
+# ==========================================================================
+# E2E Behaviour (dedup-vs-open, #224): a discovery whose SUBJECT matches an
+# ALREADY-OPEN tracker issue is NOT filed — it goes to skipped_open with NO
+# sink call (it would be duplicate noise). A genuinely-new discovery, whose
+# subject matches no open issue, is still filed normally.
+# ==========================================================================
+
+def _open_item(number, title):
+    """A minimal open WorkItem (the shape PULL writes / scheduling passes as
+    known_open)."""
+    return wi.WorkItem(
+        id=f"acme/widget#{number}", number=number, title=title, body="",
+        url=f"https://github.com/acme/widget/issues/{number}", state="OPEN")
+
+
+def test_file_discoveries_skips_discovery_matching_open_issue():
+    # The open tracker already has an issue on the SAME subject as the discovery.
+    open_items = [_open_item(209, "Add a model-backed REVIEW gate before merge")]
+    discovery = _discovery(
+        dedup_key="am-dup",
+        title="Add a model-backed REVIEW gate before merge")
+    sink = _recording_sink()
+
+    result = wi.file_discoveries(
+        [discovery], sink=sink, known_dedup_keys=(), known_open=open_items)
+
+    # It duplicates an open issue -> NOT filed, NO sink call, recorded skipped.
+    assert sink.calls == []
+    assert result.filed == []
+    assert result.skipped_existing == []
+    assert len(result.skipped_open) == 1
+    assert result.skipped_open[0]["dedup_key"] == "am-dup"
+    assert result.skipped_open[0]["matched"] == "acme/widget#209"
+    assert result.errors == []
+
+
+def test_file_discoveries_files_new_discovery_not_matching_any_open_issue():
+    # A genuinely-new subject: no open issue is about it -> filed normally.
+    open_items = [_open_item(209, "Add a model-backed REVIEW gate before merge")]
+    discovery = _discovery(
+        dedup_key="am-new", title="Document the packaging build steps")
+    sink = _recording_sink()
+
+    result = wi.file_discoveries(
+        [discovery], sink=sink, known_dedup_keys=(), known_open=open_items)
+
+    assert len(sink.calls) == 1
+    assert [f["dedup_key"] for f in result.filed] == ["am-new"]
+    assert result.skipped_open == []
+    assert result.errors == []
+
+
+def test_file_discoveries_dedup_key_precedes_open_match():
+    # A discovery that is BOTH already-filed (known_dedup_keys) AND matches an
+    # open issue is recorded as skipped_existing (ledger idempotency takes
+    # precedence), never double-counted in skipped_open.
+    open_items = [_open_item(209, "Add a REVIEW gate before merge")]
+    discovery = _discovery(
+        dedup_key="am-known", title="Add a REVIEW gate before merge")
+    sink = _recording_sink()
+
+    result = wi.file_discoveries(
+        [discovery], sink=sink, known_dedup_keys=("am-known",),
+        known_open=open_items)
+
+    assert sink.calls == []
+    assert result.skipped_existing == ["am-known"]
+    assert result.skipped_open == []
+
+
+def test_file_discoveries_default_known_open_files_everything():
+    # known_open defaults to empty: behaviour is unchanged when no open set is
+    # supplied (back-compat with existing callers).
+    discovery = _discovery(dedup_key="am-x", title="Anything at all here")
+    sink = _recording_sink()
+    result = wi.file_discoveries([discovery], sink=sink, known_dedup_keys=())
+    assert len(sink.calls) == 1
+    assert [f["dedup_key"] for f in result.filed] == ["am-x"]
+    assert result.skipped_open == []
+
+
+def test_match_open_issue_overlap_threshold():
+    # The deterministic title-overlap heuristic: near-identical titles match;
+    # an unrelated title does not. Stopwords + casing are normalized away.
+    disc = _discovery(title="Serialize same-feature work orders")
+    same = [_open_item(214, "Serialize the same-feature work-orders")]
+    other = [_open_item(99, "Completely different unrelated subject line")]
+    assert wi._match_open_issue(disc, same) == "acme/widget#214"
+    assert wi._match_open_issue(disc, other) is None
+    # An empty open set never matches.
+    assert wi._match_open_issue(disc, []) is None
 
 
 # ==========================================================================

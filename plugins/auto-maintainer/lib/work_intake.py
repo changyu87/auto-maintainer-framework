@@ -561,11 +561,16 @@ class ReportResult:
 
       - filed:            [{dedup_key, tracker_ref, url}] — newly filed items.
       - skipped_existing: [dedup_key] — keys already known (a no-op re-file).
+      - skipped_open:     [{dedup_key, matched}] — discoveries whose subject
+                          matches an ALREADY-OPEN tracker issue (dedup-vs-open):
+                          NOT filed (duplicate noise), no sink call. `matched`
+                          is the id/number of the open issue it duplicates.
       - errors:           [{dedup_key, reason}] — per-discovery sink failures.
     """
 
     filed: List[dict] = field(default_factory=list)
     skipped_existing: List[str] = field(default_factory=list)
+    skipped_open: List[dict] = field(default_factory=list)
     errors: List[dict] = field(default_factory=list)
 
 
@@ -620,24 +625,105 @@ def _derive_ref(url):
     return url
 
 
-def file_discoveries(discoveries, sink=gh_issue_file_sink, known_dedup_keys=()):
+# Dedup-vs-open: the minimum normalized-title token overlap (Jaccard) above
+# which a discovery is judged to duplicate an already-open issue. Tuned high
+# enough that only near-identical subjects match (the #222/#223-vs-#209/#210
+# duplicate class), low enough to tolerate trivial wording drift. The v1 match
+# is this deterministic heuristic; a model-judged "is this already tracked?"
+# check is the deferred robust v2 (see docs/spec.md).
+OPEN_DUP_TITLE_OVERLAP = 0.7
+
+# Tokens stripped before comparing titles: pure noise for subject matching.
+_OPEN_DUP_STOPWORDS = frozenset({
+    "a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "is",
+    "are", "be", "vs", "via", "with", "when", "that", "this", "it",
+})
+
+
+def _normalize_title_tokens(title):
+    """Lowercase a title and split it into a set of meaningful word tokens
+    (alphanumerics, stopwords dropped). Pure and deterministic; the unit of the
+    dedup-vs-open title-overlap heuristic."""
+    out = set()
+    word = []
+    for ch in (title or "").lower():
+        if ch.isalnum():
+            word.append(ch)
+        elif word:
+            out.add("".join(word))
+            word = []
+    if word:
+        out.add("".join(word))
+    return {w for w in out if w and w not in _OPEN_DUP_STOPWORDS}
+
+
+def _match_open_issue(discovery, open_items):
+    """Return the id/number of an OPEN tracker item whose subject matches this
+    discovery's title (dedup-vs-open), or None when none matches.
+
+    v1 heuristic (deterministic): the title token sets overlap (Jaccard) at or
+    above OPEN_DUP_TITLE_OVERLAP. `open_items` are WorkItem objects or their
+    machine-first dicts. Pure; performs no I/O. A robust model-judged v2 is
+    deferred (docs/spec.md)."""
+    disc_tokens = _normalize_title_tokens(discovery.title)
+    if not disc_tokens:
+        return None
+    best_ref = None
+    best_score = 0.0
+    for item in open_items or []:
+        if isinstance(item, dict):
+            title = item.get("title", "")
+            ref = item.get("id") or item.get("number")
+        else:
+            title = getattr(item, "title", "")
+            ref = getattr(item, "id", None) or getattr(item, "number", None)
+        item_tokens = _normalize_title_tokens(title)
+        if not item_tokens:
+            continue
+        overlap = disc_tokens & item_tokens
+        union = disc_tokens | item_tokens
+        score = len(overlap) / len(union)
+        if score >= OPEN_DUP_TITLE_OVERLAP and score > best_score:
+            best_score = score
+            best_ref = ref
+    return best_ref
+
+
+def file_discoveries(discoveries, sink=gh_issue_file_sink, known_dedup_keys=(),
+                     known_open=()):
     """Pure orchestration over a batch of DiscoveredIssues.
 
-    For each discovery: if its `dedup_key` is in `known_dedup_keys` it is
-    recorded in `skipped_existing` with NO sink call (idempotent re-filing is a
-    no-op); otherwise the injected `sink` is invoked and its {tracker_ref, url}
-    recorded in `filed`. A sink exception is caught and recorded in `errors`
-    (filing one bad discovery never aborts the batch).
+    For each discovery, in order:
+      - if its `dedup_key` is in `known_dedup_keys` it is recorded in
+        `skipped_existing` with NO sink call (idempotent re-filing is a no-op);
+      - else if its subject matches an ALREADY-OPEN issue in `known_open`
+        (dedup-vs-open) it is recorded in `skipped_open` with NO sink call —
+        the loop must not file a duplicate of an issue already in the tracker
+        (DESIGN §3.5.4, REPORT side);
+      - otherwise the injected `sink` is invoked and its {tracker_ref, url}
+        recorded in `filed`. A sink exception is caught and recorded in `errors`
+        (filing one bad discovery never aborts the batch).
 
-    Deterministic given the injected sink + known set; performs no I/O of its
-    own. The trust-ladder GATE is NOT here — it lives in scheduling.run_tick,
-    which only calls this when filing is permitted.
+    `known_open` are the tick's PULLed open tracker items (WorkItem objects or
+    their machine-first dicts); matching uses the deterministic title-overlap
+    heuristic (_match_open_issue). Deterministic given the injected sink + known
+    set + open set; performs no I/O of its own. The trust-ladder GATE is NOT
+    here — it lives in scheduling.run_tick, which only calls this when filing is
+    permitted.
     """
     known = set(known_dedup_keys)
+    open_items = list(known_open)
     result = ReportResult()
     for discovery in discoveries:
         if discovery.dedup_key in known:
             result.skipped_existing.append(discovery.dedup_key)
+            continue
+        matched = _match_open_issue(discovery, open_items)
+        if matched is not None:
+            result.skipped_open.append({
+                "dedup_key": discovery.dedup_key,
+                "matched": matched,
+            })
             continue
         try:
             ref = sink(discovery)

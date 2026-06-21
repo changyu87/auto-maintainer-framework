@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.4.0
+version: 0.5.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version). See spec.md / feature.json.
 ---
