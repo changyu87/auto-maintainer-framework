@@ -528,12 +528,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Minor (v0.3.0, configurables overhaul): version bumped to 0.3.0 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. v0.3.0 is a
-# MINOR — it ships the new wiring CLIs (route_config.py + adapter_map_config.py)
-# plus the breaking config schema 2.0.0, superseding the un-logged 0.2.29.
+# Minor (v0.4.0, #209 REVIEW gate): version bumped to 0.4.0 in BOTH plugin.json
+# and marketplace.json, and the two are consistent. v0.4.0 is a MINOR — it ships
+# the model-backed REVIEW gate: the auto-maintainer-reviewer subagent + the
+# ReviewVerdict schema + the REVIEW non-acting agent-state, and INTEGRATE now ANDs
+# review-approval into its merge condition. (Supersedes the v0.3.0 configurables
+# overhaul.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_3_0_and_consistent():
+def test_version_bumped_to_0_4_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -545,10 +547,10 @@ def test_version_bumped_to_0_3_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.3.0", \
-            f"plugin.json version must be 0.3.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.3.0", \
-            "marketplace.json plugin entry version must be 0.3.0"
+        assert pdata.get("version") == "0.4.0", \
+            f"plugin.json version must be 0.4.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.4.0", \
+            "marketplace.json plugin entry version must be 0.4.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1437,6 +1439,42 @@ def test_ship_collection_triager_agent_present():
         with open(src, "rb") as a, open(ag, "rb") as b:
             assert a.read() == b.read(), \
                 "shipped triager agent is not byte-identical to its source"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-ship (#209, auto-maintainer-reviewer): the model-backed REVIEW-gate reviewer
+# subagent ships at agents/auto-maintainer-reviewer.md via the ship/ collection
+# convention (it lives in verify-integrate's ship/agents/). It is the REVIEW-state
+# judge the tick skill dispatches by subagent_type. The build walks EVERY
+# feature's ship/ dir, so it lands alongside the other agents with NO build change.
+# Assert it ships, its frontmatter name is `auto-maintainer-reviewer`, and it is
+# byte-identical to the verify-integrate source.
+# ---------------------------------------------------------------------------
+def test_ship_collection_reviewer_agent_present():
+    out_root = _build_into_temp()
+    try:
+        agents = os.path.join(
+            out_root, "plugins", "auto-maintainer", "agents",
+        )
+        ag = os.path.join(agents, "auto-maintainer-reviewer.md")
+        assert os.path.isfile(ag), \
+            "ship/ collection must place agents/auto-maintainer-reviewer.md"
+        with open(ag, encoding="utf-8") as fh:
+            body = fh.read()
+        assert body.lstrip().startswith("---"), \
+            "agents/auto-maintainer-reviewer.md must carry YAML frontmatter"
+        assert "\nname: auto-maintainer-reviewer\n" in body, \
+            "reviewer agent frontmatter name must be `auto-maintainer-reviewer`"
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "verify-integrate", "ship", "agents",
+            "auto-maintainer-reviewer.md",
+        )
+        with open(src, "rb") as a, open(ag, "rb") as b:
+            assert a.read() == b.read(), \
+                "shipped reviewer agent is not byte-identical to its source"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 

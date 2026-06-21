@@ -54,6 +54,7 @@ import adapter_wiring as aw  # noqa: E402
 import agent_dispatch as ad  # noqa: E402
 import work_intake as wi  # noqa: E402
 import implement as im  # noqa: E402
+import verify_integrate as vi  # noqa: E402
 import run_tick as rt  # noqa: E402
 
 
@@ -95,6 +96,25 @@ _HANDOFF_EXAMPLE = {
     "blocked_reason": None,
 }
 
+# A concrete ReviewVerdict (the shape REVIEW produces per open PR, #209). A real
+# example value — mirrors verify_integrate.ReviewVerdict.to_dict. The reviewer
+# emits the ARRAY of these (one per PR), so the template's output_example wraps it.
+_REVIEW_VERDICT_EXAMPLE = {
+    "schema_version": vi.REVIEW_VERDICT_SCHEMA_VERSION,
+    "pr_ref": "owner/repo#1",
+    "approved": False,
+    "severity": "high",
+    "findings": [
+        {
+            "kind": "spec",
+            "severity": "high",
+            "file": "src/foo.py",
+            "line": 12,
+            "note": "solved a different problem than the issue asked for",
+        }
+    ],
+}
+
 AGENT_PORT_TEMPLATES = {
     # TRIAGE: maps work_items -> work_orders, NON-acting (no outward effect), one
     # dispatch over the whole work_items list.
@@ -117,6 +137,18 @@ AGENT_PORT_TEMPLATES = {
         "effect": "implement",
         "isolation": "worktree",
         "output_example": _HANDOFF_EXAMPLE,
+    },
+    # REVIEW: the model-backed gate (#209). Maps verdicts -> review_verdicts,
+    # NON-acting (read-only judgment — no outward effect), ONE dispatch over the
+    # whole open-PR set (the reviewer emits one ReviewVerdict per PR). The signal
+    # is nonempty_else_empty (OK when any verdicts were produced, else EMPTY).
+    "REVIEW": {
+        "writes": vi.REVIEW_VERDICTS_SLOT["name"],
+        "reads": vi.REVIEW_MANIFEST.reads,
+        "emits": list(vi.REVIEW_MANIFEST.emits),
+        "cardinality": "once",
+        "signal_rule": "nonempty_else_empty",
+        "output_example": [_REVIEW_VERDICT_EXAMPLE],
     },
 }
 

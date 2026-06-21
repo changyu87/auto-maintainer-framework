@@ -28,6 +28,17 @@ Public surface (slice 1):
   - derive_verdict(pr_dict, default_branch) — the pure verdict derivation.
   - Verify            — the VERIFY state; run(TickContext) -> StateResult.
 
+Public surface (REVIEW — the model-backed gate, #209):
+  - REVIEW_VERDICT_SCHEMA_VERSION + ReviewVerdict — the typed, versioned
+    {approved, severity, findings} review-verdict schema (mirrors Verdict).
+  - REVIEW_VERDICTS_SLOT — the fsm-contracts slot registration descriptor.
+  - REVIEW_MANIFEST / REVIEW_SIGNALS — REVIEW's manifest (reads verdicts, writes
+    review_verdicts) + signal set (OK | EMPTY). REVIEW itself has no run()
+    here — it is a NON-ACTING agent-state dispatched to auto-maintainer-reviewer.
+  - REVIEW_SEVERITIES — the closed severity vocabulary.
+  - is_review_approved(review_verdicts, pr_ref) — the conservative approval
+    predicate INTEGRATE ANDs into its merge condition.
+
 Public surface (slice 2 — INTEGRATE + CLEANUP):
   - INTEGRATION_RESULT_SCHEMA_VERSION + IntegrationResult — the typed,
     versioned {merged, skipped, errors} integration-result schema.
@@ -130,6 +141,125 @@ VERIFY_SIGNALS = ["OK", "EMPTY"]
 # slot, emits OK | EMPTY.
 VERIFY_MANIFEST = fc.StateManifest(reads=[], writes=["verdicts"],
                                    emits=VERIFY_SIGNALS)
+
+
+# ==========================================================================
+# REVIEW — the model-backed correctness/quality gate between VERIFY and
+# INTEGRATE (DESIGN §3.7 / the spec's deprecation_criterion: "a model-backed
+# verify/integrate policy"). VERIFY is purely deterministic (CI + mergeable +
+# base); REVIEW adds the JUDGMENT VERIFY cannot: did the PR build the RIGHT
+# thing (spec-compliance) and is it good quality (a code-quality pass over the
+# base..head diff).
+#
+# REVIEW is a NON-ACTING agent-state: the `auto-maintainer-reviewer` subagent
+# reads the actual PR diff + the source issue + the implementer's Handoff and
+# emits one ReviewVerdict per PR. verify-integrate OWNS the SCHEMA + SLOT +
+# MANIFEST (mirroring how `implement` owns HANDOFFS_SLOT while the subagent
+# produces the handoffs); the dispatch/collection is the agent-dispatch
+# machinery wired in scheduling. INTEGRATE ANDs review-approval into its merge
+# condition (next to `ok` + guardrails). REVIEW itself is read-only judgment
+# (runs at any mode); only the merge EFFECT stays gated by `permits`.
+# ==========================================================================
+
+# The versioned ReviewVerdict schema (machine-first; bumped on a breaking change
+# to the field set). Distinct from the feature version. Mirrors the Verdict shape.
+REVIEW_VERDICT_SCHEMA_VERSION = "1.0.0"
+
+# The closed severity vocabulary a ReviewVerdict / finding may carry, ordered
+# least-to-most severe. `none` is the no-findings level (an approved verdict);
+# `blocker` is the most severe (must block merge).
+REVIEW_SEVERITIES = ["none", "low", "medium", "high", "blocker"]
+
+
+@dataclass(eq=True)
+class ReviewVerdict:
+    """One model-backed review verdict per open loop PR (DESIGN §3.7).
+
+    `approved` is the reviewer's overall judgment (did the PR build the right
+    thing, nothing more / nothing less, AND is it acceptable quality). `severity`
+    is the worst finding severity (one of REVIEW_SEVERITIES; `none` when there
+    are no findings). `findings` is a list of {kind, severity, file, line, note}
+    dicts the reviewer flagged (empty when approved with nothing to note).
+    `to_dict`/`from_dict` give a machine-first, versioned representation for the
+    `review_verdicts` blackboard slot — mirrors the Verdict shape above.
+    """
+
+    pr_ref: str
+    approved: bool
+    severity: str = "none"
+    findings: List[dict] = field(default_factory=list)
+
+    def to_dict(self):
+        return {
+            "schema_version": REVIEW_VERDICT_SCHEMA_VERSION,
+            "pr_ref": self.pr_ref,
+            "approved": self.approved,
+            "severity": self.severity,
+            "findings": [dict(f) for f in self.findings],
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            pr_ref=d["pr_ref"],
+            approved=d["approved"],
+            severity=d.get("severity", "none"),
+            findings=[dict(f) for f in d.get("findings", [])],
+        )
+
+
+# The fsm-contracts slot descriptor. `review_verdicts` is an array slot (a list
+# of ReviewVerdict dicts); the slot version tracks the schema version. Mirrors
+# VERDICTS_SLOT's shape (name/schema/version).
+REVIEW_VERDICTS_SLOT = {
+    "name": "review_verdicts",
+    "schema": {"type": "array"},
+    "version": REVIEW_VERDICT_SCHEMA_VERSION,
+}
+
+# Closed signal set REVIEW emits: OK when any verdicts were produced (there were
+# PRs to review), else EMPTY (no open PRs this tick). The model never selects
+# control flow — the signal is the deterministic nonempty_else_empty rule applied
+# to the produced review_verdicts list.
+REVIEW_SIGNALS = ["OK", "EMPTY"]
+
+# Per-state manifest (bounded-scope): REVIEW reads the verdicts slot (the open-PR
+# set VERIFY surfaced — the reviewer reviews the SAME PRs) and writes the
+# review_verdicts slot, emitting OK | EMPTY. The PR diff + source issue the
+# reviewer reads are fetched LIVE by the subagent (gh), not blackboard slots.
+REVIEW_MANIFEST = fc.StateManifest(reads=["verdicts"],
+                                   writes=["review_verdicts"],
+                                   emits=REVIEW_SIGNALS)
+
+
+def is_review_approved(review_verdicts, pr_ref):
+    """True when `pr_ref` has an APPROVED ReviewVerdict in `review_verdicts`
+    (a list of ReviewVerdict dicts). The CONSERVATIVE default is NOT-approved:
+    a PR with NO review verdict (the reviewer never judged it) is treated as
+    not-approved, so INTEGRATE never merges a PR the REVIEW gate did not bless.
+
+    `review_verdicts` may be None / empty (a route without REVIEW, or a tick the
+    reviewer produced nothing) — then every PR reads as not-approved.
+    """
+    for rv in review_verdicts or []:
+        if rv.get("pr_ref") == pr_ref:
+            return bool(rv.get("approved"))
+    return False
+
+
+def _review_skip_reason(review_verdicts, pr_ref):
+    """A human-readable skip reason for a PR INTEGRATE withheld from merge because
+    REVIEW did not approve it. When a not-approved ReviewVerdict exists, summarize
+    its severity + each finding's note; when NO review verdict exists at all,
+    report that the PR was not reviewed (conservative not-approved)."""
+    for rv in review_verdicts or []:
+        if rv.get("pr_ref") == pr_ref:
+            notes = [f.get("note", "") for f in rv.get("findings") or []
+                     if f.get("note")]
+            detail = "; ".join(notes) if notes else "no findings recorded"
+            return (f"review not approved (severity="
+                    f"{rv.get('severity', 'none')}): {detail}")
+    return "review not approved (no review verdict for this PR)"
 
 
 # The gh JSON fields VERIFY needs to derive a verdict.
@@ -330,9 +460,11 @@ INTEGRATION_RESULT_SLOT = {
 # never fails the tick — a merge fault is recorded under `errors`, not signalled).
 INTEGRATE_SIGNALS = ["OK"]
 
-# Per-state manifest (bounded-scope): reads the verdicts slot, writes the
-# integration_result slot, emits OK.
-INTEGRATE_MANIFEST = fc.StateManifest(reads=["verdicts"],
+# Per-state manifest (bounded-scope): reads the verdicts slot AND the
+# review_verdicts slot (the model-backed REVIEW gate's output — INTEGRATE ANDs
+# review-approval into its merge condition), writes the integration_result slot,
+# emits OK.
+INTEGRATE_MANIFEST = fc.StateManifest(reads=["verdicts", "review_verdicts"],
                                       writes=["integration_result"],
                                       emits=INTEGRATE_SIGNALS)
 
@@ -360,15 +492,20 @@ def gh_pr_merge_sink(pr_ref, repo=None, runner=subprocess.run):
 class Integrate:
     """The INTEGRATE state (DESIGN §3.7, §3.8.1, §3.8.2).
 
-    Reads the `verdicts` slot and, for each `ok` verdict, merges the PR via the
+    Reads the `verdicts` slot AND the model-backed `review_verdicts` slot and,
+    for each `ok` verdict whose PR is ALSO review-APPROVED, merges the PR via the
     injectable `merge_sink` — but ONLY when permits('merge', mode) is True (the
     trust ladder permits merge at gated-merge only) AND merge_guardrails passes
     (the hard backstop below the ladder). Every other PR goes to `skipped`:
 
       - a non-ok verdict (its reasons become the skip reason);
+      - an ok verdict whose PR is NOT review-approved (the model-backed REVIEW
+        gate withheld approval — the findings/severity become the skip reason;
+        the loop re-attempts next tick). A PR with NO review verdict at all reads
+        as not-approved (conservative — never merge what REVIEW did not bless);
       - any verdict when the mode does not permit merge (the dry-run/propose
         NO-OP: the would-merge intent is recorded, a human merges);
-      - an ok verdict that violates a guardrail (wrong base / dirty tree).
+      - an ok+approved verdict that violates a guardrail (wrong base / dirty tree).
 
     A merge sink that raises records the PR under `errors` (the run still
     completes with OK). Writes the `integration_result` slot, emits OK.
@@ -389,6 +526,7 @@ class Integrate:
 
     def run(self, ctx):
         verdicts = ctx.read("verdicts")
+        review_verdicts = ctx.read("review_verdicts")
         permitted = self._permits_fn("merge", self._mode)
         result = IntegrationResult()
 
@@ -396,6 +534,15 @@ class Integrate:
             pr_ref = vd["pr_ref"]
             if not vd["ok"]:
                 reason = "; ".join(vd.get("reasons") or []) or "verdict not ok"
+                result.skipped.append({"pr_ref": pr_ref, "reason": reason})
+                continue
+            # The model-backed REVIEW gate (DESIGN §3.7): merge ONLY a PR the
+            # reviewer APPROVED. A not-approved (or un-reviewed) PR is skipped
+            # with the review findings as the reason; the loop re-attempts next
+            # tick. This is ANDed with `ok` BEFORE the trust-ladder/guardrail
+            # gates so a low-quality PR never even reaches the merge decision.
+            if not is_review_approved(review_verdicts, pr_ref):
+                reason = _review_skip_reason(review_verdicts, pr_ref)
                 result.skipped.append({"pr_ref": pr_ref, "reason": reason})
                 continue
             if not permitted:

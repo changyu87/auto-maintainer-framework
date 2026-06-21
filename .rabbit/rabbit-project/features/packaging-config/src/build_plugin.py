@@ -106,7 +106,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.3.0"
+_PLUGIN_VERSION = "0.4.0"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -150,8 +150,8 @@ _COMMAND_DESCRIPTIONS = {
     "adapter-map": (
         "View and edit the loop's adapter map — which adapter implements each "
         "route port (GUARD, DRAIN, PULL, TRIAGE, PRIORITIZE, IMPLEMENT, VERIFY, "
-        "INTEGRATE, CLEANUP, PERSIST, EXIT). Every edit is validated before it "
-        "is saved."
+        "REVIEW, INTEGRATE, CLEANUP, PERSIST, EXIT). Every edit is validated "
+        "before it is saved."
     ),
 }
 
