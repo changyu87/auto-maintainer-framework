@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-green",
+  "tdd_state": "test-red",
   "updated": "2026-06-21",
   "spec_change_reason": "#211 aggressive plug-and-play default: start.py seeds the shipped default-config (auto-merge + full acting route + REVIEW) into a fresh install; build ships the default-config assets; plugin v0.5.0."
 }
