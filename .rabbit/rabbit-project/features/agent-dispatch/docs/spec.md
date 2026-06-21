@@ -95,11 +95,10 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
   `os.path.join(output_dir, f"{state}-{dispatch_index}-{item_index}.json")`
   (`item_index` is 0 for `once`). Envelope shape:
   `{ state, task, inputs, item?, output_contract: {slot, schema, output_path}, context: {tick_id, mode} }`,
-  where the internal `schema` key (name unchanged for `run_tick` / `scheduling`)
-  carries the entry's `output_example` (or the deprecated `output_schema` alias)
-  when present, else a coarse `{"type": ...}` fallback. The `output_path` is a
-  computed string only; the file is written by the subagent and read by the
-  executor — never by this library.
+  where the internal `schema` key carries the entry's `output_example` (or the
+  deprecated `output_schema` alias) when present, else a coarse `{"type": ...}`
+  fallback. The `output_path` is a computed string only; the file is written by
+  the subagent and read by the executor — never by this library.
 - `render(envelope) -> str` — deterministic **structured-markdown** prompt
   (DESIGN §3.4.6): `inputs` rendered as a readable **derivative view** (generic
   slot→markdown; free-text fields fenced/block-quoted to preserve boundaries) —
@@ -134,13 +133,11 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
 
 - Deterministic and effect-free: no `Agent` dispatch, no model call, no network,
   no filesystem I/O, no wall clock. Pure functions of their arguments (the
-  `tick_id` / `mode` in `context` are passed in, not read). `output_path` is a
-  computed string (via `os.path.join`); the file itself is written by the
-  subagent and read by the executor, never by this library.
+  `tick_id` / `mode` in `context` are passed in, not read).
 - Machine-first split (DESIGN §1, §3.4.6): inputs render to a **derivative view**;
-  the self-contained `## Handoff` section embeds the concrete output **example**
-  the subagent mimics and names the **output_path** the subagent writes — the
-  output file is the canonical machine-first artifact the next state consumes.
+  the self-contained `## Handoff` section is the canonical handoff contract — the
+  output file the subagent writes is the machine-first artifact the next state
+  consumes.
 - Closed vocabularies for `cardinality` and `signal.rule`; unknown values raise.
 - Bounded scope: owns the schema + these helpers only; it neither loads the
   adapter-map (adapter-wiring) nor walks the route nor dispatches (scheduling /
