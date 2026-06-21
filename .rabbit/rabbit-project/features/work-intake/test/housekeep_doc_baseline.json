@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "owner": "changyu87",
   "deprecation_criterion": "Superseded by the next work-intake housekeep wave's baseline; single-use measured-reduction reference for this doc-slim wave.",
-  "description": "Pre-wave line counts of work-intake doc surfaces, captured at commit 6137941 (before the housekeep measured doc-reduction wave). The housekeep e2e test asserts the current docs are STRICTLY smaller than these baselines, and that the load-bearing tokens survived the slim. contract.md is unchanged by this wave (it is already minimal; its REPORT-slice under-documentation is FLAGGED as a separate housekeeping sub-issue, not removed).",
+  "description": "Pre-wave line counts of work-intake doc surfaces, captured at commit 6137941 (before the housekeep measured doc-reduction wave). The housekeep e2e test asserts the current spec.md is STRICTLY smaller than this baseline and that the load-bearing tokens survived the slim. contract.md was unchanged by the slim wave; its REPORT-slice under-documentation (flagged then as a separate sub-issue) has since been ADDITIVELY closed by #241, so contract.md is now asserted to DECLARE the REPORT public surface rather than capped to this baseline line count.",
   "baseline_commit": "6137941",
   "docs": {
     "docs/spec.md": 224,

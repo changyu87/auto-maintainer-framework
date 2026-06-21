@@ -14,7 +14,12 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
       "WorkItem slot schema (versioned, machine-first)",
       "PULL state: run(TickContext) -> StateResult, writes work_items, emits OK|EMPTY",
       "WorkOrder slot schema (versioned, machine-first; decision-carrying)",
-      "TRIAGE state: run(TickContext) -> StateResult, reads work_items, writes work_orders, emits OK|EMPTY (deterministic validity gate)"
+      "TRIAGE state: run(TickContext) -> StateResult, reads work_items, writes work_orders, emits OK|EMPTY (deterministic validity gate)",
+      "DiscoveredIssue slot schema (versioned, machine-first; the outbound discovery shape)",
+      "ReportResult schema (machine-first; the {filed, skipped_existing, errors} filing-batch outcome)",
+      "file_discoveries(discoveries, sink, known_dedup_keys) -> ReportResult: pure REPORT orchestrator (out-of-band, not a routed state; scheduling.run_tick flushes through it)",
+      "gh_issue_file_sink(discovery, repo=None, runner=...) -> {tracker_ref, url}: the production GitHub filing sink (injectable runner)",
+      "is_loop_filed(item) -> bool: the §3.11.5 loopback/provenance recognizer (LOOP_FILED_LABEL or am-dedup body marker), used by PULL to exclude the loop's own filings"
     ],
     "scripts": [],
     "skills": [],
@@ -26,7 +31,7 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
   "invokes": {
     "scripts": [],
     "agents": [],
-    "external": ["gh issue list --state open --json number,title,body,url,state,labels,author,createdAt,updatedAt [--repo <repo>]", "gh issue view <number> --json comments [--repo <repo>]"]
+    "external": ["gh issue list --state open --json number,title,body,url,state,labels,author,createdAt,updatedAt [--repo <repo>]", "gh issue view <number> --json comments [--repo <repo>]", "gh issue create --title <title> --body <body> --label filed-by:autonomous-maintainer [--repo <repo>] (REPORT filing sink)", "gh label create filed-by:autonomous-maintainer --description <desc> [--repo <repo>] (REPORT idempotent label ensure; non-zero 'already exists' tolerated)"]
   },
   "never": [
     "performs dedup-vs-closed / 1-level decompose / dependency ordering / WHAT-generation seam (slice 3+)",
