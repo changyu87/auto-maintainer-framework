@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-12T06:10:37Z",
   "deprecation_criterion": "Superseded when the model-backed implement-then-PR doer (DESIGN \u00a73.6.2/\u00a73.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-06-21",
   "spec_change_reason": "v2.3.0 shipped-subagent prompt gains a pre-handoff self-review checklist (completeness / quality / discipline / checks) run against the committed diff before `gh pr create` on the accept path (auto-maintainer-framework#212); spec.md documents the behaviour and a guarding test asserts the checklist language in the shipped agent body",
   "spec_no_change_reason": "DOC-dimension measured-reduction housekeep wave: coding-rules \u00a76 verify-or-flag pass applied to docs/spec.md + docs/contract.md. Every path ref (ship/agents/auto-maintainer-implementer.md), cross-feature ref (adapter-wiring, scheduling.run_tick, safety-governance), and behaviour claim verified LIVE via find/grep/ls; no proven-dead content found. Honest verdict: no-op (already-clean), a valid PASS. No spec body change; the wave ships the gating housekeep e2e test + baseline fixture only."
