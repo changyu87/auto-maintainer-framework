@@ -248,7 +248,7 @@ Implemented and merged (`tdd_state: test-green`). The tick-runner runs the real
 route `GUARD→DRAIN→PULL→PERSIST→EXIT` (read-and-idle); the script-backed
 `status.py`/`stop.py` and the `/auto-maintainer:start`/`:stop`/`:status` ship
 skills compose work-intake's PULL with the loop core. Live-validated in an
-installed plugin session. See `feature.json` / `docs/ROADMAP.md`.
+installed plugin session. See `feature.json`.
 
 ## Agent yield/resume seam (slice: agent-adapter executor protocol)
 
@@ -848,12 +848,6 @@ not in dependency-free adapter-wiring.
 - Owns the `/auto-maintainer:status` skill (script-backed via `status.py`);
   `packaging-config` no longer ships a status stub. Host projects should gitignore
   the runtime dir `.auto-maintainer/`.
-
-## Open questions
-
-- Exact recurring-vs-one-shot scheduling shape and how `/start` records the
-  active heartbeat so `/stop` can cancel it deterministically — settle in
-  implementation.
 
 ## Fresh-install seeding (#211, aggressive plug-and-play default)
 
