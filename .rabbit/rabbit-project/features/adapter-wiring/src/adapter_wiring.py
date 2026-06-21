@@ -30,6 +30,19 @@ Public surface:
   - validate_wiring(route, manifests, start, initial) -> CheckResult
   - build_loop(default_route, default_map, runtime, start, initial)
         -> (route, states)
+  - scaffold_adapter(port, src_dir, ...) -> path     (§3.4.4 authoring tool)
+  - wire_adapter(port, address, project_dir, ...) -> (route, map)
+  - validate_adapter_conformance(address, runtime, ...) -> CheckResult
+
+The §3.4.4 authoring tool (scaffold_adapter + wire_adapter +
+validate_adapter_conformance) is the BYO-adapter convenience that sits ON this
+mechanism: scaffold emits a skeleton conforming to the factory convention
+(manifest + run(TickContext) -> StateResult), wire records the port -> adapter
+map entry + the route.json state, and the conformance validator resolves the
+new adapter and runs the SAME load-time checks (validate_signals /
+validate_data_readiness + the factory/manifest shape) so BYO-adapter is a
+CHECKED operation. It reuses the existing resolver/validator unchanged; it adds
+no new contract.
 
 An adapter-map value is EITHER a "module:factory" string (a script factory,
 above) OR an agent-adapter object (a dict). adapter-wiring CONSUMES the
@@ -44,7 +57,7 @@ tick-orchestrator (validate_signals, validate_data_readiness), and
 agent-dispatch (is_agent_entry, validate_agent_adapter); it does not
 re-implement them.
 
-Version: 0.2.0
+Version: 0.3.0
 Owner: changyu87
 Deprecation criterion: Superseded when the route/adapter wiring model changes
   incompatibly (e.g. the adapter factory convention or route.json schema
@@ -329,3 +342,220 @@ def build_loop(default_route, default_map, runtime, start, initial):
             "invalid wiring: " + "; ".join(verdict.messages))
 
     return route, states
+
+
+# --------------------------------------------------------------------------
+# §3.4.4 Adapter authoring / scaffold tool — the BYO-adapter convenience that
+# sits ON the mechanism above. It does THREE things, each delegating to the
+# already-implemented resolver/validator so a BYO adapter is a CHECKED
+# operation, not a hand-edit:
+#   1. scaffold_adapter — emit a skeleton module conforming to the factory
+#      convention (manifest + run(TickContext) -> StateResult).
+#   2. wire_adapter — record the port -> adapter map entry + add the port as a
+#      state in route.json (project-local override files).
+#   3. validate_adapter_conformance — resolve the new adapter via the existing
+#      resolver and run the same load-time checks (factory/manifest shape +
+#      validate_signals / validate_data_readiness over a one-state route).
+# --------------------------------------------------------------------------
+
+# The scaffold skeleton. A protocol-naive author fills in the three TODOs
+# (reads / writes / emits + the run body) and points the adapter-map at
+# "<module>:make". It conforms to the factory convention verbatim:
+# make(runtime) -> (StateManifest, run) where run(ctx) -> StateResult.
+_SCAFFOLD_TEMPLATE = '''\
+#!/usr/bin/env python3
+"""BYO adapter for the {port!r} port (scaffolded by adapter-wiring §3.4.4).
+
+Fill in the manifest (reads / writes / emits) and the run body, then point the
+adapter-map at "{module}:{factory}". The factory convention:
+
+    {factory}(runtime) -> (StateManifest, run)   #  run(ctx) -> StateResult
+
+`runtime` carries the resolved runtime dir (runtime["project_dir"]) plus any
+injected config this adapter needs. Validate this adapter with
+adapter_wiring.validate_adapter_conformance before wiring it into a live loop.
+"""
+
+import fsm_contracts as fc
+
+
+def {factory}(runtime):
+    # TODO: declare the slots this state reads / writes and the signals it
+    # emits. Every emitted signal must appear in the route's edges; every read
+    # slot must be written by a predecessor (the conformance validator checks
+    # this). Anchor invariants apply if {port!r} is a core anchor.
+    manifest = fc.StateManifest(reads=[], writes=[], emits=["{default_signal}"])
+
+    def run(ctx):
+        # TODO: read ctx slots, do the work, return a StateResult whose `signal`
+        # is in manifest.emits and whose `writes` keys are in manifest.writes.
+        return fc.StateResult(signal="{default_signal}", writes={{}}, journal=[])
+
+    return manifest, run
+'''
+
+_DEFAULT_FACTORY = "make"
+_DEFAULT_SIGNAL = "OK"
+
+
+def _module_name_for_port(port):
+    """A safe python module name derived from the port symbol (lowercased,
+    non-identifier chars -> '_'). 'PULL' -> 'pull'; 'MY-PORT' -> 'my_port'."""
+    safe = "".join(c if (c.isalnum() or c == "_") else "_" for c in port)
+    safe = safe.lower().strip("_")
+    if not safe or not safe[0].isalpha() and safe[0] != "_":
+        safe = "adapter_" + safe
+    return safe
+
+
+def scaffold_adapter(port, src_dir, factory=_DEFAULT_FACTORY,
+                     default_signal=_DEFAULT_SIGNAL, overwrite=False):
+    """Emit a skeleton adapter module for `port` into `src_dir`, conforming to
+    the factory convention (`factory(runtime) -> (StateManifest, run)` with
+    `run(ctx) -> StateResult`). Returns the written file path and its
+    `"module:factory"` address as a (path, address) pair.
+
+    The module name is derived deterministically from the port symbol. Refusing
+    to clobber an existing file (unless `overwrite=True`) is a locatable
+    WiringError so a scaffold never silently destroys an author's work."""
+    module = _module_name_for_port(port)
+    path = os.path.join(src_dir, module + ".py")
+    if os.path.isfile(path) and not overwrite:
+        raise WiringError(
+            f"scaffold for port '{port}' would overwrite existing file {path}; "
+            f"pass overwrite=True to replace it")
+    if not os.path.isdir(src_dir):
+        os.makedirs(src_dir)
+    body = _SCAFFOLD_TEMPLATE.format(
+        port=port, module=module, factory=factory,
+        default_signal=default_signal)
+    with open(path, "w") as f:
+        f.write(body)
+    return path, f"{module}:{factory}"
+
+
+def wire_adapter(port, address, project_dir, default_route=None,
+                 default_map=None):
+    """Record `port -> address` in the project-local adapter-map.json and add
+    `port` as a state in the project-local route.json, creating either file
+    from the supplied default (or an empty skeleton) if it is absent. Returns
+    the written (route, adapter_map) pair.
+
+    This is the DATA half of BYO-adapter: it edits only the project-local
+    override files under ${project_dir}/.auto-maintainer/. It does NOT validate
+    the wiring (call validate_adapter_conformance, or build_loop, for that) and
+    it does NOT add any edges — routing topology stays an explicit author
+    choice. A pre-existing port keeps its place; only the map entry is set."""
+    cfg = os.path.join(project_dir, _CONFIG_DIRNAME)
+    if not os.path.isdir(cfg):
+        os.makedirs(cfg)
+
+    route_path = _config_path(project_dir, _ROUTE_FILENAME)
+    if os.path.isfile(route_path):
+        with open(route_path, "r") as f:
+            route = json.load(f)
+    elif default_route is not None:
+        route = json.loads(json.dumps(default_route))
+    else:
+        route = {"schema_version": "1.0.0", "states": [], "edges": [],
+                 "terminal": []}
+    if port not in route["states"]:
+        route["states"].append(port)
+
+    map_path = _config_path(project_dir, _MAP_FILENAME)
+    if os.path.isfile(map_path):
+        with open(map_path, "r") as f:
+            amap = json.load(f)
+    elif default_map is not None:
+        amap = json.loads(json.dumps(default_map))
+    else:
+        amap = {}
+    amap[port] = address
+
+    with open(route_path, "w") as f:
+        json.dump(route, f, indent=2)
+    with open(map_path, "w") as f:
+        json.dump(amap, f, indent=2)
+    return route, amap
+
+
+def validate_adapter_conformance(address, runtime, port=None,
+                                 emits_route=None, initial=None):
+    """Resolve the adapter at `address` ("module:factory") and CHECK it against
+    the contract, reusing the same machinery a live load uses. Returns a
+    fsm-contracts CheckResult. This is what makes BYO-adapter a CHECKED
+    operation (§3.4.4).
+
+    `port` is the state name the adapter occupies (defaults to the address's
+    module name); when `emits_route` is supplied, `port` MUST be the route
+    state this adapter resolves so the validators key the manifest correctly.
+
+    Checks, in order:
+      - the address resolves: import module, get factory, call factory(runtime)
+        -> (manifest, run) (a resolution failure is reported, not raised);
+      - the factory returns a fsm-contracts StateManifest and a callable run;
+      - the manifest emits a non-empty, declared signal set;
+      - signal-validity + data-readiness over a single-state route for this
+        port (reusing tick-orchestrator's validate_signals /
+        validate_data_readiness). When `emits_route` is supplied the adapter is
+        validated against that real route instead of the synthetic one, so an
+        author can check the adapter in the topology it will actually run in.
+    """
+    try:
+        manifest, run = _resolve_factory("<scaffold>", address, runtime)
+    except WiringError as exc:
+        return fc.CheckResult(False, [str(exc)])
+
+    messages = []
+    if not isinstance(manifest, fc.StateManifest):
+        messages.append(
+            f"factory at '{address}' did not return a fsm-contracts "
+            f"StateManifest (got {type(manifest).__name__})")
+    if not callable(run):
+        messages.append(
+            f"factory at '{address}' did not return a callable run "
+            f"(got {type(run).__name__})")
+    if messages:
+        return fc.CheckResult(False, messages)
+
+    if not manifest.emits:
+        messages.append("adapter manifest declares no emitted signals")
+
+    if port is None:
+        port = address.split(":")[0]
+    if emits_route is not None:
+        route = emits_route
+        start = port if port in route["states"] else route["states"][0]
+        # Other states in the supplied route are not under test here; give them
+        # an empty manifest so the reused validators run over the full topology
+        # without falsely flagging a missing manifest for a sibling state.
+        manifests = {s: fc.StateManifest(reads=[], writes=[], emits=[])
+                     for s in route["states"]}
+        manifests[port] = manifest
+    else:
+        # A synthetic single-state route: the port is GUARD-anchored start and
+        # its own terminal, so the reused validators run with no topology
+        # assumptions beyond this one adapter.
+        route = {
+            "schema_version": "1.0.0",
+            "states": [port],
+            "edges": [{"state": port, "signal": manifest.emits[0],
+                       "next": port}],
+            "terminal": [port],
+        }
+        start = port
+        manifests = {port: manifest}
+
+    sig = to.validate_signals(route, manifests)
+    if not sig.passed:
+        messages.extend(sig.messages)
+    ready = to.validate_data_readiness(
+        route, manifests, start, list(initial or []))
+    if not ready.passed:
+        messages.extend(ready.messages)
+
+    if messages:
+        return fc.CheckResult(False, messages)
+    return fc.CheckResult(True, [
+        f"OK: adapter '{address}' conforms (factory shape + manifest + "
+        f"signal/data validation)"])
