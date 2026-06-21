@@ -10,11 +10,9 @@ deprecation_criterion: Superseded when the tracker I/O model changes incompatibl
 ## Purpose
 
 The read-side first adapter: fetch actionable work from the tracker into the
-blackboard. **Slice 1 implements the GitHub-Issues `PULL` adapter only** — each
-tick fetches the repo's open issues into the `work_items` slot. This is the first
-real maintainer work, replacing the `DEMO_WORK` stub. The `TRIAGE` pipeline
-(normalize → validate → dedup → decompose → order → `work_orders`) is deferred to
-slice 2.
+blackboard. The GitHub-Issues `PULL` adapter fetches the repo's open issues into
+the `work_items` slot each tick — the first real maintainer work, replacing the
+`DEMO_WORK` stub.
 
 > Design references: DESIGN.md §3.4.2 (GitHub-Issues PULL adapter), §2.6 (PULL
 > contract: reads —, writes `work_items`, signals `OK`|`EMPTY`; the `WorkItem`
@@ -186,19 +184,11 @@ idempotency live in scheduling).
   `file_discoveries` when `safety_governance.permits("file", mode)` — at
   `dry-run` the intent is logged, not filed; at `propose`/`auto-merge` it files.
 
-## Current behaviour
-
-Slice 1 (PULL) implemented and merged (`tdd_state: test-green`) — `WorkItem` +
-`PULL` adapter, live in the loop. Slice 2 (TRIAGE validity gate → `work_orders`)
-implemented and merged. This cycle ships the `auto-maintainer-triager` subagent
-(the real TRIAGE judge) and proves the TRIAGE→triager agent-adapter wiring
-validates.
-
 ## Known gaps / deferred
 
-- **TRIAGE — slice 2 (this cycle):** deterministic validity gate → `work_orders`.
-  **Slice 3+ deferred:** dedup-vs-closed (§3.5.3), 1-level decompose (§3.5.5),
-  dependency ordering (§3.5.7), WHAT-generation/spec seam (§3.5.8, the AI seam).
+- **Richer TRIAGE deferred:** dedup-vs-closed (§3.5.3), 1-level decompose
+  (§3.5.5), dependency ordering (§3.5.7), WHAT-generation/spec seam (§3.5.8, the
+  AI seam).
 - **Loopback / provenance guard (§3.11.5)** — IMPLEMENTED: `work_intake.is_loop_filed`
   recognizes the provenance stamp and `PULL` EXCLUDES loop-filed items (they never
   enter the pipeline; they stay open for humans). NOT a TRIAGE reject. Opt-in
@@ -215,10 +205,3 @@ validates.
 - Invokes the external `gh` CLI (declared in the contract). Once integrated,
   `scheduling`'s route swaps `DEMO_WORK` → `PULL` (a separate integration step:
   scheduling route + packaging rebuild).
-
-## Open questions
-
-- Exact `WorkItem` field set vs. what TRIAGE will need — keep minimal now; extend
-  when TRIAGE lands.
-- How "actionable" is defined at PULL vs. TRIAGE (slice 1 pulls all open issues;
-  validity/actionability filtering is TRIAGE's job).
