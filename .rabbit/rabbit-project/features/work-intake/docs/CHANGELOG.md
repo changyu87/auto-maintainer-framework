@@ -4,6 +4,35 @@ All notable changes to this feature are recorded here. Versions follow the
 `version:` frontmatter in `spec.md` / `contract.md` and the `feature.json`
 `version` field.
 
+## feature 0.4.0 / spec 0.4.0 / contract 0.4.0 — 2026-06-21
+
+- **PULL now includes each issue's comments** (#213). `gh issue list` returns
+  only the original body — not comments — so the triager + implementer were
+  blind to human follow-up guidance posted as comments (the most current
+  guidance, a correction, or a resolution note often lives there). The
+  `WorkItem` schema gains an additive `comments` field
+  (`[{author, created_at, body}]`), bumping `WORK_ITEM_SCHEMA_VERSION` to
+  `1.1.0`; it is carried through TRIAGE onto the `WorkOrder` (the implementer
+  reads `work_orders`, not `work_items`), bumping `WORK_ORDER_SCHEMA_VERSION`
+  to `1.1.0`. Both are additive (older readers ignore the field).
+- **Bounded** so a long thread cannot bloat the rendered triager/implementer
+  envelope: the MOST RECENT `MAX_COMMENTS_PER_ITEM` (= 20) comments are kept
+  and each body is capped at `MAX_COMMENT_BODY_CHARS` (= 4000).
+- **Fetched per pulled issue** via `gh issue view <n> --json comments` (gh's
+  `issue list` does not return comments). The subprocess `runner` is INJECTABLE
+  (the determinism seam, mirroring `gh_issue_source`/`gh_issue_file_sink`), and
+  a per-issue comment fetch failure is TOLERATED (the item keeps an empty
+  `comments`) so a flaky comment read never sinks the whole PULL.
+- The `comments` field renders automatically into the triager/implementer
+  envelopes (agent-dispatch's `render` is generic over the slot dict); the
+  shipped `auto-maintainer-triager` prompt now tells the judge to read comments,
+  not just the body.
+- New tests (`test/test_comments_e2e.py`): parse mapping, the bound (most-recent
+  N + body cap), schema roundtrips + version bumps, PULL committing the thread
+  into the slot, TRIAGE carrying it onto the WorkOrder, and `gh_issue_source`
+  fetching comments via the injected runner with no network (incl. the
+  fetch-failure tolerance).
+
 ## contract 0.3.0 / spec 0.2.0 — 2026-06-10
 
 - **Ships the real TRIAGE judge as a subagent.** Adds

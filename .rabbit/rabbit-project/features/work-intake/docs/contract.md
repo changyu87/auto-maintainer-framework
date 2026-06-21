@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.3.0
+version: 0.4.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version). See spec.md / feature.json.
 ---
@@ -26,7 +26,7 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
   "invokes": {
     "scripts": [],
     "agents": [],
-    "external": ["gh issue list --state open --json number,title,body,url,state,labels,author,createdAt,updatedAt [--repo <repo>]"]
+    "external": ["gh issue list --state open --json number,title,body,url,state,labels,author,createdAt,updatedAt [--repo <repo>]", "gh issue view <number> --json comments [--repo <repo>]"]
   },
   "never": [
     "performs dedup-vs-closed / 1-level decompose / dependency ordering / WHAT-generation seam (slice 3+)",
