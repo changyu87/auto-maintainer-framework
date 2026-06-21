@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.2.2
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -46,11 +46,12 @@ the loop and any implementer).
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "work_order_id": "<id>",
   "status": "planned",
   "artifact": {"kind": "none", "ref": null},
   "discovered_work": [],
+  "concerns": [],
   "blocked_reason": null
 }
 ```
@@ -62,7 +63,20 @@ the loop and any implementer).
   adds `none` (no artifact was created). `ref` is null for `none`.
 - `discovered_work` — follow-on items the implementer surfaces (DESIGN §1.3,
   §3.11.3). The dry-run adapter discovers nothing → always empty.
+- `concerns` — self-flagged doubts the implementer wants a reviewer/human to
+  look harder at on an `opened` handoff (analogous to the superpowers
+  `DONE_WITH_CONCERNS` signal; auto-maintainer-framework#212). Mirrors
+  `discovered_work`: always present, defaults to an empty list. The downstream
+  REVIEW gate and REPORT can surface it. The dry-run adapter self-flags nothing
+  → always empty.
 - `blocked_reason` — null unless the handoff is blocked.
+
+### Schema version history
+
+- `1.0.0` — initial machine-first Handoff schema.
+- `1.1.0` — **additive, backward-compatible**: adds the `concerns` list. A
+  1.0.0 consumer reading a 1.1.0 handoff simply ignores the new field; nothing
+  that existed in 1.0.0 changed.
 
 ## Behaviour
 
