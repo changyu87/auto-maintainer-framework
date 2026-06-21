@@ -8,6 +8,6 @@
   "created": "2026-06-13T09:28:21Z",
   "deprecation_criterion": "Superseded when the agent-adapter schema or invocation-envelope reaches a breaking major version, or when subagent dispatch moves to a transport other than the in-session Agent tool.",
   "tdd_state": "test-green",
-  "updated": "2026-06-14",
+  "updated": "2026-06-21",
   "spec_no_change_reason": null
 }
