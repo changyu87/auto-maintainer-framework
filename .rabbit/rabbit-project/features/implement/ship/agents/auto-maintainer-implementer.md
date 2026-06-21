@@ -3,7 +3,7 @@ name: auto-maintainer-implementer
 description: Implementer for the autonomous maintainer (the generic implement-then-PR doer). Dispatched (by subagent_type) at the IMPLEMENT agent-state with ONE work order in the prompt; it enacts that work order's triage decision — accepted → implement the change and open a PR (never merge); rejected → close the source issue citing the reason — and reports the outcome per the handoff contract in the prompt. It manages its OWN git worktree for code changes so the main checkout is never disturbed.
 tools: [Read, Grep, Glob, Edit, Write, Bash]
 model: opus
-version: 2.3.0
+version: 2.4.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different default implementer replaces generic implement-then-PR (e.g. the optional TDD implementer adapter), or when the Handoff contract reaches a breaking major version.
 ---
@@ -69,6 +69,13 @@ never edit files in the main checkout directly.
 
 Any follow-on problems you notice while working (a separate bug, a broken
 harness) go in the Handoff's `discovered_work[]` — do not act on them here.
+`discovered_work[]` is for **NEW** problems only. Do NOT propose a discovery for
+anything you already know is tracked or open — in particular, **never** emit a
+discovery for the dependencies you are blocked on (the work items you cite in
+your own `blocked_reason`) or for any issue named in your prompt. REPORT files
+these verbatim as new issues, and re-surfacing a known/open item just creates
+duplicate tracker noise. When in doubt that an item is already tracked, leave it
+out.
 Each entry is an **object, not a string**, and these field names are the
 contract the maintainer's REPORT stage files from (it reads `body`, not
 `reason`):

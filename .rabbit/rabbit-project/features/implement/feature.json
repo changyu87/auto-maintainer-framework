@@ -1,6 +1,6 @@
 {
   "name": "implement",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/implement/src/**"
@@ -9,6 +9,6 @@
   "deprecation_criterion": "Superseded when the model-backed implement-then-PR doer (DESIGN \u00a73.6.2/\u00a73.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.",
   "tdd_state": "test-green",
   "updated": "2026-06-21",
-  "spec_change_reason": "v2.3.0 shipped-subagent prompt gains a pre-handoff self-review checklist (completeness / quality / discipline / checks) run against the committed diff before `gh pr create` on the accept path (auto-maintainer-framework#212); spec.md documents the behaviour and a guarding test asserts the checklist language in the shipped agent body",
+  "spec_change_reason": "v2.4.0 implementer-side guard (auto-maintainer-framework#224 fix 2): the shipped-subagent prompt now states `discovered_work` is for NEW problems only and must NOT re-file the dependencies cited in its own `blocked_reason` or any issue named in its prompt; spec.md documents the behaviour and a guarding test asserts the guard language in the shipped agent body. Complements REPORT's dedup-vs-open guard (fix 1, #224).",
   "spec_no_change_reason": "DOC-dimension measured-reduction housekeep wave: coding-rules \u00a76 verify-or-flag pass applied to docs/spec.md + docs/contract.md. Every path ref (ship/agents/auto-maintainer-implementer.md), cross-feature ref (adapter-wiring, scheduling.run_tick, safety-governance), and behaviour claim verified LIVE via find/grep/ls; no proven-dead content found. Honest verdict: no-op (already-clean), a valid PASS. No spec body change; the wave ships the gating housekeep e2e test + baseline fixture only."
 }

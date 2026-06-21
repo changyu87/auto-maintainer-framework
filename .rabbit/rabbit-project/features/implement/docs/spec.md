@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.3.0
+version: 0.4.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -131,6 +131,16 @@ the output path. Its rendered prompt is the complete handoff contract (the
   superpowers `subagent-driven-development` implementer "Before reporting"
   checklist; the interactive "ask questions mid-task" behaviour is deliberately
   NOT adopted — the unattended loop's equivalent is `status: blocked`.)
+- **`discovered_work` is for NEW problems only (v2.4.0,
+  auto-maintainer-framework#224).** The subagent must NOT emit a discovery for
+  anything it already knows is tracked or open — in particular the dependencies
+  it is blocked on (items cited in its own `blocked_reason`) or any issue named
+  in its prompt. REPORT files `discovered_work` verbatim as new issues, so
+  re-surfacing a known/open item creates duplicate tracker noise. This is the
+  cheap, implementer-side complement to REPORT's dedup-vs-open guard
+  (auto-maintainer-framework#224 fix 1): it would have prevented the observed
+  #222/#223 duplicates of the already-open #209/#210 that a blocked handoff
+  emitted as discoveries of its own blocking dependencies.
 - **PR provenance label (v2.1.0).** An opened PR is stamped with the
   `auto-maintainer` label (`gh pr create --label auto-maintainer`, creating the
   label if absent). This is the §3.7 hand-off seam to `verify-integrate`: VERIFY
