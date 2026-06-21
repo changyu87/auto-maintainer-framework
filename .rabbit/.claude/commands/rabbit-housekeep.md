@@ -1,7 +1,7 @@
 ---
 name: "rabbit-housekeep"
 description: "Run a measured verify-or-flag housekeeping wave over the CONSUMING PROJECT's declared features."
-version: 0.5.1
+version: 0.6.0
 owner: "rabbit-workflow team"
 deprecation_criterion: "when housekeeping is provided natively by the rabbit CLI as a first-class measured-reduction subcommand"
 template_version: 1.0.0

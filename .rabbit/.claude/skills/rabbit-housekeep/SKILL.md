@@ -1,7 +1,7 @@
 ---
 name: rabbit-housekeep
 description: Run measured verify-or-flag housekeeping against a target — a single feature, a set of features, or the whole project — in complexity-sized waves. The wave targets the CONSUMING PROJECT's declared features, not rabbit's own framework. Each wave proves-it-dead-or-flags every claim, measures before/after line counts, mandates ACTUAL removal (not rewording), and preserves named load-bearing tokens. Also enforces the spec-rules §4 Script-Backed Orchestration standard as a script-tier verify-or-flag dimension: it scans SKILL/agent/command bodies for non-script-backed orchestration steps and flags each. Cross-feature or project-wide scope is decomposed into per-feature sub-issues, each worked through the governed TDD path. Use when the user wants to slim/clean/reduce a feature's docs or their project, remove dead prose, scrub historical burden, check that orchestration is script-backed, or run a housekeeping pass. Phrases like "housekeep this feature", "slim the specs", "run a reduction wave", "clean up dead prose", "check script-backed orchestration", "/rabbit-housekeep". Do NOT use to author new behavior (that's rabbit-feature-touch) or to propose a feature decomposition for a greenfield project (that's rabbit-decompose).
-version: 0.5.1
+version: 0.6.0
 owner: rabbit-workflow team
 deprecation_criterion: when housekeeping is provided natively by the rabbit CLI as a first-class measured-reduction subcommand
 ---
@@ -144,14 +144,18 @@ repo-wide mandate:
 
 ### Step 3 — Measure BEFORE
 
-Snapshot the per-artifact line counts of the target with the measurement
-script (measurement is script-tier — deterministic, not judgment). The
-`<name>` slot is the target feature name:
+Snapshot the per-artifact line counts of the target's DOC SURFACES with the
+measurement script (measurement is script-tier — deterministic, not judgment).
+`--docs-only` scopes the count to the surfaces a wave slims (`docs/spec.md`,
+`docs/contract.md`, `skills/*/SKILL.md`) and excludes `test/` and
+`docs/CHANGELOG.md`, so the mandated housekeeping test the wave adds (Step 6)
+does not flip the Step-7 `reduced` verdict. The `<name>` slot is the target
+feature name:
 
 <!-- example: illustrative invocation, not a live step -->
 ```bash
 python3 .claude/features/rabbit-housekeep/scripts/measure-reduction.py \
-  count .claude/features/<name> > /tmp/housekeep-<name>-before.json
+  count --docs-only .claude/features/<name> > /tmp/housekeep-<name>-before.json
 ```
 
 ### Step 4 — Verify-or-flag every claim, then REMOVE
@@ -211,26 +215,34 @@ Skill("rabbit-feature-touch", args: "<name> housekeep: measured reduction wave")
 
 The housekeeping test the TDD subagent authors MUST assert BOTH:
 - **measured reduction** — `measure-reduction.py diff before.json after.json`
-  reports `reduced: true` (negative total delta); a reword FAILS here; and
+  over the `--docs-only` doc-surface snapshots reports `reduced: true`
+  (negative total delta); a reword FAILS here. Scope the test's own baseline to
+  the doc surfaces so the test's gate and the Step-7 operator command agree —
+  the test the subagent adds under `test/` is wave overhead, never measured as
+  bloat; and
 - **load-bearing survival** — the named load-bearing tokens (script names,
   schema fields, key cross-references) are still present; deleting one FAILS
   here.
 
 ### Step 7 — Measure AFTER and report
 
-Snapshot again and diff. The `<name>` slot is the target feature name:
+Snapshot the doc surfaces again with the SAME `--docs-only` scope as Step 3,
+then diff. Matching scopes is what makes the `reduced` verdict agree with the
+in-test gate: the mandated test added in Step 6 is wave overhead under `test/`,
+excluded from both snapshots. The `<name>` slot is the target feature name:
 
 <!-- example: illustrative invocation, not a live step -->
 ```bash
 python3 .claude/features/rabbit-housekeep/scripts/measure-reduction.py \
-  count .claude/features/<name> > /tmp/housekeep-<name>-after.json
+  count --docs-only .claude/features/<name> > /tmp/housekeep-<name>-after.json
 python3 .claude/features/rabbit-housekeep/scripts/measure-reduction.py \
   diff /tmp/housekeep-<name>-before.json /tmp/housekeep-<name>-after.json
 ```
 
-Report to the user: total lines removed (the `total_delta`), per-artifact
-breakdown, any `housekeeping`-tagged sub-issues filed for unverifiable items,
-and confirmation that load-bearing tokens survived (zero behavior loss).
+Report to the user: total doc-surface lines removed (the `total_delta`),
+per-artifact breakdown, any `housekeeping`-tagged sub-issues filed for
+unverifiable items, and confirmation that load-bearing tokens survived (zero
+behavior loss).
 
 ## Nesting constraint — do NOT invoke this skill inside an Agent() call
 

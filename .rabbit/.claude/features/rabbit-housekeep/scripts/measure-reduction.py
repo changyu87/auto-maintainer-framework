@@ -9,11 +9,20 @@ script-tier number so a housekeeping test can assert ACTUAL reduction.
 
 Two subcommands:
 
-  count <path> [<path> ...]
+  count [--docs-only] <path> [<path> ...]
     Print a JSON object mapping each path to its line count, plus a
     `__total__` key. A directory argument is walked recursively; only text
     files are counted (binary files are skipped). The output is the
     machine-first snapshot a wave records BEFORE it edits.
+
+    With `--docs-only`, a directory argument is restricted to the DOC
+    SURFACES a reduction wave actually slims — `docs/spec.md`,
+    `docs/contract.md`, and each `skills/*/SKILL.md` — instead of the whole
+    feature tree. This keeps the Step-7 `reduced` verdict scoped to the
+    surfaces the wave targets, so the mandated housekeeping test the wave
+    adds under `test/` (wave overhead, not bloat) does not flip the verdict
+    to `reduced: false`. `docs/CHANGELOG.md` is excluded by design: a wave
+    GROWS it. A file argument is counted as-is regardless of the flag.
 
   diff <before.json> <after.json>
     Read two `count` snapshots and print a JSON object describing the
@@ -33,7 +42,7 @@ Exit:
   0 success
   2 invocation error (bad args, unreadable snapshot)
 
-Version: 0.1.0
+Version: 0.2.0
 Owner: rabbit-workflow team
 Deprecation criterion: when line-accounting is provided natively by the
     rabbit CLI as a housekeeping subcommand.
@@ -77,12 +86,36 @@ def _count_lines(path: str) -> int:
     return len(lines)
 
 
-def _iter_files(paths):
+def _iter_doc_surfaces(feature_dir):
+    """Yield the doc surfaces a reduction wave slims under a feature directory:
+    `docs/spec.md`, `docs/contract.md`, and each `skills/*/SKILL.md`. Missing
+    surfaces are skipped (a feature without a contract still counts its spec).
+    `docs/CHANGELOG.md` is intentionally NOT a doc surface — a wave grows it."""
+    for rel in (os.path.join("docs", "spec.md"),
+                os.path.join("docs", "contract.md")):
+        fp = os.path.join(feature_dir, rel)
+        if os.path.isfile(fp) and _is_probably_text(fp):
+            yield fp
+    skills_dir = os.path.join(feature_dir, "skills")
+    if os.path.isdir(skills_dir):
+        for name in sorted(os.listdir(skills_dir)):
+            fp = os.path.join(skills_dir, name, "SKILL.md")
+            if os.path.isfile(fp) and _is_probably_text(fp):
+                yield fp
+
+
+def _iter_files(paths, docs_only=False):
     """Yield every text file reachable from the given paths. Directories are
     walked recursively (sorted for determinism); files are yielded directly.
-    Non-text files are skipped."""
+    Non-text files are skipped.
+
+    With docs_only, a directory argument is treated as a feature directory and
+    restricted to its doc surfaces; a file argument is yielded as-is."""
     for p in paths:
         if os.path.isdir(p):
+            if docs_only:
+                yield from _iter_doc_surfaces(p)
+                continue
             for root, dirs, files in os.walk(p):
                 dirs.sort()
                 for name in sorted(files):
@@ -97,13 +130,22 @@ def _iter_files(paths):
             raise SystemExit(2)
 
 
-def cmd_count(paths):
+def cmd_count(argv):
+    docs_only = False
+    paths = []
+    for a in argv:
+        if a == "--docs-only":
+            docs_only = True
+        else:
+            paths.append(a)
     if not paths:
-        sys.stderr.write("usage: measure-reduction.py count <path> [<path> ...]\n")
+        sys.stderr.write(
+            "usage: measure-reduction.py count [--docs-only] <path> [<path> ...]\n"
+        )
         return 2
     result = {}
     total = 0
-    for fp in _iter_files(paths):
+    for fp in _iter_files(paths, docs_only=docs_only):
         n = _count_lines(fp)
         result[os.path.normpath(fp)] = n
         total += n
@@ -161,7 +203,7 @@ def main(argv):
     if not argv:
         sys.stderr.write(
             "usage:\n"
-            "  measure-reduction.py count <path> [<path> ...]\n"
+            "  measure-reduction.py count [--docs-only] <path> [<path> ...]\n"
             "  measure-reduction.py diff <before.json> <after.json>\n"
         )
         return 2
