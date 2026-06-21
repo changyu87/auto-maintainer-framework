@@ -10,7 +10,7 @@ Reads the SessionStart hook event JSON on stdin (unused for now) and
 emits an additionalContext block on stdout per the Claude Code
 SessionStart hook contract.
 
-Version: 0.1.0
+Version: 0.5.0
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the maintainer loop ships its
   full persona/config injection and this seed folds into it.
@@ -21,9 +21,11 @@ import sys
 
 _PERSONA = (
     "[auto-maintainer] Dispatcher persona active. "
-    "This session is running the auto-maintainer plugin (slice 1: "
-    "packaging skeleton). No maintainer loop is configured yet; run "
-    "/auto-maintainer:status for the current state."
+    "This session is running the auto-maintainer plugin: an autonomous "
+    "repository maintenance loop. A fresh install seeds an aggressive "
+    "default config (auto-merge, full acting route incl. REVIEW); run "
+    "/auto-maintainer:configure to adjust it, /auto-maintainer:start to run "
+    "the loop, and /auto-maintainer:status for the current state."
 )
 
 
