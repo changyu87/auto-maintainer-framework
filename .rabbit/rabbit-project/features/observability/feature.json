@@ -9,6 +9,6 @@
   "deprecation_criterion": "Superseded when the event-log schema or escalation contract reaches a breaking major version, or when surfacing moves to a different sink than a local JSONL log + tracker issue-comment.",
   "manifest": [],
   "tdd_state": "test-green",
-  "updated": "2026-06-13",
+  "updated": "2026-06-21",
   "spec_no_change_reason": "greenfield: spec.md seeded by scaffold in prior decomposition; this cycle implements it unchanged"
 }

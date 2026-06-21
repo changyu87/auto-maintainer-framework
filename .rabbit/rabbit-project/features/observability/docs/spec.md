@@ -21,10 +21,6 @@ things:
   look. This is the real sink that un-stubs `safety-governance`'s
   `abort_on_would_block` escalation (§3.8.3).
 
-Escalation is distinct from REPORT (§1.3): escalation **comments on the
-triggering issue**; REPORT **creates a new tracked item** (deferred to
-`outbound-report`).
-
 ## Event log (this feature owns the schema)
 
 Machine-first, versioned; append-only at
