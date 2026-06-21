@@ -77,6 +77,12 @@ Sources:
     agents/auto-maintainer-echo.md — both via the ship/ collection convention,
     no build change needed.
 
+  - a plugin-internal README.md generated at the plugin root
+    (plugins/auto-maintainer/README.md), per the Claude Code plugin docs best
+    practice ("Add a README.md with installation and usage instructions"). Its
+    Commands table is DERIVED from the shipped skills/ dir so it lists every
+    shipped slash command (a skill with no curated description fails the build).
+
 The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
@@ -106,6 +112,48 @@ _DESCRIPTION = (
     "shipped as a Claude Code plugin."
 )
 _AUTHOR_NAME = "changyu87"
+
+# Curated one-line descriptions for each shipped slash command, keyed by the
+# skill dir name (= the command suffix, /auto-maintainer:<name>). The README's
+# Commands table is GENERATED from the shipped skills/ dir (so it stays complete
+# — every shipped skill MUST appear), and each row's prose is looked up here.
+# Adding a new ship/skills/<name> without a matching entry fails the build, which
+# forces this map (and thus the shipped README) to stay in sync with the skills.
+_COMMAND_DESCRIPTIONS = {
+    "start": (
+        "Start (or resume) the maintainer's in-session tick loop: runs the "
+        "first tick now and schedules a recurring heartbeat that keeps ticking "
+        "until stopped."
+    ),
+    "stop": (
+        "Stop the tick loop — latches it STOPPED and cancels the scheduled "
+        "heartbeat so no further ticks run."
+    ),
+    "status": (
+        "Report the loop's real on-disk status: current disposition and the "
+        "last pull's persisted work-items count."
+    ),
+    "tick": (
+        "Run exactly one tick, including any subagent (agent-state) "
+        "dispatches, then report the result."
+    ),
+    "configure": (
+        "Set the maintainer's trust mode (dry-run / propose / gated-merge), "
+        "per-day token budget, heartbeat interval, and backoff threshold in the "
+        "central config (.auto-maintainer/config.json)."
+    ),
+    "route": (
+        "View and edit the loop's route — the ordered state graph "
+        "(GUARD -> DRAIN -> PULL -> ... -> PERSIST -> EXIT) the tick runner "
+        "walks each tick. Every edit is validated before it is saved."
+    ),
+    "adapter-map": (
+        "View and edit the loop's adapter map — which adapter implements each "
+        "route port (GUARD, DRAIN, PULL, TRIAGE, PRIORITIZE, IMPLEMENT, VERIFY, "
+        "INTEGRATE, CLEANUP, PERSIST, EXIT). Every edit is validated before it "
+        "is saved."
+    ),
+}
 
 # Pure core libs copied byte-for-byte: dest filename -> source path relative to
 # repo_root (the worktree/repo root that contains the .rabbit/ dev tree).
@@ -296,6 +344,132 @@ def _normalize_lib(src_path, anchor, bootstrap):
     )
 
 
+def _render_readme(plugin_root):
+    """Render the plugin-internal README.md from the assembled plugin tree.
+
+    The Commands table is DERIVED from the shipped skills/ dir (each
+    skills/<name>/ is a /auto-maintainer:<name> command), so the README can
+    never omit a shipped command — a skill with no curated description in
+    _COMMAND_DESCRIPTIONS fails the build, keeping the docs complete. The Status
+    section states the accurate, current reality: a working autonomous
+    maintainer with the full pull->triage->implement->verify->integrate->report
+    loop live-proven (NOT a "packaging skeleton" — that wording is stale).
+    """
+    skills_dir = os.path.join(plugin_root, "skills")
+    skill_names = sorted(
+        name for name in os.listdir(skills_dir)
+        if os.path.isdir(os.path.join(skills_dir, name))
+    ) if os.path.isdir(skills_dir) else []
+
+    missing = [n for n in skill_names if n not in _COMMAND_DESCRIPTIONS]
+    if missing:
+        raise RuntimeError(
+            "shipped skills with no README command description (add them to "
+            f"_COMMAND_DESCRIPTIONS so the README stays complete): {missing}"
+        )
+
+    command_rows = "\n".join(
+        f"| `/auto-maintainer:{name}` | {_COMMAND_DESCRIPTIONS[name]} |"
+        for name in skill_names
+    )
+
+    return f"""# {_PLUGIN_NAME}
+
+**An autonomous repository maintenance loop, shipped as a Claude Code plugin.**
+
+This is the installed plugin tree. It bundles the maintainer's tick-FSM core, its
+default GitHub-Issues + git adapters, and the slash commands that drive the loop.
+For the framework's source, design, and roadmap, see the project repository:
+<https://github.com/{_AUTHOR_NAME}/auto-maintainer-framework>.
+
+## Status
+
+**v1 complete — a working autonomous maintainer.** The full
+pull -> triage -> implement -> verify -> integrate -> report loop is live-proven:
+the loop pulls open issues, triages them, opens labelled pull requests for the
+work it accepts, verifies and integrates its own PRs, and reports back — driven
+by a session-mediated heartbeat. See the repository's `docs/ROADMAP.md` for
+per-feature status and what is still being hardened.
+
+## Requirements
+
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — this is a
+  Claude Code plugin and is installed and run from inside Claude Code.
+- **The [`gh`](https://cli.github.com/) CLI, installed and authenticated** — the
+  default GitHub adapters shell out to `gh` for issues and pull requests. Run
+  `gh auth login` once so it can talk to your repository.
+
+## Installation
+
+Distributed as a **Claude Code plugin** served from a self-hosted marketplace.
+Inside Claude Code, run these three steps:
+
+```
+/plugin marketplace add {_AUTHOR_NAME}/auto-maintainer-framework
+/plugin install {_PLUGIN_NAME}@{_PLUGIN_NAME}
+/reload-plugins
+```
+
+> **The third step is required.** `/plugin install` stages the plugin and prints
+> *"Run /reload-plugins to apply"* — `/reload-plugins` activates it in the
+> current session. (Restarting Claude Code instead also works.)
+
+Verify it loaded:
+
+```
+/auto-maintainer:status
+```
+
+A startup banner also appears the next time you open Claude Code.
+
+**Update or remove later:**
+
+```
+/plugin marketplace update                          # pull catalog changes, then re-install
+/plugin uninstall {_PLUGIN_NAME}@{_PLUGIN_NAME}   # remove the plugin
+```
+
+## Usage
+
+1. **Configure** the loop's trust mode and budget once with
+   `/auto-maintainer:configure` (start in `dry-run` or `propose` to watch what
+   it would do before letting it act).
+2. **Start** the loop with `/auto-maintainer:start` — it runs the first tick now
+   and schedules a recurring heartbeat that keeps ticking.
+3. **Check** progress any time with `/auto-maintainer:status`, run a single tick
+   on demand with `/auto-maintainer:tick`, and **stop** the loop with
+   `/auto-maintainer:stop`.
+4. **Customize** the loop's route and adapter map with `/auto-maintainer:route`
+   and `/auto-maintainer:adapter-map` (the shipped defaults work out of the box).
+
+## Commands
+
+Once installed, the plugin provides these slash commands:
+
+| Command | Description |
+| --- | --- |
+{command_rows}
+
+## Layout
+
+This installed plugin carries:
+
+- `.claude-plugin/plugin.json` — the plugin manifest.
+- `skills/` — the slash-command skills listed above.
+- `agents/` — the subagents the tick loop dispatches (triager, implementer, …).
+- `hooks/` — the SessionStart persona/banner hook.
+- `lib/` — the self-contained Python control libraries the skills invoke.
+"""
+
+
+def _write_readme(plugin_root):
+    """Write the rendered plugin-internal README.md to the plugin root."""
+    with open(
+        os.path.join(plugin_root, "README.md"), "w", encoding="utf-8"
+    ) as fh:
+        fh.write(_render_readme(plugin_root))
+
+
 def build(repo_root, out_root=None):
     """Assemble the clean plugin tree and marketplace catalog.
 
@@ -359,6 +533,13 @@ def build(repo_root, out_root=None):
         ) as fh:
             fh.write(_normalize_lib(
                 os.path.join(repo_root, src_rel), anchor, bootstrap))
+
+    # 3b. Plugin-internal README.md at plugins/auto-maintainer/README.md, per
+    #     the Claude Code plugin docs best practice ("Add a README.md with
+    #     installation and usage instructions"). Its Commands table is DERIVED
+    #     from the shipped skills/ dir (assembled in step 1b above), so it can
+    #     never omit a shipped slash command.
+    _write_readme(plugin_root)
 
     # 4. Marketplace catalog at <out_root>/.claude-plugin/marketplace.json.
     _write_json(

@@ -217,6 +217,95 @@ def test_sessionstart_hook_executes_and_emits_context():
 
 
 # ---------------------------------------------------------------------------
+# Spec (#16): the shipped plugin carries its OWN README.md at the plugin root
+# (plugins/auto-maintainer/README.md) so a user inspecting the installed plugin
+# (or the cache) finds usage docs there too — per the Claude Code plugin docs
+# best practice ("Add a README.md with installation and usage instructions").
+# It must name the plugin, document the /reload-plugins install step, list ALL
+# shipped slash commands (DERIVED from the skills/ dir so none is omitted), and
+# state the ACCURATE v1-complete status (NOT the stale "packaging skeleton").
+# ---------------------------------------------------------------------------
+def test_plugin_internal_readme_present_with_expected_content():
+    out_root = _build_into_temp()
+    try:
+        plugin_root = os.path.join(out_root, "plugins", "auto-maintainer")
+        rm = os.path.join(plugin_root, "README.md")
+        assert os.path.isfile(rm), \
+            "plugins/auto-maintainer/README.md must ship inside the plugin"
+        with open(rm, encoding="utf-8") as fh:
+            body = fh.read()
+
+        assert "auto-maintainer" in body, "plugin README must name the plugin"
+        assert "/reload-plugins" in body, \
+            "plugin README must document the /reload-plugins install step"
+        assert "/auto-maintainer:status" in body, \
+            "plugin README must document the /auto-maintainer:status skill"
+
+        # Status must be ACCURATE: v1 complete, full loop live-proven — NOT the
+        # stale "packaging skeleton" wording the prior attempt (PR #200) carried.
+        assert "v1 complete" in body, \
+            "plugin README must state the accurate v1-complete status"
+        assert "skeleton" not in body.lower(), \
+            "plugin README must not call the plugin a packaging skeleton"
+        # the configure row sets the central config.json, not "governance config".
+        assert "config.json" in body, \
+            "configure row must reference the central config.json"
+        assert "governance config" not in body, \
+            "configure row must not say 'governance config'"
+
+        # The Commands section must list EVERY shipped slash command — derived
+        # from the shipped skills/ dir so it can never omit one.
+        skills_dir = os.path.join(plugin_root, "skills")
+        shipped = sorted(
+            name for name in os.listdir(skills_dir)
+            if os.path.isdir(os.path.join(skills_dir, name))
+        )
+        # sanity: the v0.3.0 configurables overhaul ships these seven commands.
+        assert set(shipped) == {
+            "start", "stop", "status", "tick", "configure", "route",
+            "adapter-map",
+        }, f"unexpected shipped skill set: {shipped}"
+        for name in shipped:
+            assert f"`/auto-maintainer:{name}`" in body, \
+                f"Commands table omits shipped command /auto-maintainer:{name}"
+
+        # the README is an asset, not dev infra, so the clean-ship invariant
+        # applies: no reference back to the source feature tree.
+        assert ".rabbit" not in body, "plugin README leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "plugin README references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Spec (#16): the Commands table is GENERATED from the shipped skills/ dir, so a
+# newly shipped skill with no curated README description must FAIL the build —
+# this is the guard that keeps the shipped README complete as commands are added.
+# ---------------------------------------------------------------------------
+def test_build_fails_when_a_shipped_skill_has_no_readme_description():
+    mod = _load_build()
+    out_root = tempfile.mkdtemp(prefix="pkgcfg-build-")
+    try:
+        mod.build(repo_root=_REPO_ROOT, out_root=out_root)
+        plugin_root = os.path.join(out_root, "plugins", "auto-maintainer")
+        # simulate a freshly shipped skill the description map doesn't cover.
+        os.makedirs(os.path.join(plugin_root, "skills", "brand-new-cmd"))
+        try:
+            mod._render_readme(plugin_root)
+        except RuntimeError as exc:
+            assert "brand-new-cmd" in str(exc), \
+                "the build error must name the undocumented skill"
+        else:
+            raise AssertionError(
+                "rendering the README for a skill with no curated description "
+                "must raise so the shipped README stays complete"
+            )
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Spec: /auto-maintainer:status skill ships at skills/status/SKILL.md.
 # ---------------------------------------------------------------------------
 def test_status_skill_present():
