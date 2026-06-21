@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.1.0
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version. See spec.md / feature.json.
 ---
@@ -11,7 +11,7 @@ deprecation_criterion: Superseded when the model-backed implement-then-PR doer (
 {
   "provides": {
     "files": [
-      "Handoff slot schema (versioned, machine-first: work_order_id, status, artifact, discovered_work, blocked_reason)",
+      "Handoff slot schema (versioned, machine-first: work_order_id, status, artifact, discovered_work, concerns, blocked_reason)",
       "IMPLEMENT state (dry-run reference adapter): run(TickContext) -> StateResult, reads execution_plan, writes handoffs, emits OK|BLOCKED (deterministic, inert)"
     ],
     "scripts": [],

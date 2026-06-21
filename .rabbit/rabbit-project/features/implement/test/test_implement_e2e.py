@@ -79,7 +79,8 @@ def test_handoffs_slot_descriptor_is_versioned():
     assert slot["name"] == "handoffs"
     assert slot["schema"] == {"type": "array"}
     assert slot["version"] == impl.HANDOFF_SCHEMA_VERSION
-    assert impl.HANDOFF_SCHEMA_VERSION == "1.0.0"
+    # 1.1.0: additive `concerns` field (auto-maintainer-framework#212).
+    assert impl.HANDOFF_SCHEMA_VERSION == "1.1.0"
 
 
 # ==========================================================================
@@ -130,6 +131,7 @@ def test_implement_e2e_n_ordered_yields_n_planned_handoffs_in_order():
         assert h["status"] == "planned"
         assert h["artifact"] == {"kind": "none", "ref": None}
         assert h["discovered_work"] == []
+        assert h["concerns"] == []
         assert h["blocked_reason"] is None
 
 
@@ -177,6 +179,7 @@ def test_implement_e2e_malformed_empty_id_yields_blocked():
     assert isinstance(bad["blocked_reason"], str)
     assert bad["artifact"] == {"kind": "none", "ref": None}
     assert bad["discovered_work"] == []
+    assert bad["concerns"] == []
 
     assert handoffs[2]["work_order_id"] == "wo-3"
     assert handoffs[2]["status"] == "planned"
@@ -260,7 +263,8 @@ def test_implement_run_returns_only_slot_writes():
 
 
 # ==========================================================================
-# Behaviour: the Handoff schema surface is exactly the six declared keys.
+# Behaviour: the Handoff schema surface is exactly the seven declared keys
+# (the v1.1.0 `concerns` field is part of the surface).
 # ==========================================================================
 
 def test_handoff_surface_is_exactly_the_declared_keys():
@@ -268,8 +272,28 @@ def test_handoff_surface_is_exactly_the_declared_keys():
     handoffs = impl.run(ctx).writes["handoffs"]
     assert set(handoffs[0].keys()) == {
         "schema_version", "work_order_id", "status", "artifact",
-        "discovered_work", "blocked_reason",
+        "discovered_work", "concerns", "blocked_reason",
     }
+
+
+# ==========================================================================
+# Behaviour: every handoff carries a `concerns` list (the v1.1.0 self-flagged
+# doubts field, auto-maintainer-framework#212), mirroring `discovered_work`. The
+# dry-run reference adapter self-flags nothing, so it is always an empty list on
+# both planned and blocked handoffs.
+# ==========================================================================
+
+def test_handoff_concerns_is_always_an_empty_list_for_dry_run():
+    ctx = _fresh_ctx(_plan(["wo-1", "", "wo-3"]))
+    handoffs = impl.run(ctx).writes["handoffs"]
+    assert len(handoffs) == 3
+    for h in handoffs:
+        assert "concerns" in h
+        assert h["concerns"] == []
+        assert isinstance(h["concerns"], list)
+    # Holds across both statuses the dry-run rung emits.
+    assert handoffs[0]["status"] == "planned"
+    assert handoffs[1]["status"] == "blocked"
 
 
 # ==========================================================================

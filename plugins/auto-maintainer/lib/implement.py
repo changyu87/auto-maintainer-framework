@@ -50,7 +50,12 @@ import fsm_contracts as fc
 
 # The versioned Handoff schema (machine-first; bumped on a breaking change to
 # the field set). Slot-schema version, distinct from the feature version.
-HANDOFF_SCHEMA_VERSION = "1.0.0"
+# 1.1.0 (additive, backward-compatible): adds the `concerns` field — a list of
+# self-flagged doubts the implementer wants a reviewer/human to look harder at
+# (analogous to superpowers' DONE_WITH_CONCERNS; auto-maintainer-framework#212).
+# It mirrors `discovered_work` (always present, defaults to an empty list); the
+# dry-run reference adapter flags nothing, so `concerns` is always [].
+HANDOFF_SCHEMA_VERSION = "1.1.0"
 
 # The fsm-contracts slot descriptor. `handoffs` is an array slot (a list of
 # Handoff dicts); the slot version tracks the schema version. Mirrors
@@ -73,26 +78,30 @@ IMPLEMENT_MANIFEST = fc.StateManifest(
 
 def _planned_handoff(work_order_id):
     """A `planned` handoff: the dry-run rung performed no work, so status is
-    always `planned` and the artifact is always `none`."""
+    always `planned` and the artifact is always `none`. The dry-run adapter
+    self-flags nothing, so `concerns` is always empty."""
     return {
         "schema_version": HANDOFF_SCHEMA_VERSION,
         "work_order_id": work_order_id,
         "status": "planned",
         "artifact": {"kind": "none", "ref": None},
         "discovered_work": [],
+        "concerns": [],
         "blocked_reason": None,
     }
 
 
 def _blocked_handoff(work_order_id, reason):
     """A `blocked` handoff for a malformed plan entry: no work could be turned
-    into a handoff, so blocked_reason is set and status is `blocked`."""
+    into a handoff, so blocked_reason is set and status is `blocked`. The dry-run
+    adapter self-flags nothing, so `concerns` is always empty."""
     return {
         "schema_version": HANDOFF_SCHEMA_VERSION,
         "work_order_id": work_order_id,
         "status": "blocked",
         "artifact": {"kind": "none", "ref": None},
         "discovered_work": [],
+        "concerns": [],
         "blocked_reason": reason,
     }
 
