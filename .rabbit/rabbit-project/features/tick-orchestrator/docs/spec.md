@@ -36,10 +36,10 @@ Greenfield — authored from scratch.
    script-tier.
 
 3. **Structural route validators** (run before a tick):
-   - **signal-validity**: every `on` key ∈ that state's declared `emits`; every
-     transition target exists. (§1.1.1 check 2)
-   - **data-readiness**: on every path reaching a state, each slot it `reads`
-     was `written` by a predecessor. (§1.1.1 check 3)
+   - **`validate_signals`** (signal-validity): every `on` key ∈ that state's
+     declared `emits`; every transition target exists. (§1.1.1 check 2)
+   - **`validate_data_readiness`** (data-readiness): on every path reaching a
+     state, each slot it `reads` was `written` by a predecessor. (§1.1.1 check 3)
 
 ## Decoupling guarantee (the property this feature exists to provide)
 
@@ -70,9 +70,8 @@ are **never promoted to features**.
 
 ## Current behaviour
 
-Implemented and merged (`tdd_state: test-green`). `resolve_next`, the run loop,
-and the structural validators (`validate_signals`, `validate_data_readiness`) are
-in `src/` with 13 passing tests. See `feature.json` / `docs/ROADMAP.md`.
+Implemented and merged (`tdd_state: test-green`), with the public surface above
+in `src/`. See `feature.json`.
 
 ## Known gaps / deferred (explicit boundaries)
 
