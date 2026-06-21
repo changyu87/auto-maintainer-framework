@@ -33,10 +33,6 @@ StateResult`. `runtime` carries the resolved runtime dir (`project_dir`) plus
 any injected config a factory needs. This factory signature is the entire
 contract a third-party adapter implements.
 
-An adapter-map value may instead be an **agent-adapter object** (a dict whose
-schema is owned by `agent-dispatch`). adapter-wiring resolves it to
-`(StateManifest, AgentState)` — validated via agent-dispatch, NOT executed here.
-
 ```json
 {
   "provides": {
@@ -60,7 +56,7 @@ schema is owned by `agent-dispatch`). adapter-wiring resolves it to
     "external": [
       "fsm-contracts (validate_route, StateManifest, CheckResult)",
       "tick-orchestrator (validate_signals, validate_data_readiness)",
-      "agent-dispatch (is_agent_entry, validate_agent_adapter, AGENT_ADAPTER_SCHEMA_VERSION)"
+      "agent-dispatch (is_agent_entry, validate_agent_adapter)"
     ]
   },
   "invokes": {

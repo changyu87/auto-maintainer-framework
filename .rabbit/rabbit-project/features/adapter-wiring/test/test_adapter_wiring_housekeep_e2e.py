@@ -12,9 +12,10 @@ assert the wave's two contractual properties end to end:
   housekeep_doc_baseline.json. A reword that does not actually reduce FAILS.
 
   Gate 2 — LOAD-BEARING SURVIVAL. Every token that names a public-surface
-  function, a resolved type, an anchor, the factory convention, or a contract
-  block key MUST still appear in the slimmed docs. A slim that drops a
-  load-bearing token FAILS.
+  function, a resolved type, a core anchor, the factory convention, or a
+  contract block key MUST still appear in the slimmed docs (the per-doc lists
+  below say which tokens each doc owns). A slim that drops a load-bearing
+  token FAILS.
 
 Owner: changyu87
 """
@@ -46,10 +47,12 @@ def _baseline():
         return json.load(f)
 
 
-# Load-bearing tokens that MUST survive the slim. These name the public
-# surface, the resolved agent type, the error type, the factory convention,
-# the four core anchors, the agent-dispatch helpers, and the contract's
-# provides/reads/invokes/never block keys.
+# Load-bearing tokens that MUST survive the slim. The spec list names the
+# public surface, the resolved agent type, the error type, the factory
+# convention, the agent-dispatch helpers, and the four core anchors
+# (GUARD/DRAIN/PERSIST/EXIT). The contract list (below) drops the anchors —
+# they live in the spec, not the contract block — and adds the
+# provides/reads/invokes/never block keys instead.
 _LOAD_BEARING_SPEC = (
     "load_route",
     "load_adapter_map",
