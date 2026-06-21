@@ -11,6 +11,16 @@ execution order and back-fills a per-order status into the plan. It performs NO
 outward effect: it reads and writes blackboard slots only, never the tracker or
 the filesystem.
 
+PRIORITIZE also SERIALIZES same-feature work orders (issue #214): IMPLEMENT fans
+out one implementer per planned order in parallel, each branching off the same
+`main`; two orders that touch the SAME feature would each bump that feature's
+shared metadata (feature.json/CHANGELOG/contract + the built plugin tree) off
+the same base and collide on merge. To prevent that, PRIORITIZE keeps at most
+one order per target feature per tick (FIFO-first wins the slot) and defers the
+rest to a later tick. A feature is detected from AUTHORITATIVE signals only —
+`feature:`/`component:`-prefixed labels and a `Component:` body line — never
+generic labels; orders with no provable feature stay parallel.
+
 Public surface:
   - ExecutionPlan slot schema — `EXECUTION_PLAN_SCHEMA_VERSION` +
     `EXECUTION_PLAN_SLOT` (this feature OWNS the slot, mirroring how work-intake
@@ -21,12 +31,14 @@ Public surface:
   - factory(runtime) -> (StateManifest, run_callable) — the adapter-wiring
     factory convention; scheduling.run_tick maps PRIORITIZE through it.
 
-Version: 0.1.0
+Version: 0.2.0
 Owner: changyu87
 Deprecation criterion: Superseded when ordering ceases to be deterministic
   (e.g. a model-backed prioritizer adapter replaces the default), or when the
   ExecutionPlan schema reaches a breaking major version. See docs/spec.md.
 """
+
+import re
 
 # fsm-contracts is a sibling feature; tests inject its src/ onto sys.path
 # exactly as the work-intake adapters do, so importing by module name resolves
@@ -62,17 +74,110 @@ PRIORITIZE_MANIFEST = fc.StateManifest(
     reads=["work_orders"], writes=["execution_plan"], emits=PRIORITIZE_SIGNALS)
 
 
+# The label-prefix convention that authoritatively declares a work order's
+# target feature: `feature:<name>` (the maintainer's own filing convention, e.g.
+# `feature:scheduling`) or `component:<name>`. ONLY prefixed labels name a
+# feature — generic labels (`bug`, `enhancement`, `filed-by:...`, `priority:*`)
+# are NOT feature keys, so two `enhancement`-labelled orders for different
+# features are never serialized against each other (issue #214 detection fix).
+_FEATURE_LABEL_PREFIXES = ("feature:", "component:")
+
+# The `Component:`/`Feature:` line convention in a free-form issue body, e.g.
+# "Component: scheduling" or "Scope: ... Component: scheduling, prioritize".
+# Captures the remainder of the line for splitting into one or more features.
+_COMPONENT_LINE_RE = re.compile(
+    r"^\s*(?:component|feature)s?\s*:\s*(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Connectors that separate multiple features in a multi-feature blast radius.
+# Deliberately EXCLUDES the word "and" — an "and" split can mis-cut a feature
+# name (e.g. "command-and-control") and is unsafe to infer a shared radius from
+# (issue #214 guidance item 3); a real multi-feature radius uses punctuation.
+_FEATURE_SPLIT_RE = re.compile(r"[+,&/]")
+
+
+def _normalize_feature(token):
+    """Normalize a raw feature token to a comparison key: trimmed, lower-cased.
+    Returns None for an empty/whitespace token so it never claims a feature."""
+    key = token.strip().lower()
+    return key or None
+
+
+def _features_for(order):
+    """The set of target features an accepted order's blast radius touches, from
+    AUTHORITATIVE signals only:
+
+    1. `feature:<name>` / `component:<name>` prefixed labels (the filing
+       convention) — generic labels are ignored.
+    2. a `Component:`/`Feature:` line in the issue body, split on +,&/, into one
+       or more feature names (never on the word "and").
+
+    Returns an EMPTY set when no feature is provable. An order with no provable
+    feature is never serialized against any other order (it stays parallel),
+    because serialization must rest on a *proven* shared feature, never a guess.
+    """
+    features = set()
+
+    for label in order.get("labels") or []:
+        if not isinstance(label, str):
+            continue
+        low = label.lower()
+        for prefix in _FEATURE_LABEL_PREFIXES:
+            if low.startswith(prefix):
+                name = _normalize_feature(label[len(prefix):])
+                if name:
+                    features.add(name)
+                break
+
+    for match in _COMPONENT_LINE_RE.finditer(order.get("body") or ""):
+        for token in _FEATURE_SPLIT_RE.split(match.group(1)):
+            name = _normalize_feature(token)
+            if name:
+                features.add(name)
+
+    return features
+
+
+def _serialize_same_feature(orders):
+    """Given the accepted orders in FIFO order, return the ids to fan out this
+    tick: at most ONE order per target feature, the FIFO-first claiming the
+    feature's slot. Later orders that share an already-claimed feature are
+    DEFERRED (omitted) so two PRs never bump the same feature's shared metadata
+    off the same base; once the head order's PR merges, the deferred order is
+    re-pulled and fans out next tick.
+
+    Orders with no provable feature (empty feature set) carry no shared blast
+    radius and stay parallel — they are always kept. Cross-feature orders
+    (disjoint feature sets) also stay parallel.
+    """
+    kept = []
+    claimed = set()
+    for order in orders:
+        features = _features_for(order)
+        if features and (features & claimed):
+            # A feature this order touches is already claimed by an earlier
+            # order this tick — defer it to avoid the shared-metadata collision.
+            continue
+        claimed |= features
+        kept.append(order["id"])
+    return kept
+
+
 def run(ctx):
     """The PRIORITIZE state. Reads the `work_orders` slot, keeps only the
-    accepted orders, preserves TRIAGE's identity / FIFO order, back-fills
-    `status[id] = "pending"` for each, writes the `execution_plan` slot, and
-    emits OK when the plan has at least one entry else EMPTY.
+    accepted orders, preserves TRIAGE's identity / FIFO order, serializes orders
+    that share a target feature (at most one per feature per tick; the rest
+    deferred to a later tick), back-fills `status[id] = "pending"` for every
+    fanned-out order, writes the `execution_plan` slot, and emits OK when the
+    plan has at least one entry else EMPTY.
 
     Pure function of `work_orders`: same input -> byte-identical plan. No model,
     no wall-clock, no randomness, no network, no filesystem.
     """
     orders = ctx.read("work_orders") or []
-    ordered = [o["id"] for o in orders if o.get("decision") == "accepted"]
+    accepted = [o for o in orders if o.get("decision") == "accepted"]
+    ordered = _serialize_same_feature(accepted)
     status = {oid: "pending" for oid in ordered}
     plan = {
         "schema_version": EXECUTION_PLAN_SCHEMA_VERSION,

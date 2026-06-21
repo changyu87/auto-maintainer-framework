@@ -43,17 +43,18 @@ import prioritize as pr  # noqa: E402
 # Fixtures — a builder for accepted/rejected WorkOrder dicts and a fresh ctx.
 # --------------------------------------------------------------------------
 
-def _order(oid, decision="accepted", reason=""):
+def _order(oid, decision="accepted", reason="", labels=None, body="body"):
     """Build a minimal WorkOrder dict in the shape TRIAGE writes. PRIORITIZE
-    only consumes `id` and `decision`, so the other fields carry sane filler."""
+    consumes `id`, `decision`, and (for same-feature serialization) `labels` +
+    `body`; the remaining fields carry sane filler."""
     return {
         "schema_version": "1.0.0",
         "id": oid,
         "work_item_id": oid.replace("wo-", ""),
         "title": f"title for {oid}",
-        "body": "body",
+        "body": body,
         "url": f"https://github.com/acme/widget/issues/{oid}",
-        "labels": [],
+        "labels": list(labels) if labels is not None else [],
         "decision": decision,
         "reason": reason,
         "created_at": "2026-05-01T10:00:00Z",
@@ -254,3 +255,155 @@ def test_factory_returns_manifest_and_run_callable():
     result = run(ctx)
     assert result.signal == "OK"
     assert result.writes["execution_plan"]["ordered"] == ["wo-1", "wo-2"]
+
+
+# ==========================================================================
+# Same-feature serialization (issue #214). Two work orders that touch the SAME
+# feature would each bump that feature's shared metadata off the same `main` and
+# collide on merge, so PRIORITIZE keeps at most one per feature per tick (the
+# FIFO-first wins) and defers the rest. Cross-feature orders stay parallel.
+# ==========================================================================
+
+def _plan(work_orders):
+    return pr.run(_fresh_ctx(work_orders=work_orders)).writes["execution_plan"]
+
+
+def test_same_feature_label_orders_serialize_fifo_first_wins():
+    # Two orders both labelled feature:scheduling -> only the FIFO-first fans
+    # out this tick; the second is deferred (absent from the plan).
+    plan = _plan([
+        _order("wo-1", labels=["feature:scheduling"]),
+        _order("wo-2", labels=["feature:scheduling"]),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+    assert plan["status"] == {"wo-1": "pending"}
+
+
+def test_cross_feature_label_orders_stay_parallel():
+    # Different feature: labels -> both fan out (the non-colliding case).
+    plan = _plan([
+        _order("wo-1", labels=["feature:scheduling"]),
+        _order("wo-2", labels=["feature:packaging-config"]),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_generic_labelled_different_feature_orders_stay_parallel():
+    # The #214 detection-fix regression guard: two orders sharing ONLY a generic
+    # `enhancement` label, but naming DIFFERENT features in their bodies, must
+    # NOT serialize against each other (generic labels are not feature keys).
+    plan = _plan([
+        _order("wo-1", labels=["enhancement"], body="Component: scheduling"),
+        _order("wo-2", labels=["enhancement"], body="Component: prioritize"),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_shared_generic_label_alone_does_not_serialize():
+    # Orders sharing only generic labels (enhancement/bug/filed-by:*) with no
+    # provable feature stay parallel — serialize only on a proven shared feature.
+    plan = _plan([
+        _order("wo-1", labels=["enhancement", "filed-by:autonomous-maintainer"]),
+        _order("wo-2", labels=["bug", "filed-by:autonomous-maintainer"]),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_orders_with_no_provable_feature_stay_parallel():
+    # No labels, no Component: line -> no provable feature -> all stay parallel.
+    plan = _plan([_order("wo-1"), _order("wo-2"), _order("wo-3")])
+    assert plan["ordered"] == ["wo-1", "wo-2", "wo-3"]
+
+
+def test_component_body_line_serializes_same_feature():
+    # A `Component:` body line is an authoritative feature signal even with no
+    # feature: label present.
+    plan = _plan([
+        _order("wo-1", body="Some text.\nComponent: scheduling\n"),
+        _order("wo-2", body="Other.\nComponent: scheduling\n"),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+
+
+def test_component_label_prefix_is_recognized():
+    # The `component:<name>` label prefix is honored alongside `feature:<name>`.
+    plan = _plan([
+        _order("wo-1", labels=["component:scheduling"]),
+        _order("wo-2", labels=["component:scheduling"]),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+
+
+def test_feature_detection_is_case_and_punctuation_insensitive():
+    # A label-declared feature and a body-declared feature with different case
+    # resolve to the same key and serialize.
+    plan = _plan([
+        _order("wo-1", labels=["feature:Scheduling"]),
+        _order("wo-2", body="component:  scheduling  "),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+
+
+def test_multi_feature_body_radius_claims_each_feature():
+    # A multi-feature Component: radius (split on +,&/,) claims BOTH features, so
+    # a later order touching EITHER is deferred; an unrelated feature stays.
+    plan = _plan([
+        _order("wo-1", body="Component: scheduling, prioritize"),
+        _order("wo-2", labels=["feature:prioritize"]),
+        _order("wo-3", labels=["feature:packaging-config"]),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-3"]
+
+
+def test_and_is_not_split_as_a_feature_connector():
+    # "and" must NOT split a feature name: "command-and-control" is ONE feature,
+    # not three, so two orders naming it serialize (not falsely cross-feature).
+    plan = _plan([
+        _order("wo-1", body="Component: command-and-control"),
+        _order("wo-2", body="Component: command-and-control"),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+
+
+def test_serialization_preserves_fifo_for_kept_orders():
+    # Interleaved features: the FIFO-first of each feature is kept in input order;
+    # later same-feature orders are dropped without reordering the survivors.
+    plan = _plan([
+        _order("wo-1", labels=["feature:a"]),
+        _order("wo-2", labels=["feature:b"]),
+        _order("wo-3", labels=["feature:a"]),  # deferred (a claimed by wo-1)
+        _order("wo-4", labels=["feature:c"]),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2", "wo-4"]
+
+
+def test_rejected_orders_never_claim_a_feature():
+    # A rejected order is excluded before serialization, so it cannot claim a
+    # feature slot and starve an accepted same-feature order.
+    plan = _plan([
+        _order("wo-1", decision="rejected", reason="stale",
+               labels=["feature:scheduling"]),
+        _order("wo-2", decision="accepted", labels=["feature:scheduling"]),
+    ])
+    assert plan["ordered"] == ["wo-2"]
+
+
+def test_serialization_is_deterministic():
+    orders = [
+        _order("wo-1", labels=["feature:scheduling"]),
+        _order("wo-2", labels=["feature:scheduling"]),
+        _order("wo-3", labels=["feature:packaging-config"]),
+    ]
+    plan_a = _plan(orders)
+    plan_b = _plan(orders)
+    assert json.dumps(plan_a, sort_keys=True) == json.dumps(
+        plan_b, sort_keys=True)
+
+
+def test_serialized_plan_still_has_no_groups_key():
+    # Serialization only shrinks `ordered`; the v1 plan surface is unchanged.
+    plan = _plan([
+        _order("wo-1", labels=["feature:scheduling"]),
+        _order("wo-2", labels=["feature:scheduling"]),
+    ])
+    assert set(plan.keys()) == {"schema_version", "ordered", "status"}

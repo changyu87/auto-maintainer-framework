@@ -1,12 +1,12 @@
 {
   "schema_version": "1.0.0",
   "owner": "changyu87",
-  "deprecation_criterion": "Superseded by the next prioritize housekeep wave's baseline; single-use measured-reduction reference for this doc-slim wave.",
-  "description": "Pre-wave line counts of prioritize doc surfaces, captured at commit f705266 (before the housekeep measured doc-reduction wave). coding-rules §6 verify-or-flag found NOTHING provably dead in docs/spec.md or docs/contract.md: every DESIGN citation, cross-feature reference (scheduling.run_tick, DEFAULT_ADAPTER_MAP, adapter-wiring factory), public-API name, and schema field is live. The docs were already lean, so this wave is an HONEST no-op: the current doc surfaces equal these baselines (reduced == false, verdict == no-op). The housekeep e2e test asserts behavior preserved (existing suite green), that no load-bearing token was dropped, and that the measured verdict is the honest no-op.",
-  "baseline_commit": "f705266",
+  "deprecation_criterion": "Superseded by the next prioritize housekeep wave's baseline; single-use measured-reduction reference, re-captured whenever a feature change legitimately alters the doc surfaces.",
+  "description": "Line counts of prioritize doc surfaces, re-captured after issue #214 (same-feature serialization) legitimately added behaviour to docs/spec.md and docs/contract.md. The prior baseline (spec.md=95, contract.md=30, captured at f705266) recorded an honest doc-reduction NO-OP; this revision raises it to the post-#214 surface (spec.md=144, contract.md=31) because the serialization fix is a genuine feature addition, not silent doc bloat. The housekeep e2e gates continue to assert behavior preserved, no load-bearing token dropped, and that the docs do not drift PAST this new baseline.",
+  "baseline_commit": "post-#214",
   "verdict": "no-op",
   "docs": {
-    "docs/spec.md": 95,
-    "docs/contract.md": 30
+    "docs/spec.md": 144,
+    "docs/contract.md": 31
   }
 }
