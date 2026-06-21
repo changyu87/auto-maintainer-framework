@@ -58,10 +58,9 @@ formal anchor-invariant validation may be a follow-up.
 
 ## Current behaviour
 
-Implemented and merged (`tdd_state: test-green`). The `Disposition` set + durable
-marker, the single-writer mutex with stale detection, and the `GUARD`/`EXIT`
-anchors are in `src/` with 20 passing tests. See `feature.json` /
-`docs/ROADMAP.md`.
+The `Disposition` set + durable marker, the single-writer mutex with stale
+detection, and the `GUARD`/`EXIT` anchors are implemented in `src/`. The live
+`tdd_state` is tracked in `feature.json`.
 
 ## Known gaps / deferred
 
@@ -77,9 +76,3 @@ anchors are in `src/` with 20 passing tests. See `feature.json` /
   runs them as the route's entry and terminal anchors.
 - `scheduling` reads EXIT's emitted signal / the disposition to decide
   refire-now vs idle vs halt for the next heartbeat.
-
-## Open questions
-
-- Marker file format/location and how mutex ownership identity is stamped
-  (PID + start-time vs a session token) — settle in implementation; tests inject
-  a temp runtime path.
