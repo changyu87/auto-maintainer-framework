@@ -1,5 +1,43 @@
 # scheduling — Changelog
 
+## contract 0.11.0 — 2026-06-21
+
+- **Acted-ledger re-entry: re-attempt a still-valid issue when its auto-PR is
+  closed (§3.8.5-symmetric leak fix, auto-maintainer-framework#204).** The
+  durable acted-ledger records every acted work order as `opened`/`closed` and
+  the IMPLEMENT per_item filter skips an already-acted work order forever
+  (idempotency — no duplicate PR). But when a human CLOSED an auto-PR (rejecting
+  the work) and left the issue OPEN, the loop treated it as done forever and
+  never re-attempted — a leak (the same class as the `blocked`-leak fixed at
+  contract 0.8.x). The only remedy was manual `durable-state.json` surgery
+  (deleting the acted-ledger entry). This closes the leak, symmetric with the
+  backoff re-entry.
+  - **Act-time issue state recorded.** An `opened` acted-ledger entry now stores
+    `acted_at_updated_at` (the source issue's `updated_at` at act time):
+    `ledger[wo] = {outcome: "opened", ref: <pr_url>, acted_at_updated_at:
+    <issue.updated_at>}`. `_record_acted_ledger` resolves it via the dispatched
+    work_orders' work_order_id -> work_item_id map. Back-compatible: a pre-#204
+    entry (no pin) reads as `null` and can never re-enter (stays locked).
+  - **Re-entry rule.** In the IMPLEMENT acted-ledger filter, beside the existing
+    backoff skip-deferred-unchanged check, an already-`opened` work order
+    RE-ENTERS (its ledger entry CLEARED, the item re-dispatched) when BOTH (a) its
+    PR `ref` is CLOSED-AND-NOT-MERGED AND (b) the issue's current `updated_at` has
+    ADVANCED past `acted_at_updated_at`. It stays LOCKED otherwise: merged (done),
+    still-open PR (pending review), or closed-but-issue-unchanged (the human
+    closed it without a redo — respect it, no thrash).
+  - **Injectable PR-state seam.** New `gh_pr_state_source(pr_ref, repo=None,
+    runner=subprocess.run)` + `DEFAULT_PR_STATE_SOURCE`, mirroring
+    verify-integrate's `gh_open_pr_source`: shells `gh pr view <ref> --json
+    state,mergedAt` and returns `{state, merged}` so the closed/merged check is
+    deterministic + unit-testable. `run_tick(pr_state_source=...)` overrides it.
+    The PR is queried ONLY for entries whose `updated_at` advanced (bounds the gh
+    calls to changed issues); a raising/malformed source stays locked and never
+    crashes the tick.
+  - Net behaviour: **close an auto-PR + update the issue -> the loop re-attempts
+    with the new guidance; close it + touch nothing -> the loop leaves it alone.**
+    Removes the manual ledger surgery. Edits live ONLY in scheduling
+    (`run_tick.py`); all sibling features are consumed UNCHANGED.
+
 ## contract 0.10.0 — 2026-06-21
 
 - **Durable heartbeat + SessionStart auto-resume (#31, DESIGN §3.3.2).**
