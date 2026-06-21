@@ -46,7 +46,7 @@ Public surface (slice 2 — INTEGRATE + CLEANUP):
   - INTEGRATE_MANIFEST / INTEGRATE_SIGNALS — INTEGRATE's manifest + signal set.
   - gh_pr_merge_sink(pr_ref, repo) — the production merge sink: shells
     `gh pr merge <pr> --merge --delete-branch` (the determinism seam).
-  - Integrate — the INTEGRATE state; merges only at gated-merge, guardrail-gated.
+  - Integrate — the INTEGRATE state; merges only at auto-merge, guardrail-gated.
   - CLEANUP_MANIFEST / CLEANUP_SIGNALS — CLEANUP's manifest + signal set.
   - Cleanup — the CLEANUP state (v1-thin pass-through; run -> OK).
 
@@ -495,7 +495,7 @@ class Integrate:
     Reads the `verdicts` slot AND the model-backed `review_verdicts` slot and,
     for each `ok` verdict whose PR is ALSO review-APPROVED, merges the PR via the
     injectable `merge_sink` — but ONLY when permits('merge', mode) is True (the
-    trust ladder permits merge at gated-merge only) AND merge_guardrails passes
+    trust ladder permits merge at auto-merge only) AND merge_guardrails passes
     (the hard backstop below the ladder). Every other PR goes to `skipped`:
 
       - a non-ok verdict (its reasons become the skip reason);
@@ -549,7 +549,7 @@ class Integrate:
                 result.skipped.append({
                     "pr_ref": pr_ref,
                     "reason": (f"merge not permitted at mode={self._mode!r} "
-                               f"(gated-merge required)"),
+                               f"(auto-merge required)"),
                 })
                 continue
             guard = self._guardrails_fn(

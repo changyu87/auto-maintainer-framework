@@ -21,8 +21,8 @@ Behaviours exercised here (extending docs/spec.md governance wiring):
 
   1. Default (no governance.json) -> trace + status show mode=propose and a budget
      field with the default per_day ceiling; budget_paused absent.
-  2. Project-local governance.json mode=gated-merge + per_day_tokens=null -> status
-     shows mode=gated-merge and budget ceiling "none" (unlimited); never paused.
+  2. Project-local governance.json mode=auto-merge + per_day_tokens=null -> status
+     shows mode=auto-merge and budget ceiling "none" (unlimited); never paused.
   3. Budget window persists across ticks: spend within the window is kept; a `now`
      on a LATER local day rolls the window over (window_key advances, spent resets).
   4. Injected tick_spend over a finite per_day ceiling -> evaluate_budget
@@ -174,15 +174,15 @@ def test_default_governance_status_shows_mode_propose_and_budget():
 
 
 # --------------------------------------------------------------------------
-# Behaviour 2 — project-local governance.json: mode=gated-merge + null per_day
+# Behaviour 2 — project-local governance.json: mode=auto-merge + null per_day
 # (unlimited) -> ceiling "none"; never paused.
 # --------------------------------------------------------------------------
 
-def test_gated_merge_unlimited_budget_shows_mode_and_none_ceiling():
+def test_auto_merge_unlimited_budget_shows_mode_and_none_ceiling():
     runtime_dir, state_path, journal_path = _paths()
     project_dir = _project_dir()
     _write_governance(project_dir, {
-        "mode": "gated-merge",
+        "mode": "auto-merge",
         "budget": {"per_day_tokens": None},
     })
     signal, trace = _run_tick_capture(
@@ -190,17 +190,17 @@ def test_gated_merge_unlimited_budget_shows_mode_and_none_ceiling():
         journal_path=journal_path, project_dir=project_dir,
         source=_stub_source(), now=_DAY1)
     assert signal == "idle", signal
-    assert "mode=gated-merge" in trace, trace
+    assert "mode=auto-merge" in trace, trace
     # Null per_day ceiling renders as "none" (unlimited).
     assert "budget=0/none" in trace, trace
     # An unlimited budget never pauses, even with a large injected spend.
     assert "budget_paused" not in trace, trace
 
 
-def test_gated_merge_unlimited_status_shows_mode_and_none_ceiling():
+def test_auto_merge_unlimited_status_shows_mode_and_none_ceiling():
     project_dir = _project_dir()
     _write_governance(project_dir, {
-        "mode": "gated-merge",
+        "mode": "auto-merge",
         "budget": {"per_day_tokens": None},
     })
     old = os.environ.get("CLAUDE_PROJECT_DIR")
@@ -213,7 +213,7 @@ def test_gated_merge_unlimited_status_shows_mode_and_none_ceiling():
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
         else:
             os.environ["CLAUDE_PROJECT_DIR"] = old
-    assert "mode=gated-merge" in line, line
+    assert "mode=auto-merge" in line, line
     # The recorded spend is surfaced against the unlimited "/none" ceiling.
     assert "budget=10000000/none" in line, line
     # An unlimited budget never pauses, no matter how large the spend.
@@ -337,7 +337,7 @@ def test_governance_threaded_into_runtime_dict():
     factory that captures the runtime it is handed."""
     runtime_dir, state_path, journal_path = _paths()
     project_dir = _project_dir()
-    _write_governance(project_dir, {"mode": "gated-merge"})
+    _write_governance(project_dir, {"mode": "auto-merge"})
 
     captured = {}
     orig_make_pull = rt.make_pull
@@ -356,7 +356,7 @@ def test_governance_threaded_into_runtime_dict():
 
     runtime = captured["runtime"]
     assert "governance" in runtime, runtime
-    assert runtime["governance"]["mode"] == "gated-merge", runtime["governance"]
+    assert runtime["governance"]["mode"] == "auto-merge", runtime["governance"]
     # Existing runtime keys are preserved (no regression).
     for key in ("project_dir", "runtime_dir", "source", "now"):
         assert key in runtime, (key, runtime)

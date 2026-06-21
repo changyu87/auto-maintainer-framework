@@ -381,11 +381,11 @@ def test_propose_acting_state_resume_reaches_done():
     assert rt.persisted_handoffs_count(state_path) == 2
 
 
-def test_gated_merge_acting_state_also_pauses_to_dispatch():
-    """gated-merge permits implement too -> the acting state PAUSES (dispatch),
+def test_auto_merge_acting_state_also_pauses_to_dispatch():
+    """auto-merge permits implement too -> the acting state PAUSES (dispatch),
     same as propose (not gated to inert)."""
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
-        mode="gated-merge")
+        mode="auto-merge")
     result = _resume_triage(project_dir, runtime_dir, state_path, journal_path)
     assert result["status"] == "paused", result
     assert result["state"] == "IMPLEMENT", result

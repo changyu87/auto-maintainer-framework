@@ -16,7 +16,7 @@ performing any work**. It is deterministic and inert — no model, no diff, no
 branch, no PR, no tracker write, no filesystem effect.
 
 This is the **`dry-run` rung of the trust ladder** (DESIGN §2.3, §3.8.2:
-`dry-run` / `propose` / `gated-merge`). Its job is to prove the act-side seam —
+`dry-run` / `propose` / `auto-merge`). Its job is to prove the act-side seam —
 the `Handoff` schema, the `execution_plan → handoffs` slot wiring, the signal,
 and the per-tick surfacing — with ZERO repo risk. The model-backed
 implement-then-PR doer (the `propose` rung, DESIGN §3.6.3) is a separate,

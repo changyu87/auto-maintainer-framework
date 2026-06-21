@@ -184,7 +184,7 @@ idempotency live in scheduling).
   itself is pure (it always files through the sink it is handed); the
   trust-ladder GATE lives in `scheduling.run_tick`, which only calls
   `file_discoveries` when `safety_governance.permits("file", mode)` — at
-  `dry-run` the intent is logged, not filed; at `propose`/`gated-merge` it files.
+  `dry-run` the intent is logged, not filed; at `propose`/`auto-merge` it files.
 
 ## Current behaviour
 

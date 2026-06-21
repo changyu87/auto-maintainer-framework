@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.0.0).
+"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.1.0).
 
 Every behaviour in docs/spec.md has a test here. The feature provides
 deterministic decision surfaces over a machine-first, versioned CENTRAL config
 (config.json) — DESIGN §3.8:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.0.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.1.0),
      DEFAULT_GOVERNANCE, load_config(project_dir): reads project-local
      ${project_dir}/.auto-maintainer/config.json (absent => defaults),
      backfilling missing keys from defaults. null/absent ceiling => NO LIMIT.
@@ -14,7 +14,7 @@ deterministic decision surfaces over a machine-first, versioned CENTRAL config
      (not a config field).
   3. Trust-ladder gate — permits(effect_kind, mode) over the closed effect set
      {implement, open_pr, merge, file} and the closed mode set
-     {dry-run, propose, gated-merge}. Unknown mode/effect => ValueError.
+     {dry-run, propose, auto-merge}. Unknown mode/effect => ValueError.
   4. Budget readiness gate (auto-resuming, NEVER a latch) — window_key(now),
      evaluate_budget(config, budget_state, now) reporting per-day allowance
      (per-tick ceiling REMOVED), record_spend(budget_state, now, tokens)
@@ -83,16 +83,16 @@ def _write_json(path, payload):
 
 
 # ==========================================================================
-# Behaviour: the central config schema is versioned (2.0.0) and machine-first.
+# Behaviour: the central config schema is versioned (2.1.0) and machine-first.
 # DEFAULT_GOVERNANCE matches the spec's documented defaults: mode=propose,
 # budget.per_day_tokens=null, budget.window_tz=local, heartbeat.interval_minutes=3,
 # backoff.threshold=5. The per_tick_tokens and maintainer_repo fields are REMOVED.
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.0.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.1.0"
     d = sg.DEFAULT_GOVERNANCE
-    assert d["schema_version"] == "2.0.0"
+    assert d["schema_version"] == "2.1.0"
     assert d["mode"] == "propose"
     # Default per_day is NO LIMIT (null) per explicit user decision; a finite
     # ceiling is opt-in via config.json.
@@ -122,7 +122,7 @@ def test_maintainer_repo_is_fixed_constant():
 def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["schema_version"] == "2.0.0"
+        assert config["schema_version"] == "2.1.0"
         assert config["mode"] == "propose"
         assert config["budget"]["per_day_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
@@ -140,10 +140,10 @@ def test_load_config_defaults_when_absent():
 def test_load_config_override_read_and_backfilled():
     with tempfile.TemporaryDirectory() as project_dir:
         _write_json(_config_path(project_dir),
-                    {"mode": "gated-merge",
+                    {"mode": "auto-merge",
                      "budget": {"per_day_tokens": 500000}})
         config = sg.load_config(project_dir)
-        assert config["mode"] == "gated-merge"
+        assert config["mode"] == "auto-merge"
         assert config["budget"]["per_day_tokens"] == 500000
         # backfilled from defaults:
         assert config["budget"]["window_tz"] == "local"
@@ -213,8 +213,8 @@ def test_migration_governance_json_to_config_json():
                      "maintainer_repo": "octo/legacy"})
 
         config = sg.load_config(project_dir)
-        # surviving fields mapped:
-        assert config["mode"] == "gated-merge"
+        # surviving fields mapped; the legacy mode name maps forward.
+        assert config["mode"] == "auto-merge"
         assert config["budget"]["per_day_tokens"] == 200000
         assert config["budget"]["window_tz"] == "local"
         # dropped fields gone:
@@ -230,7 +230,7 @@ def test_migration_governance_json_to_config_json():
         # the written config.json round-trips to the same values.
         with open(_config_path(project_dir)) as f:
             on_disk = json.load(f)
-        assert on_disk["mode"] == "gated-merge"
+        assert on_disk["mode"] == "auto-merge"
         assert on_disk["budget"]["per_day_tokens"] == 200000
         assert "per_tick_tokens" not in on_disk.get("budget", {})
 
@@ -256,10 +256,10 @@ def test_migration_prefers_config_json_when_both_present():
 def test_load_governance_alias_delegates_to_load_config():
     with tempfile.TemporaryDirectory() as project_dir:
         _write_json(_config_path(project_dir),
-                    {"mode": "gated-merge",
+                    {"mode": "auto-merge",
                      "budget": {"per_day_tokens": 500000}})
         via_alias = sg.load_governance(project_dir)
-        assert via_alias["mode"] == "gated-merge"
+        assert via_alias["mode"] == "auto-merge"
         assert via_alias["budget"]["per_day_tokens"] == 500000
         assert via_alias["heartbeat"]["interval_minutes"] == 3
 
@@ -274,13 +274,30 @@ def test_permits_full_truth_table():
                     "merge": False, "file": False},
         "propose": {"implement": True, "open_pr": True,
                     "merge": False, "file": True},
-        "gated-merge": {"implement": True, "open_pr": True,
-                        "merge": True, "file": True},
+        "auto-merge": {"implement": True, "open_pr": True,
+                       "merge": True, "file": True},
     }
     for mode, effects in expected.items():
         for effect_kind, allowed in effects.items():
             assert sg.permits(effect_kind, mode) is allowed, (
                 f"permits({effect_kind!r}, {mode!r}) should be {allowed}")
+
+
+def test_permits_tolerates_legacy_gated_merge_alias():
+    # The pre-2.1.0 mode name `gated-merge` is mapped forward to `auto-merge`,
+    # so the trust gate decides identically for either name (coexistence).
+    for effect_kind in ("implement", "open_pr", "merge", "file"):
+        assert sg.permits(effect_kind, "gated-merge") is (
+            sg.permits(effect_kind, "auto-merge"))
+
+
+def test_load_config_maps_legacy_gated_merge_mode_forward():
+    # A config.json still carrying the legacy mode name is TOLERATED and mapped
+    # to the current name on load (not an error).
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"mode": "gated-merge"})
+        config = sg.load_config(project_dir)
+        assert config["mode"] == "auto-merge"
 
 
 def test_permits_unknown_mode_raises():

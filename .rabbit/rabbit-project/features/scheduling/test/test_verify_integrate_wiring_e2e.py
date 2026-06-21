@@ -11,9 +11,9 @@ scheduling:
   - VERIFY (verify_integrate.Verify): reads NOTHING (open PRs sourced live from
     gh, injectable), writes the `verdicts` slot, emits OK | EMPTY.
   - INTEGRATE (verify_integrate.Integrate): reads `verdicts`, writes
-    `integration_result`, emits OK. Merges ONLY at gated-merge — the factory
+    `integration_result`, emits OK. Merges ONLY at auto-merge — the factory
     binds the loaded governance `mode` so propose merges nothing (NO-OP intent),
-    gated-merge merges via the injectable sink. Consumes sg.permits +
+    auto-merge merges via the injectable sink. Consumes sg.permits +
     sg.merge_guardrails.
   - CLEANUP (verify_integrate.Cleanup): reads `integration_result`, writes
     nothing, emits OK (v1-thin pass-through).
@@ -34,7 +34,7 @@ Behaviours exercised here:
      verdicts, INTEGRATE reads verdicts, CLEANUP reads integration_result).
   5. mode=propose: an ok verdict is NOT merged (the would-merge intent is
      recorded in integration_result.skipped); the sink is never called.
-  6. mode=gated-merge: an ok verdict IS merged via the injected sink (recorded
+  6. mode=auto-merge: an ok verdict IS merged via the injected sink (recorded
      in integration_result.merged); the sink is called once.
   7. verdicts/integration_result are #64-style per-tick read products: seeded
      empty when their states are routed.
@@ -277,10 +277,10 @@ def test_cleanup_factory_wraps_sibling_state():
 
 def test_integrate_factory_binds_governance_mode():
     """make_integrate binds the loaded governance mode so INTEGRATE merges only
-    at gated-merge."""
+    at auto-merge."""
     rti = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
            "source": None, "now": None,
-           "governance": {"mode": "gated-merge"}}
+           "governance": {"mode": "auto-merge"}}
     # Patch the gh seams BEFORE constructing the factory: make_integrate resolves
     # the default branch at factory-call time via vi.gh_default_branch_source.
     merge_calls = []
@@ -290,7 +290,7 @@ def test_integrate_factory_binds_governance_mode():
         assert manifest is vi.INTEGRATE_MANIFEST
         assert callable(run)
         # The bound run, invoked over a ctx with one ok verdict, merges via the
-        # sink at gated-merge (mode binding proven through behaviour).
+        # sink at auto-merge (mode binding proven through behaviour).
         ctx = fc.TickContext()
         ctx.register_slot("verdicts", {"type": "array"}, version="1.0.0")
         ctx.register_slot("review_verdicts", {"type": "array"}, version="1.0.0")
@@ -383,13 +383,13 @@ def test_propose_does_not_merge():
 
 
 # --------------------------------------------------------------------------
-# Behaviour 6 — mode=gated-merge: an ok verdict IS merged via the sink.
+# Behaviour 6 — mode=auto-merge: an ok verdict IS merged via the sink.
 # --------------------------------------------------------------------------
 
-def test_gated_merge_merges_via_sink():
+def test_auto_merge_merges_via_sink():
     project_dir = tempfile.mkdtemp(prefix="sched-vigated-")
     _write_project_route(project_dir, _CLOSE_ROUTE)
-    _write_governance(project_dir, "gated-merge")
+    _write_governance(project_dir, "auto-merge")
     runtime_dir = os.path.join(project_dir, ".auto-maintainer")
     state_path = os.path.join(runtime_dir, "durable-state.json")
     journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")

@@ -1,7 +1,7 @@
 ---
 name: configure
-description: Set the auto-maintainer's trust mode, token budget, heartbeat cadence, and backoff threshold in the project-local central config. Use this whenever the user runs /auto-maintainer:configure, or asks to set/change the maintainer's mode (dry-run, propose, gated-merge), arm or disarm the implementer doer, set or clear a daily token budget, change the heartbeat/tick interval, change the backoff threshold, or view the current settings. Also use this for the guided --setup walk-through whenever the user runs /auto-maintainer:configure --setup or asks to be "walked through" / "set up" / "configured step by step" — it walks every config knob field-by-field and writes the choices. It relays the requested values to the deterministic configure script, which validates them and writes .auto-maintainer/config.json.
-version: 0.6.0
+description: Set the auto-maintainer's trust mode, token budget, heartbeat cadence, and backoff threshold in the project-local central config. Use this whenever the user runs /auto-maintainer:configure, or asks to set/change the maintainer's mode (dry-run, propose, auto-merge), arm or disarm the implementer doer, set or clear a daily token budget, change the heartbeat/tick interval, change the backoff threshold, or view the current settings. Also use this for the guided --setup walk-through whenever the user runs /auto-maintainer:configure --setup or asks to be "walked through" / "set up" / "configured step by step" — it walks every config knob field-by-field and writes the choices. It relays the requested values to the deterministic configure script, which validates them and writes .auto-maintainer/config.json.
+version: 0.7.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when the central-config schema reaches a breaking major version, or when governance configuration moves out of a project-local JSON file consulted at tick entry.
 ---
@@ -25,7 +25,9 @@ user asked for. It never edits the JSON by hand.
   planned handoffs only (no PR, no issue close). The safe rung to verify a route.
 - `propose` — the doer implements and **opens PRs** (and closes rejected issues),
   but never merges.
-- `gated-merge` — as propose, and merging is permitted.
+- `auto-merge` — as propose, and merging is permitted (the loop merges
+  automatically; the §3.8.1 merge guardrails are the hard backstop). The legacy
+  name `gated-merge` is still accepted and stored as `auto-merge`.
 
 ## Budget
 
@@ -57,7 +59,7 @@ negative ceiling exits non-zero with an error) and prints the resulting config.
 - Set the mode (use the exact mode the user named):
 
   ```
-  python3 ${CLAUDE_PLUGIN_ROOT}/lib/configure.py --mode <dry-run|propose|gated-merge>
+  python3 ${CLAUDE_PLUGIN_ROOT}/lib/configure.py --mode <dry-run|propose|auto-merge>
   ```
 
 - Set a daily token budget (or clear it with `none`):
