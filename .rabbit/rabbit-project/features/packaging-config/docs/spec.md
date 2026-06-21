@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.10
+version: 0.2.11
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -222,6 +222,38 @@ Added invariants (TDD targets): the built tree contains `lib/configure.py`,
 bootstrap resolving siblings from `lib/`), `skills/{configure,route,adapter-map}/SKILL.md`,
 and `agents/auto-maintainer-implementer.md`; the plugin version is `0.3.0`; still
 **no `.rabbit` leak**; still idempotent.
+
+## Slice — ship a plugin-internal README.md (#16)
+
+Per the Claude Code plugin docs best practice ("Add a README.md with
+installation and usage instructions"), the **shipped, installed** plugin now
+carries its own `README.md` at the plugin root, not only the repo-root README
+(added in PR #15). A user inspecting the installed plugin (or the plugin cache)
+finds usage docs there too.
+
+- **Generated, not static** — `build_plugin.py` renders
+  `plugins/auto-maintainer/README.md` into the clean tree. The **Commands**
+  section is DERIVED from the shipped `skills/` dir (one row per
+  `skills/<name>/` = `/auto-maintainer:<name>`), so it can never omit a shipped
+  command; a skill with no curated description in `_COMMAND_DESCRIPTIONS` FAILS
+  the build, keeping the docs complete as commands are added.
+- **Accurate status** — the README states the plugin is a **v1-complete working
+  autonomous maintainer** (full pull→triage→implement→verify→integrate→report
+  loop, live-proven). It does NOT describe an early "packaging skeleton" (stale
+  wording superseding the prior attempt, PR #200).
+- **Content** — what the plugin is, the install steps (incl. `/reload-plugins`),
+  a usage walk-through, the full Commands table (all seven shipped commands:
+  `start`, `stop`, `status`, `tick`, `configure`, `route`, `adapter-map`), and
+  the plugin layout. The `configure` row sets mode + per-day budget + heartbeat
+  interval + backoff threshold in the central `config.json`.
+- **Clean-ship** — the README is an asset, so the no-`.rabbit`-leak invariant
+  applies to it like every other shipped file.
+
+Added invariants (TDD targets): the built tree contains `README.md` that names
+the plugin, documents `/reload-plugins`, lists every shipped slash command, and
+states the v1-complete status (no "skeleton" wording); the build fails when a
+shipped skill has no curated README description; still **no `.rabbit` leak**;
+still idempotent.
 
 ## Distribution & test flow — GitHub only
 
