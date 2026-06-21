@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded by the next verify-integrate housekeep wave's baseline; single-use measured-reduction reference for this doc-slim wave.",
+  "description": "Pre-wave line counts of verify-integrate doc surfaces, captured at commit 6137941 (before the housekeep measured doc-reduction wave). The housekeep e2e test asserts the current docs are NOT LARGER than these baselines (a reduced|no-op verdict), and that the load-bearing tokens survived the slim.",
+  "baseline_commit": "6137941",
+  "docs": {
+    "docs/spec.md": 141,
+    "docs/contract.md": 45
+  }
+}
