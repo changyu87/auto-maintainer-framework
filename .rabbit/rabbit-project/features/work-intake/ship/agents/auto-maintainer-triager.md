@@ -18,7 +18,10 @@ literally:
 
 - `## Task` — the specific triage instruction for this dispatch.
 - `## Inputs` — the batch of `work_items` to judge (each with title, body, url,
-  labels, author, timestamps).
+  labels, author, timestamps, and `comments` — the issue's human follow-up
+  discussion). **Read the comments, not just the body:** the most current
+  guidance, a correction, or a "wontfix"/resolution note often lives in a
+  comment posted after the original body, and it can change your decision.
 - `## Handoff` — the **contract you MUST obey**: the exact output shape (an
   example to mimic), the file to write your output to, and how to acknowledge.
 

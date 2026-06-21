@@ -51,7 +51,17 @@ import fsm_contracts as fc
 
 # The versioned WorkItem schema (machine-first; bumped on a breaking change to
 # the field set). Slot-schema version, distinct from the feature version.
-WORK_ITEM_SCHEMA_VERSION = "1.0.0"
+# 1.1.0: additive `comments` field (the issue's human follow-up discussion) so
+# the triager + implementer see the full thread, not just the original body.
+WORK_ITEM_SCHEMA_VERSION = "1.1.0"
+
+# Bound on how many of an issue's comments ride along in the WorkItem so a long
+# thread cannot bloat the rendered triager/implementer envelope. We keep the
+# MOST RECENT N (the latest human guidance usually lives at the end of a thread)
+# and cap each comment's body length. `gh issue view --json comments` already
+# returns comments oldest-first, so "most recent N" is the trailing slice.
+MAX_COMMENTS_PER_ITEM = 20
+MAX_COMMENT_BODY_CHARS = 4000
 
 
 @dataclass(eq=True)
@@ -73,6 +83,11 @@ class WorkItem:
     author: str = ""
     created_at: str = ""
     updated_at: str = ""
+    # The issue's human follow-up discussion, each comment a machine-first
+    # `{author, created_at, body}` dict, bounded (most-recent MAX_COMMENTS_PER_ITEM,
+    # each body capped). The triager + implementer render these so the most
+    # current guidance (which often lives in comments, not the body) is visible.
+    comments: List[dict] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -87,6 +102,7 @@ class WorkItem:
             "author": self.author,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "comments": [dict(c) for c in self.comments],
         }
 
     @classmethod
@@ -102,6 +118,7 @@ class WorkItem:
             author=d.get("author", ""),
             created_at=d.get("created_at", ""),
             updated_at=d.get("updated_at", ""),
+            comments=[dict(c) for c in d.get("comments", [])],
         )
 
 
@@ -135,11 +152,39 @@ def _derive_id(url, number):
     return f"#{number}"
 
 
+def _normalize_comments(raw_comments):
+    """Map gh's `comments` shape to the bounded machine-first WorkItem form.
+
+    gh returns each comment as `{author: {login}, createdAt, body, ...}` in
+    chronological (oldest-first) order. We keep the MOST RECENT
+    MAX_COMMENTS_PER_ITEM (the trailing slice, where the latest human guidance
+    lives) and cap each body at MAX_COMMENT_BODY_CHARS so a long thread cannot
+    bloat the rendered envelope. Pure and deterministic.
+    """
+    out = []
+    for comment in raw_comments or []:
+        author = comment.get("author") or {}
+        body = comment.get("body", "") or ""
+        if len(body) > MAX_COMMENT_BODY_CHARS:
+            body = body[:MAX_COMMENT_BODY_CHARS] + "\n... [comment truncated]"
+        out.append({
+            "author": author.get("login", ""),
+            "created_at": comment.get("createdAt", ""),
+            "body": body,
+        })
+    if len(out) > MAX_COMMENTS_PER_ITEM:
+        out = out[-MAX_COMMENTS_PER_ITEM:]
+    return out
+
+
 def parse_gh_issues(json_text):
     """Map a `gh issue list --json ...` payload string to a list of WorkItems.
 
     Expects gh's shape: author is an object with a `login`, labels a list of
-    objects with a `name`, timestamps `createdAt`/`updatedAt` (camelCase).
+    objects with a `name`, timestamps `createdAt`/`updatedAt` (camelCase). When
+    an issue carries a `comments` array (as `gh issue view --json comments`
+    returns) it is normalized + bounded into the WorkItem's `comments` field;
+    `gh issue list` does not return comments, so absent it stays empty.
     """
     raw = json.loads(json_text)
     items = []
@@ -159,6 +204,7 @@ def parse_gh_issues(json_text):
             author=author.get("login", ""),
             created_at=issue.get("createdAt", ""),
             updated_at=issue.get("updatedAt", ""),
+            comments=_normalize_comments(issue.get("comments")),
         ))
     return items
 
@@ -166,17 +212,51 @@ def parse_gh_issues(json_text):
 _GH_JSON_FIELDS = (
     "number,title,body,url,state,labels,author,createdAt,updatedAt")
 
+# `gh issue list` does NOT return comments, so they are fetched per pulled issue
+# via `gh issue view <n> --json comments`. Each gh comment carries author +
+# createdAt + body (the fields _normalize_comments reads).
+_GH_COMMENT_FIELDS = "comments"
 
-def gh_issue_source(repo=None):
+
+def gh_issue_source(repo=None, runner=subprocess.run):
     """Production issue source: shell the deterministic `gh` CLI for OPEN issues
     and parse its JSON into WorkItems. `gh` carries its own auth. When `repo` is
     given it is passed via `--repo`; otherwise gh resolves the repo from the
-    project default / git remote."""
+    project default / git remote.
+
+    `gh issue list` does not return comments, so for each pulled issue this also
+    shells `gh issue view <number> --json comments` and attaches the bounded
+    human-discussion thread to the WorkItem (so the triager + implementer see
+    follow-up guidance, not just the original body). A per-issue comment fetch
+    that fails is tolerated (the item keeps an empty `comments`) — a flaky
+    comment read must never sink the whole PULL. The subprocess `runner` is
+    INJECTABLE (defaulting to subprocess.run) so tests drive it without network.
+    """
     cmd = ["gh", "issue", "list", "--state", "open", "--json", _GH_JSON_FIELDS]
     if repo:
         cmd += ["--repo", repo]
-    out = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    return parse_gh_issues(out.stdout)
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    items = parse_gh_issues(out.stdout)
+    for item in items:
+        item.comments = _fetch_issue_comments(item.number, repo, runner)
+    return items
+
+
+def _fetch_issue_comments(number, repo=None, runner=subprocess.run):
+    """Fetch + bound one issue's comments via `gh issue view <n> --json comments`.
+
+    Returns the normalized, bounded comment list; on any error (the fetch is a
+    best-effort enrichment, never load-bearing for PULL) returns an empty list.
+    """
+    cmd = ["gh", "issue", "view", str(number), "--json", _GH_COMMENT_FIELDS]
+    if repo:
+        cmd += ["--repo", repo]
+    try:
+        out = runner(cmd, capture_output=True, text=True, check=True)
+        payload = json.loads(out.stdout)
+    except Exception:  # noqa: BLE001 — locate failure to the comment fetch
+        return []
+    return _normalize_comments(payload.get("comments"))
 
 
 class Pull:
@@ -211,7 +291,9 @@ class Pull:
 
 # The versioned WorkOrder schema (machine-first; bumped on a breaking change to
 # the field set). Distinct from both the feature version and WorkItem's version.
-WORK_ORDER_SCHEMA_VERSION = "1.0.0"
+# 1.1.0: additive `comments` field, carried from the source WorkItem so the
+# implementer (which reads work_orders, not work_items) sees the human thread.
+WORK_ORDER_SCHEMA_VERSION = "1.1.0"
 
 
 @dataclass(eq=True)
@@ -233,6 +315,9 @@ class WorkOrder:
     reason: str
     labels: List[str] = field(default_factory=list)
     created_at: str = ""
+    # The source issue's human follow-up discussion, carried from the WorkItem
+    # so the implementer (which reads work_orders) sees the full thread.
+    comments: List[dict] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -246,6 +331,7 @@ class WorkOrder:
             "decision": self.decision,
             "reason": self.reason,
             "created_at": self.created_at,
+            "comments": [dict(c) for c in self.comments],
         }
 
     @classmethod
@@ -260,6 +346,7 @@ class WorkOrder:
             decision=d["decision"],
             reason=d.get("reason", ""),
             created_at=d.get("created_at", ""),
+            comments=[dict(c) for c in d.get("comments", [])],
         )
 
 
@@ -355,6 +442,7 @@ class Triage:
                 decision="accepted",
                 reason="",
                 created_at=item.created_at,
+                comments=[dict(c) for c in item.comments],
             ))
         writes = {"work_orders": [order.to_dict() for order in accepted]}
         signal = "OK" if accepted else "EMPTY"

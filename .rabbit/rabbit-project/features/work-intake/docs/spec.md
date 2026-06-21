@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.3.2
+version: 0.4.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -28,9 +28,14 @@ Greenfield. Code under `.../features/work-intake/src/`.
 
 1. **`WorkItem` slot schema** — the typed shape of a tracker item:
    `{ id, number, title, body, url, state, labels: [str], author, created_at,
-   updated_at }`. Machine-first, versioned (`schema_version`). Owned here
-   (fsm-contracts deferred the concrete domain slot schemas to their owning
-   features). Downstream features (TRIAGE/PRIORITIZE/IMPLEMENT) consume it.
+   updated_at, comments: [{author, created_at, body}] }`. Machine-first,
+   versioned (`schema_version`). Owned here (fsm-contracts deferred the concrete
+   domain slot schemas to their owning features). Downstream features
+   (TRIAGE/PRIORITIZE/IMPLEMENT) consume it. `comments` carries the issue's
+   human follow-up discussion (the latest guidance often lives there, not the
+   body) and is **bounded** — the most recent `MAX_COMMENTS_PER_ITEM` comments,
+   each body capped at `MAX_COMMENT_BODY_CHARS` — so a long thread cannot bloat
+   the rendered triager/implementer envelope.
 
 2. **`PULL` state** — `run(TickContext) -> StateResult` (fsm-contracts contract).
    Fetches the configured repo's **open** issues, maps each to a `WorkItem`,
@@ -44,7 +49,12 @@ Greenfield. Code under `.../features/work-intake/src/`.
    number,title,body,url,state,labels,author,createdAt,updatedAt`), which carries
    its own auth. The source is INJECTABLE so tests pass a stub returning fixture
    issues — no network, fully deterministic (spec-rules §1: a failure is locatable
-   to the fetch boundary, not a flaky live call).
+   to the fetch boundary, not a flaky live call). `gh issue list` does **not**
+   return comments, so the source ALSO shells `gh issue view <number> --json
+   comments` per pulled issue to attach the (bounded) discussion thread. The
+   underlying subprocess `runner` is injectable, and a per-issue comment fetch
+   that fails is tolerated (the item keeps an empty `comments`) — a flaky comment
+   read must never sink the whole PULL.
 
 4. **Repo resolution** — slice 1 resolves the target repo from the project's `gh`
    default / git remote, or an injectable `repo` argument. Explicit config
@@ -64,8 +74,11 @@ Turn raw `work_items` into validated `work_orders`. Slice 2 implements a
 
 1. **`WorkOrder` slot schema** — a validated, decision-carrying item:
    `{ id, work_item_id, title, body, url, labels, decision: accepted|rejected,
-   reason, created_at }`. Machine-first, versioned. Written to the `work_orders`
-   slot, consumed downstream (PRIORITIZE/IMPLEMENT, future).
+   reason, created_at, comments: [{author, created_at, body}] }`. Machine-first,
+   versioned. Written to the `work_orders` slot, consumed downstream
+   (PRIORITIZE/IMPLEMENT, future). `comments` is carried verbatim from the
+   source `WorkItem` so the implementer — which reads `work_orders`, not
+   `work_items` — also sees the human discussion thread.
 2. **`TRIAGE` state** — `run(TickContext) -> StateResult`: reads `work_items`,
    applies a deterministic validity gate (well-formed = has a title; not stale =
    updated within a hardcoded window; in-scope = open, non-draft), maps each
