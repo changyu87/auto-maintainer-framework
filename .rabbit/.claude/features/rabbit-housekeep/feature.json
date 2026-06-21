@@ -1,12 +1,12 @@
 {
   "name": "rabbit-housekeep",
-  "version": "0.6.0",
+  "version": "0.9.0",
   "owner": "rabbit-workflow team",
   "tdd_state": "test-green",
   "housekeeping_clean": true,
   "contiguous_invariants": true,
   "status": "active",
-  "summary": "Repeatable measured verify-or-flag housekeeping skill. Runs slim/reduction against a feature, a set of features, or the whole repo in complexity-sized waves: each wave proves-it-dead-or-flags every claim, measures before/after line counts with a deterministic script, mandates actual removal (not rewording), and preserves named load-bearing tokens. Also enforces the spec-rules \u00a74 Script-Backed Orchestration standard as a script-tier verify-or-flag dimension: check-script-backed.py scans SKILL/agent/command bodies for non-script-backed orchestration steps and routes each through the prove-it-dead-or-flag disposition. Cross-feature/repo-wide scope is decomposed into per-feature sub-issues, each worked through the governed TDD path.",
+  "summary": "Repeatable measured verify-or-flag housekeeping skill. Runs slim/cleanup against a feature, a set of features, or the whole repo in complexity-sized waves: each wave proves-it-dead-or-flags every claim, measures before/after line counts with a deterministic script, and preserves named load-bearing tokens. Reduction is REPORTED not MANDATED \u2014 an already-clean target is an honest no-op SUCCESS; the one mandatory gate is behavior preserved (the existing test suite stays green). The default DOC dimension slims doc surfaces; an opt-in CODE dimension (--code) simplifies a feature's src/ via the code-simplifier agent and removes dead src/ symbols via the coding-rules \u00a76 grep-for-callers protocol, routed through the governed TDD path. Also enforces the spec-rules \u00a74 Script-Backed Orchestration standard as a script-tier verify-or-flag dimension: check-script-backed.py scans SKILL/agent/command bodies for non-script-backed orchestration steps and routes each through the prove-it-dead-or-flag disposition. Cross-feature/repo-wide scope is decomposed into per-feature sub-issues, each worked through the governed TDD path. For a user-installed run a wave still CREATES its PR for the audit trail and, unless --no-automerge is passed, AUTO-MERGES it to main on green gates via wave-automerge.py (HANDOFF gates green + PR mergeable/clean with green CI + honest reduced-or-no-op verdict); any failed gate leaves the PR open.",
   "surface": {
     "skills": [
       "skills/rabbit-housekeep/SKILL.md"
@@ -19,7 +19,8 @@
     "scripts": [
       "scripts/measure-reduction.py",
       "scripts/check-script-backed.py",
-      "scripts/resolve-housekeep-scope.py"
+      "scripts/resolve-housekeep-scope.py",
+      "scripts/wave-automerge.py"
     ]
   },
   "deprecation_criterion": "when housekeeping is provided natively by the rabbit CLI as a first-class measured-reduction subcommand",

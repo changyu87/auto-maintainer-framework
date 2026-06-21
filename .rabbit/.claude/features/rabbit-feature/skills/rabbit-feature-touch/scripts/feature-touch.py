@@ -54,6 +54,34 @@ Subcommands:
       Like resolve-spec-path, for the contract: prefers flat
       `docs/contract.md`, then the legacy `docs/spec/contract.md`.
 
+  is-reduction-wave <request>
+      Detect whether a feature-touch request is a housekeep spec-reduction
+      wave (#1198). rabbit-housekeep dispatches the per-feature reduction unit
+      through feature-touch with the request `housekeep: measured reduction
+      wave`; on that path the substantive spec edit must be authored by the
+      TDD subagent inside its OWN single RED->GREEN cycle, not pre-committed by
+      Step 3 (which would leave the subagent's `spec-update -> test-red` gate
+      with no working-tree diff and force the `--spec-no-change-reason` escape
+      hatch). The reduction-path decision is a computed step, so per the
+      SKILL.md Authoring Standard (spec-rules.md §4 Script-Backed
+      Orchestration) it is OWNED HERE rather than judged inline in SKILL.md
+      prose. Emits a single JSON line `{"reduction": true|false}`.
+
+  persist-intent <feature-name>   (reads the intent payload from stdin)
+      Thread a spec-reduction INTENT into the Step-5 dispatch WITHOUT editing
+      or committing the feature spec (#1198). rabbit-spec-update's
+      `--intent-only` no-commit mode COMPUTES and EMITS the impl-suggestion
+      payload on stdout while leaving `docs/spec.md` byte-identical; this
+      subcommand reads that payload from stdin and writes it to the
+      impl-suggestion file the Step-5 dispatch already consumes
+      (`<repo_root>/.rabbit/impl-suggestion-<feature-name>.json`, the same
+      mode-agnostic path rabbit-spec-update uses in its default mode and that
+      `dispatch-prompt --impl-suggestion` points at). It edits NOTHING in the
+      feature dir and creates NO commit — the spec reduction itself is deferred
+      to the TDD subagent, which authors it under its own scope marker in one
+      honest RED->GREEN cycle. Prints the written impl-suggestion path on
+      stdout so the SKILL body can thread it into `dispatch-prompt`.
+
   commit-spec <feature-name> <summary>
       Stage and commit the feature's spec change (if any) BEFORE the TDD
       subagent is dispatched (Step 5). Mode-aware:
@@ -90,7 +118,7 @@ All paths are resolved relative to the repo root, which the script derives
 by walking up from the cwd to the nearest ancestor containing a `.git`
 entry (file or directory, so git worktrees are handled).
 
-Version: 0.10.0
+Version: 0.11.0
 Owner: rabbit-workflow team
 Deprecation criterion: when feature-touch orchestration is natively handled
 by the rabbit CLI or by Claude Code's native workflow mechanism.
@@ -441,6 +469,57 @@ def cmd_commit_spec(feature: str, summary: str) -> int:
     return 0
 
 
+# The housekeep reduction-wave signal rabbit-housekeep passes to feature-touch
+# (rabbit-housekeep SKILL.md dispatches the per-feature reduction unit with the
+# request "<name> housekeep: measured reduction wave"). Matching the
+# `housekeep: measured reduction wave` substring keeps the decision a stable,
+# script-tier check rather than an inline judgement in SKILL.md prose (#1198).
+_REDUCTION_SIGNAL = "housekeep: measured reduction wave"
+
+
+def cmd_is_reduction_wave(request: str) -> int:
+    """Emit JSON {"reduction": bool} for the housekeep reduction-wave path.
+
+    Detects the rabbit-housekeep measured-reduction signal in the request so
+    Step 3 can branch to the intent-only / no-pre-commit path (#1198) without
+    judging it inline in SKILL.md prose (§4 Script-Backed Orchestration).
+    """
+    reduction = _REDUCTION_SIGNAL in request.lower()
+    print(json.dumps({"reduction": reduction}))
+    return 0
+
+
+def cmd_persist_intent(feature: str) -> int:
+    """Persist a stdin spec-reduction intent to the impl-suggestion file (#1198).
+
+    Reads rabbit-spec-update's `--intent-only` payload from stdin and writes it
+    to `<repo_root>/.rabbit/impl-suggestion-<feature>.json` — the same
+    mode-agnostic path the default-mode rabbit-spec-update uses and that
+    `dispatch-prompt --impl-suggestion` already consumes — so the intent threads
+    into the Step-5 dispatch through the existing channel. Edits NOTHING in the
+    feature dir and creates NO commit; the spec reduction itself is the TDD
+    subagent's job under its own scope marker. Prints the written path.
+    """
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(
+            f"ERROR: persist-intent expected a JSON intent payload on stdin "
+            f"(rabbit-spec-update --intent-only output): {exc}\n"
+        )
+        return 1
+
+    repo_root = _repo_root(Path.cwd())
+    impl_path = repo_root / ".rabbit" / f"impl-suggestion-{feature}.json"
+    impl_path.parent.mkdir(parents=True, exist_ok=True)
+    impl_path.write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    _emit_relative(repo_root, impl_path)
+    return 0
+
+
 def cmd_dispatch_prompt(
     feature: str,
     spec: str,
@@ -484,10 +563,13 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(
             "usage: feature-touch.py "
             "{create-branch|resolve-spec-path|resolve-contract-path"
-            "|commit-spec|dispatch-prompt} ...\n"
+            "|is-reduction-wave|persist-intent|commit-spec|dispatch-prompt} "
+            "...\n"
             "  create-branch [--multi] <feature-name> <request>\n"
             "  resolve-spec-path <feature-name>\n"
             "  resolve-contract-path <feature-name>\n"
+            "  is-reduction-wave <request>\n"
+            "  persist-intent <feature-name>  (intent JSON on stdin)\n"
             "  commit-spec <feature-name> <summary>\n"
             "  dispatch-prompt <feature-name> --spec <path> "
             "[--impl-suggestion <path>] [--worktree <path>]\n"
@@ -521,6 +603,21 @@ def main(argv: list[str]) -> int:
             )
             return 2
         return cmd_resolve_contract_path(argv[2])
+    if sub == "is-reduction-wave":
+        if len(argv) != 3:
+            sys.stderr.write(
+                "usage: feature-touch.py is-reduction-wave <request>\n"
+            )
+            return 2
+        return cmd_is_reduction_wave(argv[2])
+    if sub == "persist-intent":
+        if len(argv) != 3:
+            sys.stderr.write(
+                "usage: feature-touch.py persist-intent <feature-name>  "
+                "(intent JSON on stdin)\n"
+            )
+            return 2
+        return cmd_persist_intent(argv[2])
     if sub == "commit-spec":
         if len(argv) != 4:
             sys.stderr.write(

@@ -1,6 +1,6 @@
 {
   "name": "rabbit-spec",
-  "version": "1.20.0",
+  "version": "1.21.0",
   "owner": "rabbit-workflow team",
   "housekeeping_clean": true,
   "contiguous_invariants": true,
@@ -21,7 +21,7 @@
     ]
   },
   "deprecation_criterion": "when Claude Code exposes native spec-lifecycle skills that supersede this feature",
-  "updated": "2026-06-07",
+  "updated": "2026-06-13",
   "manifest": [
     {
       "api": "publish_skill",
@@ -52,6 +52,5 @@
         "paths_resolved"
       ]
     }
-  ],
-  "spec_no_change_reason": "Spec amended this cycle (bumped 1.19.1 -> 1.20.0, #1079 designed-deprecation cleanup): the defensive relocation shim in scripts/dispatch-spec-creator.py is retired now that contract/scripts/build-prompt.py anchors the prompts dir at the canonical single-`.rabbit` runtime root upstream (#1073) — the in-dispatcher relocation was a verified no-op in both modes. Inv 3 clause (f) rewritten to STATE the upstream guarantee (drops the relocation-mechanism description); clause (d)'s stdlib list narrowed back to argparse/glob/os/subprocess/sys/pathlib (shutil + importlib.util removed). contract.md drops the rabbit-cage runtime_root.py INVOKE (no longer imported). Numbering stays contiguous 1..8."
+  ]
 }

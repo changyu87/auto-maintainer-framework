@@ -2,7 +2,7 @@
 name: rabbit-spec-update
 description: Use when an existing feature spec needs to be revised or updated, in any context (standalone or plugin mode). Invoke as Skill("rabbit-spec-update", args: "<feature-name> <request>") from any skill, process, or directly. Auto-detects rabbit mode from .rabbit/.runtime/mode and resolves the target feature directory to .claude/features/<feature-name>/ in standalone mode or .rabbit/rabbit-project/features/<feature-name>/ in plugin mode. Reads the current spec, judges the request type, invokes superpowers as needed, updates the spec surgically, and produces an implementation suggestion file for whoever invoked it. Also use when a user asks to update, review, or revise a spec for any rabbit feature — even if they don't say "spec" explicitly (e.g., "think about what we need to build", "plan this feature", "what should change in the design", "update the design for this bug fix"). For drafting a BRAND NEW spec from scratch (no existing content), use rabbit-spec-create instead.
 model: opus
-version: 2.8.0
+version: 2.9.0
 owner: rabbit-workflow team
 deprecation_criterion: when Claude Code exposes native spec-lifecycle skills that supersede this feature
 ---
@@ -57,10 +57,46 @@ Every `spec.md` / `contract.md` reference in the steps below means
 
 ## Inputs
 
-Args format: `<feature-name> <request-or-item-description>`
+Args format: `[--intent-only] <feature-name> <request-or-item-description>`
 
 - **feature-name**: the rabbit feature to update (e.g., `tdd-subagent`, `rabbit-issue`)
 - **request**: the user's raw request, or a rabbit-managed issue description
+- **`--intent-only`** (optional flag): opt into the intent-only / no-commit
+  mode. When present, the skill EMITS the spec-reduction intent and stops
+  short of applying the spec edit. See the **Intent-Only Mode** section
+  below. When absent (the default), behaviour is unchanged: the skill edits
+  and writes the spec (Step 4) and writes the impl-suggestion file (Step 5).
+
+## Intent-Only Mode (`--intent-only`)
+
+This is an additive, opt-in mode. It is OFF by default — when the
+`--intent-only` flag is absent, the skill behaves exactly as it always
+has (edit + write the spec at Step 4, then write the impl-suggestion file
+at Step 5). The default path is unchanged and backward-compatible.
+
+When `--intent-only` IS present, the skill COMPUTES the spec-reduction
+intent but does NOT apply it:
+
+- It runs Step 1 (Read), Step 2 (Judge), and Step 3 (Superpowers) exactly
+  as in the default flow — these are read-only/analysis steps that produce
+  the intent.
+- It SHORT-CIRCUITS Step 4: it does NOT edit and does NOT write the target
+  `docs/spec.md`, and it does NOT commit anything. The on-disk
+  `docs/spec.md` stays byte-identical. The actual spec edit is deferred to
+  whoever consumes the intent (e.g. a downstream TDD subagent that will
+  author the `docs/spec.md` change under its own scope marker).
+- Instead of writing the impl-suggestion FILE (Step 5), it EMITS the same
+  payload as JSON on stdout. The emitted payload reuses the existing
+  impl-suggestion schema VERBATIM (the exact object shape documented in
+  Step 5 — same `schema_version`, `feature`, `generated_at`,
+  `request_summary`, `spec_changes`, `implementation_approach`,
+  `affected_files`, `key_invariants`, and optional `owner` / `deprecation`
+  fields). Do NOT invent a new schema; the only difference from the default
+  mode is the SINK (stdout JSON, not the `.rabbit/impl-suggestion-*.json`
+  file) and the absence of the spec edit/commit.
+
+In short: intent-only = "compute and emit the intent, edit nothing, commit
+nothing." Default = "edit the spec, write the impl-suggestion file."
 
 ## Step 1 — Read Current State
 
@@ -126,6 +162,13 @@ Both superpowers run under your current model context (opus). Do not dispatch a 
 
 ## Step 4 — Update the Spec
 
+**INTENT-ONLY GUARD:** If the `--intent-only` flag was passed (see the
+**Intent-Only Mode** section above), SKIP this step entirely — do NOT edit
+or write `docs/spec.md` and do NOT commit. Proceed straight to emitting the
+intent JSON on stdout per the Intent-Only Mode section (the Step 5 payload
+shape). The rest of this step applies only to the default (edit + write)
+mode.
+
 **PRE-CONDITION:** You must have already Read the target
 `<spec_path>` (the feature's canonical flat `docs/spec.md`; see
 **Modes** above for how `<feature_root>` and `<spec_path>` are resolved)
@@ -145,6 +188,11 @@ surgical:
 Do not touch implementation files — your scope is the spec only.
 
 ## Step 5 — Write impl-suggestion File
+
+**INTENT-ONLY GUARD:** If the `--intent-only` flag was passed, do NOT write
+this file — EMIT the identical payload as JSON on stdout instead (see the
+**Intent-Only Mode** section above). The schema below is the same in both
+modes; only the sink differs.
 
 Write `.rabbit/impl-suggestion-<feature-name>.json` (create `.rabbit/` if it doesn't exist):
 

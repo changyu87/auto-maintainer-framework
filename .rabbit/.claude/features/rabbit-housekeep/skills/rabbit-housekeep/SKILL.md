@@ -1,7 +1,7 @@
 ---
 name: rabbit-housekeep
-description: Run measured verify-or-flag housekeeping against a target — a single feature, a set of features, or the whole project — in complexity-sized waves. The wave targets the CONSUMING PROJECT's declared features, not rabbit's own framework. Each wave proves-it-dead-or-flags every claim, measures before/after line counts, mandates ACTUAL removal (not rewording), and preserves named load-bearing tokens. Also enforces the spec-rules §4 Script-Backed Orchestration standard as a script-tier verify-or-flag dimension: it scans SKILL/agent/command bodies for non-script-backed orchestration steps and flags each. Cross-feature or project-wide scope is decomposed into per-feature sub-issues, each worked through the governed TDD path. Use when the user wants to slim/clean/reduce a feature's docs or their project, remove dead prose, scrub historical burden, check that orchestration is script-backed, or run a housekeeping pass. Phrases like "housekeep this feature", "slim the specs", "run a reduction wave", "clean up dead prose", "check script-backed orchestration", "/rabbit-housekeep". Do NOT use to author new behavior (that's rabbit-feature-touch) or to propose a feature decomposition for a greenfield project (that's rabbit-decompose).
-version: 0.6.0
+description: Run measured verify-or-flag housekeeping against a target — a single feature, a set of features, or the whole project — in complexity-sized waves. The wave targets the CONSUMING PROJECT's declared features, not rabbit's own framework. Each wave proves-it-dead-or-flags every claim and reports an HONEST measured outcome: it removes dead/redundant/simplifiable content when present, else honestly reports a no-op / already-clean verdict (an already-lean target is a SUCCESS, never forced into a reword). The ONE mandatory gate is behavior preserved (the feature's existing test suite stays green). The default DOC dimension slims doc surfaces; an OPT-IN CODE dimension (--code) simplifies the feature's src/ via the code-simplifier agent (simplify-first) and removes dead src/ symbols via the coding-rules §6 grep-for-callers protocol, routed through the governed TDD path. Also enforces the spec-rules §4 Script-Backed Orchestration standard as a script-tier verify-or-flag dimension: it scans SKILL/agent/command bodies for non-script-backed orchestration steps and flags each. Cross-feature or project-wide scope is decomposed into per-feature sub-issues, each worked through the governed TDD path. Use when the user wants to slim/clean/reduce a feature's docs or their project, simplify a feature's code, remove dead prose or dead code, scrub historical burden, check that orchestration is script-backed, or run a housekeeping pass. Phrases like "housekeep this feature", "slim the specs", "simplify this feature's code", "run a reduction wave", "clean up dead prose", "remove dead code", "check script-backed orchestration", "/rabbit-housekeep". Do NOT use to author new behavior (that's rabbit-feature-touch) or to propose a feature decomposition for a greenfield project (that's rabbit-decompose).
+version: 0.9.0
 owner: rabbit-workflow team
 deprecation_criterion: when housekeeping is provided natively by the rabbit CLI as a first-class measured-reduction subcommand
 ---
@@ -9,10 +9,21 @@ deprecation_criterion: when housekeeping is provided natively by the rabbit CLI 
 # rabbit-housekeep — Measured Verify-or-Flag Housekeeping in Waves
 
 Your job: turn a housekeeping intent — "slim this feature", "scrub dead prose
-repo-wide", "reduce the specs" — into a MEASURED reduction with zero behavior
-loss. Rewording without removing is a failure; deleting a load-bearing token
-is a regression. This skill enforces both guards: it measures the reduction
-with a deterministic script and asserts named load-bearing tokens survive.
+repo-wide", "reduce the specs", "simplify this feature's code" — into an HONEST
+cleanup with zero behavior loss. The cleanup runs in two dimensions: the DOC
+dimension (default) and an OPT-IN CODE dimension (the `--code` selector,
+below). In both, reduction is REPORTED, never MANDATED.
+
+The ONE MANDATORY gate of a wave is BEHAVIOR PRESERVED: the feature's existing
+test suite stays green — zero behavior loss. Reduction is the honest measured
+OUTCOME, not the gate: when there is dead, redundant, or simplifiable content
+the wave removes it (`reduced: true`); when the target is already lean and
+nothing is dead, the wave honestly reports a `no-op` / already-clean verdict
+and that is a SUCCESS, not a failure. Never reword to manufacture a diff and
+never delete a load-bearing token to inflate the line delta — both fail the
+behavior-preserved gate. The deterministic `measure-reduction.py diff` reports
+the verdict (`reduced` or `no-op`); the test asserts behavior is preserved and
+named load-bearing tokens survive.
 
 ## The governing policy (embedded verbatim)
 
@@ -89,7 +100,7 @@ python3 .claude/features/rabbit-housekeep/scripts/resolve-housekeep-scope.py \
 
 ## Inputs
 
-Args format: `<target>`
+Args format: `<target> [--code]`
 
 The target is one of:
 - a single project feature name (`user-auth`) — a one-wave tidy;
@@ -98,8 +109,15 @@ The target is one of:
 - omitted — every consuming-project feature
   (`resolve-housekeep-scope.py list`).
 
-When the target is unclear, ask the user one focused question. Do not guess
-the scope.
+The DIMENSION selector is OPT-IN and defaults to the DOC dimension:
+- default (no `--code`) → the DOC dimension: Steps 3-7 operate on the doc
+  surfaces (`docs/spec.md`, `docs/contract.md`, `skills/*/SKILL.md`) measured
+  with `count --docs-only`;
+- `--code` → the OPT-IN CODE dimension (below): the wave operates on the
+  feature's `src/` source, measured with `count --code`.
+
+When the target or dimension is unclear, ask the user one focused question. Do
+not guess the scope.
 
 ## Protocol
 
@@ -173,7 +191,9 @@ from the embedded §6 protocol above:
 Slim under coding-rules §2 (Simplicity First) and §7 (Parenthetical Clarity):
 drop redundant sentences, restated rationale, and decorative parentheticals;
 fold load-bearing parentheticals into clauses. History belongs in
-`docs/CHANGELOG.md`, never in the doc surfaces.
+`docs/CHANGELOG.md`, never in the doc surfaces. Remove IF there is dead /
+redundant / simplifiable content; if the surfaces are already lean and nothing
+is dead, that is an honest `no-op` outcome — do NOT reword to force a diff.
 
 ### Step 5 — Scan for non-script-backed orchestration, then verify-or-flag
 
@@ -213,23 +233,42 @@ an ad-hoc edit. Invoke the feature-touch path so the change is test-driven:
 Skill("rabbit-feature-touch", args: "<name> housekeep: measured reduction wave")
 ```
 
-The housekeeping test the TDD subagent authors MUST assert BOTH:
-- **measured reduction** — `measure-reduction.py diff before.json after.json`
-  over the `--docs-only` doc-surface snapshots reports `reduced: true`
-  (negative total delta); a reword FAILS here. Scope the test's own baseline to
-  the doc surfaces so the test's gate and the Step-7 operator command agree —
-  the test the subagent adds under `test/` is wave overhead, never measured as
-  bloat; and
+The `housekeep: measured reduction wave` request is the signal rabbit-feature-
+touch's `is-reduction-wave` detection keys on. On that path the whole reduction
+rides ONE governed RED->GREEN cycle: feature-touch runs rabbit-spec-update in
+its `--intent-only` no-commit mode, threads the spec-reduction intent into the
+dispatch, and the TDD subagent authors BOTH the spec reduction AND its gating
+test inside that single cycle. The dispatcher does NOT pre-edit or pre-commit
+`docs/spec.md` outside the cycle, so there is no forced no-spec-change escape
+hatch — the real spec edit is the subagent's working-tree diff that satisfies
+the `spec-update -> test-red` gate.
+
+The housekeeping test the TDD subagent authors MUST assert:
+- **behavior preserved (the ONE MANDATORY gate)** — the feature's existing
+  test suite stays green; zero behavior loss. This is the only gate that can
+  FAIL a wave. For the code dimension it is the direct analogue of the doc
+  dimension's load-bearing-survival gate.
 - **load-bearing survival** — the named load-bearing tokens (script names,
   schema fields, key cross-references) are still present; deleting one FAILS
   here.
 
+The test REPORTS the measured reduction; it does NOT mandate it. Run
+`measure-reduction.py diff before.json after.json` over the `--docs-only`
+(doc dimension) or `--code` (code dimension) snapshots and record the
+`verdict`: `reduced` when content was removed, `no-op` when the target was
+already clean. A `no-op` is a valid honest outcome and MUST pass — do not fail
+an already-clean feature or force it into a reword. Scope the test's own
+baseline to the same surfaces as Step 7 so the test and the Step-7 operator
+command agree; the test the subagent adds under `test/` is wave overhead, never
+measured as bloat.
+
 ### Step 7 — Measure AFTER and report
 
-Snapshot the doc surfaces again with the SAME `--docs-only` scope as Step 3,
-then diff. Matching scopes is what makes the `reduced` verdict agree with the
-in-test gate: the mandated test added in Step 6 is wave overhead under `test/`,
-excluded from both snapshots. The `<name>` slot is the target feature name:
+Snapshot the surfaces again with the SAME scope as Step 3 (`--docs-only` for
+the doc dimension, `--code` for the code dimension), then diff. Matching scopes
+is what makes the `verdict` agree with the in-test gate: the mandated test
+added in Step 6 is wave overhead under `test/`, excluded from both snapshots.
+The `<name>` slot is the target feature name:
 
 <!-- example: illustrative invocation, not a live step -->
 ```bash
@@ -239,10 +278,95 @@ python3 .claude/features/rabbit-housekeep/scripts/measure-reduction.py \
   diff /tmp/housekeep-<name>-before.json /tmp/housekeep-<name>-after.json
 ```
 
-Report to the user: total doc-surface lines removed (the `total_delta`),
-per-artifact breakdown, any `housekeeping`-tagged sub-issues filed for
-unverifiable items, and confirmation that load-bearing tokens survived (zero
-behavior loss).
+Report to the user the honest `verdict`: when `reduced`, the total lines
+removed (the `total_delta`) and per-artifact breakdown; when `no-op`, that the
+target was already clean and nothing was dead — a SUCCESS, not a failure. In
+both cases report any `housekeeping`-tagged sub-issues filed for unverifiable
+items and confirm behavior was preserved (the existing test suite stayed green;
+load-bearing tokens survived).
+
+### Step 8 — Auto-merge the wave's PR on green gates
+
+Step 6 delegates to `rabbit-feature-touch`, which CREATES the wave's PR (its
+Step 7) for the audit trail. For a user-installed `/rabbit-housekeep` run the
+PR should not be left pending for the user to merge by hand: when the wave's
+gates are all green, this step MERGES that PR to `main` and cleans up its
+branch/worktree. The PR is still always created — auto-merge only lands it when
+the gates hold. Auto-merge is DEFAULT-ON for housekeep waves (they are
+mechanical and fully gated). A user opts out with the phrase `--no-automerge`
+in the housekeep request; when opted out, the PR is created and left open for
+the user to merge, exactly as a plain feature-touch PR.
+
+The MERGE-OR-LEAVE-OPEN decision is a computed, gate-aware branch, so it is
+SCRIPT-tier (spec-rules §4): `scripts/wave-automerge.py` owns the gating logic
+and the SKILL invokes it. Build the gating payload from the wave's signals —
+the HANDOFF gates from `.rabbit/tdd-report-<name>.json` (`tdd_state`,
+`test_result`, `spec_compliance`), the honest-reduction `verdict` from Step 7,
+and the PR-side `mergeable` / `merge_state_status` / `ci_status` collected by
+the script's `gather` subcommand — then ask the script to `decide`. It emits
+`decision: merge` ONLY when ALL hold: the HANDOFF gates are green
+(`tdd_state: test-green`, `test_result: pass`, `spec_compliance: pass`), the PR
+is mergeable/clean with green CI, AND the honest-reduction outcome held (a
+measured `reduced` OR an honest already-clean `no-op` — a `no-op` is a PASSING
+outcome, never a failure). Any failed gate yields `decision: leave-open` with
+the failing gate NAMED in `reasons`, leaving the PR OPEN for human attention,
+exactly as today.
+
+<!-- example: illustrative invocation, not a live step -->
+```bash
+python3 .claude/features/rabbit-housekeep/scripts/wave-automerge.py \
+  gather --pr <pr-number> > /tmp/housekeep-<name>-prstate.json
+python3 .claude/features/rabbit-housekeep/scripts/wave-automerge.py decide \
+  < /tmp/housekeep-<name>-gates.json
+```
+
+On `decision: merge`, land the PR to `main` with a direct squash merge that also
+deletes the wave's branch:
+
+<!-- example: illustrative invocation, not a live step -->
+```bash
+gh pr merge <pr-number> --squash --delete-branch
+```
+
+On `decision: leave-open`, report to the user that the PR was created and left
+open with the failing gate from `reasons`, and do NOT merge.
+
+## The OPT-IN code dimension (`--code`)
+
+The DOC dimension above is the DEFAULT. With `--code` the wave runs a parallel,
+OPT-IN dimension on the target feature's `src/` source. It honors the same
+philosophies: machine-first measurement, BOUNDED SCOPE (edit only the TARGET
+feature's `src/`, never cross-feature), designed deprecation, and coding-rules
+§2 (Simplicity First) + §3 (Surgical Changes). The ONE MANDATORY gate is
+unchanged: behavior preserved (the feature's existing test suite stays green).
+
+The code dimension reuses the wave skeleton (measure BEFORE with `count
+--code`, do the work, measure AFTER, report the honest `verdict`) and runs the
+edit through the governed TDD path (Step 6). Inside the code dimension, apply
+this PRIORITY ORDER:
+
+1. **SIMPLIFY (the main focus).** Refine `src/` for clarity, consistency, and
+   maintainability while PRESERVING all functionality. Route the
+   simplification through the in-environment `code-simplifier` agent, which
+   "simplifies and refines code for clarity, consistency, and maintainability
+   while preserving all functionality". The simplification runs through the
+   governed TDD path with the feature's EXISTING test suite as the
+   zero-behavior-loss gate — the code analogue of the doc dimension's
+   load-bearing-survival gate.
+2. **DEAD CODE.** Apply the embedded coding-rules §6 prove-it-dead-or-flag
+   protocol to `src/` SYMBOLS: for each function / flag / script / symbol,
+   `grep` for callers/usages across the repo; none = dead → REMOVE; proven
+   live → KEEP; unverifiable → FLAG a `housekeeping`-tagged sub-issue (the
+   Step 2 filing shape) and CONTINUE (annotate-and-continue — one uncertain
+   symbol never stalls the wave).
+3. **REDUCTION.** Measured `src/` reduction is the honest OUTCOME of steps 1-2,
+   reported by `measure-reduction.py diff` over `--code` snapshots — `reduced`
+   when simplification or removal actually happened, `no-op` when the source
+   was already clean. Reduction is REPORTED, never MANDATED; never reword code
+   to manufacture a diff.
+
+Any cross-scope reach or risky rewrite is FLAGGED as a `housekeeping`-tagged
+sub-issue, not silently applied (§6 annotate-and-continue).
 
 ## Nesting constraint — do NOT invoke this skill inside an Agent() call
 
@@ -258,8 +382,9 @@ for a single, main-session invocation.
 
 ## What you do NOT do
 
-- Reword to manufacture a diff. A reduction wave REMOVES; the
-  `measure-reduction.py diff` verdict (`reduced: true`) is the gate.
+- Reword to manufacture a diff. A wave removes only dead/redundant content;
+  an already-clean target is an honest `no-op` SUCCESS, never forced into a
+  reword. Behavior preserved (tests green) is the only MANDATORY gate.
 - Delete a load-bearing token to inflate the line delta. Schemas, decision
   tables, exit codes, script names, and cross-references are KEPT verbatim.
 - Silently keep an unverifiable claim. FLAG it as a `housekeeping`-tagged

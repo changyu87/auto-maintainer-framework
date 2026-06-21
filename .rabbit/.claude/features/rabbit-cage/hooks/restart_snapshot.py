@@ -27,14 +27,19 @@ skill-`scripts/`-only change → nothing; any hook/settings/CLAUDE.md/agent chan
 Best-effort and graceful: any IO error degrades to no advisory (never crashes a
 dispatcher).
 
-Mid-session reload re-baseline (spec Inv 54f): `/reload-skills` is a Claude Code
-built-in that reloads `SKILL.md` definitions WITHOUT starting a session, so it
-never triggers the SessionStart re-baseline above — leaving the reload-tier
-advisory firing forever. When the UserPromptSubmit dispatcher observes a
-`/reload-skills` prompt it calls `rebaseline_skill_tier`, which refreshes ONLY
-the `SKILL.md`-tier keys of the snapshot (so the reload-tier advisory clears)
-while leaving the hard-restart-tier keys (hooks/settings/CLAUDE.md/agents)
-untouched — a genuine hard-restart change still legitimately requires a restart.
+Mid-session reload re-baseline (spec Inv 54f): the SessionStart re-baseline above
+is the ONLY thing that clears the snapshot, so the reload-tier advisory would
+otherwise fire forever. `/reload-skills` reloads `SKILL.md` definitions
+mid-session but is a Claude Code CLIENT-LOCAL built-in that NEVER fires the
+UserPromptSubmit hook, so it cannot drive the re-baseline (a prior fix that
+matched the `/reload-skills` submitted prompt was wiring a DEAD path — #1193).
+The clearing surface is instead the `/rabbit-refresh` command: its body runs
+`scripts/rabbit-refresh-rebaseline.py`, which calls `rebaseline_skill_tier` to
+refresh ONLY the `SKILL.md`-tier keys of the snapshot (so the reload-tier
+advisory clears) while leaving the hard-restart-tier keys
+(hooks/settings/CLAUDE.md/agents) untouched — a genuine hard-restart change still
+legitimately requires a restart. So the advisory text directs the user to
+`/reload-skills` to load the change AND `/rabbit-refresh` to dismiss the advisory.
 
 Public API:
     restart_sensitive_signature(repo_root) -> dict[str, str]
@@ -42,7 +47,7 @@ Public API:
     restart_advisory_payloads(repo_root) -> list[dict]
     rebaseline_skill_tier(repo_root) -> None
 
-Version: 1.4.0
+Version: 1.5.0
 Owner: rabbit-workflow team (rabbit-cage)
 Deprecation criterion: when Claude Code reloads hooks/skills/agents in-session
     without a restart, making the stale-load advisory unnecessary.
@@ -80,11 +85,14 @@ _ADVISORY_TEXT = (
 )
 _ADVISORY_ICON = "\U0001f504"  # 🔄
 
-# The cheaper /reload-skills advisory line (Inv 54e) for a SKILL.md-only change:
-# `/reload-skills` reloads skill definitions mid-session without a restart.
+# The cheaper reload advisory line (Inv 54e) for a SKILL.md-only change:
+# `/reload-skills` reloads skill definitions mid-session without a restart, and
+# `/rabbit-refresh` dismisses this advisory (Inv 54f) — `/reload-skills` is a
+# client-local built-in that cannot clear it (#1193).
 _RELOAD_ADVISORY_TEXT = (
     "reload ADVISED (not required): skill definitions changed on disk — run "
-    "/reload-skills to load the update (no restart needed)"
+    "/reload-skills to load the update, then /rabbit-refresh to dismiss this "
+    "(no restart needed)"
 )
 
 
@@ -159,10 +167,10 @@ def _read_snapshot(repo_root):
 def rebaseline_skill_tier(repo_root):
     """Inv 54f: re-baseline ONLY the `SKILL.md`-tier keys of the snapshot.
 
-    Invoked by the UserPromptSubmit dispatcher when the submitted prompt is
-    `/reload-skills` — the Claude Code built-in that reloads `SKILL.md`
-    definitions mid-session without a restart (and so never fires the
-    SessionStart re-baseline). After the reload the running session holds the
+    Invoked by `scripts/rabbit-refresh-rebaseline.py` (the `/rabbit-refresh`
+    command's companion script) — the corrected clearing surface, since
+    `/reload-skills` is a Claude Code client-local built-in that never reaches a
+    hook (#1193). After the user reloads skills the running session holds the
     current on-disk skill definitions, so the reload-tier advisory must clear:
     refresh every `SKILL.md` key (current vs absent) in the snapshot to its
     current digest, but leave the hard-restart-tier keys (hooks / settings /

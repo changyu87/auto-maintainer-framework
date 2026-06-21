@@ -1,7 +1,7 @@
 ---
 name: rabbit-feature-touch
 description: Use when any write, edit, delete, or add operation targets a feature directory, or when a new feature is being created. Not for read-only queries, and NOT for metadata-only writes (filing a rabbit-managed issue, such as a bug or enhancement). Ensures the formal TDD state machine is advanced via tdd-step.py on every feature touch.
-version: 3.12.0
+version: 3.13.0
 owner: rabbit-feature
 deprecation_criterion: when feature-touch orchestration is natively handled by the rabbit CLI or by Claude Code workflow primitives
 ---
@@ -77,7 +77,19 @@ companion script (it is a computed step):
 
 ### Step 3 — Spec Authoring
 
-Invoke rabbit-spec-update inline:
+Step 3 has two paths. Which one applies is a computed decision, so per the
+SKILL.md Authoring Standard (`spec-rules.md` §4 Script-Backed Orchestration)
+it is owned by the companion `is-reduction-wave` subcommand rather than judged
+inline — invoke it with the raw request and read the emitted
+`{"reduction": true|false}`:
+
+<!-- example: invocation synopsis of the is-reduction-wave subcommand -->
+```bash
+.claude/features/rabbit-feature/skills/rabbit-feature-touch/scripts/feature-touch.py \
+  is-reduction-wave "<request>"
+```
+
+**Default path (`reduction` is false).** Invoke rabbit-spec-update inline:
 ```
 Skill("rabbit-spec-update", args: "<feature-name> <request>")
 ```
@@ -101,6 +113,37 @@ The `commit-spec` subcommand detects the rabbit mode, resolves the feature
 directory and spec path, stages with the mode-appropriate `git add` form,
 skips the commit when the staged spec diff is empty, and otherwise commits
 with the message `spec(<feature-name>): update spec for <one-line request summary>`.
+
+**Reduction/intent path (`reduction` is true).** A housekeep measured
+reduction wave (request `housekeep: measured reduction wave`) is ONE honest
+RED->GREEN cycle: the TDD subagent authors BOTH the spec reduction AND its
+gating test under its own scope marker. So on this path feature-touch must
+NOT pre-commit the spec — pre-committing leaves the subagent's
+`spec-update -> test-red` gate with no working-tree spec diff, forcing the
+`--spec-no-change-reason` escape hatch. Instead, run rabbit-spec-update in its
+`--intent-only` no-commit mode, which COMPUTES and EMITS the spec-reduction
+intent on stdout while leaving `docs/spec.md` byte-identical and committing
+nothing:
+```
+Skill("rabbit-spec-update", args: "--intent-only <feature-name> <request>")
+```
+
+Thread the emitted intent into the Step-5 dispatch by piping it to the
+companion `persist-intent` subcommand, which writes it to the same
+`.rabbit/impl-suggestion-<feature-name>.json` file the Step-5 dispatch already
+consumes (it edits NOTHING in the feature dir and creates NO commit):
+
+<!-- example: invocation synopsis of the persist-intent subcommand -->
+```bash
+.claude/features/rabbit-feature/skills/rabbit-feature-touch/scripts/feature-touch.py \
+  persist-intent <feature-name>   # rabbit-spec-update --intent-only JSON on stdin
+```
+
+On this path DO NOT run `commit-spec`: there is no pre-committed spec edit to
+stage. The spec reduction itself is the TDD subagent's job — it makes the real
+`docs/spec.md` edit inside its single cycle (producing a working-tree diff that
+satisfies the `spec-update -> test-red` gate WITHOUT `--spec-no-change-reason`),
+reusing the branch/worktree from Step 2 (no double-branching).
 
 ### Step 4 — Human Approval
 
