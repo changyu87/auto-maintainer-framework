@@ -1,5 +1,59 @@
 # scheduling — Changelog
 
+## contract 0.10.0 — 2026-06-21
+
+- **Durable heartbeat + SessionStart auto-resume (#31, DESIGN §3.3.2).**
+  The warm-only heartbeat (a session-scheduled prompt) ended with the Claude
+  session and did not auto-resume next session. It is now DURABLE — not by
+  keeping a clock alive (a plugin cannot) but by persisting a durable
+  **loop-intent** marker and re-arming the in-session heartbeat from a
+  `SessionStart` hook on the next session.
+  - **New lib `heartbeat.py`** owns two runtime-dir markers alongside the
+    lifecycle disposition/lock markers (which it only READS, never edits):
+    `loop-intent` (set `running` by `/start`, cleared by `/stop`) and
+    `last-resume-session` (the cross-session arm-once dedup), plus the pure
+    decision `should_auto_resume(runtime_dir, session_id)` — True only when
+    intent is `running`, the loop is NOT latched `STOPPED`/`ABORTED` and NOT owed
+    a `RESTART_NEEDED`, and this session has not already armed. The decision is a
+    pure function of on-disk state + session id, so it is deterministic and
+    unit-testable with no session/clock/scheduler.
+  - **Dedup ownership is on the SessionStart path, NOT `/start` (the #31 core
+    fix).** `record_loop_intent` (the `/start` path) does NOT clear the
+    resume-dedup. The SessionStart hook is what asks the session to run `/start`;
+    if `/start` cleared the dedup, a SECOND SessionStart in the SAME session
+    (SessionStart fires on startup / resume / `/clear` / compact) would re-arm a
+    DUPLICATE heartbeat. Only `mark_resumed` (hook, on a True decision) and
+    `clear_loop_intent` (the `/stop` path, which ends the arming epoch) ever
+    write/clear the dedup. Regression test:
+    `hook-arm → /start → 2nd SessionStart same session → assert no 2nd arm`.
+  - **`start.py` (v0.4.0)** records the durable loop-intent after the
+    latch-clear/refuse succeeds (in BOTH default and `--clear-only` modes; a
+    refused `ABORTED` start records nothing) — without clearing the dedup.
+    **`stop.py` (v0.2.0)** clears the loop-intent AND the dedup (so a stopped
+    loop does NOT auto-resume, and a `/start` in the same session can re-arm) in
+    addition to latching `STOPPED`.
+  - **New shipped SessionStart hook `session-start-resume.py`** (scheduling
+    `ship/hooks/`): reads intent + disposition, asks `should_auto_resume`, stamps
+    the dedup, and emits `additionalContext` instructing the session to re-run
+    `/auto-maintainer:start` to re-arm the heartbeat — at most once per session.
+    A hook never breaks the session (any error -> silent). Registered as a second
+    `SessionStart` command in the shipped `hooks.json` (packaging-config asset),
+    alongside the persona hook.
+  - **RESTART_NEEDED is BLOCKED, not driven.** A latched `RESTART_NEEDED` blocks
+    auto-resume (the safe choice — the loop is never silently re-armed behind the
+    human's back). This is NOT the DESIGN §3.3.4 RESTART_NEEDED→SessionStart
+    *resume-drive* flow, which remains **deferred**.
+  - **build_plugin.py** ships `heartbeat.py` into `lib/` with the plain self-path
+    bootstrap (resolving its sibling `lifecycle_dispositions` from `lib/` alone);
+    the hook resolves `heartbeat` from `../lib`. Build stays deterministic +
+    byte-stable. scheduling consumes lifecycle-dispositions UNCHANGED.
+
+> Numbering note: contract.md advanced 0.7.0 → 0.8.0 → 0.9.0 during the
+> configurables overhaul (the wiring-config CLIs `route_config.py` /
+> `adapter_map_config.py`, PRs #193-198) without dedicated CHANGELOG entries for
+> 0.8.0/0.9.0; that work is described in those PRs and in spec.md. This entry
+> resumes the changelog at the next contract version, **0.10.0**.
+
 ## contract 0.7.0 — 2026-06-10
 
 - **Doer governance for ACTING agent-states: acted-ledger + budget pre-gate +

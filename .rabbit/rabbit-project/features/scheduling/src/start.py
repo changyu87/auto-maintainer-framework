@@ -26,10 +26,16 @@ the route GUARD->DRAIN->PULL->PERSIST->EXIT lives in exactly one place. The
 recurring heartbeat keeps using ``run_tick`` directly (no reset per tick); only
 the FRESH start goes through this script.
 
+It also durably records the **loop-intent** (heartbeat.py) when the latch-clear
+succeeds, so a future session's SessionStart auto-resume hook re-arms the
+in-session heartbeat (the durable heartbeat, §3.3.2). It does NOT clear the
+cross-session resume-dedup (heartbeat.py owns that on the SessionStart path), so
+a duplicate heartbeat can never be re-armed within one session.
+
 scheduling CONSUMES run_tick + lifecycle-dispositions UNCHANGED; it never edits
 or forks them.
 
-Version: 0.3.0
+Version: 0.4.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the control surface is replaced.
@@ -49,6 +55,7 @@ if _SRC not in sys.path:
 import run_tick as rt  # noqa: E402
 import lifecycle_dispositions as ld  # noqa: E402
 import safety_governance as sg  # noqa: E402
+import heartbeat as hb  # noqa: E402
 
 
 class StartRefused(Exception):
@@ -134,6 +141,16 @@ def start(runtime_dir=None, state_path=None, journal_path=None, source=None,
         journal_path = journal_path if journal_path is not None else _journal
 
     _clear_or_refuse(runtime_dir, clear_only=clear_only)
+
+    # The latch-clear/refuse succeeded (ABORTED would have raised above), so the
+    # human wants the loop ticking: durably record the loop-intent so a future
+    # session's SessionStart hook auto-resumes the heartbeat (§3.3.2). Recorded
+    # in BOTH modes — --clear-only is the executor-model start, which still arms
+    # the durable heartbeat even though tick #1 is deferred. NOTE: recording the
+    # intent does NOT clear the cross-session resume-dedup (heartbeat.py owns
+    # that on the SessionStart path), so a 2nd SessionStart that asks the same
+    # session to re-run /start cannot re-arm a duplicate heartbeat.
+    hb.record_loop_intent(runtime_dir)
 
     if clear_only:
         return None
