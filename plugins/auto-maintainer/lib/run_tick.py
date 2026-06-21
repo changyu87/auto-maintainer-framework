@@ -64,6 +64,7 @@ import hashlib
 import io
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime
 
@@ -114,6 +115,37 @@ DEFAULT_PULL_SOURCE = wi.gh_issue_source
 # injected sink) files real tracker items through `gh`.
 DEFAULT_REPORT_SINK = wi.gh_issue_file_sink
 
+
+def gh_pr_state_source(pr_ref, repo=None, runner=subprocess.run):
+    """Production PR-state source for the acted-ledger re-entry check (§3.8.5
+    symmetric): shell the deterministic `gh` CLI for ONE PR's closed/merged
+    state and return a ``{"state": <"OPEN"|"CLOSED"|"MERGED">, "merged": <bool>}``
+    dict. `pr_ref` is the PR url or `owner/repo#N` ref recorded in the acted-ledger
+    (`gh pr view` accepts either form); when `repo` is given it is passed via
+    `--repo`, otherwise gh resolves it from the project default. `gh` carries its
+    own auth.
+
+    The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so the
+    closed/merged check is deterministic and unit-testable with a fake — no
+    network, the failure locatable to the fetch boundary (mirror of
+    verify_integrate.gh_open_pr_source). The re-entry check queries the PR ONLY
+    for ledger entries whose issue updated_at advanced, so the `gh` calls are
+    bounded to changed issues."""
+    cmd = ["gh", "pr", "view", pr_ref, "--json", "state,mergedAt"]
+    if repo:
+        cmd += ["--repo", repo]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    data = json.loads(out.stdout)
+    merged = bool(data.get("mergedAt"))
+    state = data.get("state", "")
+    return {"state": state, "merged": merged}
+
+
+# The production default PR-state source for the acted-ledger re-entry check.
+# Tests inject a deterministic stub instead so the suite touches no network; the
+# shipped run_tick (no injected source) queries real PR state through `gh`.
+DEFAULT_PR_STATE_SOURCE = gh_pr_state_source
+
 # The durable-state document keys under which the last tick's pulled work_items
 # (and triaged work_orders, when the active route produced them) are persisted,
 # so status.py can report the counts without re-running the loop.
@@ -141,9 +173,22 @@ BUDGET_KEY = "budget"
 # The durable-state document key under which the ACTED-LEDGER is persisted: a
 # durable CROSS-TICK fact (like BUDGET_KEY, NOT a per-tick #64 read product)
 # mapping {work_order_id: {"outcome": <handoff status>, "ref": <artifact ref or
-# null>}}. It records which work orders an ACTING agent-state already acted on, so
-# a later tick that re-pulls the SAME work order does NOT re-dispatch it (no second
-# PR) — idempotency (§3.2.4). Load-modify-saved preserving every other durable key.
+# null>, "acted_at_updated_at": <issue updated_at at act time or null>}}. It
+# records which work orders an ACTING agent-state already acted on, so a later
+# tick that re-pulls the SAME work order does NOT re-dispatch it (no second PR) —
+# idempotency (§3.2.4).
+#
+# Acted-ledger RE-ENTRY (§3.8.5 symmetric leak fix, #204): an `opened` entry
+# stores the issue's `acted_at_updated_at` so the loop can re-attempt a still-valid
+# issue whose auto-PR a human CLOSED. In the IMPLEMENT per_item filter an already-
+# `opened` work order RE-ENTERS (its ledger entry cleared, the item re-dispatched)
+# ONLY when BOTH (a) its PR `ref` is CLOSED-AND-NOT-MERGED and (b) the issue's
+# current updated_at has ADVANCED past acted_at_updated_at. It stays LOCKED
+# otherwise: merged (done), still-open PR (pending review), or closed-but-issue-
+# unchanged (the human closed it without asking for a redo — respect it, no
+# thrash). The PR is queried (gh_pr_state_source) ONLY for entries whose updated_at
+# advanced, bounding the gh calls to changed issues.
+# Load-modify-saved preserving every other durable key.
 ACTED_LEDGER_KEY = "acted_ledger"
 
 # The durable-state document key under which the BACKOFF-LEDGER is persisted: a
@@ -1058,8 +1103,85 @@ def _is_deferred_unchanged(wi_id, backoff, wi_updated_at):
     return wi_updated_at.get(wi_id, "") == deferred_at
 
 
+def _acted_updated_at_advanced(entry, wi_id, wi_updated_at):
+    """True when an acted-ledger `entry`'s SOURCE work_item updated_at has ADVANCED
+    past the act-time pin (the §3.8.5-symmetric re-entry trigger, #204).
+
+    Compares the issue's CURRENT updated_at (from `wi_updated_at`) against the
+    entry's `acted_at_updated_at`. False when either is missing/empty (a null pin
+    — e.g. a pre-#204 ledger entry — can never re-enter; the issue stays locked) or
+    when the current value is not strictly greater (issue unchanged or regressed).
+    GitHub's updated_at is an ISO-8601 lexicographically-sortable timestamp, so a
+    string `>` is the correct chronological compare (mirrors the backoff pin)."""
+    acted_at = entry.get("acted_at_updated_at")
+    if not acted_at or not wi_id:
+        return False
+    current = wi_updated_at.get(wi_id, "")
+    if not current:
+        return False
+    return current > acted_at
+
+
+def _agentstate_collection(agentstate, slot_values):
+    """Resolve the per_item collection (e.g. execution_plan.ordered) from
+    `slot_values` for an acting agent-state, or [] when the dispatch is `once`
+    (no per_item cardinality). Used to bound the acted-ledger re-entry PR query
+    (#204) to the items actually in this tick's dispatch set."""
+    dispatch_entry = agentstate.entry["dispatch"][0]
+    cardinality = dispatch_entry["cardinality"]
+    if not isinstance(cardinality, dict) or "per_item" not in cardinality:
+        return []
+    return ad._resolve_path(slot_values, cardinality["per_item"])
+
+
+def _acted_reentry_wo_ids(collection, ledger, wo_to_wi, wi_updated_at,
+                          pr_state_source):
+    """The set of already-`opened` work_order_ids in `collection` that RE-ENTER
+    the dispatch set (§3.8.5-symmetric leak fix, #204).
+
+    An `opened` ledger entry re-enters when BOTH:
+      - the issue's updated_at has ADVANCED past the entry's acted_at_updated_at
+        (a human touched the issue after the auto-PR was opened), AND
+      - the entry's PR `ref` is CLOSED-AND-NOT-MERGED (queried via the injectable
+        `pr_state_source`).
+    It stays LOCKED otherwise: merged (done), still-open PR (pending review), or
+    closed-but-issue-unchanged (the human closed it without a redo — no thrash).
+
+    The PR is queried ONLY for entries whose updated_at advanced, bounding the gh
+    calls to changed issues. A `pr_state_source` raising / returning a malformed
+    value is treated as "stay locked" (never crash the tick, never thrash). A
+    non-`opened` ledger entry (e.g. a `closed` outcome) never re-enters. Returns a
+    set of work_order_ids."""
+    reenter = set()
+    if pr_state_source is None:
+        return reenter
+    for el in collection:
+        wo_id = _item_id(el)
+        entry = ledger.get(wo_id)
+        if not entry or entry.get("outcome") != "opened":
+            continue
+        wi_id = wo_to_wi.get(wo_id)
+        if not _acted_updated_at_advanced(entry, wi_id, wi_updated_at):
+            continue  # issue unchanged since the PR was opened — stay locked
+        ref = entry.get("ref")
+        if not ref:
+            continue  # no PR ref to check — can't confirm closed; stay locked
+        try:
+            pr = pr_state_source(ref)
+        except Exception:
+            continue  # fetch failed — stay locked (no crash, no thrash)
+        if not isinstance(pr, dict):
+            continue
+        # Re-enter ONLY a closed-and-not-merged PR; merged (done) / still-open
+        # (pending review) stay locked.
+        if pr.get("state") == "CLOSED" and not pr.get("merged"):
+            reenter.add(wo_id)
+    return reenter
+
+
 def _per_item_filtered_values(agentstate, slot_values, ledger, backoff=None,
-                              wo_to_wi=None, wi_updated_at=None):
+                              wo_to_wi=None, wi_updated_at=None,
+                              reenter_wo_ids=None):
     """Drop already-acted AND deferred-unchanged items from an ACTING agent-state's
     per_item collection.
 
@@ -1067,12 +1189,16 @@ def _per_item_filtered_values(agentstate, slot_values, ledger, backoff=None,
     The per_item cardinality (e.g. {"per_item": "execution_plan.ordered"}) is
     resolved against `slot_values`; each element is filtered OUT when EITHER:
       - its work_order_id is already a key in `ledger` (already acted — never
-        re-dispatch), OR
+        re-dispatch) AND it is NOT in `reenter_wo_ids` (the §3.8.5-symmetric
+        acted-ledger re-entry set: an `opened` PR a human closed while the issue
+        advanced — #204), OR
       - its SOURCE work_item_id (via `wo_to_wi`) is DEFERRED-and-UNCHANGED in
         `backoff` (deferred + the issue updated_at has not advanced — no thrash).
     An item whose work_item_id is deferred but whose issue updated_at has ADVANCED
     is NOT filtered (it re-enters); its work_item_id is collected into
     `reenter_wi_ids` so the caller can RESET its backoff entry (fresh attempts).
+    An acted item whose work_order_id is in `reenter_wo_ids` re-enters too (the
+    caller clears its acted-ledger entry).
 
     The returned `filtered_slot_values` is a shallow copy with the per_item
     collection's host slot replaced by a filtered shape, so ad.build_envelopes
@@ -1082,6 +1208,7 @@ def _per_item_filtered_values(agentstate, slot_values, ledger, backoff=None,
     backoff = backoff or {}
     wo_to_wi = wo_to_wi or {}
     wi_updated_at = wi_updated_at or {}
+    reenter_wo_ids = reenter_wo_ids or set()
     dispatch_entry = agentstate.entry["dispatch"][0]
     cardinality = dispatch_entry["cardinality"]
     if not isinstance(cardinality, dict) or "per_item" not in cardinality:
@@ -1093,8 +1220,8 @@ def _per_item_filtered_values(agentstate, slot_values, ledger, backoff=None,
     reenter_wi_ids = []
     for el in collection:
         wo_id = _item_id(el)
-        if wo_id in ledger:
-            continue  # already acted — never re-dispatch
+        if wo_id in ledger and wo_id not in reenter_wo_ids:
+            continue  # already acted (and not re-entering) — never re-dispatch
         wi_id = wo_to_wi.get(wo_id)
         if wi_id and _is_deferred_unchanged(wi_id, backoff, wi_updated_at):
             continue  # deferred + unchanged — no thrash
@@ -1129,19 +1256,28 @@ def _per_item_filtered_values(agentstate, slot_values, ledger, backoff=None,
 _COMPLETED_OUTCOMES = ("opened", "closed")
 
 
-def _record_acted_ledger(state_path, handoffs):
+def _record_acted_ledger(state_path, handoffs, wo_to_wi=None,
+                         wi_updated_at=None):
     """Record each newly-COMPLETED handoff into the durable acted-ledger
     (idempotency, §3.2.4). For each handoff whose status is a completed outcome
     (`opened`/`closed`):
     ledger[work_order_id] = {"outcome": handoff["status"], "ref":
-    handoff.get("artifact", {}).get("ref")}. Load-modify-save of ONLY
-    ACTED_LEDGER_KEY, preserving every other durable key. A handoff with no
-    work_order_id is skipped (nothing to key on).
+    handoff.get("artifact", {}).get("ref"), "acted_at_updated_at": <the issue's
+    current updated_at>}. The `acted_at_updated_at` is the SOURCE work_item's
+    updated_at (resolved via `wo_to_wi` -> `wi_updated_at`); it is the act-time
+    issue state the §3.8.5-symmetric re-entry rule (#204) compares against so a
+    human who CLOSES the auto-PR + UPDATES the issue gets the loop to re-attempt.
+    Both maps default to {} (then acted_at_updated_at is null — back-compatible,
+    a null pin can never re-enter since no current updated_at equals null<advance).
+    Load-modify-save of ONLY ACTED_LEDGER_KEY, preserving every other durable key.
+    A handoff with no work_order_id is skipped (nothing to key on).
 
     The §3.8.5 leak fix: a `blocked` (or any non-completed) handoff is NEVER
     recorded — previously it was, then filtered out as "already acted" forever
     (silent leak). A blocked item now stays retryable; its bounded-retry state
     lives in the backoff ledger instead (see _record_backoff_outcomes)."""
+    wo_to_wi = wo_to_wi or {}
+    wi_updated_at = wi_updated_at or {}
     doc = ds.DurableState(state_path).load()
     ledger = dict(doc.get(ACTED_LEDGER_KEY, {}))
     for h in handoffs:
@@ -1150,9 +1286,11 @@ def _record_acted_ledger(state_path, handoffs):
             continue
         if h.get("status") not in _COMPLETED_OUTCOMES:
             continue
+        wi_id = wo_to_wi.get(wo_id)
         ledger[wo_id] = {
             "outcome": h.get("status"),
             "ref": h.get("artifact", {}).get("ref"),
+            "acted_at_updated_at": wi_updated_at.get(wi_id) if wi_id else None,
         }
     doc[ACTED_LEDGER_KEY] = ledger
     ds.DurableState(state_path).save(doc)
@@ -1296,6 +1434,26 @@ def _reset_backoff_entries(state_path, wi_ids):
             changed = True
     if changed:
         doc[BACKOFF_LEDGER_KEY] = backoff
+        ds.DurableState(state_path).save(doc)
+
+
+def _clear_acted_entries(state_path, wo_ids):
+    """Clear the acted-ledger entries for `wo_ids` — already-`opened` work orders
+    whose auto-PR a human CLOSED while the issue advanced, so they RE-ENTER the
+    dispatch set (§3.8.5-symmetric leak fix, #204). Clearing the entry lets the
+    item be re-dispatched (and a fresh PR opened + re-recorded) on this tick.
+    Load-modify-save of ONLY ACTED_LEDGER_KEY, preserving every other durable
+    key. A wo_id not in the ledger is a no-op."""
+    if not wo_ids:
+        return
+    doc = ds.DurableState(state_path).load()
+    ledger = dict(doc.get(ACTED_LEDGER_KEY, {}))
+    changed = False
+    for wo_id in wo_ids:
+        if ledger.pop(wo_id, None) is not None:
+            changed = True
+    if changed:
+        doc[ACTED_LEDGER_KEY] = ledger
         ds.DurableState(state_path).save(doc)
 
 
@@ -1576,7 +1734,8 @@ def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
 
 def _drive_agent_tick(route, states, ctx, state_path,
                       current, mode, tick_id, agentstates, path, signals,
-                      output_dir, gov, budget_clock, events=None):
+                      output_dir, gov, budget_clock, events=None,
+                      pr_state_source=None):
     """Walk the route from `current` SCRIPT-state-by-SCRIPT-state, pausing at the
     first AGENT state with a durable checkpoint. SCRIPT states run inline exactly
     as tick_orchestrator.run does (impl(ctx) + fc.apply_result + resolve_next).
@@ -1676,20 +1835,34 @@ def _drive_agent_tick(route, states, ctx, state_path,
                 #    work_item is deferred-AND-unchanged in the backoff ledger
                 #    (§3.8.5 — no thrash). A deferred item whose issue updated_at
                 #    advanced re-enters and its backoff entry is RESET (fresh K
-                #    attempts). If NO items remain, do NOT pause — synthesize an
-                #    inert (empty) result, compute the signal, CONTINUE.
+                #    attempts). An already-`opened` work order whose auto-PR a human
+                #    CLOSED (not merged) WHILE the issue advanced ALSO re-enters
+                #    (§3.8.5-symmetric leak fix, #204): its acted-ledger entry is
+                #    CLEARED so it is re-dispatched. If NO items remain, do NOT
+                #    pause — synthesize an inert (empty) result, compute the signal,
+                #    CONTINUE.
                 ledger = persisted_acted_ledger(state_path)
                 backoff = persisted_backoff_ledger(state_path)
                 wo_to_wi = _work_order_to_work_item(
                     _read_slot_or(ctx, wi.WORK_ORDERS_SLOT["name"], []))
                 wi_updated_at = _work_items_updated_at(
                     _read_slot_or(ctx, wi.WORK_ITEMS_SLOT["name"], []))
+                # Acted-ledger re-entry (#204): query the PR ONLY for `opened`
+                # entries whose issue updated_at advanced (bounds the gh calls to
+                # changed issues); a closed-and-not-merged PR re-enters.
+                reenter_wo_ids = _acted_reentry_wo_ids(
+                    _agentstate_collection(agentstate, slot_values),
+                    ledger, wo_to_wi, wi_updated_at, pr_state_source)
                 slot_values, remaining, dropped, reenter = \
                     _per_item_filtered_values(
                         agentstate, slot_values, ledger, backoff=backoff,
-                        wo_to_wi=wo_to_wi, wi_updated_at=wi_updated_at)
-                # Re-entered (issue advanced) items get a fresh K attempts.
+                        wo_to_wi=wo_to_wi, wi_updated_at=wi_updated_at,
+                        reenter_wo_ids=reenter_wo_ids)
+                # Re-entered (issue advanced) items get a fresh K attempts; a
+                # re-entered acted work order has its acted-ledger entry cleared so
+                # the re-dispatch can open + re-record a fresh PR.
                 _reset_backoff_entries(state_path, reenter)
+                _clear_acted_entries(state_path, reenter_wo_ids)
                 if dropped and not remaining:
                     writes, slot_value, signal = _synthesize_acting_result(
                         agentstate, [])
@@ -1779,7 +1952,7 @@ def _resume_agent_state(route, states, ctx, checkpoint, agentstates):
 def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
                     resume, mode, output_dir, gov, budget_clock, tick_id,
                     events=None, route_src=None, escalate_sink=None,
-                    escalate_now=None):
+                    escalate_now=None, pr_state_source=None):
     """Drive a tick over a route that contains agent-states (DESIGN §2.8, §3.4.6).
 
     Three cases, all keyed off the durable checkpoint (the source of truth):
@@ -1832,15 +2005,19 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
         if resumed_effect:
             handoffs = ctx.read(checkpoint["pending"]["writes"])
             if isinstance(handoffs, list):
-                _record_acted_ledger(state_path, handoffs)
-                # Backoff governance (§3.8.5): map each handoff's work_order_id
-                # -> work_item_id via the dispatched work_orders, then count
-                # blocked outcomes / clear successes on the work_item_id-keyed
-                # backoff ledger; at the configured threshold defer + escalate once.
+                # Map each handoff's work_order_id -> work_item_id via the
+                # dispatched work_orders + each work_item's current updated_at;
+                # the acted-ledger records the act-time updated_at (the §3.8.5-
+                # symmetric re-entry pin, #204) and the backoff ledger keys on it.
                 wo_to_wi = _work_order_to_work_item(
                     _read_slot_or(ctx, wi.WORK_ORDERS_SLOT["name"], []))
                 wi_updated_at = _work_items_updated_at(
                     _read_slot_or(ctx, wi.WORK_ITEMS_SLOT["name"], []))
+                _record_acted_ledger(state_path, handoffs, wo_to_wi,
+                                     wi_updated_at)
+                # Backoff governance (§3.8.5): count blocked outcomes / clear
+                # successes on the work_item_id-keyed backoff ledger; at the
+                # configured threshold defer + escalate once.
                 _record_backoff_outcomes(
                     state_path, handoffs, wo_to_wi, wi_updated_at,
                     escalate_sink, escalate_now, _backoff_threshold(gov))
@@ -1855,7 +2032,8 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
         return _drive_agent_tick(
             route, states, ctx, state_path, next_state, mode,
             tick_id, agentstates, path, signals, output_dir,
-            gov, budget_clock, events=events) + (ctx,)
+            gov, budget_clock, events=events,
+            pr_state_source=pr_state_source) + (ctx,)
 
     if checkpoint:
         # CRASH-SAFETY RE-EMIT: re-issue the SAME PAUSED dispatch idempotently
@@ -1873,13 +2051,14 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
     return _drive_agent_tick(
         route, states, ctx, state_path, "GUARD", mode, tick_id,
         agentstates, ["GUARD"], [], output_dir, gov, budget_clock,
-        events=events) + (ctx,)
+        events=events, pr_state_source=pr_state_source) + (ctx,)
 
 
 def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              project_dir=None, source=None, now=None, tick_spend=0,
              return_run_result=False, resume=False, spent=0,
-             report_sink=None, discoveries=None, escalate_sink=None):
+             report_sink=None, discoveries=None, escalate_sink=None,
+             pr_state_source=None):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -1927,6 +2106,15 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     injectable filing sink (default DEFAULT_REPORT_SINK = work-intake's live `gh`
     sink); tests inject a stub so no network. The reported=<filed>/<skipped> token
     is appended to the trace and the tick_end event detail.
+
+    Acted-ledger re-entry (§3.8.5-symmetric leak fix, #204): `pr_state_source` is
+    the injectable PR-state source (default DEFAULT_PR_STATE_SOURCE =
+    gh_pr_state_source, shelling `gh pr view`). For an already-`opened` work order
+    whose SOURCE issue updated_at ADVANCED past the act-time pin, run_tick queries
+    the recorded PR `ref`; a CLOSED-AND-NOT-MERGED PR makes the work order
+    RE-ENTER the dispatch set (its acted-ledger entry cleared, the item
+    re-dispatched). Merged / still-open / closed-but-issue-unchanged stay locked.
+    Tests inject a stub so no network; the query is bounded to changed issues.
 
     Prints a one-line tick trace (state path, work_items/work_orders counts,
     disposition, and the route source — default vs override:<path>, #59).
@@ -2061,7 +2249,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
             gov=gov, budget_clock=budget_clock, tick_id=tick_id, events=events,
             route_src=route_src,
             escalate_sink=escalate_sink or DEFAULT_ESCALATE_SINK,
-            escalate_now=event_now)
+            escalate_now=event_now,
+            pr_state_source=pr_state_source or DEFAULT_PR_STATE_SOURCE)
         if agent_outcome[0] is not None:
             # PAUSED or invalid_output: return the structured dict directly. The
             # executor re-invokes run_tick(resume=True) to continue after the

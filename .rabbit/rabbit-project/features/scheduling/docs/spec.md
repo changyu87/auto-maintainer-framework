@@ -420,17 +420,37 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
 - **Acted-ledger (idempotency, §3.2.4).** A new durable cross-tick key
   `ACTED_LEDGER_KEY = "acted_ledger"` (a durable cross-tick fact like `BUDGET_KEY`,
   NOT a #64 read product) stores `{work_order_id: {"outcome": <status>, "ref":
-  <artifact ref or null>}}`. `persisted_acted_ledger(state_path)` reads it
-  (default `{}`). At an acting agent-state, when determining the per_item dispatch
-  set, run_tick **filters OUT any `work_order_id` already present in the ledger**
-  (already acted — never re-dispatch / never open a second PR). If, after
-  filtering, NO items remain to dispatch, the state does NOT pause: it synthesizes
-  an inert result (no handoffs to add), computes the route signal, and CONTINUES
-  the driver. On **resume**, after collecting the handoffs, run_tick RECORDS each
-  newly-acted item into the ledger: `ledger[work_order_id] = {"outcome":
-  handoff["status"], "ref": handoff.get("artifact", {}).get("ref")}` and persists
-  it (load-modify-save just `ACTED_LEDGER_KEY`, preserving all other durable keys).
+  <artifact ref or null>, "acted_at_updated_at": <issue updated_at at act time or
+  null>}}`. `persisted_acted_ledger(state_path)` reads it (default `{}`). At an
+  acting agent-state, when determining the per_item dispatch set, run_tick
+  **filters OUT any `work_order_id` already present in the ledger** (already acted —
+  never re-dispatch / never open a second PR), EXCEPT a work order that RE-ENTERS
+  (see below). If, after filtering, NO items remain to dispatch, the state does NOT
+  pause: it synthesizes an inert result (no handoffs to add), computes the route
+  signal, and CONTINUES the driver. On **resume**, after collecting the handoffs,
+  run_tick RECORDS each newly-acted item into the ledger: `ledger[work_order_id] =
+  {"outcome": handoff["status"], "ref": handoff.get("artifact", {}).get("ref"),
+  "acted_at_updated_at": <the source issue's current updated_at>}` and persists it
+  (load-modify-save just `ACTED_LEDGER_KEY`, preserving all other durable keys).
   Only real, non-planned outcomes reach the resume record path.
+- **Acted-ledger re-entry (§3.8.5-symmetric leak fix,
+  auto-maintainer-framework#204).** A still-valid issue whose auto-PR a human
+  CLOSED (rejecting the work) but left OPEN must not be abandoned forever — that is
+  a leak, the same class as the `blocked`-leak. So an already-`opened` work order
+  RE-ENTERS the per_item dispatch set (its acted-ledger entry CLEARED, the item
+  re-dispatched), beside the existing backoff skip-deferred-unchanged check, when
+  BOTH: (a) the source issue's current `updated_at` has ADVANCED past
+  `acted_at_updated_at`, AND (b) its recorded PR `ref` is **CLOSED-AND-NOT-MERGED**
+  (queried via the **injectable** `gh_pr_state_source` / `DEFAULT_PR_STATE_SOURCE`,
+  mirroring verify-integrate's `gh_open_pr_source`; `run_tick(pr_state_source=...)`
+  overrides it). It stays **LOCKED** otherwise: merged (done), still-open PR
+  (pending review), or closed-but-issue-unchanged (the human closed it without a
+  redo — respect it, no thrash). The PR is queried ONLY for entries whose
+  `updated_at` advanced (bounds the `gh` calls to changed issues); a
+  raising/malformed source stays locked and never crashes the tick. Net: **close
+  an auto-PR + update the issue -> the loop re-attempts with the new guidance;
+  close it + touch nothing -> the loop leaves it alone** — removing the manual
+  `durable-state.json` ledger surgery that was previously the only remedy.
 - **Budget pre-gate.** At an acting agent-state on the permitted path, BEFORE
   pausing for dispatch, run_tick evaluates the budget window
   (`sg.evaluate_budget(gov, persisted_budget_state(...), budget_clock)`). If
