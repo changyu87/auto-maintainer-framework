@@ -53,6 +53,32 @@
 > `adapter_map_config.py`, PRs #193-198) without dedicated CHANGELOG entries for
 > 0.8.0/0.9.0; that work is described in those PRs and in spec.md. This entry
 > resumes the changelog at the next contract version, **0.10.0**.
+- **Per-tick event-log `tick_id` that discriminates ticks (#112).** Previously
+  every event stamped `tick_id` = the work `counter`, which a read-only route
+  never bumps — so every read-only tick collapsed to `tick_id=0` and the field
+  could not distinguish ticks. The fix introduces a durable monotonic per-tick
+  counter, SEPARATE from the work counter:
+  - **`TICK_ID_COUNTER_KEY = "tick_id_counter"`** + `persisted_tick_id_counter(
+    state_path) -> int` (default `0`; first FRESH tick assigns `1`, never `0`).
+  - **`_assign_tick_id(state_path, resume, checkpoint)`** assigns THIS
+    invocation's id: minted ONCE (counter+1) at a FRESH tick, and READ BACK from
+    the durable checkpoint on a `--resume` / crash-safety re-emit. The id is
+    stamped into `TICK_CHECKPOINT_KEY` at a PAUSE so a single tick's `--step` →
+    `--resume` pair shares ONE id.
+  - The id is therefore (1) DISTINCT across ticks AND (2) STABLE across a single
+    tick's `--step` → `--resume` on ALL routes including the agent route — whose
+    `--step`/`--resume` are SEPARATE processes that inject no `now`. It is
+    deliberately NOT derived from the wall clock/`now` (which would split one
+    logical tick into two ids; the reason the superseded PR #201 was wrong).
+  - The same `tick_id` seeds the rendered agent-dispatch `{tick_id}` slot, the
+    structured event log, and the human trace. Removes the dead `tick-0` fallback
+    (the `counter`-defaulting-to-0 reads).
+  - Purely additive otherwise: the walk, signals, disposition, slot persistence,
+    #64 ephemerality, and the budget window are unchanged. Tests: a `--step` →
+    `--resume` pair WITHOUT injecting `now` (production parity) asserts a single
+    shared `tick_id`; consecutive read-only ticks and consecutive agent ticks
+    assert DISTINCT ids; the counter advances once per logical tick (not per
+    invocation).
 
 ## contract 0.7.0 — 2026-06-10
 

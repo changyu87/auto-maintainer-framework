@@ -571,6 +571,18 @@ event `ts` reuses the tick's already-resolved tz-aware budget `now` (the injecte
 monotonic (observability assigns it via the file's line count, so a multi-
 invocation agent tick keeps a single monotonic sequence).
 
+Every event carries a **per-tick `tick_id`** that DISCRIMINATES ticks (#112). It
+is a durable monotonic counter (`tick_id_counter` in durable state, SEPARATE from
+the work `counter` — a read-only route never bumps the work counter, so it cannot
+distinguish read-only ticks and every such tick used to collapse to `tick_id=0`).
+The id is assigned ONCE, at FRESH tick start (incrementing the counter; the first
+tick is `1`, never `0`), and then carried through the tick via the durable
+checkpoint: it is stamped into `TICK_CHECKPOINT_KEY` at a PAUSE and READ BACK on a
+`--resume` / crash-safety re-emit. It is therefore (1) DISTINCT across ticks AND
+(2) STABLE across a single tick's `--step` → `--resume` — on ALL routes including
+the agent route, where `--step` and `--resume` are separate processes that inject
+no `now`, so the id is deliberately NOT derived from the wall clock/`now`.
+
 Event emission is **purely additive**: it changes NO existing behaviour — the
 one-line trace, signals, disposition, slot persistence, #64 read-product
 ephemerality, the durable budget window, and all existing scheduling tests stay
