@@ -69,3 +69,17 @@ def test_shipped_implementer_body_stamps_auto_maintainer_label():
     VERIFY can find the loop's own open PRs (spec: PR provenance label).
     The accept path must pass `--label auto-maintainer` to `gh pr create`."""
     assert "--label auto-maintainer" in _body()
+
+
+def test_shipped_implementer_body_has_self_review_checklist():
+    """v2.3.0: on the accept path, BEFORE `gh pr create`, the implementer runs a
+    structured pre-handoff self-review against its own committed diff and fixes
+    any gap before opening the PR (spec: Pre-handoff self-review). The body must
+    carry the self-review section and its checklist lenses."""
+    body = _body().lower()
+    assert "self-review" in body, "body must describe a pre-handoff self-review"
+    # the lenses adopted from the superpowers implementer checklist
+    for lens in ("completeness", "quality", "discipline"):
+        assert lens in body, f"self-review checklist missing the {lens} lens"
+    # it must review the ACTUAL committed diff, not just intent
+    assert "diff" in body, "self-review must review the actual committed diff"
