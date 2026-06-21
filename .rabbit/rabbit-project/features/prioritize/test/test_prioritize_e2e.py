@@ -43,21 +43,32 @@ import prioritize as pr  # noqa: E402
 # Fixtures — a builder for accepted/rejected WorkOrder dicts and a fresh ctx.
 # --------------------------------------------------------------------------
 
-def _order(oid, decision="accepted", reason=""):
+def _order(oid, decision="accepted", reason="", body="body", labels=None):
     """Build a minimal WorkOrder dict in the shape TRIAGE writes. PRIORITIZE
-    only consumes `id` and `decision`, so the other fields carry sane filler."""
+    consumes `id` + `decision`, and (for same-feature serialization, #214) the
+    `body`/`labels` blast-radius declaration; the rest carries sane filler. The
+    default `body="body"` carries NO `Component:` line and `labels=[]`, so a
+    default-built order has no declarable feature and is never serialized against
+    another (each gets its own private bucket)."""
     return {
         "schema_version": "1.0.0",
         "id": oid,
         "work_item_id": oid.replace("wo-", ""),
         "title": f"title for {oid}",
-        "body": "body",
+        "body": body,
         "url": f"https://github.com/acme/widget/issues/{oid}",
-        "labels": [],
+        "labels": list(labels or []),
         "decision": decision,
         "reason": reason,
         "created_at": "2026-05-01T10:00:00Z",
     }
+
+
+def _order_in(oid, feature, decision="accepted"):
+    """An accepted order whose body declares `feature` as its blast radius via a
+    `Component:` line (the maintainer's own issue convention, #214)."""
+    return _order(oid, decision=decision,
+                  body=f"some description\n\nComponent: {feature}.")
 
 
 def _fresh_ctx(work_orders=None):
@@ -254,3 +265,139 @@ def test_factory_returns_manifest_and_run_callable():
     result = run(ctx)
     assert result.signal == "OK"
     assert result.writes["execution_plan"]["ordered"] == ["wo-1", "wo-2"]
+
+
+# ==========================================================================
+# Same-feature serialization (#214): the v1-minimal instance of DESIGN §2.2 /
+# §3.8.6. IMPLEMENT fans out one implementer per ordered work_order in parallel;
+# two orders touching the SAME feature each bump that feature's shared metadata
+# (feature.json/CHANGELOG/contract + the built plugins/ tree) and COLLIDE the
+# moment one auto-PR lands. PRIORITIZE serializes them: at most ONE accepted
+# order per feature per tick (FIFO-first wins), the rest deferred (absent from
+# the plan). Cross-feature orders stay parallel.
+# ==========================================================================
+
+def test_serializes_same_feature_keeps_only_the_first():
+    # Two scheduling-feature orders + one packaging order, like the live
+    # #205/#207 (scheduling) vs #206 (packaging) collision.
+    orders = [
+        _order_in("wo-205", "scheduling"),
+        _order_in("wo-207", "scheduling"),
+        _order_in("wo-206", "packaging-config"),
+    ]
+    ctx = _fresh_ctx(work_orders=orders)
+
+    result = pr.run(ctx)
+    assert result.signal == "OK"
+
+    vocab = fc.SignalVocabulary(pr.PRIORITIZE_SIGNALS)
+    fc.apply_result(ctx, pr.PRIORITIZE_MANIFEST, result, vocab)
+
+    plan = ctx.read("execution_plan")
+    # The first scheduling order fans out; the second is DEFERRED. The
+    # cross-feature packaging order fans out in parallel.
+    assert plan["ordered"] == ["wo-205", "wo-206"]
+    # wo-207 is absent from BOTH maps (deferred to a later tick).
+    assert "wo-207" not in plan["ordered"]
+    assert "wo-207" not in plan["status"]
+    assert plan["status"] == {"wo-205": "pending", "wo-206": "pending"}
+
+
+def test_cross_feature_orders_all_fan_out_in_parallel():
+    orders = [
+        _order_in("wo-a", "scheduling"),
+        _order_in("wo-b", "work-intake"),
+        _order_in("wo-c", "verify-integrate"),
+    ]
+    ctx = _fresh_ctx(work_orders=orders)
+    plan = pr.run(ctx).writes["execution_plan"]
+    # Disjoint features -> all kept, FIFO order preserved.
+    assert plan["ordered"] == ["wo-a", "wo-b", "wo-c"]
+
+
+def test_serialization_preserves_fifo_first_wins_per_feature():
+    # Interleaved features: each feature's FIRST-seen order wins; later
+    # same-feature orders defer, but distinct features all keep their first.
+    orders = [
+        _order_in("wo-1", "scheduling"),
+        _order_in("wo-2", "work-intake"),
+        _order_in("wo-3", "scheduling"),   # defer (scheduling taken by wo-1)
+        _order_in("wo-4", "work-intake"),  # defer (work-intake taken by wo-2)
+        _order_in("wo-5", "implement"),
+    ]
+    ctx = _fresh_ctx(work_orders=orders)
+    plan = pr.run(ctx).writes["execution_plan"]
+    assert plan["ordered"] == ["wo-1", "wo-2", "wo-5"]
+
+
+def test_multi_feature_blast_radius_serializes_against_each():
+    # An order whose Component spans TWO features shares with EITHER, so a later
+    # order touching just one of them must defer.
+    orders = [
+        _order("wo-1", body="Component: verify-integrate + scheduling."),
+        _order_in("wo-2", "scheduling"),       # shares scheduling -> defer
+        _order_in("wo-3", "verify-integrate"),  # shares verify-int -> defer
+        _order_in("wo-4", "packaging-config"),  # disjoint -> keep
+    ]
+    ctx = _fresh_ctx(work_orders=orders)
+    plan = pr.run(ctx).writes["execution_plan"]
+    assert plan["ordered"] == ["wo-1", "wo-4"]
+
+
+def test_orders_without_declarable_feature_stay_parallel():
+    # No Component line, no labels -> each order is its own private bucket and
+    # never serialized against another (the safe default: serialize only on a
+    # PROVEN shared feature). This is exactly the existing _order builder.
+    orders = [_order("wo-1"), _order("wo-2"), _order("wo-3")]
+    ctx = _fresh_ctx(work_orders=orders)
+    plan = pr.run(ctx).writes["execution_plan"]
+    assert plan["ordered"] == ["wo-1", "wo-2", "wo-3"]
+
+
+def test_serialization_falls_back_to_labels_when_no_component_line():
+    # When the body declares no Component, the order's labels name the feature.
+    orders = [
+        _order("wo-1", body="no component here", labels=["scheduling"]),
+        _order("wo-2", body="also none", labels=["scheduling"]),  # defer
+        _order("wo-3", body="none", labels=["work-intake"]),       # keep
+    ]
+    ctx = _fresh_ctx(work_orders=orders)
+    plan = pr.run(ctx).writes["execution_plan"]
+    assert plan["ordered"] == ["wo-1", "wo-3"]
+
+
+def test_component_feature_match_is_case_and_punctuation_insensitive():
+    # `scheduling`, `Scheduling.`, and ` SCHEDULING ` are the SAME feature.
+    orders = [
+        _order("wo-1", body="Component: scheduling."),
+        _order("wo-2", body="component: Scheduling"),    # defer
+        _order("wo-3", body="COMPONENT:  SCHEDULING  "),  # defer
+    ]
+    ctx = _fresh_ctx(work_orders=orders)
+    plan = pr.run(ctx).writes["execution_plan"]
+    assert plan["ordered"] == ["wo-1"]
+
+
+def test_rejected_orders_do_not_claim_features():
+    # A rejected same-feature order is excluded entirely and must NOT consume the
+    # feature slot — the accepted same-feature order still fans out.
+    orders = [
+        _order_in("wo-1", "scheduling", decision="rejected"),
+        _order_in("wo-2", "scheduling", decision="accepted"),
+    ]
+    ctx = _fresh_ctx(work_orders=orders)
+    plan = pr.run(ctx).writes["execution_plan"]
+    assert plan["ordered"] == ["wo-2"]
+
+
+def test_serialization_is_deterministic_byte_identical():
+    orders = [
+        _order_in("wo-1", "scheduling"),
+        _order_in("wo-2", "scheduling"),
+        _order_in("wo-3", "work-intake"),
+    ]
+    import json as _json
+    plan_a = pr.run(_fresh_ctx(work_orders=orders)).writes["execution_plan"]
+    plan_b = pr.run(_fresh_ctx(work_orders=orders)).writes["execution_plan"]
+    assert _json.dumps(plan_a, sort_keys=True) == _json.dumps(
+        plan_b, sort_keys=True)

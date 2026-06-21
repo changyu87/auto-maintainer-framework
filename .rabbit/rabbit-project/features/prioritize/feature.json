@@ -1,6 +1,6 @@
 {
   "name": "prioritize",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/prioritize/src/**"
@@ -8,6 +8,6 @@
   "created": "2026-06-12T06:02:16Z",
   "deprecation_criterion": "Superseded when ordering ceases to be deterministic (e.g. a model-backed prioritizer adapter replaces the default), or when the ExecutionPlan schema reaches a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-06-12",
-  "spec_no_change_reason": "greenfield: spec.md seeded by scaffold in prior decomposition; this cycle implements it unchanged"
+  "updated": "2026-06-21",
+  "spec_no_change_reason": "spec.md updated this cycle to document same-feature serialization (#214)"
 }
