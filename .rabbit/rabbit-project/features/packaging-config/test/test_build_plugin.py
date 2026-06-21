@@ -528,14 +528,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Minor (v0.4.0, #209 REVIEW gate): version bumped to 0.4.0 in BOTH plugin.json
-# and marketplace.json, and the two are consistent. v0.4.0 is a MINOR — it ships
+# Minor (v0.5.0, #211 aggressive default): version bumped to 0.5.0 in BOTH plugin.json
+# and marketplace.json, and the two are consistent. v0.5.0 is a MINOR — it ships
 # the model-backed REVIEW gate: the auto-maintainer-reviewer subagent + the
 # ReviewVerdict schema + the REVIEW non-acting agent-state, and INTEGRATE now ANDs
 # review-approval into its merge condition. (Supersedes the v0.3.0 configurables
 # overhaul.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_4_0_and_consistent():
+def test_version_bumped_to_0_5_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -547,10 +547,10 @@ def test_version_bumped_to_0_4_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.4.0", \
-            f"plugin.json version must be 0.4.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.4.0", \
-            "marketplace.json plugin entry version must be 0.4.0"
+        assert pdata.get("version") == "0.5.0", \
+            f"plugin.json version must be 0.5.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.5.0", \
+            "marketplace.json plugin entry version must be 0.5.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2151,5 +2151,33 @@ def test_ship_collection_route_and_adapter_map_skills_present():
                 f"skills/{dirname}/SKILL.md must carry YAML frontmatter"
             assert f"\nname: {fm_name}\n" in body, \
                 f"skills/{dirname}/SKILL.md frontmatter name must be `{fm_name}`"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Minor (v0.5.0, #211 aggressive default): the plugin ships a default-config/
+# dir with the aggressive seed assets (config.json mode=auto-merge, the full
+# acting route incl. REVIEW, the agent-wired adapter-map) that start.py seeds
+# into a fresh install's .auto-maintainer/ — the plug-and-play aggressive default.
+# ---------------------------------------------------------------------------
+def test_default_config_seed_assets_shipped():
+    out_root = _build_into_temp()
+    try:
+        dc = os.path.join(out_root, "plugins", "auto-maintainer", "default-config")
+        for name in ("config.json", "route.json", "adapter-map.json"):
+            assert os.path.isfile(os.path.join(dc, name)), \
+                f"default-config/{name} must ship for fresh-install seeding"
+        with open(os.path.join(dc, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        assert cfg["mode"] == "auto-merge", "seed config.json mode must be auto-merge"
+        with open(os.path.join(dc, "route.json"), encoding="utf-8") as fh:
+            route = json.load(fh)
+        assert "REVIEW" in route["states"], "seed route must include the REVIEW gate"
+        with open(os.path.join(dc, "adapter-map.json"), encoding="utf-8") as fh:
+            amap = json.load(fh)
+        agents = [k for k, v in amap.items() if isinstance(v, dict)]
+        assert "IMPLEMENT" in agents and "TRIAGE" in agents and "REVIEW" in agents, \
+            "seed adapter-map must wire TRIAGE/IMPLEMENT/REVIEW to agents"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)

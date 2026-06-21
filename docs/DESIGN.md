@@ -185,12 +185,21 @@ v1 is **serial-only**. *Rationale:* safe parallel autonomy needs a per-project
 scope/conflict model (the deepest generality gap); serial is immediately useful
 and avoids it. **[v2]**
 
-### 2.3 Trust default — `propose`
+### 2.3 Trust default — `auto-merge` (REVIEW-gated)
 
-Ship modes `dry-run` / `propose` / `auto-merge`; default `propose` (implement +
-open PR, never auto-merge). *Rationale:* auto-merge is the scariest action; make
-trust opt-in and graduated. *(The top rung was formerly named `gated-merge`; the
-legacy name is tolerated on load and mapped to `auto-merge`.)* **[v1]**
+Ship modes `dry-run` / `propose` / `auto-merge`; **default `auto-merge`** — the
+plug-and-play aggressive posture: the loop autonomously implements, reviews, and
+merges. This is gated by construction — a merge requires CI-green **AND**
+mergeable **AND** the model-backed **REVIEW** gate's approval (§3.7, #209) **AND**
+the merge guardrails (§3.8.1); every uncertainty resolves to NOT-merge. `propose`
+(implement + open PR, never merge) and `dry-run` (inert) are the safer opt-down
+rungs for a user who wants a human gate. *(Rationale revised from the original
+`propose` default: the original held that auto-merge with no review was too scary
+to default to; with the REVIEW gate now in place a second model must approve
+before anything lands, so aggressive-by-default is the intended experience. A
+user who wants the human in the loop sets `--mode propose`.)* *(The top rung was
+formerly named `gated-merge`; the legacy name is tolerated on load and mapped to
+`auto-merge`.)* **[v1]**
 
 ### 2.4 Extensibility — ports-and-adapters via script contracts
 

@@ -21,10 +21,20 @@ disposition (lifecycle-dispositions API), and prepares a fresh start:
     never silently cleared.
   - otherwise (RUNNING / IDLE / absent) — proceed straight to tick #1.
 
+Before the disposition decision, start SEEDS the shipped aggressive default
+config into a FRESH install's runtime dir (#211): ``seed_default_config`` copies
+``config.json`` / ``route.json`` / ``adapter-map.json`` from the shipped
+``default-config/`` dir ONLY when each target is absent (idempotent; never
+clobbers a config the user already wrote/edited). This is how a fresh install
+becomes plug-and-play aggressive (``auto-merge`` mode + the full acting route
+with the REVIEW gate) WITHOUT changing the conservative code
+``DEFAULT_ROUTE`` / ``DEFAULT_GOVERNANCE`` fallback, which stays the safe default
+if a user deletes their config.
+
 Tick #1 itself is NOT re-implemented here: start calls ``run_tick.run_tick`` so
-the route GUARD->DRAIN->PULL->PERSIST->EXIT lives in exactly one place. The
-recurring heartbeat keeps using ``run_tick`` directly (no reset per tick); only
-the FRESH start goes through this script.
+the route lives in exactly one place. The recurring heartbeat keeps using
+``run_tick`` directly (no reset per tick); only the FRESH start goes through this
+script.
 
 It also durably records the **loop-intent** (heartbeat.py) when the latch-clear
 succeeds, so a future session's SessionStart auto-resume hook re-arms the
@@ -35,13 +45,14 @@ a duplicate heartbeat can never be re-armed within one session.
 scheduling CONSUMES run_tick + lifecycle-dispositions UNCHANGED; it never edits
 or forks them.
 
-Version: 0.4.0
+Version: 0.5.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the control surface is replaced.
 """
 
 import os
+import shutil
 import sys
 
 # Resolve sibling modules via sys.path exactly as run_tick does. In the worktree
@@ -64,6 +75,53 @@ class StartRefused(Exception):
     A fault is never silently cleared: the human must investigate and resolve it
     before the loop may resume. The CLI entrypoint maps this to a non-zero exit.
     """
+
+
+# The config files a fresh install is seeded with (#211). Order is cosmetic.
+_SEED_FILES = ("config.json", "route.json", "adapter-map.json")
+
+
+def _default_config_dir():
+    """The shipped aggressive-default config dir.
+
+    In the installed plugin this file is ``<plugin_root>/lib/start.py`` and the
+    seed assets ship at ``<plugin_root>/default-config/`` (a sibling of ``lib/``),
+    so the dir is ``dirname(dirname(__file__))/default-config``. In the source
+    tree that sibling does not exist (the assets are a packaging-config plugin
+    asset), so ``seed_default_config`` no-ops there unless a source dir is
+    injected by a test.
+    """
+    return os.path.join(os.path.dirname(_SRC), "default-config")
+
+
+def seed_default_config(runtime_dir, source_dir=None):
+    """Seed the shipped aggressive default config into a fresh install (#211).
+
+    For each of ``config.json`` / ``route.json`` / ``adapter-map.json``, copy the
+    shipped default into ``runtime_dir`` ONLY when the target is ABSENT —
+    idempotent, and it NEVER clobbers a config the user has already written or
+    edited (a present file is left untouched). Returns the list of files actually
+    seeded. A no-op (returns ``[]``) when the source dir is absent — e.g. running
+    from the source tree, or a test that injects no ``source_dir`` — so it is
+    safe to call unconditionally at the top of every start.
+
+    `source_dir` overrides the shipped ``default-config/`` location (tests inject
+    a temp dir). This is the seed half of the plug-and-play aggressive default;
+    the conservative code ``DEFAULT_ROUTE`` / ``DEFAULT_GOVERNANCE`` remain the
+    fallback when a config is absent (e.g. a user deleted theirs).
+    """
+    src = source_dir or _default_config_dir()
+    if not os.path.isdir(src):
+        return []
+    os.makedirs(runtime_dir, exist_ok=True)
+    seeded = []
+    for name in _SEED_FILES:
+        s = os.path.join(src, name)
+        d = os.path.join(runtime_dir, name)
+        if os.path.isfile(s) and not os.path.exists(d):
+            shutil.copyfile(s, d)
+            seeded.append(name)
+    return seeded
 
 
 def _clear_or_refuse(runtime_dir, clear_only=False):
@@ -121,14 +179,15 @@ def start(runtime_dir=None, state_path=None, journal_path=None, source=None,
     """Prepare a fresh start, then run tick #1; return the EXIT disposition signal.
 
     Resolves the runtime dir the same way run_tick does when paths are not
-    injected (the installed case). It first performs the FRESH-start
-    disposition decision via `_clear_or_refuse` (clear STOPPED / refuse ABORTED
-    / no-op), then runs tick #1 via run_tick.
+    injected (the installed case). It first SEEDS the shipped aggressive default
+    config for a fresh install (`seed_default_config`, idempotent), then performs
+    the FRESH-start disposition decision via `_clear_or_refuse` (clear STOPPED /
+    refuse ABORTED / no-op), then runs tick #1 via run_tick.
 
-    With `clear_only=True` it performs ONLY that disposition decision and does
-    NOT run tick #1 — returning None. This separates the latch-clear from tick
-    #1, which the in-session executor model (DESIGN §2.8) needs: tick #1 of an
-    AGENT route must go through the executor skill (which presses the Agent
+    With `clear_only=True` it performs the seed + the disposition decision and
+    does NOT run tick #1 — returning None. This separates the latch-clear from
+    tick #1, which the in-session executor model (DESIGN §2.8) needs: tick #1 of
+    an AGENT route must go through the executor skill (which presses the Agent
     button), not start.py's in-process run_tick (which would just pause).
 
     `source` is the injectable PULL issue source forwarded to run_tick (tests
@@ -139,6 +198,17 @@ def start(runtime_dir=None, state_path=None, journal_path=None, source=None,
         runtime_dir = runtime_dir if runtime_dir is not None else _rt
         state_path = state_path if state_path is not None else _state
         journal_path = journal_path if journal_path is not None else _journal
+
+    # Fresh-install seeding (#211): copy the shipped aggressive default config
+    # (auto-merge + full acting route + REVIEW gate) into the runtime dir for any
+    # file that is absent. Idempotent; never clobbers an existing config. A no-op
+    # once the user has a config, and a no-op in the source tree (no shipped
+    # default-config sibling).
+    seeded = seed_default_config(runtime_dir)
+    if seeded:
+        sys.stdout.write(
+            "[start] seeded default config (fresh install): "
+            + ", ".join(seeded) + "\n")
 
     _clear_or_refuse(runtime_dir, clear_only=clear_only)
 
@@ -162,11 +232,12 @@ def start(runtime_dir=None, state_path=None, journal_path=None, source=None,
 if __name__ == "__main__":
     # Production entrypoint: the /auto-maintainer:start skill invokes this once
     # for tick #1 from the installed plugin with no path wiring and no injected
-    # source. It clears a latched STOPPED (or refuses on ABORTED) and then runs
-    # tick #1 via run_tick (which prints the tick trace). A latched fault exits
-    # non-zero so the skill surfaces it instead of silently clearing it.
+    # source. It seeds a fresh install's default config, clears a latched STOPPED
+    # (or refuses on ABORTED) and then runs tick #1 via run_tick (which prints the
+    # tick trace). A latched fault exits non-zero so the skill surfaces it instead
+    # of silently clearing it.
     #
-    # With --clear-only it performs ONLY the latch-clear/refuse decision and
+    # With --clear-only it performs the seed + the latch-clear/refuse decision and
     # defers tick #1 to the executor skill (DESIGN §2.8). Exit 0 on
     # cleared/no-op, non-zero on the ABORTED refusal.
     import argparse
@@ -175,8 +246,8 @@ if __name__ == "__main__":
         description="Fresh-start control for /auto-maintainer:start.")
     parser.add_argument(
         "--clear-only", action="store_true",
-        help="Only clear a latched STOPPED (or refuse on ABORTED); do NOT run "
-             "tick #1 (deferred to the executor skill).")
+        help="Only seed + clear a latched STOPPED (or refuse on ABORTED); do "
+             "NOT run tick #1 (deferred to the executor skill).")
     parser.add_argument(
         "--print-interval", action="store_true",
         help="Print the configured heartbeat interval in minutes "

@@ -1,0 +1,158 @@
+{
+  "CLEANUP": "run_tick:make_cleanup",
+  "DONE": "run_tick:make_terminal",
+  "DRAIN": "run_tick:make_drain",
+  "EXIT": "run_tick:make_exit",
+  "GUARD": "run_tick:make_guard",
+  "HALTED": "run_tick:make_terminal",
+  "IMPLEMENT": {
+    "dispatch": [
+      {
+        "cardinality": {
+          "per_item": "work_orders"
+        },
+        "description": "auto-maintainer implement",
+        "effect": "implement",
+        "inputs": [
+          "work_orders"
+        ],
+        "output_example": {
+          "artifact": {
+            "kind": "pr",
+            "ref": "https://github.com/owner/repo/pull/NN"
+          },
+          "blocked_reason": null,
+          "discovered_work": [],
+          "schema_version": "1.0.0",
+          "status": "opened",
+          "work_order_id": "wo-owner/repo#NN"
+        },
+        "subagent_type": "auto-maintainer:auto-maintainer-implementer",
+        "task": "Enact this ONE work order's triage decision. If decision is 'rejected', close the source issue (gh issue close) and post the reason as a justification comment; make no code change. If decision is 'accepted', implement the change in your worktree, run the project's checks, and open a PR against the default branch (gh pr create) \u2014 NEVER merge. If you cannot complete an accepted order, report status 'blocked' and leave no open PR.",
+        "writes": "handoffs"
+      }
+    ],
+    "kind": "agent",
+    "manifest": {
+      "emits": [
+        "OK",
+        "BLOCKED"
+      ],
+      "reads": [
+        "work_orders"
+      ],
+      "writes": [
+        "handoffs"
+      ]
+    },
+    "signal": {
+      "rule": "blocked_if_any"
+    }
+  },
+  "INTEGRATE": "run_tick:make_integrate",
+  "PERSIST": "run_tick:make_persist",
+  "PULL": "run_tick:make_pull",
+  "REVIEW": {
+    "dispatch": [
+      {
+        "cardinality": "once",
+        "inputs": [
+          "verdicts"
+        ],
+        "output_example": [
+          {
+            "approved": false,
+            "findings": [
+              {
+                "file": "src/foo.py",
+                "kind": "spec",
+                "line": 12,
+                "note": "solved a different problem than the issue asked for",
+                "severity": "high"
+              }
+            ],
+            "pr_ref": "owner/repo#1",
+            "schema_version": "1.0.0",
+            "severity": "high"
+          }
+        ],
+        "subagent_type": "auto-maintainer:auto-maintainer-reviewer",
+        "writes": "review_verdicts"
+      }
+    ],
+    "kind": "agent",
+    "manifest": {
+      "emits": [
+        "OK",
+        "EMPTY"
+      ],
+      "reads": [
+        "verdicts"
+      ],
+      "writes": [
+        "review_verdicts"
+      ]
+    },
+    "signal": {
+      "rule": "nonempty_else_empty"
+    }
+  },
+  "TRIAGE": {
+    "dispatch": [
+      {
+        "cardinality": "once",
+        "inputs": [
+          "work_items"
+        ],
+        "output_example": [
+          {
+            "body": "<copied from the work_item>",
+            "created_at": "<copied from the work_item>",
+            "decision": "accepted",
+            "id": "wo-owner/repo#NN",
+            "labels": [
+              "<copied from the work_item>"
+            ],
+            "reason": "",
+            "schema_version": "1.0.0",
+            "title": "<copied from the work_item>",
+            "url": "<copied from the work_item>",
+            "work_item_id": "owner/repo#NN"
+          },
+          {
+            "body": "<copied from the work_item>",
+            "created_at": "<copied from the work_item>",
+            "decision": "rejected",
+            "id": "wo-owner/repo#MM",
+            "labels": [],
+            "reason": "<specific reason, e.g. advertising spam unrelated to this repository>",
+            "schema_version": "1.0.0",
+            "title": "<copied from the work_item>",
+            "url": "<copied from the work_item>",
+            "work_item_id": "owner/repo#MM"
+          }
+        ],
+        "subagent_type": "auto-maintainer:auto-maintainer-triager",
+        "task": "Triage each work_item. Accept genuine, actionable maintenance tasks for THIS repository (bug/enhancement/chore). Reject spam, advertising, off-topic, malformed/empty, stale, or out-of-scope items with a specific, justification-grade reason. You may split a bundled accepted item into child work orders (one level). Judge only \u2014 do not modify the tracker.",
+        "writes": "work_orders"
+      }
+    ],
+    "kind": "agent",
+    "manifest": {
+      "emits": [
+        "OK",
+        "EMPTY"
+      ],
+      "reads": [
+        "work_items"
+      ],
+      "writes": [
+        "work_orders"
+      ]
+    },
+    "signal": {
+      "rule": "nonempty_else_empty"
+    }
+  },
+  "VERIFY": "run_tick:make_verify"
+}

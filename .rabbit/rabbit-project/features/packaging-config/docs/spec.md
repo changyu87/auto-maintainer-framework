@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.2.11
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -309,3 +309,15 @@ Implemented and merged (`tdd_state: test-green`). The deterministic
   component lands.
 - Whether to also publish a tagged release / pin `version` per release vs. rely on
   marketplace `version` field alone (leaning explicit `version`).
+
+## Plugin minor v0.5.0 — aggressive plug-and-play default (#211)
+
+Ships the **`default-config/`** seed assets — `config.json` (`mode: auto-merge`,
+unbounded budget, heartbeat 3, backoff 5), `route.json` (the full acting route
+incl. the REVIEW gate), and `adapter-map.json` (TRIAGE/IMPLEMENT/REVIEW wired to
+their agents) — authored under `src/plugin_assets/default-config/` and copied
+verbatim into `plugins/auto-maintainer/default-config/` by the existing
+`_copy_tree` of `plugin_assets/`. scheduling's `start.py` seeds these into a
+fresh install's `.auto-maintainer/` (idempotent). `_PLUGIN_VERSION → 0.5.0`.
+Invariant: the built tree contains `default-config/{config.json,route.json,adapter-map.json}`
+with `mode=auto-merge` + the REVIEW route; the version test asserts 0.5.0.
