@@ -291,7 +291,7 @@ is added via git. Updates: `/plugin marketplace update`.
 Implemented and merged (`tdd_state: test-green`). The deterministic
 `build_plugin.py` assembly + `ship/` collection produce the committed,
 `.rabbit`-free `plugins/auto-maintainer/` tree + `.claude-plugin/marketplace.json`
-(plugin v0.2.2) with 21 passing tests. See `feature.json` / `docs/ROADMAP.md`.
+(plugin v0.2.2) with 21 passing tests. See `feature.json`.
 
 ## Known gaps / deferred (explicit boundaries)
 
@@ -301,14 +301,6 @@ Implemented and merged (`tdd_state: test-green`). The deterministic
 - Full configure/run UX, heartbeat install bootstrap — §3.3.2/§3.10.4, later slice.
 - Dogfood (rabbit-workflow as adapter #1) — §3.10.5, deferred.
 - The maintainer loop itself (PULL/TRIAGE/IMPLEMENT/scheduling) — other features.
-
-## Open questions
-
-- Where exactly the core libs sit inside the plugin (`lib/` vs a package dir) and
-  how future skills/hooks import them — settle when the first loop-driving
-  component lands.
-- Whether to also publish a tagged release / pin `version` per release vs. rely on
-  marketplace `version` field alone (leaning explicit `version`).
 
 ## Plugin minor v0.5.0 — aggressive plug-and-play default (#211)
 
