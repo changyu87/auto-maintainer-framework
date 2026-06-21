@@ -245,17 +245,10 @@ the trust `mode` and budget ceilings without hand-editing JSON.
 
 ## Deferred (NOT in this slice)
 
-- **Declarative guardrails** (§3.8.1) — IMPLEMENTED this slice as
-  `merge_guardrails` (see "Merge guardrails"); consumed by `verify-integrate`'s
-  INTEGRATE/CLEANUP.
 - **Backoff / circuit-breaker** (§3.8.5) → still deferred (re-verifying a red PR
   is cheap and never merges, so there is no thrash to break yet).
 - **Loopback / provenance guard** (§3.11.5, `filed_by` stamp recognized by the
   TRIAGE gates) → with `outbound-report` (nothing files until REPORT exists).
 - **Blast-radius / learned scope** (§3.8.6) → v2.
-- **`userConfig` guided `--setup` walk-through** (§3.10.1) — IMPLEMENTED (see
-  "Guided `--setup` walk-through" above): the configure skill walks the user
-  field-by-field over the `configure.py --describe` catalog and writes via the
-  deterministic writer.
 - **Per-day window basis other than local-tz**, and a real escalation sink
   (§3.9.3, observability) → later refinements.

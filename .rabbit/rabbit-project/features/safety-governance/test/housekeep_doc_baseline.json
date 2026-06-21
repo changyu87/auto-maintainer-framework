@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded by the next safety-governance housekeep wave's baseline; single-use measured-reduction reference for this doc-slim wave.",
+  "description": "Pre-wave line counts of safety-governance doc surfaces, captured at commit 7a42f9c (before the housekeep measured doc-reduction wave). The housekeep e2e test asserts the current docs are STRICTLY smaller than these baselines, and that the load-bearing tokens survived the slim. contract.md is unchanged by this wave (it is already minimal); the spec's stale 'READS + decides over governance.json' claim is FLAGGED as a separate housekeeping sub-issue, not reworded here.",
+  "baseline_commit": "7a42f9c",
+  "docs": {
+    "docs/spec.md": 261,
+    "docs/contract.md": 38
+  }
+}
