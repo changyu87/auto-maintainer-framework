@@ -17,7 +17,8 @@ user's requested values to this CLI and never hand-rolls JSON.
 
 Knobs:
   - ``--mode`` validated through ``safety_governance.permits`` (the closed mode
-    set {dry-run, propose, gated-merge}); an unknown mode raises ValueError.
+    set {dry-run, propose, auto-merge}); an unknown mode raises ValueError. The
+    legacy name ``gated-merge`` is tolerated and stored as ``auto-merge``.
   - ``--per-day-tokens`` is a non-negative int, or one of {none, null, unlimited,
     ""} meaning NO LIMIT (stored as JSON null).
   - ``--interval-minutes`` (heartbeat cadence) and ``--backoff-threshold`` are
@@ -91,7 +92,9 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
         # Validate against the closed mode set; permits() raises ValueError on an
         # unknown mode. (The effect choice is immaterial to mode validation.)
         sg.permits("implement", mode)
-        cfg["mode"] = mode
+        # Store the canonical (post-rename) name so a legacy `gated-merge`
+        # request is persisted as `auto-merge`.
+        cfg["mode"] = sg._normalize_mode(mode)
 
     budget = cfg.setdefault("budget", {})
     if per_day_tokens is not _UNSET:
@@ -125,7 +128,7 @@ def _field_catalog(project_dir):
             "default": defaults["mode"],
             "current": current["mode"],
             "type": "enum",
-            "validator": "one of dry-run | propose | gated-merge",
+            "validator": "one of dry-run | propose | auto-merge",
         },
         {
             "key": "budget.per_day_tokens",
@@ -173,7 +176,8 @@ def main(argv=None):
     parser.add_argument(
         "--mode",
         default=None,
-        help="trust mode: one of dry-run, propose, gated-merge",
+        help="trust mode: one of dry-run, propose, auto-merge "
+             "(legacy 'gated-merge' is accepted and stored as 'auto-merge')",
     )
     parser.add_argument(
         "--per-day-tokens",

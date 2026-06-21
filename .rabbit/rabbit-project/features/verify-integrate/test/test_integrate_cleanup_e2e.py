@@ -5,7 +5,7 @@ INTEGRATE is the single highest-stakes act-side state (DESIGN §3.7): it reads t
 `verdicts` slot and, for each `ok` verdict, merges the PR via an INJECTABLE merge
 sink (production: `gh pr merge <pr> --merge --delete-branch`; tests pass a stub —
 the determinism seam, no network). A merge happens ONLY when permits('merge',
-mode) is True (the trust-ladder gate, gated-merge only) AND
+mode) is True (the trust-ladder gate, auto-merge only) AND
 merge_guardrails(pr_meta, default_branch) passes. Non-ok verdicts, not-permitted
 modes (dry-run/propose NO-OP), and guardrail violations go to `skipped`; a merge
 sink that raises records the PR under `errors`. INTEGRATE writes the
@@ -185,13 +185,13 @@ def test_integrate_signal_vocabulary_is_closed():
 
 
 # ==========================================================================
-# E2E Behaviour: at gated-merge, a clean ok verdict is MERGED via the stub sink;
+# E2E Behaviour: at auto-merge, a clean ok verdict is MERGED via the stub sink;
 # integration_result records it under `merged`; signal OK.
 # ==========================================================================
 
-def test_integrate_e2e_gated_merge_merges_ok_verdict():
+def test_integrate_e2e_auto_merge_merges_ok_verdict():
     sink = _recording_sink()
-    integrate = vi.Integrate(mode="gated-merge", merge_sink=sink,
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [_verdict(number=1, ok=True)])
@@ -220,7 +220,7 @@ def test_integrate_e2e_gated_merge_merges_ok_verdict():
 
 def test_integrate_e2e_non_ok_verdict_skipped_sink_not_called():
     sink = _recording_sink()
-    integrate = vi.Integrate(mode="gated-merge", merge_sink=sink,
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [_verdict(number=2, ok=False, ci_state="failing",
@@ -295,7 +295,7 @@ def test_integrate_e2e_dry_run_mode_not_permitted_skipped():
 
 def test_integrate_e2e_guardrail_violation_skipped_sink_not_called():
     sink = _recording_sink()
-    integrate = vi.Integrate(mode="gated-merge", merge_sink=sink,
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     # ok flag is True but the base is wrong — the guardrail must still block it.
@@ -323,7 +323,7 @@ def test_integrate_e2e_merge_sink_raises_records_error():
     def raising_sink(pr_ref, repo=None):  # noqa: ARG001
         raise RuntimeError("gh merge failed: protected branch")
 
-    integrate = vi.Integrate(mode="gated-merge", merge_sink=raising_sink,
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=raising_sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [_verdict(number=6, ok=True)])
@@ -343,13 +343,13 @@ def test_integrate_e2e_merge_sink_raises_records_error():
 
 
 # ==========================================================================
-# E2E Behaviour: a mixed batch at gated-merge — one ok (merged), one non-ok
+# E2E Behaviour: a mixed batch at auto-merge — one ok (merged), one non-ok
 # (skipped), one ok-but-guardrail-violation (skipped) — partitions correctly.
 # ==========================================================================
 
 def test_integrate_e2e_mixed_batch_partitions():
     sink = _recording_sink()
-    integrate = vi.Integrate(mode="gated-merge", merge_sink=sink,
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [
@@ -374,17 +374,17 @@ def test_integrate_e2e_mixed_batch_partitions():
 
 # ==========================================================================
 # E2E Behaviour: INTEGRATE consumes the REAL safety_governance permits +
-# merge_guardrails (no stub) — a clean ok verdict at gated-merge merges.
+# merge_guardrails (no stub) — a clean ok verdict at auto-merge merges.
 # ==========================================================================
 
 def test_integrate_e2e_uses_real_safety_governance():
     import safety_governance as sg
-    # Sanity: the real gate permits merge only at gated-merge.
-    assert sg.permits("merge", "gated-merge") is True
+    # Sanity: the real gate permits merge only at auto-merge.
+    assert sg.permits("merge", "auto-merge") is True
     assert sg.permits("merge", "propose") is False
 
     sink = _recording_sink()
-    integrate = vi.Integrate(mode="gated-merge", merge_sink=sink,
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [_verdict(number=8, ok=True)])

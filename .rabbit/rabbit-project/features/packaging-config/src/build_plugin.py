@@ -138,7 +138,7 @@ _COMMAND_DESCRIPTIONS = {
         "dispatches, then report the result."
     ),
     "configure": (
-        "Set the maintainer's trust mode (dry-run / propose / gated-merge), "
+        "Set the maintainer's trust mode (dry-run / propose / auto-merge), "
         "per-day token budget, heartbeat interval, and backoff threshold in the "
         "central config (.auto-maintainer/config.json)."
     ),

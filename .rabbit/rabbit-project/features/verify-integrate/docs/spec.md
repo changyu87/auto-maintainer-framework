@@ -83,9 +83,10 @@ CLEANUP    integration_result  —                    OK
   Records `IntegrationResult`. Non-ok verdicts and guardrail violations go to
   `skipped`.
 - **Trust-gated by `permits("merge", mode)`** (§3.8.2): merge is permitted ONLY
-  at `gated-merge`. At `dry-run` and the default `propose`, INTEGRATE is a NO-OP
+  at `auto-merge`. At `dry-run` and the default `propose`, INTEGRATE is a NO-OP
   that logs the would-merge intent — a human merges. Arming autonomous merge is
-  an explicit `/auto-maintainer:configure --mode gated-merge`.
+  an explicit `/auto-maintainer:configure --mode auto-merge` (the legacy name
+  `gated-merge` is still accepted and stored as `auto-merge`).
 - Emits `OK`.
 
 ## CLEANUP (slice 2)
@@ -115,7 +116,7 @@ CLEANUP → PERSIST → EXIT`.
 
 ## Invariants
 
-- VERIFY is read-only (no GitHub writes); INTEGRATE merges ONLY at `gated-merge`
+- VERIFY is read-only (no GitHub writes); INTEGRATE merges ONLY at `auto-merge`
   and ONLY a PR that is `ok` AND passes guardrails.
 - Deterministic given the injected `gh` seams; no model, no wall-clock beyond gh.
 - Idempotent: a merged PR leaves the open set, so re-running never double-merges;

@@ -20,9 +20,11 @@ config (config.json). Decision surfaces plus one effectful halt helper:
 
   3. Trust-ladder gate (§3.8.2, §2.3) — permits(effect_kind, mode) over the
      closed effect set {implement, open_pr, merge, file} and the closed mode
-     set {dry-run, propose, gated-merge}. dry-run performs nothing; propose
-     allows implement/open_pr/file but never merge; gated-merge allows all.
-     An unknown mode or effect raises ValueError (closed vocabulary).
+     set {dry-run, propose, auto-merge}. dry-run performs nothing; propose
+     allows implement/open_pr/file but never merge; auto-merge allows all.
+     An unknown mode or effect raises ValueError (closed vocabulary). The legacy
+     mode name `gated-merge` is tolerated and mapped to `auto-merge` on load (see
+     _overlay / _normalize_mode).
 
   4. Merge guardrails (§3.8.1) — merge_guardrails(pr_meta, default_branch,
      delete_branch) a pure declarative backstop BELOW the trust ladder.
@@ -79,8 +81,10 @@ import lifecycle_dispositions as ld
 
 # The versioned central-config schema. Bumped on a breaking change to the field
 # set; distinct from the feature version. 2.0.0: config.json rename, per-tick
-# ceiling + maintainer_repo removed, heartbeat + backoff knobs added.
-GOVERNANCE_SCHEMA_VERSION = "2.0.0"
+# ceiling + maintainer_repo removed, heartbeat + backoff knobs added. 2.1.0:
+# trust mode `gated-merge` renamed to `auto-merge` (the legacy name is tolerated
+# on load and mapped forward, a non-breaking coexistence migration).
+GOVERNANCE_SCHEMA_VERSION = "2.1.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
 # config field. The loop's OWN defects route here ALWAYS, never the project
@@ -122,17 +126,33 @@ def _copy_defaults():
     return d
 
 
+# The legacy trust-mode name -> its current name. A config (or CLI request) still
+# carrying the pre-2.1.0 `gated-merge` is TOLERATED and mapped forward to
+# `auto-merge` (the rename is a non-breaking coexistence migration, not an error).
+_MODE_ALIASES = {"gated-merge": "auto-merge"}
+
+
+def _normalize_mode(mode):
+    """Map a legacy trust-mode name forward to its current name.
+
+    Returns `mode` unchanged when it is not a known legacy alias (so unknown
+    modes still flow through to the closed-vocabulary check in permits()).
+    """
+    return _MODE_ALIASES.get(mode, mode)
+
+
 def _overlay(raw):
     """Backfill `raw` onto a fresh defaults copy, returning the merged config.
 
     Only KNOWN keys are surfaced — the removed per_tick_tokens (under budget) and
     a removed top-level maintainer_repo are silently dropped (tolerated, ignored).
     An explicit key (including a `null` value) overrides the default; an absent
-    key keeps the default.
+    key keeps the default. A legacy `mode: "gated-merge"` is tolerated and mapped
+    forward to `auto-merge` (the rename coexistence migration).
     """
     config = _copy_defaults()
     if "mode" in raw:
-        config["mode"] = raw["mode"]
+        config["mode"] = _normalize_mode(raw["mode"])
     budget = raw.get("budget", {})
     for key in ("per_day_tokens", "window_tz"):
         if key in budget:
@@ -201,24 +221,26 @@ _EFFECTS = ("implement", "open_pr", "merge", "file")
 
 # The trust ladder: mode -> {effect: permitted}. dry-run performs nothing
 # (intent logged, not performed, incl. filing §3.11.7); propose allows
-# implement + open PR + file but NEVER merge (§2.3); gated-merge allows all.
+# implement + open PR + file but NEVER merge (§2.3); auto-merge allows all.
 _LADDER = {
     "dry-run": {"implement": False, "open_pr": False,
                 "merge": False, "file": False},
     "propose": {"implement": True, "open_pr": True,
                 "merge": False, "file": True},
-    "gated-merge": {"implement": True, "open_pr": True,
-                    "merge": True, "file": True},
+    "auto-merge": {"implement": True, "open_pr": True,
+                   "merge": True, "file": True},
 }
 
 
 def permits(effect_kind, mode):
     """Whether `effect_kind` is permitted under trust-ladder `mode`.
 
-    `mode` is one of dry-run | propose | gated-merge; `effect_kind` is one of
-    implement | open_pr | merge | file. An unknown mode or effect raises
+    `mode` is one of dry-run | propose | auto-merge; `effect_kind` is one of
+    implement | open_pr | merge | file. The legacy mode name `gated-merge` is
+    tolerated and mapped to `auto-merge`. An unknown mode or effect raises
     ValueError (closed vocabulary — never silently allow/deny).
     """
+    mode = _normalize_mode(mode)
     if mode not in _LADDER:
         raise ValueError(
             f"unknown mode {mode!r} (expected one of {tuple(_LADDER)})")
@@ -250,7 +272,7 @@ def merge_guardrails(pr_meta, default_branch, delete_branch=None):
 
     A pure, deterministic check over a PR's metadata (`pr_meta` is a dict
     tolerant of the keys {base, mergeable, head}). It is a hard backstop BELOW
-    the trust ladder: even at gated-merge (where permits("merge", …) is True) a
+    the trust ladder: even at auto-merge (where permits("merge", …) is True) a
     violation blocks the merge. Checks (each adds a named violation):
 
       - never-merge-wrong-base — pr_meta['base'] != default_branch (the loop

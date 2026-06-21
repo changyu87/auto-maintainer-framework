@@ -80,7 +80,7 @@ Once installed, the plugin provides these slash commands:
 | `/auto-maintainer:stop` | Stop the tick loop — latches it STOPPED and cancels the scheduled heartbeat so no further ticks run. |
 | `/auto-maintainer:status` | Report the loop's real on-disk status: current disposition and the last pull's persisted work-items count. |
 | `/auto-maintainer:tick` | Run exactly one tick, including any subagent dispatches, then report the result. |
-| `/auto-maintainer:configure` | Set the maintainer's trust mode (dry-run / propose / gated-merge) and token budget in the project-local governance config. |
+| `/auto-maintainer:configure` | Set the maintainer's trust mode (dry-run / propose / auto-merge) and token budget in the project-local governance config. |
 
 ## Relationship to rabbit-workflow
 

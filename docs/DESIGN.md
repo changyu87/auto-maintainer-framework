@@ -187,9 +187,10 @@ and avoids it. **[v2]**
 
 ### 2.3 Trust default — `propose`
 
-Ship modes `dry-run` / `propose` / `gated-merge`; default `propose` (implement +
+Ship modes `dry-run` / `propose` / `auto-merge`; default `propose` (implement +
 open PR, never auto-merge). *Rationale:* auto-merge is the scariest action; make
-trust opt-in and graduated. **[v1]**
+trust opt-in and graduated. *(The top rung was formerly named `gated-merge`; the
+legacy name is tolerated on load and mapped to `auto-merge`.)* **[v1]**
 
 ### 2.4 Extensibility — ports-and-adapters via script contracts
 
@@ -518,7 +519,7 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 - **3.8.1** Declarative guardrails (red-flags as config the host enforces: never
   merge a wrong base, never delete a non-matching branch, never merge a dirty
   tree). **[v1]**
-- **3.8.2** Trust ladder (`dry-run` / `propose` / `gated-merge`, per decision
+- **3.8.2** Trust ladder (`dry-run` / `propose` / `auto-merge`, per decision
   2.3). **[v1]**
 - **3.8.3** No `AskUserQuestion` in autonomous mode -> ABORTED marker + escalation
   instead of blocking prompts. **[v1]**
@@ -614,7 +615,7 @@ top-level feature is required.
   auto-maintainer, not whatever project it currently maintains. This is a fixed
   constant (not configurable) with **no project fallback**. **[v1]**
 - **3.11.7** Trust-ladder interaction — filing is a non-destructive write: permitted
-  at `propose` and `gated-merge`; at `dry-run` the intent is logged, not filed
+  at `propose` and `auto-merge`; at `dry-run` the intent is logged, not filed
   (3.8.2). **[v1]**
 - **3.11.8** Rich cross-tracker routing rules and bidirectional sync (mirroring
   state changes back from the maintainer tracker into the project view).

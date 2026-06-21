@@ -38,7 +38,7 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
   `IMPLEMENT`, `VERIFY`, `INTEGRATE`, `CLEANUP`) to its factory, even though the
   default route uses a subset. `make_verify`/`make_integrate`/`make_cleanup` wrap
   the verify-integrate states; `make_integrate` binds the loaded governance
-  `mode` so INTEGRATE merges only at `gated-merge` (and consumes
+  `mode` so INTEGRATE merges only at `auto-merge` (and consumes
   `safety_governance.permits` + `merge_guardrails`). The full close-the-loop
   route `… IMPLEMENT → VERIFY → INTEGRATE → CLEANUP → PERSIST → EXIT` therefore
   wires with NO code change (all ports pre-mapped) — a pure `route.json` edit.
@@ -388,7 +388,7 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
     and CONTINUES the driver. No PAUSE, no checkpoint, no spend, no subagent.
     This is the dry-run safety behaviour: inert planned handoffs, deterministic,
     the model never decides whether to act.
-  - **Permitted (`propose` / `gated-merge`):** `run_tick` proceeds to the
+  - **Permitted (`propose` / `auto-merge`):** `run_tick` proceeds to the
     normal PAUSE-for-dispatch path unchanged, so the executor dispatches the real
     subagent.
 - **isolation + description in the PAUSED dispatches.** When building the PAUSED
@@ -411,7 +411,7 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
 This slice completes the doer's `run_tick` governance for **acting agent-states**
 (those whose dispatch entry carries a truthy `effect`, from the prior trust-gate
 slice). On the PERMITTED (dispatch) path — `sg.permits(effect, mode)` True, e.g.
-`propose` / `gated-merge` — it adds three things. ALL apply ONLY to acting
+`propose` / `auto-merge` — it adds three things. ALL apply ONLY to acting
 agent-states; a **non-acting** agent-state (TRIAGE, no `effect`), the dry-run
 inert path, and pure-script routes are BYTE-IDENTICAL / unchanged. It consumes
 `safety-governance` + `durable-state` + `agent-dispatch` + every sibling
@@ -664,7 +664,7 @@ paths. It consumes `work_intake` (`DiscoveredIssue` / `file_discoveries` /
 - **Trust gate (§3.11.7).** Filing is the `file` effect. The flush computes
   `sg.permits("file", mode)`: at `dry-run` it does NOT file — it logs the intent
   (the would-file count) and leaves the ledger untouched so a later armed tick
-  files them; at `propose`/`gated-merge` it files via `file_discoveries`.
+  files them; at `propose`/`auto-merge` it files via `file_discoveries`.
 - **Injectable sink seam.** `DEFAULT_REPORT_SINK = work_intake.gh_issue_file_sink`
   (mirrors `DEFAULT_PULL_SOURCE`); tests override it with a stub so no network.
   The sink's destination repo is resolved per `DiscoveredIssue.target`:

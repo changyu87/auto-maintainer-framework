@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.6.0
+version: 0.7.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -13,7 +13,7 @@ The cross-cutting governance layer (DESIGN §3.8). **Slice 1** ships the pieces
 that either have present value or are the safety harness the model-backed
 IMPLEMENT doer must be born into:
 
-- **Trust-ladder mode** (§3.8.2, §2.3) — `dry-run` / `propose` / `gated-merge`.
+- **Trust-ladder mode** (§3.8.2, §2.3) — `dry-run` / `propose` / `auto-merge`.
 - **Budget ceiling** (§3.8.4) — a **per-day token** ceiling, enforced as an
   auto-resuming **readiness gate**, not a latched halt (the per-tick ceiling is
   removed).
@@ -32,7 +32,7 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 
 ```json
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.1.0",
   "mode": "propose",
   "budget": {
     "per_day_tokens": null,
@@ -47,7 +47,8 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 }
 ```
 
-- `mode` — `dry-run` | `propose` | `gated-merge`. **Default `propose`** (§2.3).
+- `mode` — `dry-run` | `propose` | `auto-merge`. **Default `propose`** (§2.3).
+  The legacy value `gated-merge` is tolerated on load and mapped to `auto-merge`.
 - `budget.per_day_tokens` — an integer ceiling, or **`null`/omitted = NO LIMIT**
   (unbounded; the gate is a no-op). **Default `null`** per an explicit user
   decision; a finite ceiling is **opt-in**. §3.8.4's "a real ceiling, not
@@ -97,7 +98,10 @@ A deterministic `permits(effect_kind, mode) -> bool` over the closed effect set:
 - `dry-run` — no outward effect; intent is logged, not performed (incl. filing,
   §3.11.7).
 - `propose` — implement + open PR permitted; **merge denied** (§2.3).
-- `gated-merge` — merge permitted (gated).
+- `auto-merge` — merge permitted (the loop merges automatically; the §3.8.1
+  merge guardrails are the hard backstop that actually gates it). The legacy
+  name `gated-merge` is tolerated on load and mapped forward to `auto-merge`
+  (a non-breaking coexistence migration; schema 2.1.0).
 
 Slice-1 note: the only acting adapter today is the reference dry-run IMPLEMENT,
 which is inherently dry-run; the gate is harness-ready for the model-backed doer,
@@ -106,7 +110,7 @@ not yet load-bearing.
 ## Merge guardrails (§3.8.1)
 
 Declarative red-flags the host enforces before a merge — a hard backstop BELOW
-the trust ladder. Even at `gated-merge` (where `permits("merge", …)` is True), a
+the trust ladder. Even at `auto-merge` (where `permits("merge", …)` is True), a
 PR must clear these or it is NOT merged. Owned here (the safety layer);
 `verify-integrate`'s INTEGRATE consumes it.
 
@@ -181,10 +185,11 @@ the trust `mode` and budget ceilings without hand-editing JSON.
   `load_config` (absent keys backfilled from the defaults), applies only the
   mentioned fields, validates, writes back (pretty, `sort_keys`), and prints the
   resulting config. It owns NO schema — the schema is this feature's
-  (`GOVERNANCE_SCHEMA_VERSION` = 2.0.0).
+  (`GOVERNANCE_SCHEMA_VERSION` = 2.1.0).
   - `--mode` is validated through `permits` (the closed mode set
-    {dry-run, propose, gated-merge}); an unknown mode raises `ValueError`
-    (CLI exit 2 with an error, never a silent write).
+    {dry-run, propose, auto-merge}); an unknown mode raises `ValueError`
+    (CLI exit 2 with an error, never a silent write). The legacy `gated-merge`
+    is accepted and stored as `auto-merge`.
   - `--per-day-tokens` accepts a non-negative int, or `none`/`null`/`unlimited`/`""`
     meaning NO LIMIT (stored as JSON `null`). `--per-tick-tokens` and
     `--maintainer-repo` are **removed**.

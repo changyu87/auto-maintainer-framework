@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end tests for the central-config WRITER (src/configure.py) and the
-shipped /auto-maintainer:configure skill (schema 2.0.0).
+shipped /auto-maintainer:configure skill (schema 2.1.0).
 
 safety_governance.py is the READER/decider over config.json; configure.py is its
 writer half (spec: "Config writer + the configure skill"). It performs a
@@ -66,7 +66,7 @@ def _read_cfg(project_dir):
 
 # ==========================================================================
 # E2E Behaviour: --mode sets the trust mode and writes config.json with it,
-# at schema 2.0.0.
+# at schema 2.1.0.
 # ==========================================================================
 
 def test_cli_sets_mode_and_writes_file():
@@ -75,7 +75,21 @@ def test_cli_sets_mode_and_writes_file():
         assert rc == 0
         cfg = _read_cfg(project_dir)
         assert cfg["mode"] == "dry-run"
-        assert cfg["schema_version"] == "2.0.0"
+        assert cfg["schema_version"] == "2.1.0"
+
+
+# ==========================================================================
+# E2E Behaviour: the legacy mode name `gated-merge` is TOLERATED on the CLI and
+# stored canonically as `auto-merge` (the rename coexistence migration).
+# ==========================================================================
+
+def test_cli_legacy_gated_merge_stored_as_auto_merge():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir, "--mode", "gated-merge"])
+        assert rc == 0
+        cfg = _read_cfg(project_dir)
+        assert cfg["mode"] == "auto-merge"
 
 
 # ==========================================================================
@@ -184,12 +198,12 @@ def test_cli_backoff_threshold_nonpositive_rejected():
 def test_load_modify_save_preserves_unmentioned_keys():
     with tempfile.TemporaryDirectory() as project_dir:
         assert configure.main(
-            ["--project-dir", project_dir, "--mode", "gated-merge"]) == 0
+            ["--project-dir", project_dir, "--mode", "auto-merge"]) == 0
         assert configure.main(
             ["--project-dir", project_dir,
              "--per-day-tokens", "200000"]) == 0
         cfg = _read_cfg(project_dir)
-        assert cfg["mode"] == "gated-merge"
+        assert cfg["mode"] == "auto-merge"
         assert cfg["budget"]["per_day_tokens"] == 200000
         assert cfg["budget"]["window_tz"] == "local"
         # heartbeat/backoff defaults preserved across the modify-save.
@@ -352,15 +366,16 @@ def _skill_body():
 
 # ==========================================================================
 # E2E Behaviour (guided --setup walk-through, spec "Guided --setup
-# walk-through"): the configure skill is bumped to 0.6.0 and its description
-# advertises the guided --setup / walk-me-through entrypoint so the skill
-# triggers when the user asks to be walked through the config.
+# walk-through"): the configure skill advertises the guided --setup /
+# walk-me-through entrypoint so the skill triggers when the user asks to be
+# walked through the config. The skill version tracks the latest config change
+# (bumped to 0.7.0 for the gated-merge -> auto-merge mode rename).
 # ==========================================================================
 
-def test_skill_version_bumped_to_0_6_0():
+def test_skill_version_bumped():
     fm = _skill_frontmatter()
-    assert fm["version"] == "0.6.0", (
-        f"configure skill must be bumped to 0.6.0, got {fm['version']}")
+    assert fm["version"] == "0.7.0", (
+        f"configure skill must be bumped to 0.7.0, got {fm['version']}")
 
 
 def test_skill_description_advertises_setup_walkthrough():

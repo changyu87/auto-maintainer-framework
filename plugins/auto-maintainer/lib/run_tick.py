@@ -411,10 +411,10 @@ def make_integrate(runtime):
     """INTEGRATE adapter (verify-integrate): the single highest-stakes act-side
     state. Reads `verdicts` + the model-backed `review_verdicts`, merges each
     `ok` AND review-APPROVED verdict's PR via the injectable merge sink ONLY at
-    gated-merge, and writes the `integration_result` slot.
+    auto-merge, and writes the `integration_result` slot.
 
     Binds the loaded governance `mode` (runtime['governance']['mode']) so the
-    trust ladder gates merge at gated-merge only (sg.permits) and the §3.8.1
+    trust ladder gates merge at auto-merge only (sg.permits) and the §3.8.1
     declarative backstop applies (sg.merge_guardrails over the resolved default
     branch). The default branch is resolved via verify-integrate's injectable
     `gh` resolver (the same seam VERIFY uses), so the guardrail's never-merge-
@@ -1595,7 +1595,7 @@ def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink):
       - NOT permitted (dry-run): does NOT file and leaves the ledger UNTOUCHED so
         a later armed tick files them; returns (0, <would-file count>, 0) — the
         intent (the would-file count) is surfaced via the returned skipped count.
-      - permitted (propose / gated-merge): files each not-yet-known discovery via
+      - permitted (propose / auto-merge): files each not-yet-known discovery via
         wi.file_discoveries (the per-target repo bound onto the injected sink),
         then RECORDS each filed {dedup_key: {tracker_ref, url}} into the durable
         REPORT_LEDGER_KEY (load-modify-save just that key). Returns

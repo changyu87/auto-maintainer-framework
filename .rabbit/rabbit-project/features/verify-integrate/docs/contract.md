@@ -16,7 +16,7 @@ deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or
       "REVIEW_MANIFEST/REVIEW_SIGNALS + REVIEW_VERDICTS_SLOT + is_review_approved(): REVIEW is a NON-ACTING agent-state (reads verdicts, writes review_verdicts, emits OK|EMPTY) dispatched to the auto-maintainer-reviewer subagent; the schema/manifest live here, the dispatch is wired in scheduling",
       "IntegrationResult slot schema (versioned: merged, skipped, errors)",
       "VERIFY state: run(TickContext) -> StateResult, reads the loop's open PRs via gh, writes verdicts, emits OK|EMPTY (read-only, deterministic)",
-      "INTEGRATE state: run(TickContext) -> StateResult, reads verdicts + review_verdicts, writes integration_result, emits OK (merges only at gated-merge, guardrail-gated, AND only a review-APPROVED PR)",
+      "INTEGRATE state: run(TickContext) -> StateResult, reads verdicts + review_verdicts, writes integration_result, emits OK (merges only at auto-merge, guardrail-gated, AND only a review-APPROVED PR)",
       "CLEANUP state: run(TickContext) -> StateResult, reads integration_result, emits OK (branch/release hygiene, idempotent)",
       "ship/agents/auto-maintainer-reviewer.md — the model-backed reviewer subagent (spec-compliance + code-quality over the PR base..head diff)"
     ],
@@ -35,7 +35,7 @@ deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or
   "invokes": {"scripts": [], "agents": ["auto-maintainer-reviewer (the REVIEW agent-state's subagent; dispatched by the scheduling executor, not called directly here)"], "external": ["gh", "git"]},
   "never": [
     "calls a model from its SCRIPT states (VERIFY/INTEGRATE/CLEANUP stay deterministic gh/git script-tier; REVIEW is the one model-backed state, a non-acting agent-state dispatched by scheduling)",
-    "merges anywhere except at trust mode gated-merge AND only a PR that is ok AND review-APPROVED AND passes merge_guardrails",
+    "merges anywhere except at trust mode auto-merge AND only a PR that is ok AND review-APPROVED AND passes merge_guardrails",
     "merges a PR with a non-default base, a dirty/conflicting tree, or failing/pending CI",
     "maintains a durable PR-ledger (GitHub is the source of truth, queried live by label)",
     "writes the tracker/issues (REPORT/work-intake owns outbound issue writes)",
