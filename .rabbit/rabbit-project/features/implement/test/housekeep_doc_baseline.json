@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded by the next implement housekeep wave's baseline; single-use measured-reduction reference for this doc-slim wave.",
+  "description": "Pre-wave line counts of implement doc surfaces, captured before the housekeep measured doc-reduction wave. The housekeep e2e test asserts the current docs are NOT LARGER than these baselines, records the measured reduced|no-op verdict, and asserts the load-bearing tokens survived. Reduction is REPORTED, never MANDATED: an already-clean no-op is a valid PASS (coding-rules §6 / measure-reduction.py contract).",
+  "docs": {
+    "docs/spec.md": 196,
+    "docs/contract.md": 32
+  }
+}
