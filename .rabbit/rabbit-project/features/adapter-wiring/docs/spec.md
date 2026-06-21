@@ -133,12 +133,8 @@ locatable to the port/module that is wrong.
 
 ## Current behaviour
 
-Implemented: `load_route` / `load_adapter_map` (project-local override + schema
-validation), `resolve_states` (script `"module:factory"` AND agent-adapter object
-entries → uniform `(manifest, second)`), `validate_wiring` (signals +
-data-readiness + anchor invariants over the resolved manifests), and `build_loop`
-(load + resolve + validate). Agent entries are resolved + validated here but NOT
-executed (execution is a later slice).
+All five public-surface functions are implemented. Agent entries are resolved
+and validated at load but NOT executed (execution is a later slice).
 
 ## Known gaps / deferred
 
@@ -154,19 +150,10 @@ executed (execution is a later slice).
 
 - Consumes `fsm-contracts` (route.json schema, `validate_route`, `StateManifest`),
   `tick-orchestrator` (`validate_signals`, `validate_data_readiness`), and
-  `agent-dispatch` (`is_agent_entry`, `validate_agent_adapter`,
-  `AGENT_ADAPTER_SCHEMA_VERSION`) — all UNCHANGED.
+  `agent-dispatch` (`is_agent_entry`, `validate_agent_adapter`) — all UNCHANGED.
 - Consumed by `scheduling`: `run_tick` calls `build_loop(...)` (passing
   scheduling's default route/map + the resolved runtime) instead of hardcoding,
   then feeds the result to `tick_orchestrator.run`.
 - Does NOT import scheduling/durable-state/lifecycle-dispositions/work-intake
   directly — it resolves adapters dynamically by the map's `module:factory`
   strings, so it stays a generic mechanism with no built-in-adapter coupling.
-
-## Open questions
-
-- Whether anchors should be map-addressed (uniform) or special-cased as fixed —
-  leaning uniform addressing + anchor-invariant validation, so the convention is
-  one shape for all states.
-- Where the project-local config dir is rooted — reuse the same
-  `${CLAUDE_PROJECT_DIR}/.auto-maintainer/` runtime dir the loop already uses.
