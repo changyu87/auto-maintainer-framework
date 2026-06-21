@@ -175,7 +175,7 @@ next window" is distinguishable from "idle: no work".
 
 ## Config writer + the configure skill (userConfig §3.10.1)
 
-safety_governance.py READS + decides over `governance.json`; this feature also
+safety_governance.py READS + decides over `config.json`; this feature also
 ships its **writer half** — the deterministic `src/configure.py` script and the
 `/auto-maintainer:configure` skill (`ship/skills/configure/`) — so a user can set
 the trust `mode` and budget ceilings without hand-editing JSON.

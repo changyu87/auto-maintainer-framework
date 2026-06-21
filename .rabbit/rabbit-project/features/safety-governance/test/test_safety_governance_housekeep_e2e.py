@@ -308,23 +308,22 @@ def test_genuinely_deferred_items_are_preserved():
 
 
 # ==========================================================================
-# FLAG (coding-rules §6 verify-or-flag) — the stale-but-wrong claim is RECORDED,
-# not reworded. The loader reads config.json; the spec's
-# "READS + decides over governance.json" is stale. Per the measured-reduction
-# discipline we FLAG rather than reword (rewording would force a diff). This
-# test documents the flag so it is not silently lost; it does NOT assert the
-# claim away.
+# CORRECTED (coding-rules §6 verify-or-flag) — a prior housekeeping wave FLAGGED
+# the stale-but-wrong claim (the loader reads config.json, not governance.json)
+# and deferred the rewrite to a follow-up rather than rewording mid-wave. The
+# follow-up corrected the claim to config.json; this test now asserts the stale
+# wording is gone and the corrected wording is present.
 # ==========================================================================
 
-def test_flag_stale_governance_json_read_claim_is_recorded():
-    """FLAG: spec.md says safety_governance.py 'READS + decides over
-    governance.json', but the loader reads config.json (governance.json is only a
-    one-time migration source). This is a stale same-line claim FLAGGED for a
-    follow-up housekeeping sub-issue, NOT reworded here (rewording to force a
-    diff is forbidden by the measured-reduction discipline). This test asserts
-    the flagged claim is present (so the flag stays anchored to real text) and
-    documents that it is intentionally left for the follow-up."""
+def test_stale_governance_json_read_claim_is_corrected():
+    """The spec.md claim that safety_governance.py 'READS + decides over
+    governance.json' was stale: the loader reads config.json (governance.json is
+    only a one-time migration source). A prior housekeeping wave FLAGGED the
+    claim and deferred the correction to a follow-up; that follow-up corrected it
+    to config.json. This test asserts the stale wording is gone and the corrected
+    wording is present."""
     text = _read(_SPEC)
-    assert "READS + decides over `governance.json`" in text, (
-        "the FLAGGED stale claim is the anchor for the follow-up sub-issue; "
-        "if it was reworded this wave overstepped (reword-to-force-diff)")
+    assert "READS + decides over `governance.json`" not in text, (
+        "the stale read claim must be corrected to config.json")
+    assert "READS + decides over `config.json`" in text, (
+        "the corrected read claim should name config.json (the loader's source)")

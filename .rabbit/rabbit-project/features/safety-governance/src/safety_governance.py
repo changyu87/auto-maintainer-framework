@@ -4,7 +4,7 @@
 A pure, deterministic decision library over a machine-first, versioned CENTRAL
 config (config.json). Decision surfaces plus one effectful halt helper:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.0.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.1.0),
      DEFAULT_GOVERNANCE, load_config(project_dir). The config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
      §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
