@@ -17,7 +17,11 @@ GUARD reads, so a stop latches: the loop stays STOPPED until a human restarts it
 scheduling CONSUMES run_tick + lifecycle-dispositions UNCHANGED; it never edits
 or forks them.
 
-Version: 0.1.0
+It also clears the durable **loop-intent** (heartbeat.py), so a future session's
+SessionStart auto-resume hook finds no intent and does NOT re-arm the heartbeat:
+a stop holds across a restart, not just within the session.
+
+Version: 0.2.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the control surface is replaced.
@@ -41,18 +45,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import run_tick as rt  # noqa: E402
 import lifecycle_dispositions as ld  # noqa: E402
+import heartbeat as hb  # noqa: E402
 
 
 def stop():
     """Latch the loop STOPPED and return the runtime dir the marker landed in.
 
     Resolves the runtime dir via run_tick's resolver, writes disposition
-    STOPPED through the lifecycle-dispositions API, and prints a one-line
-    confirmation. Idempotent: calling it when already STOPPED simply re-writes
-    the same marker.
+    STOPPED through the lifecycle-dispositions API, clears the durable
+    loop-intent (so a future session's SessionStart hook does NOT auto-resume
+    the heartbeat), and prints a one-line confirmation. Idempotent: calling it
+    when already STOPPED simply re-writes the same marker and re-clears intent.
     """
     runtime_dir, _state_path, _journal_path = rt.resolve_runtime_paths()
     ld.write_disposition(runtime_dir, ld.Disposition.STOPPED)
+    # Clear the durable loop-intent: a stop must NOT auto-resume next session.
+    hb.clear_loop_intent(runtime_dir)
     sys.stdout.write(
         f"[stop] disposition={ld.Disposition.STOPPED} runtime_dir={runtime_dir}\n")
     return runtime_dir

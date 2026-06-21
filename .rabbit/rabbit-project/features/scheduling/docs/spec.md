@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.14.0
+version: 0.15.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -187,10 +187,16 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      defeat a `/stop` that lands between heartbeats). **The interval is
      config-driven** — `start.py` emits the configured `heartbeat.interval_minutes`
      (default 3, from the central config) and the `/start` skill schedules at that
-     cadence. Heartbeat is **session-only** for slice 1 (durable + restart-resume
-     deferred, #31).
-   - `/auto-maintainer:stop` — invokes `stop.py` (latch STOPPED) then cancels the
-     heartbeat (CronDelete).
+     cadence. The in-session heartbeat ends with the session, but the loop is
+     **durable across sessions** (§3.3.2, #31): `start.py` records a durable
+     **loop-intent** marker (via `heartbeat.py`) when it clears the latch, and the
+     plugin's `SessionStart` auto-resume hook re-arms the heartbeat on the next
+     session (point 6 below). `start.py` records the intent but does NOT clear the
+     cross-session resume-dedup, so a second `SessionStart` in the same session
+     cannot re-arm a duplicate heartbeat.
+   - `/auto-maintainer:stop` — invokes `stop.py` (latch STOPPED **and clear the
+     durable loop-intent**, so the next session's `SessionStart` hook does not
+     auto-resume) then cancels the heartbeat (CronDelete).
    - `/auto-maintainer:status` — invokes `status.py` and reports the real
      disposition + last-pull `work_items` count (replaces packaging-config's
      slice-1 stub).
@@ -198,9 +204,30 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    plugin-level cron API); every state operation is a script.
 5. **Scheduler detection (§3.3.1)** — slice 1 uses the in-session durable
    heartbeat; system-cron detection is stubbed/deferred.
-6. **Restart-resume wiring (§3.3.4)** — on restart, the next tick's DRAIN +
-   durable state resume the loop; full RESTART_NEEDED→SessionStart auto-resume is
-   a follow-up.
+6. **Durable heartbeat + SessionStart auto-resume (§3.3.2, #31).** The
+   warm-only heartbeat is made durable across sessions by a durable **loop-intent**
+   marker + a `SessionStart` hook, owned by **`heartbeat.py`**:
+   - `loop-intent` (`running`) is set by `/start` and cleared by `/stop`; it is
+     the durable bit that survives a session ending. `last-resume-session` is the
+     at-most-one-refire dedup across sessions.
+   - The pure decision `heartbeat.should_auto_resume(runtime_dir, session_id)` is
+     True only when intent is `running`, the disposition is **not** latched
+     `STOPPED`/`ABORTED` and **not** owed `RESTART_NEEDED`, and this session has
+     not already armed.
+   - The shipped `SessionStart` hook (`session-start-resume.py`, registered in
+     `hooks.json` alongside the persona hook) asks that decision and, when True,
+     stamps the dedup and emits `additionalContext` telling the session to re-run
+     `/auto-maintainer:start` to re-arm the in-session heartbeat — at most once per
+     session. **The dedup is owned by the SessionStart path, not `/start`**: the
+     hook is what asks the session to run `/start`, so `start.py` must NOT clear
+     the dedup (else a second `SessionStart` in the same session — SessionStart
+     fires on startup / resume / `/clear` / compact — would re-arm a duplicate
+     heartbeat). A hook never breaks the session (any error → silent).
+   - A latched `RESTART_NEEDED` **blocks** auto-resume (the safe, conservative
+     gate — the loop is never silently re-armed). This is NOT the full
+     §3.3.4 `RESTART_NEEDED`→`SessionStart` resume-**drive** flow (which would
+     proactively resume after a restart); that remains **deferred**. On restart,
+     the next tick's DRAIN + durable state still resume the loop.
 
 > Tool-tier note (spec-rules §1): the deterministic tick logic is a **script**
 > (`run_tick.py`); the act of *scheduling the wake* is necessarily
