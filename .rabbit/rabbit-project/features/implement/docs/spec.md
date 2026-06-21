@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.2.1
+version: 0.2.2
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -103,6 +103,20 @@ the output path. Its rendered prompt is the complete handoff contract (the
   (it owns the WHAT, DESIGN §2.1), run the project's checks, and **open a PR
   against the default branch — never merge**. If it cannot complete an accepted
   order it reports `status: blocked` and leaves no open PR.
+- **Pre-handoff self-review (v2.3.0).** On the accept path, after committing and
+  BEFORE `gh pr create`, the subagent runs a structured self-review against its
+  OWN committed diff (it reads the actual diff, not its intent) and fixes any gap
+  before opening the PR. The checklist has four lenses: **completeness** (did it
+  do exactly what the issue asked — nothing more, nothing less), **quality**
+  (follows existing patterns; no overbuild / YAGNI), **discipline** (only
+  in-scope changes; separate problems go to `discovered_work[]`, not the diff),
+  and **checks** (the project's tests/build pass on the committed change). The
+  self-review is a self-check, not a licence to expand scope: an out-of-scope fix
+  is surfaced as `discovered_work[]`, and an order that cannot be done cleanly
+  within scope yields `status: blocked` with no open PR. (Adopted from Claude's
+  superpowers `subagent-driven-development` implementer "Before reporting"
+  checklist; the interactive "ask questions mid-task" behaviour is deliberately
+  NOT adopted — the unattended loop's equivalent is `status: blocked`.)
 - **PR provenance label (v2.1.0).** An opened PR is stamped with the
   `auto-maintainer` label (`gh pr create --label auto-maintainer`, creating the
   label if absent). This is the §3.7 hand-off seam to `verify-integrate`: VERIFY
