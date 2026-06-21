@@ -38,10 +38,6 @@ durable PR-ledger to drift.
   green, then merged in tick N+k. Cross-tick correctness falls out of querying
   GitHub live; no slot carries PRs across ticks.
 
-So `VERIFY`'s effective input is "the loop's open PRs" (queried), not only the
-just-produced `handoffs`. The §2.6 `handoffs → verdicts → integration_result`
-shape is preserved as the in-tick slot flow; the PR SET is sourced from `gh`.
-
 ## Slot contract (DESIGN §2.6, refined)
 
 ```
