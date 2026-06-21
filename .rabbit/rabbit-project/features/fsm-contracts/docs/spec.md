@@ -43,8 +43,10 @@ own the contract schema modules + JSON schemas once implemented.
    choice. (§1.1.1)
 
 4. **Per-state manifest** — each state declares `{ reads: [slots],
-   writes: [slots], emits: [signals] }`. The machine-first realization of
-   bounded scope (philosophy §2). **No state names another state.** (§1.1.1)
+   writes: [slots], emits: [signals] }`; it is declared by the state
+   (`StateManifest`) and aggregated by the router for validation, not stored
+   inside `route.json`. The machine-first realization of bounded scope
+   (philosophy §2). **No state names another state.** (§1.1.1)
 
 5. **`route.json` schema** — the transition-table shape: a state set, the
    `(state, signal) -> next_state` edge table, and the terminal-state marker.
@@ -68,8 +70,8 @@ B) is explicitly rejected.
 Implemented and merged (`tdd_state: test-green`). The contract layer —
 `TickContext`, `StateResult`, `SignalVocabulary`, `StateManifest`, the
 `route.json` schema + `validate_route` — is authored in `src/` with 22 passing
-conformance tests (incl. the domain-free PING/PONG e2e). See `feature.json` /
-`docs/ROADMAP.md` for status.
+conformance tests (incl. the domain-free PING/PONG e2e). See `feature.json`
+for status.
 
 ## Known gaps / deferred (explicit boundaries)
 
@@ -89,13 +91,6 @@ conformance tests (incl. the domain-free PING/PONG e2e). See `feature.json` /
   *shape* the resolver consumes.
 - **Slot versioning / migration policy** (§3.2.1 versioned durable state) —
   deferred.
-
-## Resolved during implementation
-
-- Slot type declarations use JSON-Schema-style dicts with a `type` key (see
-  `src/fsm_contracts.py`).
-- The per-state manifest is declared by the state (`StateManifest`) and
-  aggregated by the router for validation — it is not stored inside `route.json`.
 
 ## Relationship to `tick-orchestrator` (first milestone)
 
