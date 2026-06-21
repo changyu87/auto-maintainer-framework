@@ -64,13 +64,15 @@ if _SRC not in sys.path:
 _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
              "lifecycle-dispositions", "work-intake", "adapter-wiring",
-             "prioritize", "implement", "agent-dispatch", "safety-governance"):
+             "prioritize", "implement", "agent-dispatch", "safety-governance",
+             "observability"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
 
 import durable_state as ds  # noqa: E402
 import work_intake as wi  # noqa: E402
+import observability as ob  # noqa: E402
 import run_tick as rt  # noqa: E402
 
 
@@ -485,3 +487,132 @@ def test_bare_main_no_args_prints_human_trace_regression():
     except ValueError:
         raised = True
     assert raised, "bare mode must print the human trace, not JSON"
+
+
+# ==========================================================================
+# Behaviour (#112) — the event-log tick_id is a per-tick id that is
+#   (1) DISTINCT across ticks, even on a read-only route (it no longer collapses
+#       to 0 because the work `counter` never bumped), AND
+#   (2) STABLE across a SINGLE tick's `--step` -> `--resume`, on the agent route,
+#       WITHOUT injecting `now` (production parity: --step and --resume are
+#       separate invocations that pass no `now`, so a clock-derived id would split
+#       one logical tick into two ids — the bug this fix prevents).
+# These tests drive the CLI exactly as production does (no `now` injected).
+# ==========================================================================
+
+def _events(runtime_dir):
+    return ob.EventLog(os.path.join(runtime_dir, "events.jsonl")).read()
+
+
+def _tick_ids(runtime_dir):
+    return [e["tick_id"] for e in _events(runtime_dir)]
+
+
+def test_event_tick_id_is_distinct_across_read_only_ticks():
+    """Two consecutive pure-SCRIPT (read-only) ticks must carry DISTINCT tick_ids
+    in the event log — the original bug was every tick stamped tick_id=0 because
+    the read-only route never bumps the work counter. No `now` is injected."""
+    _root, runtime_dir, state_path, journal_path = _temp_runtime()
+    with _stub_pull_source():
+        _c1, _o1 = _run_main(_step_argv(runtime_dir, state_path, journal_path))
+        ids_tick1 = set(_tick_ids(runtime_dir))
+        _c2, _o2 = _run_main(_step_argv(runtime_dir, state_path, journal_path))
+        ids_all = _tick_ids(runtime_dir)
+    # The first tick's events all share one id; the second tick's events all
+    # share a DIFFERENT id (so a reader can group + distinguish ticks).
+    assert len(ids_tick1) == 1, ids_tick1
+    tick1_id = next(iter(ids_tick1))
+    # Events appended after the first tick belong to the second tick.
+    ids_tick2 = set(ids_all) - {tick1_id}
+    assert len(ids_tick2) == 1, ids_all
+    tick2_id = next(iter(ids_tick2))
+    assert tick1_id != tick2_id, ids_all
+    # And neither is the dead tick-0 fallback.
+    assert tick1_id != 0 and tick2_id != 0, ids_all
+
+
+def test_event_tick_id_is_stable_across_step_then_resume_no_injected_now():
+    """The core #112 requirement: a SINGLE agent tick's `--step` -> `--resume`
+    pair (separate processes, NO injected `now`) stamps ONE shared tick_id across
+    ALL its events — the agent route, where the bug (a clock-derived id) split one
+    logical tick into two ids."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    with _stub_pull_source():
+        # --step: fresh tick, pauses at TRIAGE (assigns + persists the id).
+        _c1, o1 = _run_main(_step_argv(runtime_dir, state_path, journal_path,
+                                       project_dir=project_dir))
+        e1 = json.loads(o1)
+        assert e1["state"] == "TRIAGE", e1
+        # The subagent writes work_orders; --resume continues the SAME tick.
+        _write_outputs_from_envelope(e1, [_CANNED_WORK_ORDERS])
+        _c2, o2 = _run_main(_resume_argv(runtime_dir, state_path,
+                                         journal_path, project_dir=project_dir))
+        e2 = json.loads(o2)
+        assert e2["state"] == "IMPLEMENT", e2
+        # Resume again to the terminal so tick_start..tick_end all exist.
+        _write_outputs_from_envelope(
+            e2, [_canned_handoff(d["item"]) for d in e2["dispatches"]])
+        _c3, o3 = _run_main(_resume_argv(runtime_dir, state_path,
+                                         journal_path, project_dir=project_dir))
+        assert json.loads(o3)["status"] == "done", o3
+    ids = set(_tick_ids(runtime_dir))
+    # ONE id across the entire step -> resume -> resume -> done sequence.
+    assert len(ids) == 1, _tick_ids(runtime_dir)
+    assert next(iter(ids)) != 0, ids
+
+
+def test_two_agent_ticks_get_distinct_ids():
+    """Run a full agent tick to done, then a SECOND full agent tick: the two
+    ticks' event ids differ (distinctness holds for the agent route too)."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+
+    def _full_tick():
+        _c1, o1 = _run_main(_step_argv(runtime_dir, state_path, journal_path,
+                                       project_dir=project_dir))
+        e1 = json.loads(o1)
+        _write_outputs_from_envelope(e1, [_CANNED_WORK_ORDERS])
+        _c2, o2 = _run_main(_resume_argv(runtime_dir, state_path,
+                                         journal_path, project_dir=project_dir))
+        e2 = json.loads(o2)
+        _write_outputs_from_envelope(
+            e2, [_canned_handoff(d["item"]) for d in e2["dispatches"]])
+        _run_main(_resume_argv(runtime_dir, state_path,
+                               journal_path, project_dir=project_dir))
+
+    with _stub_pull_source():
+        _full_tick()
+        ids_after_first = set(_tick_ids(runtime_dir))
+        _full_tick()
+        ids_all = set(_tick_ids(runtime_dir))
+    assert len(ids_after_first) == 1, ids_after_first
+    # The second tick added exactly one NEW id distinct from the first.
+    new_ids = ids_all - ids_after_first
+    assert len(new_ids) == 1, ids_all
+
+
+def test_fresh_tick_persists_a_monotonic_tick_id_counter():
+    """The durable per-tick counter (separate from the work `counter`) increments
+    once per FRESH tick and starts at 1 (never the dead 0)."""
+    _root, runtime_dir, state_path, journal_path = _temp_runtime()
+    assert rt.persisted_tick_id_counter(state_path) == 0  # nothing run yet
+    with _stub_pull_source():
+        _run_main(_step_argv(runtime_dir, state_path, journal_path))
+        assert rt.persisted_tick_id_counter(state_path) == 1
+        _run_main(_step_argv(runtime_dir, state_path, journal_path))
+        assert rt.persisted_tick_id_counter(state_path) == 2
+
+
+def test_resume_does_not_bump_the_tick_id_counter():
+    """A `--resume` of a paused agent tick reuses the id from the checkpoint and
+    does NOT mint a new one — so the per-tick counter advances ONCE per logical
+    tick, not once per invocation."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    with _stub_pull_source():
+        _c1, o1 = _run_main(_step_argv(runtime_dir, state_path, journal_path,
+                                       project_dir=project_dir))
+        assert rt.persisted_tick_id_counter(state_path) == 1
+        _write_outputs_from_envelope(json.loads(o1), [_CANNED_WORK_ORDERS])
+        _run_main(_resume_argv(runtime_dir, state_path,
+                               journal_path, project_dir=project_dir))
+        # The resume continued the SAME tick: counter unchanged.
+        assert rt.persisted_tick_id_counter(state_path) == 1

@@ -230,6 +230,18 @@ LAST_TRIAGED_KEY = "last_triaged"
 # transient cross-invocation handoff, NOT a #64 read product.
 TICK_CHECKPOINT_KEY = "tick_checkpoint"
 
+# The durable-state document key under which the per-tick TICK-ID COUNTER is
+# persisted: a durable CROSS-TICK monotonic counter (like the work `counter`, NOT
+# a per-tick #64 read product) that increments ONCE per fresh tick to give each
+# tick a DISTINCT id (#112). It is SEPARATE from the work `counter`, which only
+# advances when a state bumps it (a read-only route never does, so the work
+# counter cannot discriminate read-only ticks). The id is assigned at FRESH tick
+# start (next = last + 1), persisted here AND stamped into TICK_CHECKPOINT_KEY so
+# a single tick's `--step` -> `--resume` (separate processes, no injected `now`)
+# reads back the SAME id rather than recomputing it. Load-modify-save preserving
+# every other durable key. Starts at 1 (the first tick is tick_id=1, never 0).
+TICK_ID_COUNTER_KEY = "tick_id_counter"
+
 # The structured event-log filename (observability §3.9.1). run_tick opens an
 # observability.EventLog at ${runtime_dir}/<EVENTS_FILENAME> and appends one
 # structured event per tick milestone. The log is the machine-first record of
@@ -690,6 +702,54 @@ def persisted_tick_checkpoint(state_path):
     re-emit)."""
     doc = ds.DurableState(state_path).load()
     return doc.get(TICK_CHECKPOINT_KEY, {})
+
+
+def persisted_tick_id_counter(state_path):
+    """The durable per-tick id counter persisted under TICK_ID_COUNTER_KEY, or 0
+    when no tick has run yet (so the first FRESH tick assigns id 1). Like the work
+    `counter` this is a durable CROSS-TICK fact (see TICK_ID_COUNTER_KEY), NOT a
+    per-tick #64 read product."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(TICK_ID_COUNTER_KEY, 0)
+
+
+def _assign_tick_id(state_path, resume, checkpoint):
+    """Resolve THIS invocation's per-tick id (#112), distinct across ticks AND
+    stable across a single tick's `--step` -> `--resume`.
+
+    The id is assigned ONCE, at FRESH tick start, and then carried through the
+    tick via the durable checkpoint — it is NEVER derived from the wall clock /
+    injected `now` (the `--step` and `--resume` invocations are SEPARATE processes
+    that do not inject `now`, so a clock-derived id would split one logical tick
+    into two ids):
+
+      - RESUME (`resume=True`) or CRASH-SAFETY RE-EMIT (a `checkpoint` is present):
+        READ the id BACK from the checkpoint (`checkpoint["tick_id"]`), so the
+        agent route's pause/resume pair shares one id. A legacy checkpoint written
+        before this field existed falls back to the persisted counter.
+      - FRESH (no resume, no checkpoint): increment the durable per-tick counter
+        (load-modify-save ONLY TICK_ID_COUNTER_KEY, preserving every other key)
+        and use the new value. The first ever tick gets id 1.
+
+    Returns the integer tick id for this invocation.
+    """
+    if checkpoint:
+        tid = checkpoint.get("tick_id")
+        if tid is not None:
+            return tid
+        # Legacy checkpoint (pre-#112) carried no tick_id: fall back to the
+        # persisted counter so a tick paused before the upgrade still resumes.
+        return persisted_tick_id_counter(state_path)
+    if resume:
+        # A resume without a checkpoint is a caller error elsewhere; surface the
+        # persisted counter rather than minting a new id.
+        return persisted_tick_id_counter(state_path)
+    # FRESH tick: mint the next id and persist it.
+    doc = ds.DurableState(state_path).load()
+    tid = doc.get(TICK_ID_COUNTER_KEY, 0) + 1
+    doc[TICK_ID_COUNTER_KEY] = tid
+    ds.DurableState(state_path).save(doc)
+    return tid
 
 
 def _budget_clock(now):
@@ -1453,6 +1513,10 @@ def _write_checkpoint(state_path, name, ctx, path, signals, agentstate,
     doc = ds.DurableState(state_path).load()
     doc[TICK_CHECKPOINT_KEY] = {
         "next_state": name,
+        # The per-tick id (#112) is stamped into the checkpoint so a `--resume`
+        # (a separate process, no injected `now`) reads back the SAME id this
+        # tick was assigned at its fresh start, rather than recomputing it.
+        "tick_id": tick_id,
         "slots": snapshot,
         "path": list(path),
         "signals": list(signals),
@@ -1713,7 +1777,7 @@ def _resume_agent_state(route, states, ctx, checkpoint, agentstates):
 
 
 def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
-                    resume, mode, output_dir, gov, budget_clock,
+                    resume, mode, output_dir, gov, budget_clock, tick_id,
                     events=None, route_src=None, escalate_sink=None,
                     escalate_now=None):
     """Drive a tick over a route that contains agent-states (DESIGN §2.8, §3.4.6).
@@ -1738,9 +1802,11 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
     carry the RunResult + the final TickContext for read-product persistence.
     """
     checkpoint = persisted_tick_checkpoint(state_path)
-    # The durable counter is the deterministic per-tick anchor (no wall clock);
-    # it seeds the rendered dispatch's {tick_id} slot value.
-    tick_id = ds.DurableState(state_path).load().get("counter", 0)
+    # `tick_id` is the per-tick id (#112) assigned ONCE by run_tick at fresh start
+    # and carried through the checkpoint (read back on resume), so it is distinct
+    # across ticks AND stable across a single tick's `--step` -> `--resume`. It is
+    # NEVER the wall clock and never the work `counter` (which a read-only route
+    # never bumps). It also seeds the rendered dispatch's {tick_id} slot value.
 
     if resume:
         # RESUME: the checkpoint must exist (a resume without a prior PAUSE is a
@@ -1906,6 +1972,15 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     persisted_checkpoint = persisted_tick_checkpoint(state_path)
     is_resume = resume or bool(persisted_checkpoint)
 
+    # The per-tick id (#112): assigned ONCE at FRESH tick start (incrementing the
+    # durable per-tick counter — distinct across ticks, even on a read-only route
+    # that never bumps the work `counter`) and read BACK from the durable
+    # checkpoint on resume / crash-safety re-emit, so a single tick's `--step` ->
+    # `--resume` (separate processes, no injected `now`) shares ONE id. It is
+    # computed before the route runs so both the event emitter and the rendered
+    # agent-dispatch {tick_id} slot use the same value.
+    tick_id = _assign_tick_id(state_path, resume, persisted_checkpoint)
+
     if is_resume:
         # Reuse the persisted budget window (no fresh-start gate). Carry the
         # evaluated/rolled window forward (#123): the fresh tick's window was
@@ -1966,11 +2041,14 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # The structured event log (observability §3.9.1), opened at
     # ${runtime_dir}/events.jsonl. The event `ts` reuses the tz-aware budget
     # clock (the injected `now`), so the log is deterministic; the tick_id is the
-    # durable counter. Event emission is purely additive — it writes ALONGSIDE the
-    # tick, never altering the walk/signals/disposition/persistence/trace.
+    # per-tick id (#112) assigned above — distinct per tick AND stable across a
+    # single tick's `--step` -> `--resume`, so every event of one logical tick
+    # carries the SAME id (it is NOT the work `counter`, which a read-only route
+    # never bumps, so it no longer collapses to 0). Event emission is purely
+    # additive — it writes ALONGSIDE the tick, never altering the
+    # walk/signals/disposition/persistence/trace.
     event_now = _budget_clock(now)
-    event_tick_id = ds.DurableState(state_path).load().get("counter", 0)
-    events = _EventEmitter(runtime_dir, event_now, event_tick_id)
+    events = _EventEmitter(runtime_dir, event_now, tick_id)
     mode = gov.get("mode", "")
     route_src = route_source_label(project_dir)
 
@@ -1980,7 +2058,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
                 state_path, journal_path, route),
             state_path=state_path,
             resume=resume, mode=mode, output_dir=output_dir,
-            gov=gov, budget_clock=budget_clock, events=events,
+            gov=gov, budget_clock=budget_clock, tick_id=tick_id, events=events,
             route_src=route_src,
             escalate_sink=escalate_sink or DEFAULT_ESCALATE_SINK,
             escalate_now=event_now)
