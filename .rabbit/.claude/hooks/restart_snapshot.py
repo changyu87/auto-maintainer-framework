@@ -15,15 +15,34 @@ Mechanism:
     NOT rewrite the snapshot, so the advisory persists across tick-ends until a
     fresh SessionStart re-baselines it.
 
+Tiered remedy (spec Inv 54e): a full restart is not always required. Since
+Claude Code v2.1.152 `/reload-skills` reloads `SKILL.md` definitions mid-session
+without a restart, and skill `scripts/` are re-read on every invocation. So the
+re-check classifies the SET of changed surfaces and emits the CHEAPEST
+sufficient remedy: a `SKILL.md`-only change → a `/reload-skills` advisory; a
+skill-`scripts/`-only change → nothing; any hook/settings/CLAUDE.md/agent change
+→ the full-restart advisory; mixed → the superset (strongest remedy) wins
+(strict precedence full-restart > reload-skills > nothing).
+
 Best-effort and graceful: any IO error degrades to no advisory (never crashes a
 dispatcher).
+
+Mid-session reload re-baseline (spec Inv 54f): `/reload-skills` is a Claude Code
+built-in that reloads `SKILL.md` definitions WITHOUT starting a session, so it
+never triggers the SessionStart re-baseline above — leaving the reload-tier
+advisory firing forever. When the UserPromptSubmit dispatcher observes a
+`/reload-skills` prompt it calls `rebaseline_skill_tier`, which refreshes ONLY
+the `SKILL.md`-tier keys of the snapshot (so the reload-tier advisory clears)
+while leaving the hard-restart-tier keys (hooks/settings/CLAUDE.md/agents)
+untouched — a genuine hard-restart change still legitimately requires a restart.
 
 Public API:
     restart_sensitive_signature(repo_root) -> dict[str, str]
     write_session_snapshot(repo_root) -> None
     restart_advisory_payloads(repo_root) -> list[dict]
+    rebaseline_skill_tier(repo_root) -> None
 
-Version: 1.2.0
+Version: 1.4.0
 Owner: rabbit-workflow team (rabbit-cage)
 Deprecation criterion: when Claude Code reloads hooks/skills/agents in-session
     without a restart, making the stale-load advisory unnecessary.
@@ -53,13 +72,20 @@ _SENSITIVE_DIRS = (
 )
 _SENSITIVE_FILES = ("CLAUDE.md",)
 
-# The advisory line — deliberately distinct from the hard auto-resume banner so
-# it reads as OPTIONAL (Inv 54c).
+# The full-restart advisory line — deliberately distinct from the hard
+# auto-resume banner so it reads as OPTIONAL (Inv 54c).
 _ADVISORY_TEXT = (
     "restart ADVISED (not required): loaded skills/hooks/agents changed on "
     "disk — restart Claude Code to load the update"
 )
 _ADVISORY_ICON = "\U0001f504"  # 🔄
+
+# The cheaper /reload-skills advisory line (Inv 54e) for a SKILL.md-only change:
+# `/reload-skills` reloads skill definitions mid-session without a restart.
+_RELOAD_ADVISORY_TEXT = (
+    "reload ADVISED (not required): skill definitions changed on disk — run "
+    "/reload-skills to load the update (no restart needed)"
+)
 
 
 def _is_generated(p: Path) -> bool:
@@ -130,11 +156,81 @@ def _read_snapshot(repo_root):
     return data
 
 
+def rebaseline_skill_tier(repo_root):
+    """Inv 54f: re-baseline ONLY the `SKILL.md`-tier keys of the snapshot.
+
+    Invoked by the UserPromptSubmit dispatcher when the submitted prompt is
+    `/reload-skills` — the Claude Code built-in that reloads `SKILL.md`
+    definitions mid-session without a restart (and so never fires the
+    SessionStart re-baseline). After the reload the running session holds the
+    current on-disk skill definitions, so the reload-tier advisory must clear:
+    refresh every `SKILL.md` key (current vs absent) in the snapshot to its
+    current digest, but leave the hard-restart-tier keys (hooks / settings /
+    CLAUDE.md / agents) and the skill-`scripts/` keys EXACTLY as they were, so a
+    genuine hard-restart change still legitimately fires its advisory.
+
+    Surgical: SKILL.md keys present on disk are set to their current sha256;
+    SKILL.md keys that vanished from disk are dropped from the snapshot. No
+    other key is touched. Best-effort: no snapshot, or any IO error, is a
+    silent no-op (never crashes the dispatcher)."""
+    baseline = _read_snapshot(repo_root)
+    if baseline is None:
+        return
+    current = restart_sensitive_signature(repo_root)
+    updated = dict(baseline)
+    # Refresh / drop every SKILL.md key — across both the snapshot and the
+    # current on-disk signature — to the now-loaded state.
+    for key in set(baseline) | set(current):
+        if not _is_skill_md(key):
+            continue
+        if key in current:
+            updated[key] = current[key]
+        else:
+            updated.pop(key, None)
+    try:
+        (Path(repo_root) / SNAPSHOT_FILE).write_text(
+            json.dumps(updated, sort_keys=True) + "\n")
+    except OSError:
+        return
+
+
+def _is_skill_md(rel: str) -> bool:
+    """A `.claude/skills/**/SKILL.md` path — reloadable via `/reload-skills`
+    without a restart (Inv 54e)."""
+    return rel.startswith(".claude/skills/") and Path(rel).name == "SKILL.md"
+
+
+def _is_skill_script(rel: str) -> bool:
+    """A `.claude/skills/` path that is NOT a `SKILL.md` (a skill `scripts/`
+    file) — re-read on the next invocation, so no remedy is needed (Inv 54e)."""
+    return rel.startswith(".claude/skills/") and Path(rel).name != "SKILL.md"
+
+
+def _classify_remedy(changed_keys):
+    """Inv 54e: map the SET of changed restart-sensitive relative paths to the
+    cheapest sufficient remedy. Strict precedence: full-restart > reload-skills
+    > nothing.
+
+      - any non-skill surface changed (hook / settings / CLAUDE.md / agent) →
+        "restart" (a full restart is required).
+      - else any SKILL.md changed → "reload" (/reload-skills suffices).
+      - else (only skill scripts/ changed, or nothing) → None (no remedy).
+    """
+    has_hard = any(
+        not (_is_skill_md(k) or _is_skill_script(k)) for k in changed_keys)
+    if has_hard:
+        return "restart"
+    if any(_is_skill_md(k) for k in changed_keys):
+        return "reload"
+    return None
+
+
 def restart_advisory_payloads(repo_root):
-    """Stop / UserPromptSubmit re-check (Inv 54c): recompute the signature and
-    compare to the snapshot. On a mismatch return the single advisory print
-    payload; otherwise return []. The snapshot is NOT rewritten, so the advisory
-    persists across tick-ends until a fresh SessionStart re-baselines it.
+    """Stop / UserPromptSubmit re-check (Inv 54c/54e): recompute the signature,
+    compare to the snapshot, and return the CHEAPEST sufficient advisory print
+    payload for the set of changed surfaces — the full-restart advisory, the
+    `/reload-skills` advisory, or none. The snapshot is NOT rewritten, so the
+    advisory persists across tick-ends until a fresh SessionStart re-baselines.
 
     Graceful: no snapshot (no prior SessionStart) → no advisory. Never raises.
     """
@@ -142,21 +238,35 @@ def restart_advisory_payloads(repo_root):
     if baseline is None:
         return []
     current = restart_sensitive_signature(repo_root)
-    if current == baseline:
+    # The changed set = keys whose digest differs, plus keys added or removed.
+    changed_keys = {
+        k for k in set(baseline) | set(current)
+        if baseline.get(k) != current.get(k)
+    }
+    if not changed_keys:
         return []
-    return [{"type": "print", "text": _advisory_text_with_timestamp(),
+    remedy = _classify_remedy(changed_keys)
+    if remedy == "restart":
+        text = _ADVISORY_TEXT
+    elif remedy == "reload":
+        text = _RELOAD_ADVISORY_TEXT
+    else:
+        return []
+    return [{"type": "print", "text": _advisory_text_with_timestamp(text),
              "icon": _ADVISORY_ICON, "color": "yellow"}]
 
 
-def _advisory_text_with_timestamp(now=None):
+def _advisory_text_with_timestamp(base_text=_ADVISORY_TEXT, now=None):
     """Inv 54c: the advisory text suffixed with ` (as of HH:MM:SS ZZZ)` so the
     reader can judge whether the alert is current or stale. The clock is LOCAL
     wall-clock with an explicit zone label (`%H:%M:%S %Z`) — the same format the
     universal Stop turn-end timestamp (Inv 57) uses, so the composite Stop block
-    reads consistently. The optional `now` is an injected aware datetime for
-    deterministic test rendering; the default is the real local clock (an aware
-    local datetime so `%Z` populates with the real zone abbreviation)."""
+    reads consistently. `base_text` is the tier-specific advisory line (full
+    restart or /reload-skills, Inv 54e). The optional `now` is an injected aware
+    datetime for deterministic test rendering; the default is the real local
+    clock (an aware local datetime so `%Z` populates with the real zone
+    abbreviation)."""
     if now is None:
         now = datetime.datetime.now().astimezone()
     stamp = now.strftime(_TIMESTAMP_FMT).strip()
-    return f"{_ADVISORY_TEXT} (as of {stamp})"
+    return f"{base_text} (as of {stamp})"

@@ -39,7 +39,7 @@ This module has two distinct roles:
      (test-deployed-hooks-execute.py, test-install-publish-loop.py) to exercise
      the publish flow against a freshly copied .claude tree.
 
-Version: 6.9.0
+Version: 6.11.0
 Owner: rabbit-workflow team
 Deprecation criterion: when rabbit's per-project vendored model is superseded
 """
@@ -103,6 +103,7 @@ SKILLS = [
     (".claude/features/rabbit-issue/skills/rabbit-issue/SKILL.md", ".claude/skills/rabbit-issue/SKILL.md"),
     (".claude/features/rabbit-spec/skills/rabbit-spec-update/SKILL.md", ".claude/skills/rabbit-spec-update/SKILL.md"),
     (".claude/features/rabbit-decompose/skills/rabbit-decompose/SKILL.md", ".claude/skills/rabbit-decompose/SKILL.md"),
+    (".claude/features/rabbit-housekeep/skills/rabbit-housekeep/SKILL.md", ".claude/skills/rabbit-housekeep/SKILL.md"),
 ]
 
 # Agents: source → deployed
@@ -117,6 +118,7 @@ COMMANDS: list[tuple[str, str]] = [
     (".claude/features/rabbit-cage/commands/rabbit-project.md", ".claude/commands/rabbit-project.md"),
     (".claude/features/rabbit-cage/commands/rabbit-update.md", ".claude/commands/rabbit-update.md"),
     (".claude/features/rabbit-cage/commands/rabbit-cage-config.md", ".claude/commands/rabbit-cage-config.md"),
+    (".claude/features/rabbit-housekeep/commands/rabbit-housekeep.md", ".claude/commands/rabbit-housekeep.md"),
 ]
 
 # Per-feature sub-path includes (whole subset; same path on both sides)
@@ -225,6 +227,14 @@ FEATURE_INCLUDES: dict[str, list[str]] = {
         "feature.json",
         "skills/rabbit-decompose/SKILL.md",
         "scripts/handoff-scaffold.py",
+    ],
+    "rabbit-housekeep": [
+        "feature.json",
+        "skills/rabbit-housekeep/SKILL.md",
+        "commands/rabbit-housekeep.md",
+        "scripts/measure-reduction.py",
+        "scripts/check-script-backed.py",
+        "scripts/resolve-housekeep-scope.py",
     ],
     "tdd-subagent": [
         "feature.json",
@@ -390,6 +400,7 @@ _RABBIT_GITIGNORE_BODY = (
     ".scope-bypass-once\n"
     ".rabbit-restart-snapshot\n"
     ".rabbit-prompt-counter\n"
+    ".rabbit-update-restart-needed\n"
     "__pycache__/\n"
     "*.pyc\n"
 )

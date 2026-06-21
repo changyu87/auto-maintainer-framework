@@ -7,5 +7,6 @@ impl-suggestion-*.json
 .scope-bypass-once
 .rabbit-restart-snapshot
 .rabbit-prompt-counter
+.rabbit-update-restart-needed
 __pycache__/
 *.pyc
