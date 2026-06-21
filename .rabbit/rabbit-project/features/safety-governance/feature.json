@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-13T03:57:44Z",
   "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
-  "tdd_state": "test-green",
+  "tdd_state": "sync-deployed",
   "updated": "2026-06-21",
   "spec_no_change_reason": "spec.md is updated this cycle (trust mode gated-merge -> auto-merge rename; schema 2.0.0 -> 2.1.0 with legacy-name coexistence migration)"
 }
