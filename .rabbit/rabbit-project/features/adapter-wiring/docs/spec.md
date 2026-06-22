@@ -1,6 +1,6 @@
 ---
 feature: adapter-wiring
-version: 0.2.0
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it.
 ---
@@ -124,6 +124,37 @@ slice) consumes it to build + dispatch invocation envelopes. Because
    — convenience: load + resolve + validate, returning exactly what
    `tick_orchestrator.run(route, states, ctx, vocab, start)` needs.
 
+## Adapter authoring / scaffold tool (§3.4.4, the BYO convenience)
+
+The §3.4.4 authoring tool sits **on** this mechanism: it makes writing a
+bring-your-own adapter a guided, **CHECKED** operation rather than a hand-edit.
+It adds no new contract — it reuses the resolver + the load-time validators
+above and the fsm-contracts factory convention. Three functions:
+
+6. **`scaffold_adapter(port, src_dir, factory='make', default_signal='OK',
+   overwrite=False) -> (path, address)`** — emit a skeleton adapter module for
+   `port` into `src_dir`, conforming verbatim to the factory convention
+   (`make(runtime) -> (StateManifest, run)` with `run(TickContext) ->
+   StateResult`). The module name is derived deterministically from the port
+   symbol; the returned `address` is its `"module:factory"` string. Refusing to
+   clobber an existing file (unless `overwrite=True`) is a locatable
+   `WiringError`.
+7. **`wire_adapter(port, address, project_dir, default_route=None,
+   default_map=None) -> (route, map)`** — the DATA half: record `port ->
+   address` in the project-local `adapter-map.json` and add `port` as a state in
+   `route.json` (creating either file from the supplied default or an empty
+   skeleton). It edits only `${project_dir}/.auto-maintainer/` override files;
+   it adds no edges (topology stays an explicit author choice) and does not
+   itself validate.
+8. **`validate_adapter_conformance(address, runtime, port=None,
+   emits_route=None, initial=None) -> CheckResult`** — the CHECK that makes BYO
+   a checked operation: resolve the adapter via the existing `_resolve_factory`,
+   confirm it returns a `StateManifest` + callable `run` and declares a
+   non-empty emit set, then run `validate_signals` + `validate_data_readiness`
+   (reused from tick-orchestrator) over a synthetic single-state route — or, if
+   `emits_route` is supplied, over the real topology the adapter will run in. A
+   resolution failure is reported as a FAILED `CheckResult`, never raised.
+
 ## Determinism & testability
 
 Pure file reads + `importlib` + validation; no network, no AI. Everything is
@@ -138,8 +169,6 @@ and validated at load but NOT executed (execution is a later slice).
 
 ## Known gaps / deferred
 
-- The convenience **adapter scaffold/authoring tool** (§3.4.4, #52) — v2; this
-  feature is the mechanism the tool will sit on.
 - `userConfig` prompts (token/mode/budget, §3.10.1) — config feature.
 - Hot-reload of route/map mid-run; multiple named routes — later.
 - The **default route + default adapter-map + built-in adapter factories** are

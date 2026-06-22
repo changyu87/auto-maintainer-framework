@@ -3,6 +3,21 @@
 All notable changes to this feature are recorded here. Versions follow the
 spec/contract `version:` frontmatter.
 
+## 0.3.0
+
+- New §3.4.4 adapter authoring/scaffold tool (additive, #52): `scaffold_adapter`
+  emits a skeleton module conforming to the factory convention (`make(runtime)
+  -> (StateManifest, run)` with `run(TickContext) -> StateResult`);
+  `wire_adapter` records the `port -> adapter` map entry + adds the route state
+  in the project-local override files; `validate_adapter_conformance` resolves
+  the new adapter via the existing resolver and runs the SAME load-time checks
+  (factory/manifest shape + `validate_signals` / `validate_data_readiness`) so
+  BYO-adapter is a CHECKED operation.
+- The tool reuses the existing resolver/validators and the fsm-contracts factory
+  convention UNCHANGED; it adds no new contract surface beyond the three
+  functions and writes only project-local `.auto-maintainer/` override files.
+- Backward compatible: the mechanism's five functions are untouched.
+
 ## 0.2.0
 
 - Public surface change (additive): `load_adapter_map` now accepts adapter-map

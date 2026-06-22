@@ -1,6 +1,6 @@
 ---
 feature: adapter-wiring
-version: 0.2.0
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it (see feature.json / docs/spec.md).
 ---
@@ -44,14 +44,17 @@ contract a third-party adapter implements.
       "validate_wiring(route, manifests, start, initial) -> CheckResult",
       "build_loop(default_route, default_map, runtime, start, initial) -> (route, states)",
       "the adapter factory convention: 'module:factory', factory(runtime) -> (StateManifest, run_callable)",
-      "AgentState(manifest, dispatch, signal, entry): the resolved form of an agent-adapter object entry"
+      "AgentState(manifest, dispatch, signal, entry): the resolved form of an agent-adapter object entry",
+      "scaffold_adapter(port, src_dir, factory, default_signal, overwrite) -> (path, address)  # §3.4.4 authoring tool: emit a skeleton conforming to the factory convention",
+      "wire_adapter(port, address, project_dir, default_route, default_map) -> (route, map)  # record port->adapter map entry + route state",
+      "validate_adapter_conformance(address, runtime, port, emits_route, initial) -> CheckResult  # CHECK a BYO adapter via the reused resolver + validate_signals/validate_data_readiness"
     ],
     "skills": []
   },
   "reads": {
     "files": [
-      "${project_dir}/.auto-maintainer/route.json (project-local override)",
-      "${project_dir}/.auto-maintainer/adapter-map.json (project-local override)"
+      "${project_dir}/.auto-maintainer/route.json (project-local override; wire_adapter also writes it)",
+      "${project_dir}/.auto-maintainer/adapter-map.json (project-local override; wire_adapter also writes it)"
     ],
     "external": [
       "fsm-contracts (validate_route, StateManifest, CheckResult)",

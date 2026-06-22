@@ -1,6 +1,6 @@
 {
   "name": "adapter-wiring",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/adapter-wiring/src/**"
@@ -8,6 +8,5 @@
   "created": "2026-06-11T12:56:11Z",
   "deprecation_criterion": "Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it.",
   "tdd_state": "test-green",
-  "updated": "2026-06-21",
-  "spec_no_change_reason": "Housekeep doc-slim wave: docs/spec.md was already reduced and committed (68bbfff) before this subagent dispatch; remaining doc edit is the contract.md dead-claim removal handled in IMPLEMENT, not a spec change."
+  "updated": "2026-06-21"
 }
