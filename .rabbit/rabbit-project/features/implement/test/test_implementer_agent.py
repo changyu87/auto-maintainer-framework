@@ -83,3 +83,17 @@ def test_shipped_implementer_body_has_self_review_checklist():
         assert lens in body, f"self-review checklist missing the {lens} lens"
     # it must review the ACTUAL committed diff, not just intent
     assert "diff" in body, "self-review must review the actual committed diff"
+
+
+def test_shipped_implementer_body_guards_discovered_work_against_known_open():
+    """v2.4.0 (auto-maintainer-framework#224): `discovered_work` is for NEW
+    problems only. The body must instruct the implementer NOT to emit a discovery
+    for dependencies it is blocked on (cited in its own `blocked_reason`) or for
+    anything already tracked/open, to prevent REPORT filing duplicate issues."""
+    body = _body().lower().replace("*", "")
+    assert "discovered_work" in body or "discovered work" in body
+    assert "blocked_reason" in body, (
+        "guard must reference the blocked_reason dependencies an implementer "
+        "must not re-file as discoveries")
+    assert "new problems only" in body, (
+        "body must state discovered_work is for NEW problems only")
