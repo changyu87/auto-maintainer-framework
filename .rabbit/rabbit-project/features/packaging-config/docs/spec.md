@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.3.0
+version: 0.5.0
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -291,7 +291,7 @@ is added via git. Updates: `/plugin marketplace update`.
 Implemented and merged (`tdd_state: test-green`). The deterministic
 `build_plugin.py` assembly + `ship/` collection produce the committed,
 `.rabbit`-free `plugins/auto-maintainer/` tree + `.claude-plugin/marketplace.json`
-(plugin v0.2.2) with 21 passing tests. See `feature.json`.
+(plugin v0.5.0) with 68 passing tests. See `feature.json`.
 
 ## Known gaps / deferred (explicit boundaries)
 
