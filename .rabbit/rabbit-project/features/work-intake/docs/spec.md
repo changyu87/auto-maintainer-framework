@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.4.0
+version: 0.5.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -148,8 +148,11 @@ idempotency live in scheduling).
   `dedup_key` is a stable caller-supplied key making filing idempotent; `target`
   selects the destination tracker; `filed_by` stamps loop provenance.
 - **`ReportResult` schema**: `{ filed: [{dedup_key, tracker_ref, url}],
-  skipped_existing: [dedup_key], errors: [{dedup_key, reason}] }`. Re-filing an
-  existing `dedup_key` is a no-op that returns the prior `tracker_ref`.
+  skipped_existing: [dedup_key], skipped_open: [{dedup_key, matched}],
+  errors: [{dedup_key, reason}] }`. Re-filing an
+  existing `dedup_key` is a no-op that returns the prior `tracker_ref`;
+  `skipped_open` records a discovery NOT filed because its subject already
+  matches an OPEN tracker issue (dedup-vs-open), `matched` being that issue.
 - **Injectable filing sink (determinism seam, mirrors `gh_issue_source`).** The
   production `gh_issue_file_sink(discovery, repo=None) -> {tracker_ref, url}`
   shells `gh issue create` with the title/body, the provenance label
@@ -165,12 +168,19 @@ idempotency live in scheduling).
     --description "filed by the autonomous maintainer"` (idempotent — a non-zero
     "already exists" exit is tolerated, NOT raised) before the issue create. Both
     `gh` calls honor `--repo` and the injectable `runner`.
-- **`file_discoveries(discoveries, sink, known_dedup_keys) -> ReportResult`** —
-  pure orchestration: for each `DiscoveredIssue`, if its `dedup_key` is in
-  `known_dedup_keys` it goes to `skipped_existing` (no sink call); otherwise the
-  sink is invoked and the result recorded in `filed`; a sink exception is caught
-  and recorded in `errors` (filing one bad discovery never aborts the batch).
-  Deterministic given the injected sink + known set; performs no I/O of its own.
+- **`file_discoveries(discoveries, sink, known_dedup_keys, known_open) ->
+  ReportResult`** — pure orchestration: for each `DiscoveredIssue`, if its
+  `dedup_key` is in `known_dedup_keys` it goes to `skipped_existing` (no sink
+  call); else if its subject matches an already-OPEN issue in `known_open`
+  (dedup-vs-open, DESIGN §3.5.4 applied to the REPORT side: the loop must not
+  file a duplicate of an issue already in the tracker) it goes to `skipped_open`
+  (no sink call); otherwise the sink is invoked and the result recorded in
+  `filed`; a sink exception is caught and recorded in `errors` (filing one bad
+  discovery never aborts the batch). The dedup-vs-open match is a deterministic
+  normalized-title token-overlap heuristic (`_match_open_issue`); a model-judged
+  "is this already tracked?" check is the deferred robust v2. `known_open` are
+  the tick's PULLed open tracker items (scheduling passes its `work_items`).
+  Deterministic given the injected sink + known set + open set; no I/O of its own.
 - **Target routing (§3.11.6).** `target: project` files into the repo PULL reads
   (the default); `target: maintainer-self` files into the **fixed upstream
   maintainer repo** (`safety_governance.MAINTAINER_REPO`, the dogfood case

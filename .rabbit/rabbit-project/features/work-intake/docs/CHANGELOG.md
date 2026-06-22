@@ -4,6 +4,31 @@ All notable changes to this feature are recorded here. Versions follow the
 `version:` frontmatter in `spec.md` / `contract.md` and the `feature.json`
 `version` field.
 
+## feature 0.5.0 / spec 0.5.0 / contract 0.5.0 — 2026-06-21
+
+- **REPORT dedup-vs-open** (#224, DESIGN §3.5.4 applied to the REPORT side).
+  `file_discoveries` previously deduped a discovery ONLY against the loop's own
+  `report_ledger` (`known_dedup_keys`); it never checked whether an equivalent
+  issue ALREADY EXISTS in the tracker, so a blocked implementer that emitted its
+  blocked-on dependencies as `discovered_work` got them filed as NEW issues —
+  exact duplicates of already-open ones (the live #222/#223-vs-#209/#210 case).
+- `file_discoveries` gains a `known_open` arg (the tick's PULLed open tracker
+  items): a discovery whose subject matches an already-open issue is skipped to
+  the new `ReportResult.skipped_open` (`[{dedup_key, matched}]`) with NO sink
+  call, instead of being filed as duplicate noise. Matching is a deterministic
+  normalized-title token-overlap heuristic (`_match_open_issue`); a model-judged
+  "is this already tracked?" check is the deferred robust v2. The ledger-dedup
+  (`known_dedup_keys` → `skipped_existing`) is unchanged and takes precedence.
+- `scheduling._flush_report` now passes the tick's `work_items` into
+  `file_discoveries` as `known_open`; open-duplicate skips fold into the
+  `reported=<filed>/<skipped>` surface (so they are NOT filed, and the dry-run
+  would-file count excludes them). scheduling consumes work-intake unchanged
+  except for the added arg.
+- New tests: discovery == existing open issue → skipped (no sink call);
+  genuinely-new discovery → filed; ledger-dedup precedence over open-match;
+  default `known_open` preserves prior behaviour; the overlap heuristic;
+  scheduling `_flush_report` end-to-end skip/file/dry-run with open work_items.
+
 ## feature 0.4.0 / spec 0.4.0 / contract 0.4.0 — 2026-06-21
 
 - **PULL now includes each issue's comments** (#213). `gh issue list` returns

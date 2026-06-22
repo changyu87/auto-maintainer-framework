@@ -1,5 +1,17 @@
 # scheduling — Changelog
 
+## feature 0.18.0 — 2026-06-21
+
+- **REPORT dedup-vs-open wiring (#224, DESIGN §3.5.4).** `_flush_report` now
+  passes the tick's PULLed open `work_items` to `work_intake.file_discoveries`
+  as `known_open`, so a discovery whose subject duplicates an already-open issue
+  is skipped (not filed as duplicate noise — the live #222/#223-vs-#209/#210
+  case). The open-duplicate skips fold into the `reported=<filed>/<skipped>`
+  surface and the dry-run would-file count excludes them. work-intake +
+  safety-governance are consumed unchanged except for the added `known_open`
+  arg. New tests in `test/test_report_flush_e2e.py` cover skip/file/dry-run with
+  open work_items present.
+
 ## contract 0.11.0 — 2026-06-21
 
 - **Acted-ledger re-entry: re-attempt a still-valid issue when its auto-PR is
