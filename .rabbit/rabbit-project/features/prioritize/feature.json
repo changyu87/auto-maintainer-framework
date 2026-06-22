@@ -1,6 +1,6 @@
 {
   "name": "prioritize",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/prioritize/src/**"
@@ -8,6 +8,5 @@
   "created": "2026-06-12T06:02:16Z",
   "deprecation_criterion": "Superseded when ordering ceases to be deterministic (e.g. a model-backed prioritizer adapter replaces the default), or when the ExecutionPlan schema reaches a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-06-21",
-  "spec_no_change_reason": "DOC-dimension housekeep no-op: coding-rules \u00a76 verify-or-flag found nothing provably dead in docs/spec.md or docs/contract.md (all DESIGN citations, cross-feature refs, public-API names, schema fields live); honest no-op, docs left unchanged, gate test asserts behavior preserved + load-bearing survival + no-op verdict"
+  "updated": "2026-06-21"
 }

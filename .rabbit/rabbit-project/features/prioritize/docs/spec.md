@@ -1,6 +1,6 @@
 ---
 feature: prioritize
-version: 0.1.0
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when ordering ceases to be deterministic (e.g. a model-backed prioritizer adapter replaces the default), or when the ExecutionPlan schema reaches a breaking major version.
 ---
@@ -59,10 +59,47 @@ work-intake owns WorkItem/WorkOrder).
    produced (TRIAGE already owns dependency ordering, DESIGN §3.5.7). The
    WorkOrder schema carries no severity/priority field today, so v1 introduces
    no re-ordering key of its own.
-4. Back-fill `status[id] = "pending"` for every ordered entry.
-5. Write `execution_plan` and emit `OK`.
+4. **Serialize same-feature orders**: keep at most ONE order per target feature
+   (the FIFO-first wins the slot); DEFER the rest (omit them from the plan).
+5. Back-fill `status[id] = "pending"` for every kept entry.
+6. Write `execution_plan` and emit `OK`.
 
 The state is a pure function of `work_orders`: same input → byte-identical plan.
+
+## Same-feature serialization (issue #214)
+
+IMPLEMENT fans out one implementer per planned order **in parallel**, each
+branching off the same `main`. Two orders touching the **same feature** would
+each bump that feature's shared metadata (`feature.json` version,
+`docs/CHANGELOG.md`, `docs/contract.md`) and regenerate the committed `plugins/`
+tree off the same base — so the moment one PR lands, the others **collide** on
+that shared metadata even when their code is in different functions (observed:
+scheduling PRs #205/#207 collided after #208 merged; #206 survived only by
+targeting a different feature). PRIORITIZE is the choke point that decides what
+fans out, so it serializes here:
+
+- It keeps at most **one** accepted order per target feature per tick (FIFO-first
+  wins the slot) and **defers** the rest. A deferred order is simply absent from
+  this tick's plan, so the loop re-pulls and re-prioritizes it next tick; once
+  the head order's PR merges, the next same-feature order fans out then.
+- **Cross-feature** orders (disjoint feature sets) stay **parallel**, so the
+  non-colliding case is unaffected.
+- The plan surface is **unchanged** — serialization only shrinks `ordered`; no
+  `groups` key (grouping stays [v2]).
+
+A feature is detected from **authoritative** signals only, never inferred from
+generic labels:
+
+- `feature:<name>` / `component:<name>` **prefixed labels** (the maintainer's
+  filing convention). Generic labels (`bug`, `enhancement`, `filed-by:*`,
+  `priority:*`) are **not** feature keys, so two `enhancement`-labelled orders
+  for different features stay parallel.
+- a `Component:` / `Feature:` **line in the issue body**, split into a
+  multi-feature radius on `+ , & /` only — **never** on the word "and" (an "and"
+  split can mis-cut a feature name such as `command-and-control`).
+
+An order with **no provable feature** carries no shared blast radius and stays
+parallel — serialization rests on a *proven* shared feature, never a guess.
 
 ## Adapter factory convention
 
@@ -79,7 +116,10 @@ IMPLEMENT before `execution_plan` exists.
 - Deterministic: no model call, no wall-clock read, no randomness, no network.
 - No outward effect: reads/writes blackboard slots only; never touches the
   tracker or the filesystem.
-- Identity ordering: the relative order of accepted work orders is preserved.
+- Identity ordering: the relative order of kept work orders is preserved.
+- Same-feature safety: never more than one order per target feature in a plan;
+  feature detection uses only prefixed labels + a `Component:` line, never
+  generic labels, and never the "and" connector.
 - `EMPTY` ⇔ the plan has zero entries; `OK` ⇔ at least one.
 - Bounded scope: reads only `work_orders`; writes only `execution_plan`.
 
@@ -87,6 +127,15 @@ IMPLEMENT before `execution_plan` exists.
 
 - **Parallel grouping** — DESIGN §1.1 marks grouping **[v2]**; the v1
   ExecutionPlan carries no `groups`.
+- **Rebase-and-rebuild merge queue** — an alternative to deferral: keep
+  same-feature orders parallel and, after each merge, rebase the remaining PRs
+  onto the new `main` and regenerate the built tree. Deferred; the v1 fix
+  serializes in PRIORITIZE instead (no merge-queue machinery required).
+- **Authoritative `target_feature` on WorkOrder** — the durable Machine-First
+  fix is a blast-radius field set by TRIAGE from a path/component mapping, so
+  PRIORITIZE reads a field instead of re-deriving the feature from labels/body.
+  Deferred to a work-intake/TRIAGE follow-up; v1 detects from the existing
+  authoritative label/`Component:` signals.
 - **Severity/priority re-ordering** — requires a priority key on WorkOrder
   (absent today); identity order stands until one exists.
 - **Tracker-side status write** — DESIGN §1.1's "(e.g. in-progress)" implies
