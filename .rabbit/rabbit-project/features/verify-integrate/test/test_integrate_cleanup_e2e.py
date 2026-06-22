@@ -116,9 +116,20 @@ def _fresh_ctx():
 def _approve(ctx, *numbers, approved=True):
     """Write one ReviewVerdict per PR number into the review_verdicts slot, so
     INTEGRATE's model-backed REVIEW gate (#209) permits merge. pr_ref mirrors the
-    _verdict builder (acme/widget#<number>)."""
-    rvs = [vi.ReviewVerdict(pr_ref=f"acme/widget#{n}", approved=approved)
-           .to_dict() for n in numbers]
+    _verdict builder (acme/widget#<number>).
+
+    A GENUINE approval carries evidence (#255): the files the reviewer actually
+    examined plus a substantive rationale. An approved verdict WITHOUT evidence
+    is invalid (rubber-stamp) and INTEGRATE refuses to merge it — so this helper
+    populates evidence by default, mirroring what the reviewer subagent must do
+    after running `gh pr diff`."""
+    rvs = [vi.ReviewVerdict(
+        pr_ref=f"acme/widget#{n}", approved=approved,
+        evidence={
+            "files_examined": [f"src/file_{n}.py"],
+            "rationale": (f"Reviewed the base..head diff for #{n}; the change "
+                          f"implements exactly what the source issue asked."),
+        }).to_dict() for n in numbers]
     ctx.write(vi.REVIEW_VERDICTS_SLOT["name"], rvs)
 
 
@@ -489,7 +500,9 @@ def test_review_verdict_round_trip():
     rv = vi.ReviewVerdict(
         pr_ref="acme/widget#9", approved=False, severity="high",
         findings=[{"kind": "spec", "severity": "high", "file": "a.py",
-                   "line": 12, "note": "solved the wrong problem"}])
+                   "line": 12, "note": "solved the wrong problem"}],
+        evidence={"files_examined": ["a.py"],
+                  "rationale": "diff solved a different problem"})
     d = rv.to_dict()
     assert d["schema_version"] == vi.REVIEW_VERDICT_SCHEMA_VERSION
     assert vi.ReviewVerdict.from_dict(d) == rv
@@ -500,6 +513,10 @@ def test_review_verdict_defaults_no_findings():
     d = rv.to_dict()
     assert d["severity"] == "none"
     assert d["findings"] == []
+    # evidence is part of the machine-first schema (#255); it defaults to an
+    # empty (invalid-for-approval) structure and round-trips.
+    assert d["evidence"] == {"files_examined": [], "rationale": ""}
+    assert vi.ReviewVerdict.from_dict(d) == rv
 
 
 def test_review_verdicts_slot_descriptor_is_versioned():
@@ -517,8 +534,13 @@ def test_review_manifest_declares_reads_writes_emits():
     assert set(m.emits) == {"OK", "EMPTY"}
 
 
+_EVIDENCE = {"files_examined": ["src/a.py"],
+             "rationale": "Read the diff; it matches the issue."}
+
+
 def test_is_review_approved_predicate():
-    rvs = [vi.ReviewVerdict(pr_ref="acme/widget#1", approved=True).to_dict(),
+    rvs = [vi.ReviewVerdict(pr_ref="acme/widget#1", approved=True,
+                            evidence=_EVIDENCE).to_dict(),
            vi.ReviewVerdict(pr_ref="acme/widget#2", approved=False).to_dict()]
     assert vi.is_review_approved(rvs, "acme/widget#1") is True
     assert vi.is_review_approved(rvs, "acme/widget#2") is False
