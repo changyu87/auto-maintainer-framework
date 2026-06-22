@@ -528,14 +528,15 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Minor (v0.5.0, #211 aggressive default): version bumped to 0.5.0 in BOTH plugin.json
-# and marketplace.json, and the two are consistent. v0.5.0 is a MINOR — it ships
-# the model-backed REVIEW gate: the auto-maintainer-reviewer subagent + the
-# ReviewVerdict schema + the REVIEW non-acting agent-state, and INTEGRATE now ANDs
-# review-approval into its merge condition. (Supersedes the v0.3.0 configurables
-# overhaul.)
+# Minor (v0.6.0, #263/#264 release rebuild): version bumped to 0.6.0 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. v0.6.0 is the
+# release that deploys the merged-but-unshipped src fixes into the committed
+# plugin tree — the #255 model-review evidence gate (verify_integrate's
+# review_evidence_valid / batch_is_untrustworthy), the #252 prioritize
+# serialization, and #259/#260/#261 — by regenerating the committed plugin tree
+# from CURRENT src. (Supersedes the v0.5.0 aggressive-default minor.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_5_0_and_consistent():
+def test_version_bumped_to_0_6_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -547,10 +548,10 @@ def test_version_bumped_to_0_5_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.5.0", \
-            f"plugin.json version must be 0.5.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.5.0", \
-            "marketplace.json plugin entry version must be 0.5.0"
+        assert pdata.get("version") == "0.6.0", \
+            f"plugin.json version must be 0.6.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.6.0", \
+            "marketplace.json plugin entry version must be 0.6.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2181,3 +2182,70 @@ def test_default_config_seed_assets_shipped():
             "seed adapter-map must wire TRIAGE/IMPLEMENT/REVIEW to agents"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.6.0 (#263/#264), BUILD-DRIFT GUARD — the headline release test.
+#
+# The committed plugin tree (<repo_root>/plugins/auto-maintainer/) is the
+# artifact a GitHub clone installs. It is GENERATED from the current framework
+# src by build_plugin.build(), but it can silently drift: a merged src fix (a
+# new verify_integrate review-evidence gate, a prioritize serialization change)
+# does NOT reach the installed plugin until the committed tree is regenerated.
+#
+# This guard rebuilds the plugin from CURRENT src into a fresh temp out-root and
+# asserts it is byte-for-byte identical to the committed tree — both the path set
+# AND every file's bytes. If a src fix was merged but the committed tree was
+# never re-shipped, this FAILS, locating the drift to a concrete file. It is the
+# deterministic gate that this release's whole purpose (deploy merged fixes into
+# the shipped tree) actually landed.
+# ---------------------------------------------------------------------------
+def test_committed_plugin_tree_matches_fresh_build():
+    committed = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer")
+    assert os.path.isdir(committed), \
+        f"committed plugin tree must exist at {committed}"
+
+    out_root = _build_into_temp()
+    try:
+        fresh = os.path.join(out_root, "plugins", "auto-maintainer")
+        committed_paths = sorted(_walk_paths(committed))
+        fresh_paths = sorted(_walk_paths(fresh))
+        assert committed_paths == fresh_paths, (
+            "committed plugin tree drifted from a fresh build (path set "
+            "differs) — regenerate plugins/auto-maintainer/ from current src.\n"
+            f"only in committed: {sorted(set(committed_paths) - set(fresh_paths))}\n"
+            f"only in fresh:     {sorted(set(fresh_paths) - set(committed_paths))}"
+        )
+        for rel in committed_paths:
+            fc = os.path.join(committed, rel)
+            ff = os.path.join(fresh, rel)
+            if os.path.isfile(fc):
+                with open(fc, "rb") as a, open(ff, "rb") as b:
+                    assert a.read() == b.read(), (
+                        f"committed plugin file {rel} drifted from a fresh "
+                        "build — regenerate plugins/auto-maintainer/ from "
+                        "current src so the shipped bytes match the merged fix."
+                    )
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.6.0 (#263/#264), #255 evidence-gate deploy confirmation: the
+# whole point of this release is that the committed (shipped) verify_integrate
+# carries the #255 model-review evidence gate (review_evidence_valid /
+# batch_is_untrustworthy), which the stale committed tree lacked. Assert the
+# COMMITTED lib — the bytes an installed plugin runs — now contains the gate.
+# ---------------------------------------------------------------------------
+def test_committed_verify_integrate_carries_255_evidence_gate():
+    committed_vi = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib", "verify_integrate.py"
+    )
+    assert os.path.isfile(committed_vi), \
+        "committed lib/verify_integrate.py must ship in the plugin tree"
+    with open(committed_vi, encoding="utf-8") as fh:
+        body = fh.read()
+    assert "review_evidence_valid" in body, \
+        "committed verify_integrate must carry the #255 review_evidence_valid gate"
+    assert "batch_is_untrustworthy" in body, \
+        "committed verify_integrate must carry the #255 batch_is_untrustworthy gate"
