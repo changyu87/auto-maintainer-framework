@@ -29,7 +29,7 @@ validity gate; its only time-dependent edge (staleness) sits behind an
 INJECTABLE reference time (Triage(now=...)). Richer TRIAGE — dedup / decompose /
 order / the WHAT-generation seam — is deferred to slice 3+.
 
-Version: 0.1.0
+Version: 0.4.0
 Owner: changyu87
 Deprecation criterion: Superseded when the tracker-read model changes
   incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a

@@ -5,12 +5,12 @@ This wave is a MEASURED doc reduction (rabbit-housekeep): docs/spec.md is
 slimmed of proven-dead / drifted prose — a drifted "Current behaviour"
 implementation-history section, a resolved "Open questions" section, and stale
 slice-staging clauses in Purpose — without losing any load-bearing claim.
-docs/contract.md is left UNCHANGED: it is already minimal, and its known
-REPORT-slice under-documentation (the contract block omits the
+docs/contract.md was the contract-too-SMALL counterpart: the doc-slim wave
+flagged (but did not fix) its REPORT-slice under-documentation as a separate
+sub-issue. That sub-issue (#241) has since ADDITIVELY declared the
 DiscoveredIssue / ReportResult / file_discoveries / gh_issue_file_sink /
-is_loop_filed public surface the src implements) is a contract-too-SMALL GAP
-flagged as a separate housekeeping sub-issue — NOT removable dead content, so
-this wave neither removes the spec's REPORT references nor grows the contract.
+is_loop_filed public surface and the `gh issue create` / `gh label create`
+external invocations in the contract block, so the contract now matches the src.
 
 These tests are the deterministic gate on the wave. They are e2e in that they
 read the SHIPPED doc artifacts (not a mock) and assert the wave's contractual
@@ -226,15 +226,18 @@ def test_spec_is_strictly_smaller_than_baseline():
         f"spec.md did not shrink: {spec_after} lines now vs baseline {before}")
 
 
-def test_contract_not_larger_than_baseline():
-    """contract.md is left unchanged by this wave (its REPORT under-documentation
-    is FLAGGED separately, not fixed here); it must not have grown past its
-    baseline."""
-    after = _measure_docs_only(_FEATURE_DIR)
-    before = _baseline()["docs"]["docs/contract.md"]
-    contract_after = after[os.path.normpath(_CONTRACT)]
-    assert contract_after <= before, (
-        f"contract.md grew: {contract_after} lines now vs baseline {before}")
+def test_contract_declares_report_slice():
+    """contract.md now ADDITIVELY documents the REPORT slice (#241 — the
+    contract-too-SMALL gap the doc-slim wave flagged as a separate sub-issue).
+    The contract block's provides + invokes.external must name the REPORT public
+    surface and its `gh issue create` / `gh label create` external invocations,
+    which src/work_intake.py implements and ~23 tests exercise."""
+    contract_text = open(_CONTRACT).read()
+    for token in ("DiscoveredIssue", "ReportResult", "file_discoveries",
+                  "gh_issue_file_sink", "is_loop_filed", "gh issue create",
+                  "gh label create"):
+        assert token in contract_text, (
+            f"contract.md does not declare REPORT-slice token: {token!r}")
 
 
 # ==========================================================================
