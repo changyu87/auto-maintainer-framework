@@ -18,8 +18,10 @@ shared metadata (feature.json/CHANGELOG/contract + the built plugin tree) off
 the same base and collide on merge. To prevent that, PRIORITIZE keeps at most
 one order per target feature per tick (FIFO-first wins the slot) and defers the
 rest to a later tick. A feature is detected from AUTHORITATIVE signals only —
-`feature:`/`component:`-prefixed labels and a `Component:` body line — never
-generic labels; orders with no provable feature stay parallel.
+`feature:`/`component:`-prefixed labels, a `Component:` body line, and a
+conventional title prefix (`name:` / `type(scope):`, for label-less issues) —
+never generic labels nor a bare conventional-commit type; orders with no
+provable feature stay parallel.
 
 Public surface:
   - ExecutionPlan slot schema — `EXECUTION_PLAN_SCHEMA_VERSION` +
@@ -31,7 +33,7 @@ Public surface:
   - factory(runtime) -> (StateManifest, run_callable) — the adapter-wiring
     factory convention; scheduling.run_tick maps PRIORITIZE through it.
 
-Version: 0.2.0
+Version: 0.3.0
 Owner: changyu87
 Deprecation criterion: Superseded when ordering ceases to be deterministic
   (e.g. a model-backed prioritizer adapter replaces the default), or when the
@@ -96,12 +98,54 @@ _COMPONENT_LINE_RE = re.compile(
 # (issue #214 guidance item 3); a real multi-feature radius uses punctuation.
 _FEATURE_SPLIT_RE = re.compile(r"[+,&/]")
 
+# The conventional title-prefix convention that names a work order's target
+# feature for LABEL-LESS issues (issue #257), matching `name: ...` (the bare
+# prefix, e.g. `scheduling: ...`) and `type(scope): ...` (a conventional-commit
+# header, e.g. `feat(scheduling): ...` / `fix(work-intake): ...`). The optional
+# `(scope)` is captured separately so a scoped header yields the scope as the
+# feature; a bare prefix yields the name. The title's `Type: x` blast-radius is
+# distinct from a `Component:` body line and never spans multiple features.
+_TITLE_PREFIX_RE = re.compile(r"^\s*([^\s():]+)\s*(?:\(([^)]+)\))?\s*:")
+
+# Bare conventional-commit TYPES used without a scope (e.g. `fix: x`,
+# `docs: y`). These are NOT feature names — grouping on a bare type would
+# over-serialize unrelated work orders (the #216 regression), so a `name:`
+# prefix whose name is a bare type claims NO feature. A `type(scope):` header is
+# unaffected: the scope (not the type) is the feature key.
+_CONVENTIONAL_COMMIT_TYPES = frozenset({
+    "feat", "fix", "docs", "chore", "refactor",
+    "test", "perf", "build", "ci", "style",
+})
+
 
 def _normalize_feature(token):
     """Normalize a raw feature token to a comparison key: trimmed, lower-cased.
     Returns None for an empty/whitespace token so it never claims a feature."""
     key = token.strip().lower()
     return key or None
+
+
+def _title_feature(title):
+    """Derive the target feature from a conventional title prefix, or None.
+
+    Recognizes `name: ...` (take `name`, e.g. `scheduling: ...`) and
+    `type(scope): ...` (take `scope`, e.g. `feat(scheduling): ...` /
+    `fix(work-intake): ...`). A bare conventional-commit type used WITHOUT a
+    scope (`fix: x`, `docs: y`) names NO feature, so unrelated `fix:`/`docs:`
+    orders are not falsely grouped (the #216 over-serialization regression); a
+    scoped header is unaffected because the scope, not the type, is the key.
+    """
+    match = _TITLE_PREFIX_RE.match(title or "")
+    if not match:
+        return None
+    name, scope = match.group(1), match.group(2)
+    if scope is not None:
+        # `type(scope):` — the scope is the feature, whatever the type.
+        return _normalize_feature(scope)
+    # `name:` — a bare conventional-commit type names no feature.
+    if name.strip().lower() in _CONVENTIONAL_COMMIT_TYPES:
+        return None
+    return _normalize_feature(name)
 
 
 def _features_for(order):
@@ -112,6 +156,9 @@ def _features_for(order):
        convention) — generic labels are ignored.
     2. a `Component:`/`Feature:` line in the issue body, split on +,&/, into one
        or more feature names (never on the word "and").
+    3. a conventional title prefix — `name:` or `type(scope):` — which covers
+       LABEL-LESS issues (issue #257) that carry no feature label or body line;
+       a bare conventional-commit type (`fix:`, `docs:`) names no feature.
 
     Returns an EMPTY set when no feature is provable. An order with no provable
     feature is never serialized against any other order (it stays parallel),
@@ -135,6 +182,10 @@ def _features_for(order):
             name = _normalize_feature(token)
             if name:
                 features.add(name)
+
+    title_feature = _title_feature(order.get("title"))
+    if title_feature:
+        features.add(title_feature)
 
     return features
 

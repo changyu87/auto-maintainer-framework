@@ -43,15 +43,18 @@ import prioritize as pr  # noqa: E402
 # Fixtures — a builder for accepted/rejected WorkOrder dicts and a fresh ctx.
 # --------------------------------------------------------------------------
 
-def _order(oid, decision="accepted", reason="", labels=None, body="body"):
+def _order(oid, decision="accepted", reason="", labels=None, body="body",
+           title=None):
     """Build a minimal WorkOrder dict in the shape TRIAGE writes. PRIORITIZE
-    consumes `id`, `decision`, and (for same-feature serialization) `labels` +
-    `body`; the remaining fields carry sane filler."""
+    consumes `id`, `decision`, and (for same-feature serialization) `labels`,
+    `body`, and `title`; the remaining fields carry sane filler. The default
+    `title` is a plain string with no conventional prefix, so it declares no
+    feature unless a caller passes one explicitly."""
     return {
         "schema_version": "1.0.0",
         "id": oid,
         "work_item_id": oid.replace("wo-", ""),
-        "title": f"title for {oid}",
+        "title": title if title is not None else f"title for {oid}",
         "body": body,
         "url": f"https://github.com/acme/widget/issues/{oid}",
         "labels": list(labels) if labels is not None else [],
@@ -407,3 +410,87 @@ def test_serialized_plan_still_has_no_groups_key():
         _order("wo-2", labels=["feature:scheduling"]),
     ])
     assert set(plan.keys()) == {"schema_version", "ordered", "status"}
+
+
+# ==========================================================================
+# Title-prefix feature detection (issue #257). Label-less issues (e.g. the
+# historical #205/#207) carry no feature: label and no Component: body line, so
+# they would fan out in parallel and collide. _features_for ALSO derives the
+# feature from a conventional title prefix — `name:` (take name) and
+# `type(scope):` (take scope) — while EXCLUDING a bare conventional-commit type
+# without a scope (so `fix:`/`docs:` do not group unrelated orders, the #216
+# over-serialization regression).
+# ==========================================================================
+
+def _titled(oid, title):
+    # A label-less, body-less order whose ONLY feature signal is its title.
+    return _order(oid, labels=[], body="No feature signal here.", title=title)
+
+
+def test_labelless_bare_name_title_prefix_serializes():
+    # Two label-less orders titled `scheduling: ...` serialize (FIFO-first wins).
+    plan = _plan([
+        _titled("wo-1", "scheduling: add retry backoff"),
+        _titled("wo-2", "scheduling: tighten heartbeat window"),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+    assert plan["status"] == {"wo-1": "pending"}
+
+
+def test_labelless_scoped_conventional_title_prefix_serializes():
+    # `type(scope):` headers serialize on the SCOPE (the feature), whatever the
+    # conventional-commit type — `feat(scheduling)` and `fix(scheduling)` group.
+    plan = _plan([
+        _titled("wo-1", "feat(scheduling): add a tick"),
+        _titled("wo-2", "fix(scheduling): correct a tick"),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+
+
+def test_labelless_cross_feature_title_prefixes_stay_parallel():
+    # Different title-derived features stay parallel (the non-colliding case).
+    plan = _plan([
+        _titled("wo-1", "scheduling: add retry backoff"),
+        _titled("wo-2", "fix(work-intake): drop a stale order"),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_bare_conventional_commit_type_titles_do_not_serialize():
+    # A bare `type:` prefix with NO scope names no feature, so unrelated `fix:`
+    # and `docs:` orders are NOT grouped (the #216 over-serialization guard).
+    plan = _plan([
+        _titled("wo-1", "fix: correct a typo"),
+        _titled("wo-2", "docs: clarify a heading"),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_two_bare_fix_titles_still_stay_parallel():
+    # Even two `fix:` orders must stay parallel — a bare type is not a feature.
+    plan = _plan([
+        _titled("wo-1", "fix: one thing"),
+        _titled("wo-2", "fix: another unrelated thing"),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_title_prefix_agrees_with_label_and_body_signals():
+    # A title-derived feature unifies with the label/body signals: an order
+    # titled `scheduling: ...` is deferred behind a feature:scheduling order.
+    plan = _plan([
+        _order("wo-1", labels=["feature:scheduling"], body="b",
+               title="title for wo-1"),
+        _titled("wo-2", "scheduling: another change"),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+
+
+def test_title_prefix_detection_is_case_insensitive():
+    # The title-derived key normalizes case like the other signals.
+    plan = _plan([
+        _titled("wo-1", "Scheduling: capitalized prefix"),
+        _order("wo-2", labels=["feature:scheduling"], body="b",
+               title="title for wo-2"),
+    ])
+    assert plan["ordered"] == ["wo-1"]

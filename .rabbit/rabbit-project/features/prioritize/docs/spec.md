@@ -1,6 +1,6 @@
 ---
 feature: prioritize
-version: 0.2.0
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when ordering ceases to be deterministic (e.g. a model-backed prioritizer adapter replaces the default), or when the ExecutionPlan schema reaches a breaking major version.
 ---
@@ -97,6 +97,14 @@ generic labels:
 - a `Component:` / `Feature:` **line in the issue body**, split into a
   multi-feature radius on `+ , & /` only — **never** on the word "and" (an "and"
   split can mis-cut a feature name such as `command-and-control`).
+- a conventional **title prefix** — `name:` (take the name, e.g.
+  `scheduling: ...`) or `type(scope):` (take the scope, e.g.
+  `feat(scheduling): ...`, `fix(work-intake): ...`). This hardens detection for
+  **label-less** issues (issue #257) that carry no feature label or `Component:`
+  line. A **bare** conventional-commit type used without a scope (`feat`, `fix`,
+  `docs`, `chore`, `refactor`, `test`, `perf`, `build`, `ci`, `style`) names
+  **no** feature, so `fix: x` and `docs: y` are not grouped (the #216
+  over-serialization regression); a `type(scope):` header keys on the scope.
 
 An order with **no provable feature** carries no shared blast radius and stays
 parallel — serialization rests on a *proven* shared feature, never a guess.
@@ -118,8 +126,9 @@ IMPLEMENT before `execution_plan` exists.
   tracker or the filesystem.
 - Identity ordering: the relative order of kept work orders is preserved.
 - Same-feature safety: never more than one order per target feature in a plan;
-  feature detection uses only prefixed labels + a `Component:` line, never
-  generic labels, and never the "and" connector.
+  feature detection uses only prefixed labels, a `Component:` line, and a
+  conventional title prefix (`name:` / `type(scope):`), never generic labels,
+  never a bare conventional-commit type, and never the "and" connector.
 - `EMPTY` ⇔ the plan has zero entries; `OK` ⇔ at least one.
 - Bounded scope: reads only `work_orders`; writes only `execution_plan`.
 

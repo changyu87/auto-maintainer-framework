@@ -1,6 +1,6 @@
 {
   "name": "prioritize",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/prioritize/src/**"
@@ -8,5 +8,5 @@
   "created": "2026-06-12T06:02:16Z",
   "deprecation_criterion": "Superseded when ordering ceases to be deterministic (e.g. a model-backed prioritizer adapter replaces the default), or when the ExecutionPlan schema reaches a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-06-21"
+  "updated": "2026-06-22"
 }
