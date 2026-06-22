@@ -92,15 +92,12 @@ CLEANUP    integration_result  —                    OK
   performs an idempotent release/tag if configured (create-if-not-exists).
   Emits `OK`. Deterministic, idempotent.
 
-## Guardrails & backoff (consumed from safety-governance)
+## Guardrails (consumed from safety-governance)
 
 - **Merge guardrails (§3.8.1)** — `safety_governance.merge_guardrails(pr_meta,
   default_branch) -> {ok, violations}`: never-merge-wrong-base (base != default),
   never-merge-dirty (`mergeable` is CONFLICTING/unknown), never-delete a
   non-matching branch. INTEGRATE refuses any PR with violations.
-- **Backoff (§3.8.5)** — a PR whose VERIFY keeps failing is not retried forever;
-  after K consecutive failing verdicts it is deferred/escalated (minimal v1;
-  re-checking a red PR is cheap and never merges, so this only bounds noise).
 
 ## Adapter factory convention
 
@@ -125,7 +122,13 @@ CLEANUP → PERSIST → EXIT`.
 - Non-git VCS backends (GitLab MR / Gerrit) — §3.7.5, port exists, additive.
 - Model-backed VERIFY (review-quality judgment beyond CI) — v1 is CI+mergeable.
 - Rich release pipelines / changelog generation.
-- Aggressive backoff / circuit-breaker tuning (§3.8.5) beyond the minimal counter.
+- **Backoff (§3.8.5)** — a consecutive-failure counter that defers/escalates a
+  PR after K failing verdicts is NOT implemented in v1: re-checking a red PR is
+  cheap and never merges, so VERIFY simply re-checks every tick until CI goes
+  green (the cross-tick model above), which already bounds the risk. The K
+  threshold exists today only as a `safety-governance` config knob
+  (`backoff.threshold`); wiring it into a durable cross-tick counter — plus any
+  aggressive backoff / circuit-breaker tuning — is deferred.
 
 ## Interfaces (composition)
 
