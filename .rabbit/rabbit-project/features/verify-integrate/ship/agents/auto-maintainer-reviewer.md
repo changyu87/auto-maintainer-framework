@@ -3,7 +3,7 @@ name: auto-maintainer-reviewer
 description: Model-backed reviewer for the autonomous maintainer (the pre-merge REVIEW gate). Dispatched (by subagent_type) at the REVIEW agent-state with the tick's open loop PRs (the VERIFY verdicts) in the prompt; for each PR it reads the ACTUAL base..head diff (gh pr diff), the source issue (the WHAT), and the implementer's Handoff, then judges spec-compliance (right thing, nothing more / nothing less) plus code quality, and emits one approve/reject ReviewVerdict per PR per the handoff contract in the prompt. Read-only judgment — it never merges, comments, or modifies the repo or any PR.
 tools: [Read, Grep, Glob, Bash]
 model: opus
-version: 1.0.0
+version: 1.1.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different review policy replaces the spec-compliance + code-quality lens, or when the ReviewVerdict contract reaches a breaking major version.
 ---
@@ -56,6 +56,15 @@ Never use it to merge, push, comment, close, or otherwise mutate anything.
 - **approve** (`approved: true`) when the PR builds the right thing, nothing more
   / nothing less, and is acceptable quality. `findings` may still list minor
   (`low`) notes; `severity` is the worst finding level (`none` when clean).
+  An approval MUST carry `evidence` — the concrete proof you actually examined
+  the diff: `evidence.files_examined` is the list of files you read from
+  `gh pr diff` (never empty for an approval), and `evidence.rationale` is a
+  substantive, multi-sentence explanation of WHY the PR is correct and in-scope.
+  INTEGRATE applies a DETERMINISTIC backstop: an `approved: true` verdict with no
+  `files_examined` or a thin/blank `rationale` is rejected as a rubber-stamp and
+  is NOT merged, and a whole batch of contentless blanket-approvals merges
+  nothing. Do not approve without genuinely reading the diff and recording the
+  evidence.
 - **do NOT approve** (`approved: false`) when any **`high`** or **`blocker`**
   problem exists (wrong thing, incomplete, over-built, a real bug, broken/missing
   tests, a security issue). Record each problem in `findings` with its `kind`,

@@ -30,14 +30,19 @@ Public surface (slice 1):
 
 Public surface (REVIEW — the model-backed gate, #209):
   - REVIEW_VERDICT_SCHEMA_VERSION + ReviewVerdict — the typed, versioned
-    {approved, severity, findings} review-verdict schema (mirrors Verdict).
+    {approved, severity, findings, evidence} review-verdict schema (mirrors
+    Verdict). `evidence` ({files_examined, rationale}) is REQUIRED for a valid
+    approval (#255).
   - REVIEW_VERDICTS_SLOT — the fsm-contracts slot registration descriptor.
   - REVIEW_MANIFEST / REVIEW_SIGNALS — REVIEW's manifest (reads verdicts, writes
     review_verdicts) + signal set (OK | EMPTY). REVIEW itself has no run()
     here — it is a NON-ACTING agent-state dispatched to auto-maintainer-reviewer.
   - REVIEW_SEVERITIES — the closed severity vocabulary.
+  - review_evidence_valid(rv) / batch_is_untrustworthy(review_verdicts) — the
+    deterministic evidence-gated trust backstop (#255): does NOT trust the
+    model's `approved` flag.
   - is_review_approved(review_verdicts, pr_ref) — the conservative approval
-    predicate INTEGRATE ANDs into its merge condition.
+    predicate INTEGRATE ANDs into its merge condition (ANDs evidence-validity).
 
 Public surface (slice 2 — INTEGRATE + CLEANUP):
   - INTEGRATION_RESULT_SCHEMA_VERSION + IntegrationResult — the typed,
@@ -50,7 +55,7 @@ Public surface (slice 2 — INTEGRATE + CLEANUP):
   - CLEANUP_MANIFEST / CLEANUP_SIGNALS — CLEANUP's manifest + signal set.
   - Cleanup — the CLEANUP state (v1-thin pass-through; run -> OK).
 
-Version: 0.2.0
+Version: 0.3.0
 Owner: changyu87
 Deprecation criterion: Superseded when the loop adopts a non-git VCS backend,
   or a model-backed verify/integrate policy replaces the deterministic gh-based
@@ -171,6 +176,12 @@ REVIEW_VERDICT_SCHEMA_VERSION = "1.0.0"
 REVIEW_SEVERITIES = ["none", "low", "medium", "high", "blocker"]
 
 
+def _empty_evidence():
+    """The default (invalid-for-approval) evidence structure: no files examined,
+    no rationale. An approval carrying this is a rubber-stamp (#255)."""
+    return {"files_examined": [], "rationale": ""}
+
+
 @dataclass(eq=True)
 class ReviewVerdict:
     """One model-backed review verdict per open loop PR (DESIGN §3.7).
@@ -180,14 +191,19 @@ class ReviewVerdict:
     is the worst finding severity (one of REVIEW_SEVERITIES; `none` when there
     are no findings). `findings` is a list of {kind, severity, file, line, note}
     dicts the reviewer flagged (empty when approved with nothing to note).
-    `to_dict`/`from_dict` give a machine-first, versioned representation for the
-    `review_verdicts` blackboard slot — mirrors the Verdict shape above.
+    `evidence` is `{files_examined: [str], rationale: str}` — the concrete proof
+    the reviewer actually examined the PR (the files it read from `gh pr diff`
+    plus a substantive rationale). Evidence is REQUIRED for a VALID approval
+    (#255): an approved verdict with empty/missing evidence is a rubber-stamp and
+    is treated as not-approved. `to_dict`/`from_dict` give a machine-first,
+    versioned representation for the `review_verdicts` slot.
     """
 
     pr_ref: str
     approved: bool
     severity: str = "none"
     findings: List[dict] = field(default_factory=list)
+    evidence: dict = field(default_factory=_empty_evidence)
 
     def to_dict(self):
         return {
@@ -196,15 +212,25 @@ class ReviewVerdict:
             "approved": self.approved,
             "severity": self.severity,
             "findings": [dict(f) for f in self.findings],
+            "evidence": {
+                "files_examined": list(
+                    (self.evidence or {}).get("files_examined", [])),
+                "rationale": (self.evidence or {}).get("rationale", ""),
+            },
         }
 
     @classmethod
     def from_dict(cls, d):
+        ev = d.get("evidence") or {}
         return cls(
             pr_ref=d["pr_ref"],
             approved=d["approved"],
             severity=d.get("severity", "none"),
             findings=[dict(f) for f in d.get("findings", [])],
+            evidence={
+                "files_examined": list(ev.get("files_examined", [])),
+                "rationale": ev.get("rationale", ""),
+            },
         )
 
 
@@ -232,28 +258,81 @@ REVIEW_MANIFEST = fc.StateManifest(reads=["verdicts"],
                                    emits=REVIEW_SIGNALS)
 
 
+# The minimum number of whitespace-separated words a rationale must carry to be
+# "substantive" — a one-word "ok"/"lgtm" is a rubber-stamp, not a rationale.
+_MIN_RATIONALE_WORDS = 3
+
+
+def review_evidence_valid(rv):
+    """Whether a ReviewVerdict dict carries VALID evidence (#255) — the
+    deterministic backstop that does NOT trust the model's `approved` flag.
+
+    Evidence is valid only when the verdict names at least one concrete file the
+    reviewer examined (`evidence.files_examined` non-empty) AND carries a
+    substantive (non-blank, at least `_MIN_RATIONALE_WORDS` words) `rationale`.
+    An approval lacking either is a contentless rubber-stamp.
+    """
+    ev = rv.get("evidence") or {}
+    files = ev.get("files_examined") or []
+    if not files:
+        return False
+    rationale = (ev.get("rationale") or "").strip()
+    return len(rationale.split()) >= _MIN_RATIONALE_WORDS
+
+
 def is_review_approved(review_verdicts, pr_ref):
     """True when `pr_ref` has an APPROVED ReviewVerdict in `review_verdicts`
-    (a list of ReviewVerdict dicts). The CONSERVATIVE default is NOT-approved:
-    a PR with NO review verdict (the reviewer never judged it) is treated as
-    not-approved, so INTEGRATE never merges a PR the REVIEW gate did not bless.
+    (a list of ReviewVerdict dicts) AND that approval carries VALID evidence
+    (#255). The CONSERVATIVE default is NOT-approved: a PR with NO review verdict
+    (the reviewer never judged it), or an approval without evidence (a
+    rubber-stamp), is treated as not-approved, so INTEGRATE never merges a PR the
+    REVIEW gate did not GENUINELY bless.
 
     `review_verdicts` may be None / empty (a route without REVIEW, or a tick the
     reviewer produced nothing) — then every PR reads as not-approved.
     """
     for rv in review_verdicts or []:
         if rv.get("pr_ref") == pr_ref:
-            return bool(rv.get("approved"))
+            return bool(rv.get("approved")) and review_evidence_valid(rv)
     return False
+
+
+def batch_is_untrustworthy(review_verdicts):
+    """Whether a whole review batch carries the fabricated rubber-stamp signature
+    (#255): EVERY verdict approved, ZERO findings across the batch, and NO valid
+    evidence anywhere. Such a batch is the hallmark of a reviewer that blanket-
+    approved without examining anything — INTEGRATE merges NONE of it.
+
+    A batch that carries valid evidence on any verdict, contains any rejection,
+    or records any finding is trustworthy. An empty/None batch is not
+    untrustworthy (there is simply nothing to merge).
+    """
+    rvs = review_verdicts or []
+    if not rvs:
+        return False
+    for rv in rvs:
+        if not rv.get("approved"):
+            return False
+        if rv.get("findings"):
+            return False
+        if review_evidence_valid(rv):
+            return False
+    return True
 
 
 def _review_skip_reason(review_verdicts, pr_ref):
     """A human-readable skip reason for a PR INTEGRATE withheld from merge because
-    REVIEW did not approve it. When a not-approved ReviewVerdict exists, summarize
-    its severity + each finding's note; when NO review verdict exists at all,
-    report that the PR was not reviewed (conservative not-approved)."""
+    REVIEW did not GENUINELY approve it. When the verdict is marked approved but
+    lacks valid evidence, the reason names the missing evidence (the #255
+    rubber-stamp case). When a not-approved ReviewVerdict exists, summarize its
+    severity + each finding's note. When NO review verdict exists at all, report
+    that the PR was not reviewed (conservative not-approved)."""
     for rv in review_verdicts or []:
         if rv.get("pr_ref") == pr_ref:
+            if rv.get("approved") and not review_evidence_valid(rv):
+                return ("review approval invalid: missing evidence "
+                        "(no files_examined / substantive rationale) — "
+                        "treated as a rubber-stamp, not merged")
             notes = [f.get("note", "") for f in rv.get("findings") or []
                      if f.get("note")]
             detail = "; ".join(notes) if notes else "no findings recorded"
@@ -530,11 +609,26 @@ class Integrate:
         permitted = self._permits_fn("merge", self._mode)
         result = IntegrationResult()
 
+        # The #255 deterministic backstop: a whole batch carrying the fabricated
+        # rubber-stamp signature (all approved, zero findings, no evidence) is
+        # UNTRUSTWORTHY — merge NONE of it; route every PR to skipped so the loop
+        # re-reviews next tick. Checked BEFORE the per-PR loop so one contentless
+        # blanket-approval can never drive an autonomous merge.
+        untrustworthy = batch_is_untrustworthy(review_verdicts)
+
         for vd in verdicts:
             pr_ref = vd["pr_ref"]
             if not vd["ok"]:
                 reason = "; ".join(vd.get("reasons") or []) or "verdict not ok"
                 result.skipped.append({"pr_ref": pr_ref, "reason": reason})
+                continue
+            if untrustworthy:
+                result.skipped.append({
+                    "pr_ref": pr_ref,
+                    "reason": ("review batch untrustworthy: all approvals are "
+                               "contentless rubber-stamps (no findings, no "
+                               "evidence) — merging nothing, re-review required"),
+                })
                 continue
             # The model-backed REVIEW gate (DESIGN §3.7): merge ONLY a PR the
             # reviewer APPROVED. A not-approved (or un-reviewed) PR is skipped
