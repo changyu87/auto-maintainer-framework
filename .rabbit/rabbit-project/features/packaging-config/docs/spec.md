@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.5.0
+version: 0.6.0
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -291,7 +291,7 @@ is added via git. Updates: `/plugin marketplace update`.
 Implemented and merged (`tdd_state: test-green`). The deterministic
 `build_plugin.py` assembly + `ship/` collection produce the committed,
 `.rabbit`-free `plugins/auto-maintainer/` tree + `.claude-plugin/marketplace.json`
-(plugin v0.5.0) with 68 passing tests. See `feature.json`.
+(plugin v0.6.0), regenerated from current src. See `feature.json`.
 
 ## Known gaps / deferred (explicit boundaries)
 
@@ -313,3 +313,11 @@ verbatim into `plugins/auto-maintainer/default-config/` by the existing
 fresh install's `.auto-maintainer/` (idempotent). `_PLUGIN_VERSION → 0.5.0`.
 Invariant: the built tree contains `default-config/{config.json,route.json,adapter-map.json}`
 with `mode=auto-merge` + the REVIEW route; the version test asserts 0.5.0.
+
+## Plugin minor v0.6.0 — release rebuild: deploy merged src fixes (#263/#264)
+
+The committed `plugins/auto-maintainer/` tree had drifted from src: merged fixes —
+#255 model-review evidence gate (`verify_integrate.review_evidence_valid` /
+`batch_is_untrustworthy`), #252 prioritize serialization, #259/#260/#261 — never
+reached the installed plugin. This release REBUILDS the committed tree from CURRENT
+src (no feature-src LOGIC change), bumps `_PLUGIN_VERSION → 0.6.0`, and adds a build-drift guard test asserting committed tree == fresh build.
