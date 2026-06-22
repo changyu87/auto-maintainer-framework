@@ -30,7 +30,12 @@ started" view (disposition IDLE, work_items 0) without creating any runtime file
    run with cwd = the user's project). The script reads the disposition marker
    and the persisted work_items count and prints one status line.
 
-2. Report the line it prints to the user verbatim (disposition, work_items, and the
-   runtime dir it read from). Do not hand-roll any Python or invent a status:
-   `status.py` owns all state reads, and this skill only runs it and relays the
-   output.
+2. Report the line it prints to the user verbatim (disposition, work_items, the
+   runtime dir it read from, and `awaiting`). Do not hand-roll any Python or
+   invent a status: `status.py` owns all state reads, and this skill only runs it
+   and relays the output.
+
+The `awaiting` field distinguishes "actively working" from "paused mid-tick":
+while a tick is paused at an agent-state awaiting a subagent's output, the
+disposition still reads RUNNING, so `awaiting=<state>` names that paused state
+(e.g. `awaiting=REVIEW`); when no tick is paused it reads `awaiting=none`.
