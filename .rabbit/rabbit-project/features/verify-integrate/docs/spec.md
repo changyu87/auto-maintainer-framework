@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.1.0
+version: 0.2.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult schemas reach a breaking major version.
 ---
@@ -56,6 +56,27 @@ CLEANUP    integration_result  —                    OK
 - **`IntegrationResult`** — `{ schema_version, merged: [{pr_ref, url}],
   skipped: [{pr_ref, reason}], errors: [{pr_ref, reason}] }`. Idempotent: an
   already-merged PR leaves the open set, so a re-run never double-merges.
+- **`ReviewVerdict`** — one model-backed verdict per open loop PR:
+  `{ schema_version, pr_ref, approved, severity, findings: [{kind, severity,
+  file, line, note}], evidence: {files_examined: [str], rationale: str} }`.
+  `evidence` is REQUIRED for an approval (#255): a genuine approval names the
+  files the reviewer examined (from `gh pr diff`) and a substantive rationale.
+
+## Evidence-gated trust (#255 — the deterministic REVIEW backstop)
+
+The REVIEW gate is model-backed, so its `approved` flag cannot be trusted alone:
+a model that rubber-stamps every PR (all `approved`, `findings: []`, no evidence)
+would otherwise drive autonomous merges. INTEGRATE ANDs a DETERMINISTIC trust
+check into its merge condition — it does NOT trust the model:
+
+- `review_evidence_valid(rv)` — an approval is valid only when `evidence` names
+  at least one `files_examined` entry AND a substantive (non-blank, multi-word)
+  `rationale`. `is_review_approved` ANDs this in, so an approved-without-evidence
+  verdict reads as not-approved and is never merged (a rubber-stamp is INVALID).
+- `batch_is_untrustworthy(review_verdicts)` — the fabricated-batch signature:
+  every verdict approved, zero findings, no valid evidence anywhere. INTEGRATE
+  merges NO PR from such a batch (all routed to `skipped`, re-review next tick).
+  A batch carrying evidence or any real rejection is trustworthy.
 
 ## VERIFY (slice 1)
 
