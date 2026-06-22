@@ -1,6 +1,6 @@
 ---
 feature: prioritize
-version: 0.2.0
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when ordering ceases to be deterministic (e.g. a model-backed prioritizer adapter replaces the default), or when the ExecutionPlan schema reaches a breaking major version. See spec.md / feature.json.
 ---
@@ -13,7 +13,7 @@ deprecation_criterion: Superseded when ordering ceases to be deterministic (e.g.
     "files": [
       "ExecutionPlan slot schema (versioned, machine-first: ordered + status)",
       "PRIORITIZE state: run(TickContext) -> StateResult, reads work_orders, writes execution_plan, emits OK|EMPTY (deterministic identity ordering + pending status backfill)",
-      "same-feature serialization (#214): at most one accepted order per target feature per tick (FIFO-first wins, the rest deferred); cross-feature orders stay parallel. Feature detected from feature:/component: prefixed labels + a Component: body line only (never generic labels, never the 'and' connector)"
+      "same-feature serialization (#214, #257): at most one accepted order per target feature per tick (FIFO-first wins, the rest deferred); cross-feature orders stay parallel. Feature detected from feature:/component: prefixed labels, a Component: body line, and a conventional title prefix (name: / type(scope):, for label-less issues) only (never generic labels, never a bare conventional-commit type, never the 'and' connector)"
     ],
     "scripts": [],
     "skills": []
