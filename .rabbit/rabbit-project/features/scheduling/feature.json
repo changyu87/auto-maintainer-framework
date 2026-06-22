@@ -10,5 +10,5 @@
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
   "tdd_state": "test-green",
   "updated": "2026-06-21",
-  "spec_change_reason": "#211 aggressive plug-and-play default: start.py seeds the shipped default-config (auto-merge + full acting route + REVIEW) into a fresh install; build ships the default-config assets; plugin v0.5.0."
+  "spec_change_reason": "#244 contract/spec drift correction (additive): corrected the stale tick-interval never-clause (#17 RESOLVED — start.py reads heartbeat.interval_minutes), documented the REVIEW gate (#209) + verify-integrate VERIFY/INTEGRATE/CLEANUP consumption in the contract, and aligned version labels (spec/contract frontmatter -> 0.17.0, contract start.py -> v0.5.0, start skill -> v0.3.0)."
 }

@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.16.0
+version: 0.17.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -173,7 +173,7 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      API) using the same runtime-path resolution. Owns the state write.
    These own ALL state operations so the skills never hand-roll Python.
 4. **Shipped control skills** (`ship/skills/{start,stop,status}`):
-   - `/auto-maintainer:start` (skill **v0.2.1**) — first invokes
+   - `/auto-maintainer:start` (skill **v0.3.0**) — first invokes
      `start.py --clear-only` to perform ONLY the FRESH-start latch decision (clear
      a latched `STOPPED` → `IDLE`, or REFUSE on `ABORTED` and stop), then runs
      tick #1 **through the executor** by invoking the `/auto-maintainer:tick`
