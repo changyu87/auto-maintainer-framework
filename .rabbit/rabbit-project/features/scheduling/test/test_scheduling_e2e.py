@@ -651,6 +651,111 @@ def test_status_line_includes_runtime_dir():
 
 
 # --------------------------------------------------------------------------
+# #254: status exposes a machine-visible `awaiting` signal so a reader can tell
+# "actively working" from "paused at an agent-state awaiting a subagent's
+# output" — a distinction the RUNNING disposition cannot give on its own. The
+# field names the paused agent-state from the durable tick checkpoint (the sole
+# source of truth for the paused dispatch), else `none`.
+# --------------------------------------------------------------------------
+
+# A TRIAGE agent-state wired so a fresh tick PAUSES at TRIAGE (mirrors the
+# agent yield/resume fixture): reads work_items -> dispatches a subagent ->
+# writes work_orders. The pause persists a tick checkpoint with next_state.
+_TRIAGE_AGENT_FOR_STATUS = {
+    "kind": "agent",
+    "manifest": {"reads": ["work_items"], "writes": ["work_orders"],
+                 "emits": ["OK", "EMPTY"]},
+    "dispatch": [
+        {
+            "subagent_type": "triage-doer",
+            "inputs": ["work_items"],
+            "writes": "work_orders",
+            "cardinality": "once",
+            "task": "Triage the work_items into accepted work_orders.",
+        }
+    ],
+    "signal": {"rule": "nonempty_else_empty"},
+}
+
+_AGENT_TRIAGE_ROUTE_FOR_STATUS = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "PULL", "TRIAGE", "PERSIST", "EXIT",
+               "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "TRIAGE"},
+        {"state": "PULL", "signal": "EMPTY", "next": "TRIAGE"},
+        {"state": "TRIAGE", "signal": "OK", "next": "PERSIST"},
+        {"state": "TRIAGE", "signal": "EMPTY", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+
+def _write_status_project_files(project_dir, route, amap):
+    cfg = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(cfg, exist_ok=True)
+    with open(os.path.join(cfg, "route.json"), "w") as f:
+        json.dump(route, f)
+    with open(os.path.join(cfg, "adapter-map.json"), "w") as f:
+        json.dump(amap, f)
+
+
+def test_status_reports_awaiting_none_when_no_tick_paused():
+    """#254: a completed (non-paused) tick leaves no checkpoint, so status
+    reports awaiting=none — the loop is not blocked on a subagent."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-await-none-")
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        rt.run_tick(source=_stub_source())  # pure-script default route -> DONE
+        line = st.status_line()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    assert "awaiting=none" in line, line
+
+
+def test_status_reports_awaiting_state_when_tick_paused_at_agent():
+    """#254: while a tick is paused at an agent-state (a durable checkpoint is
+    present, awaiting the subagent's output), status names that state in
+    awaiting=<state> — even though the disposition still reads RUNNING."""
+    project_dir = tempfile.mkdtemp(prefix="scheduling-await-paused-")
+    amap = dict(rt.DEFAULT_ADAPTER_MAP)
+    amap["TRIAGE"] = dict(_TRIAGE_AGENT_FOR_STATUS)
+    _write_status_project_files(project_dir, _AGENT_TRIAGE_ROUTE_FOR_STATUS, amap)
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = project_dir
+    try:
+        paused = rt.run_tick(source=_stub_source())  # pauses at TRIAGE
+        line = st.status_line()
+        _rt, state_path, _j = rt.resolve_runtime_paths()
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+    # The tick really did pause at TRIAGE and persist a checkpoint.
+    assert isinstance(paused, dict) and paused["status"] == "paused", paused
+    assert paused["state"] == "TRIAGE", paused
+    assert rt.persisted_tick_checkpoint(state_path), "no checkpoint persisted"
+    # The disposition stays RUNNING mid-tick; awaiting is what distinguishes it.
+    assert ld.Disposition.RUNNING in line, line
+    assert "awaiting=TRIAGE" in line, line
+    assert "awaiting=none" not in line, line
+
+
+# --------------------------------------------------------------------------
 # Self-contained import (#29/#30) — status.py and stop.py must resolve their
 # imports from the shipped flat `lib/` layout alone, where run_tick.py and the
 # consumed sibling modules are FLAT SIBLINGS.

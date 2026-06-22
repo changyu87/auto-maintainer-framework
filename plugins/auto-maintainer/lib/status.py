@@ -56,6 +56,14 @@ def status_line():
     diverges from the trace. The route source (#59) reuses run_tick.route_source
     — the SAME helper the trace uses — so status and the trace never diverge on
     whether an override is active.
+
+    The disposition stays RUNNING while a tick is mid-flight, so it cannot by
+    itself tell "actively working" from "paused at an agent-state, awaiting a
+    subagent's output" (#254). The ``awaiting`` field exposes that distinction
+    as a machine-visible signal: ``awaiting=<state>`` names the paused
+    agent-state when a durable tick checkpoint is present, else ``awaiting=none``.
+    It reads the SAME run_tick.persisted_tick_checkpoint that is the sole source
+    of truth for the paused dispatch, so status never diverges from the executor.
     """
     runtime_dir, state_path, _journal_path = rt.resolve_runtime_paths()
     disposition = ld.read_disposition(runtime_dir)
@@ -75,11 +83,17 @@ def status_line():
     last_reported = rt.persisted_last_reported(state_path)
     reported_field = (f"reported={last_reported.get('filed', 0)}/"
                       f"{last_reported.get('skipped', 0)}")
+    # Awaiting-agent surface (#254): name the paused agent-state when a durable
+    # tick checkpoint is present (the tick paused mid-flight to dispatch a
+    # subagent and is awaiting its output), else `none`. This is the
+    # machine-visible signal a RUNNING disposition cannot give on its own.
+    checkpoint = rt.persisted_tick_checkpoint(state_path)
+    awaiting = checkpoint.get("next_state", "none") if checkpoint else "none"
     line = (f"[status] disposition={disposition} work_items={work_items} "
             f"work_orders={work_orders} "
             f"execution_plan={execution_plan} handoffs={handoffs} "
             f"route={route_src} runtime_dir={runtime_dir} {gov_fields} "
-            f"{reported_field}")
+            f"{reported_field} awaiting={awaiting}")
     return line
 
 
