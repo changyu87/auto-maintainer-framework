@@ -9,7 +9,7 @@ a load-modify-save of config.json: it loads the current config via
 documented defaults, and a legacy governance.json is migrated), applies only the
 mentioned fields, validates them against safety_governance's CLOSED vocabularies,
 and writes the result back (pretty, sort_keys). It owns NO schema of its own —
-the schema is safety_governance's (GOVERNANCE_SCHEMA_VERSION = 2.0.0).
+the schema is safety_governance's (GOVERNANCE_SCHEMA_VERSION = 2.1.0).
 
 It is script-tier (spec-rules §1): all validation and the file write are
 deterministic here, so the ``/auto-maintainer:configure`` skill only relays the
