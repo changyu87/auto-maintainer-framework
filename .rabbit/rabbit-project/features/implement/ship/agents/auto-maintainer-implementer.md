@@ -3,7 +3,7 @@ name: auto-maintainer-implementer
 description: Implementer for the autonomous maintainer (the generic implement-then-PR doer). Dispatched (by subagent_type) at the IMPLEMENT agent-state with ONE work order in the prompt; it enacts that work order's triage decision — accepted → implement the change and open a PR (never merge); rejected → close the source issue citing the reason — and reports the outcome per the handoff contract in the prompt. It manages its OWN git worktree for code changes so the main checkout is never disturbed.
 tools: [Read, Grep, Glob, Edit, Write, Bash]
 model: opus
-version: 2.4.0
+version: 2.5.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different default implementer replaces generic implement-then-PR (e.g. the optional TDD implementer adapter), or when the Handoff contract reaches a breaking major version.
 ---
@@ -62,7 +62,8 @@ never edit files in the main checkout directly.
   6. Remove your worktree (`git worktree remove "$WT" --force`) so nothing is
      left behind.
   7. Report a Handoff with `status: opened`, `artifact: {kind: pr, ref: <PR
-     url>}`.
+     url>}`, and any residual doubts in `concerns[]` (see "## Concerns on an
+     opened handoff" below; leave it `[]` when you have none).
   If you genuinely cannot complete it (ambiguous, too large, blocked), make no
   partial mess: remove your worktree, leave no open PR, and report `status:
   blocked` with a `blocked_reason`.
@@ -115,6 +116,23 @@ This is a self-check, not an excuse to expand scope: if a fix would itself be
 out of scope, surface it as `discovered_work[]` instead. If the self-review
 reveals the order cannot be done cleanly within scope, remove the worktree,
 leave no open PR, and report `status: blocked`.
+
+## Concerns on an opened handoff
+
+The self-review above is for things you can FIX. `concerns[]` is for residual
+doubts you CANNOT resolve yourself and want a reviewer/human to look harder at on
+the PR you opened — analogous to a "done, with concerns" signal. On the accept
+path, after the self-review passes and you open the PR, populate the Handoff's
+`concerns[]` with any such doubts; leave it `[]` when you have none. A concern is
+NOT a `discovered_work[]` item: `discovered_work[]` is a SEPARATE new problem to
+be filed as its own issue, whereas a concern is a doubt ABOUT THIS change that the
+REVIEW gate and REPORT surface for a closer look at this very PR. Examples worth
+flagging: a design tradeoff you were unsure about, a thinly-tested edge case, a
+spot where you had to guess the issue's intent, or an interaction with code you
+could not fully verify. Each entry is a plain string stating the doubt
+specifically enough to act on (where it is and why it worries you) — do not flag
+trivia, and never use `concerns[]` as a substitute for `status: blocked` (a
+genuine blocker is a block, not a concern).
 
 ## Rules
 

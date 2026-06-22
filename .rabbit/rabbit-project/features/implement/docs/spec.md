@@ -131,6 +131,20 @@ the output path. Its rendered prompt is the complete handoff contract (the
   superpowers `subagent-driven-development` implementer "Before reporting"
   checklist; the interactive "ask questions mid-task" behaviour is deliberately
   NOT adopted — the unattended loop's equivalent is `status: blocked`.)
+- **Emits `concerns[]` on an opened handoff (v2.5.0,
+  auto-maintainer-framework#212).** The subagent is the PRODUCER of the Handoff's
+  `concerns[]` field (added to the schema in v1.1.0). On the accept path, after
+  the self-review passes and the PR is opened, it populates `concerns[]` with
+  residual doubts it could NOT resolve itself and wants the REVIEW gate / a human
+  to look harder at on this very PR (a "done, with concerns" signal). A concern
+  is distinct from a `discovered_work[]` item: `discovered_work[]` is a SEPARATE
+  new problem to be filed as its own issue, whereas a concern is a doubt about
+  THIS change (an unsure design tradeoff, a thinly-tested edge case, a guessed
+  intent, an unverified interaction). It is never a substitute for `status:
+  blocked` (a genuine blocker is a block, not a concern); when there are no
+  doubts, `concerns[]` stays `[]`. This is the producer half of #212 — the
+  schema field and the downstream REVIEW gate's "look harder at concerns" lens
+  already exist; without this the field is always empty in practice.
 - **`discovered_work` is for NEW problems only (v2.4.0,
   auto-maintainer-framework#224).** The subagent must NOT emit a discovery for
   anything it already knows is tracked or open — in particular the dependencies

@@ -97,3 +97,20 @@ def test_shipped_implementer_body_guards_discovered_work_against_known_open():
         "must not re-file as discoveries")
     assert "new problems only" in body, (
         "body must state discovered_work is for NEW problems only")
+
+
+def test_shipped_implementer_body_instructs_emitting_concerns():
+    """v2.5.0 (auto-maintainer-framework#212): the implementer is the PRODUCER of
+    the Handoff's `concerns[]` — residual doubts on an opened handoff for the
+    REVIEW gate / REPORT to surface. The body must instruct it to populate
+    `concerns[]` on the accept path and distinguish a concern (a doubt about THIS
+    change) from a `discovered_work[]` item (a separate new problem to file)."""
+    body = _body().lower().replace("*", "")
+    assert "concerns" in body, (
+        "body must instruct the implementer to emit concerns on an opened "
+        "handoff")
+    # a concern is tied to the opened (accept) path, not a substitute for a block
+    assert "opened" in body
+    # the concern-vs-discovered_work distinction must be drawn so the implementer
+    # does not conflate the two
+    assert "discovered_work" in body or "discovered work" in body
