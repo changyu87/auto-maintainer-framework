@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.5.0
+version: 0.6.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version). See spec.md / feature.json.
 ---
@@ -14,7 +14,9 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
       "WorkItem slot schema (versioned, machine-first)",
       "PULL state: run(TickContext) -> StateResult, writes work_items, emits OK|EMPTY",
       "WorkOrder slot schema (versioned, machine-first; decision-carrying)",
-      "TRIAGE state: run(TickContext) -> StateResult, reads work_items, writes work_orders, emits OK|EMPTY (deterministic validity gate)",
+      "TRIAGE state: run(TickContext) -> StateResult, reads work_items, writes work_orders + cross_cutting_risk, emits OK|EMPTY (deterministic validity gate)",
+      "CrossCuttingRisk slot schema (versioned, machine-first; {risk, features, reason}) + CROSS_CUTTING_RISK_SLOT descriptor; TRIAGE ALWAYS writes cross_cutting_risk (default no-risk) for VERIFY (DESIGN §3.5.9)",
+      "normalize_cross_cutting_risk(annotation) -> CrossCuttingRisk: pure normalizer/validator (risk=true only on >=2 distinct features + non-empty reason; rejects malformed input)",
       "DiscoveredIssue slot schema (versioned, machine-first; the outbound discovery shape)",
       "ReportResult schema (machine-first; the {filed, skipped_existing, errors} filing-batch outcome)",
       "file_discoveries(discoveries, sink, known_dedup_keys) -> ReportResult: pure REPORT orchestrator (out-of-band, not a routed state; scheduling.run_tick flushes through it)",

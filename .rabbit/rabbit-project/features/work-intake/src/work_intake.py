@@ -20,6 +20,10 @@ Public surface (slice 2 — TRIAGE validity gate):
   - TRIAGE_MANIFEST     — the TRIAGE state's {reads, writes, emits} manifest.
   - TRIAGE_SIGNALS      — the closed signal set TRIAGE may emit (OK | EMPTY).
   - Triage              — the TRIAGE state; run(TickContext) -> StateResult.
+  - CrossCuttingRisk    — the typed, versioned cross-cutting-risk slot schema.
+  - CROSS_CUTTING_RISK_SLOT — the fsm-contracts slot registration descriptor.
+  - normalize_cross_cutting_risk() — pure normalizer/validator for the batch
+    annotation (DESIGN §3.5.9; risk only on >=2 distinct features + a reason).
 
 The only non-deterministic edge — the live `gh` call — sits behind an
 INJECTABLE source (Pull(source=...)), so tests drive PULL with a stub over
@@ -29,7 +33,7 @@ validity gate; its only time-dependent edge (staleness) sits behind an
 INJECTABLE reference time (Triage(now=...)). Richer TRIAGE — dedup / decompose /
 order / the WHAT-generation seam — is deferred to slice 3+.
 
-Version: 0.4.0
+Version: 0.5.0
 Owner: changyu87
 Deprecation criterion: Superseded when the tracker-read model changes
   incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a
@@ -362,9 +366,105 @@ WORK_ORDERS_SLOT = {
 TRIAGE_SIGNALS = ["OK", "EMPTY"]
 
 # Per-state manifest (bounded-scope contract): reads work_items, writes
-# work_orders, emits OK | EMPTY.
-TRIAGE_MANIFEST = fc.StateManifest(reads=["work_items"], writes=["work_orders"],
-                                   emits=TRIAGE_SIGNALS)
+# work_orders AND cross_cutting_risk (DESIGN §3.5.9 — TRIAGE always writes the
+# risk slot so VERIFY can always read it), emits OK | EMPTY.
+TRIAGE_MANIFEST = fc.StateManifest(
+    reads=["work_items"],
+    writes=["work_orders", "cross_cutting_risk"],
+    emits=TRIAGE_SIGNALS)
+
+
+# --------------------------------------------------------------------------
+# Cross-cutting-risk slot (DESIGN §3.5.9). TRIAGE is the only state with the
+# whole-batch view, so it flags when accepted work orders' blast radii may
+# overlap across DIFFERENT features and writes this machine-first slot for
+# VERIFY (§3.7.6) to act on. Same-feature overlap is handled by serialization
+# (§3.8.6); this flag is the residual semantic cross-feature case.
+# --------------------------------------------------------------------------
+
+# The versioned CrossCuttingRisk schema (machine-first; bumped on a breaking
+# field-set change). Distinct from the feature + other slot versions.
+CROSS_CUTTING_RISK_SCHEMA_VERSION = "1.0.0"
+
+# risk=true requires at least this many DISTINCT affected features (a single
+# feature's overlap is serialization's job, not this cross-feature flag).
+_CROSS_CUTTING_MIN_FEATURES = 2
+
+
+@dataclass(eq=True)
+class CrossCuttingRisk:
+    """The whole-batch cross-cutting-risk verdict TRIAGE writes each tick.
+
+    `risk` is True only when accepted work orders' blast radii may overlap
+    across DIFFERENT features; `features` names the affected features and
+    `reason` the specific overlap. The default value is no-risk (risk=False,
+    empty features, empty reason). `to_dict`/`from_dict` give a machine-first,
+    versioned representation suitable for the `cross_cutting_risk` slot.
+    """
+
+    risk: bool
+    features: List[str] = field(default_factory=list)
+    reason: str = ""
+
+    def to_dict(self):
+        return {
+            "schema_version": CROSS_CUTTING_RISK_SCHEMA_VERSION,
+            "risk": bool(self.risk),
+            "features": list(self.features),
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            risk=bool(d["risk"]),
+            features=list(d.get("features", [])),
+            reason=d.get("reason", ""),
+        )
+
+
+# The fsm-contracts slot descriptor. `cross_cutting_risk` is an object slot (a
+# single CrossCuttingRisk dict); the slot version tracks the schema version.
+CROSS_CUTTING_RISK_SLOT = {
+    "name": "cross_cutting_risk",
+    "schema": {"type": "object"},
+    "version": CROSS_CUTTING_RISK_SCHEMA_VERSION,
+}
+
+
+def normalize_cross_cutting_risk(annotation):
+    """Fold a batch-level cross-cutting annotation into a normalized
+    CrossCuttingRisk. Pure and deterministic.
+
+    `annotation` is None (no risk) or a mapping `{features: [str], reason: str}`.
+    The verdict `risk` is True ONLY when the annotation names at least
+    _CROSS_CUTTING_MIN_FEATURES DISTINCT features AND carries a non-empty
+    (non-whitespace) reason; a single-feature, empty, or whitespace-only
+    annotation normalizes to no-risk. Malformed input — a non-mapping, a
+    non-list `features`, a non-string feature entry, or a non-string `reason` —
+    is REJECTED (ValueError/TypeError), so a bad annotation is locatable at this
+    boundary rather than silently swallowed (spec-rules §1).
+    """
+    if annotation is None:
+        return CrossCuttingRisk(risk=False, features=[], reason="")
+    if not isinstance(annotation, dict):
+        raise TypeError(
+            "cross-cutting annotation must be a mapping or None, got "
+            f"{type(annotation).__name__}")
+    features = annotation.get("features", [])
+    reason = annotation.get("reason", "")
+    if not isinstance(features, list):
+        raise TypeError("annotation 'features' must be a list")
+    if not all(isinstance(f, str) for f in features):
+        raise TypeError("annotation 'features' entries must be strings")
+    if not isinstance(reason, str):
+        raise TypeError("annotation 'reason' must be a string")
+    distinct = []
+    for f in features:
+        if f and f not in distinct:
+            distinct.append(f)
+    risk = len(distinct) >= _CROSS_CUTTING_MIN_FEATURES and bool(reason.strip())
+    return CrossCuttingRisk(risk=risk, features=distinct, reason=reason)
 
 # The staleness window: an item whose `updated_at` is older than this many days
 # relative to the reference time is gated out as stale. Hardcoded for slice 2;
@@ -392,8 +492,9 @@ def _parse_iso(ts):
 class Triage:
     """The TRIAGE state. Reads the `work_items` slot, applies a deterministic
     validity gate to each WorkItem, maps each ACCEPTED item 1:1 to a
-    WorkOrder(decision="accepted"), writes the `work_orders` slot, and emits OK
-    if any were accepted else EMPTY.
+    WorkOrder(decision="accepted"), writes the `work_orders` slot AND ALWAYS the
+    `cross_cutting_risk` slot (DESIGN §3.5.9 — a default no-risk verdict when no
+    batch annotation is supplied), and emits OK if any were accepted else EMPTY.
 
     The validity gate (pure rules, no network, no AI):
       - well-formed: a non-empty title  (else rejected "malformed: no title");
@@ -406,8 +507,13 @@ class Triage:
     staleness deterministically (spec-rules §1).
     """
 
-    def __init__(self, now=None):
+    def __init__(self, now=None, cross_cutting_annotation=None):
         self._now = now if now is not None else datetime.now(timezone.utc)
+        # The batch-level cross-cutting annotation (DESIGN §3.5.9), normalized
+        # once at construction so a malformed annotation is rejected at the
+        # boundary rather than at run time. None -> a default no-risk verdict.
+        self._cross_cutting = normalize_cross_cutting_risk(
+            cross_cutting_annotation)
 
     def classify(self, item):
         """Apply the validity gate to one WorkItem, returning (decision, reason)
@@ -444,7 +550,13 @@ class Triage:
                 created_at=item.created_at,
                 comments=[dict(c) for c in item.comments],
             ))
-        writes = {"work_orders": [order.to_dict() for order in accepted]}
+        # ALWAYS write the cross_cutting_risk slot (DESIGN §3.5.9) — a default
+        # no-risk verdict when no annotation — so VERIFY (§3.7.6) can always
+        # read it regardless of this tick's batch.
+        writes = {
+            "work_orders": [order.to_dict() for order in accepted],
+            "cross_cutting_risk": self._cross_cutting.to_dict(),
+        }
         signal = "OK" if accepted else "EMPTY"
         return fc.StateResult(signal=signal, writes=writes)
 

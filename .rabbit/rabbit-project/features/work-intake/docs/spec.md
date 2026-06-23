@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.5.0
+version: 0.6.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -86,6 +86,28 @@ Turn raw `work_items` into validated `work_orders`. Slice 2 implements a
    writes: ["work_orders"], emits: ["OK","EMPTY"]}`. Script-tier, no AI.
 3. **Determinism** — pure rules over the in-memory `work_items`; no network, no
    AI. The stale window is hardcoded (config deferred, #17-style).
+
+## Cross-cutting-risk slot (DESIGN §3.5.9, FT-B)
+
+TRIAGE is the only state with the whole-batch view, so it flags when accepted
+work orders' blast radii may overlap across **different** features and writes a
+machine-first `cross_cutting_risk` slot for VERIFY (§3.7.6) to act on.
+
+1. **`CrossCuttingRisk` slot schema** — `{ risk: bool, features: [str], reason }`,
+   versioned (`schema_version`); `CROSS_CUTTING_RISK_SLOT` mirrors
+   `WORK_ORDERS_SLOT`. The default value is no-risk (`risk=false`, empty
+   `features`, empty `reason`).
+2. **`TRIAGE` ALWAYS writes the slot.** Every `Triage.run` writes
+   `cross_cutting_risk` (default no-risk when no annotation) so VERIFY can always
+   read it. `TRIAGE_MANIFEST.writes` declares both `work_orders` and
+   `cross_cutting_risk`.
+3. **`normalize_cross_cutting_risk(annotation)`** — a pure, deterministic
+   normalizer/validator folding a batch-level annotation `{features, reason}`
+   into a `CrossCuttingRisk`: `risk=true` ONLY when ≥2 DISTINCT features AND a
+   non-empty reason; single-feature / empty / whitespace → `risk=false`.
+   Malformed input (non-mapping, non-list features, non-string entries/reason) is
+   REJECTED (`ValueError`/`TypeError`). Same-feature overlap is handled by
+   serialization (§3.8.6); this flag is the residual semantic cross-feature case.
 
 ## Shipped subagent — the TRIAGE judge
 

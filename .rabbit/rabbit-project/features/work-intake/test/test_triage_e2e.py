@@ -80,6 +80,11 @@ def _fresh_ctx(work_items=None):
         wi.WORK_ORDERS_SLOT["schema"],
         version=wi.WORK_ORDERS_SLOT["version"],
     )
+    ctx.register_slot(
+        wi.CROSS_CUTTING_RISK_SLOT["name"],
+        wi.CROSS_CUTTING_RISK_SLOT["schema"],
+        version=wi.CROSS_CUTTING_RISK_SLOT["version"],
+    )
     if work_items is not None:
         ctx.write("work_items", [it.to_dict() for it in work_items])
     return ctx
@@ -125,7 +130,8 @@ def test_triage_manifest_declares_reads_writes_emits():
     m = wi.TRIAGE_MANIFEST
     assert isinstance(m, fc.StateManifest)
     assert m.reads == ("work_items",)
-    assert m.writes == ("work_orders",)
+    # TRIAGE writes work_orders AND the cross_cutting_risk slot (DESIGN §3.5.9).
+    assert m.writes == ("work_orders", "cross_cutting_risk")
     assert set(m.emits) == {"OK", "EMPTY"}
 
 
@@ -295,6 +301,9 @@ def test_pull_then_triage_pipeline_e2e():
     ctx.register_slot(
         wi.WORK_ORDERS_SLOT["name"], wi.WORK_ORDERS_SLOT["schema"],
         version=wi.WORK_ORDERS_SLOT["version"])
+    ctx.register_slot(
+        wi.CROSS_CUTTING_RISK_SLOT["name"], wi.CROSS_CUTTING_RISK_SLOT["schema"],
+        version=wi.CROSS_CUTTING_RISK_SLOT["version"])
 
     # PULL fixture: one fresh open issue, updated just before REF_NOW so it
     # survives the staleness gate.
