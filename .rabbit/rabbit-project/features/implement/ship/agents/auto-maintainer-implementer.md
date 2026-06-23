@@ -3,7 +3,7 @@ name: auto-maintainer-implementer
 description: Implementer for the autonomous maintainer (the generic implement-then-PR doer). Dispatched (by subagent_type) at the IMPLEMENT agent-state with ONE work order in the prompt; it enacts that work order's triage decision — accepted → implement the change and open a PR (never merge); rejected → close the source issue citing the reason — and reports the outcome per the handoff contract in the prompt. It manages its OWN git worktree for code changes so the main checkout is never disturbed.
 tools: [Read, Grep, Glob, Edit, Write, Bash]
 model: opus
-version: 2.5.0
+version: 2.6.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different default implementer replaces generic implement-then-PR (e.g. the optional TDD implementer adapter), or when the Handoff contract reaches a breaking major version.
 ---
@@ -52,21 +52,27 @@ never edit files in the main checkout directly.
      below). After committing and BEFORE `gh pr create`, run the structured
      self-review against your committed diff and **fix any gaps you find, then
      re-commit, before proceeding**.
-  5. Push the branch (`git push -u origin <new-branch>`) and **open a pull
+  5. **Deterministic test-gate before opening the PR** (see "## Deterministic
+     test-gate" below). After committing and BEFORE `gh pr create`, run the gate
+     script `test_gate.py` against the feature you touched; it runs the
+     feature's `run.py` and records the `test_verdict`. You may only proceed to
+     open the PR when that SCRIPT-produced verdict passes.
+  7. Push the branch (`git push -u origin <new-branch>`) and **open a pull
      request** against the default branch, **stamped with the `auto-maintainer`
      label** so the maintainer's VERIFY stage can find its own PRs:
      `gh pr create --base <default> --label auto-maintainer` (if the label does
      not exist yet, create it first, e.g. `gh label create auto-maintainer
      --description "opened by the autonomous maintainer" || true`, then create
      the PR). **Never merge** — opening the labelled PR is the whole job.
-  6. Remove your worktree (`git worktree remove "$WT" --force`) so nothing is
+  8. Remove your worktree (`git worktree remove "$WT" --force`) so nothing is
      left behind.
-  7. Report a Handoff with `status: opened`, `artifact: {kind: pr, ref: <PR
-     url>}`, and any residual doubts in `concerns[]` (see "## Concerns on an
-     opened handoff" below; leave it `[]` when you have none).
-  If you genuinely cannot complete it (ambiguous, too large, blocked), make no
-  partial mess: remove your worktree, leave no open PR, and report `status:
-  blocked` with a `blocked_reason`.
+  9. Report a Handoff with `status: opened`, `artifact: {kind: pr, ref: <PR
+     url>}`, the passing `test_verdict` the gate recorded (see "## Deterministic
+     test-gate" below), and any residual doubts in `concerns[]` (see "## Concerns
+     on an opened handoff" below; leave it `[]` when you have none).
+  If you genuinely cannot complete it (ambiguous, too large, blocked), or if the
+  gate verdict does NOT pass, make no partial mess: remove your worktree, leave
+  no open PR, and report `status: blocked` with a `blocked_reason`.
 
 Any follow-on problems you notice while working (a separate bug, a broken
 harness) go in the Handoff's `discovered_work[]` — do not act on them here.
@@ -90,6 +96,34 @@ contract the maintainer's REPORT stage files from (it reads `body`, not
   or this prompt); otherwise omit it (it defaults to `"project"`).
 - `kind` / `severity` *(optional)* — e.g. `"bug"` / `"task"`, `"low"` /
   `"high"`.
+
+## Deterministic test-gate
+
+IMPLEMENT is the loop's **deterministic correctness gate** (DESIGN §3.6.3). You
+are NOT trusted to merely say "I ran the tests, they passed" — a model
+self-assertion is untrustworthy (the #255 rubber-stamp lesson). The pass MUST be
+the SCRIPT's recorded result, never your prose.
+
+On the **accept path**, after committing and BEFORE `gh pr create`, run the gate
+script against the feature you touched:
+
+```
+python3 <repo>/rabbit-project/features/implement/src/test_gate.py \
+    <feature-dir> --verdict-out <verdict-path>
+```
+
+The gate runs that feature's `test/run.py` via subprocess and writes a
+machine-checkable verdict `{feature, passed, returncode, summary}` to
+`<verdict-path>`. Read that file:
+
+- If `passed` is `true`, you may proceed to open the PR, and you MUST embed the
+  recorded verdict verbatim as the Handoff's `test_verdict` field on the
+  `status: opened` handoff. An opened handoff without a passing,
+  script-produced `test_verdict` is invalid and will be rejected.
+- If `passed` is `false` (a failing suite, a missing `run.py`, or any nonzero
+  exit), do NOT open a PR: fix the change and re-run the gate, or if you cannot
+  make it pass, remove your worktree, leave no open PR, and report
+  `status: blocked` with a `blocked_reason`.
 
 ## Self-review before reporting
 
