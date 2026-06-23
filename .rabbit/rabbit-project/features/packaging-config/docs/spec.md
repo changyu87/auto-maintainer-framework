@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.6.0
+version: 0.7.0
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -321,3 +321,13 @@ The committed `plugins/auto-maintainer/` tree had drifted from src: merged fixes
 `batch_is_untrustworthy`), #252 prioritize serialization, #259/#260/#261 — never
 reached the installed plugin. This release REBUILDS the committed tree from CURRENT
 src (no feature-src LOGIC change), bumps `_PLUGIN_VERSION → 0.6.0`, and adds a build-drift guard test asserting committed tree == fresh build.
+
+## Plugin minor v0.7.0 — loop-redesign final release: ship test_gate.py
+
+Adds implement's `test_gate.py` (the IMPLEMENT doer's deterministic test gate;
+stdlib-only, no sibling import) to `_LIBS` — the PURE byte-copied set — so it
+lands at `plugins/auto-maintainer/lib/test_gate.py` byte-identical to its
+`implement/src/test_gate.py` source. `_PLUGIN_VERSION → 0.7.0`; the committed
+tree is regenerated from current src. Invariant: the built tree ships
+`lib/test_gate.py` byte-identical with no `.rabbit` leak; version 0.7.0 is
+consistent across `plugin.json` + `marketplace.json`; still idempotent.
