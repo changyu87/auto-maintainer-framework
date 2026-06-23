@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.17.0
+version: 0.19.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -84,6 +84,41 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
   empties also flow through the agent checkpoint/restore so a multi-resume tick is
   equally safe. Regression-tested on a `VERIFY EMPTY → PERSIST` route (no open
   loop PRs) and a `TRIAGE EMPTY` route (no work orders).
+
+## Redesigned-loop reconciliation (FT-E): cross-cutting risk, advisory REVIEW, thin INTEGRATE
+
+Reconciles scheduling with the redesigned verify-integrate + work-intake
+contracts (loop redesign FT-A/B/C/D) so the close-the-loop route runs end-to-end.
+verify-integrate + work-intake + safety-governance are consumed UNCHANGED; edits
+live ONLY in `run_tick.py` + `adapter_map_config.py`.
+
+- **VERIFY reads `cross_cutting_risk`, writes `cross_check` (FT-B/D §3.5.9/§3.7.6).**
+  `_seed_context` registers + seeds an empty no-risk `cross_cutting_risk` default
+  when TRIAGE **or** VERIFY is routed (a VERIFY-without-TRIAGE route still has the
+  slot to read), and an empty `cross_check` (`ran=False`) when VERIFY is routed.
+  `cross_cutting_risk` is in the data-readiness `initial` set. Without it a TRIAGE
+  or VERIFY tick crashed with `ContractError("slot 'cross_cutting_risk' is not
+  registered")`.
+- **REVIEW is ADVISORY — `review_verdicts` retired for `review_findings` (FT-C
+  §3.7.7).** REVIEW reads `verdicts` and writes the advisory `review_findings`
+  slot (DiscoveredIssue-conforming records with stable `dedup_key`s). The default
+  `make_review` is a no-op writing an EMPTY `review_findings` list (signal EMPTY).
+  REVIEW is NO LONGER a merge gate. `_seed_context` seeds `review_findings` only
+  when REVIEW is routed; `review_verdicts` is no longer seeded/mapped/persisted.
+  `persisted_review_findings` replaces `persisted_review_verdicts`;
+  `REVIEW_VERDICTS_KEY` -> `REVIEW_FINDINGS_KEY`.
+- **INTEGRATE is a THIN merge (FT-C/D).** Reads ONLY `verdicts`; merges each `ok`
+  verdict's PR via `sg.permits('merge', mode)` + `merge_guardrails` with NO
+  review-approval read (the merge rests on IMPLEMENT's gate + VERIFY + guardrails
+  + the trust ladder). An ok PR merges at `auto-merge` even with no findings;
+  `propose` records the would-merge intent under `skipped`. The `make_integrate`
+  factory binding is unchanged.
+- **`review_findings` flush through REPORT.** At the terminal the flush gathers
+  the `review_findings` slot as an ADDITIONAL discoveries source into
+  `_gather_discoveries`/`_flush_report`, beside `handoffs[].discovered_work`.
+  Being DiscoveredIssue-conforming, they file via `wi.file_discoveries` on the
+  SAME journaled-idempotency + dedup-vs-open (`known_open=work_items`) path — NOT
+  a parallel mechanism. `AGENT_PORT_TEMPLATES['REVIEW']` writes `review_findings`.
 
 ## Governance wiring (slice 1: load + surface + persist)
 

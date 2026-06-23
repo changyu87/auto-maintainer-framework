@@ -1,5 +1,37 @@
 # scheduling — Changelog
 
+## feature 0.19.0 — 2026-06-21
+
+- **Redesigned-loop reconciliation (FT-E).** scheduling now consumes the
+  redesigned verify-integrate (FT-C/D) + work-intake (FT-B) contracts so the
+  close-the-loop route is runnable end-to-end.
+  - **TRIAGE/VERIFY tick crash fixed.** `_seed_context` registers + seeds an
+    empty no-risk `cross_cutting_risk` default whenever TRIAGE OR VERIFY is
+    routed, and an empty `cross_check` whenever VERIFY is routed.
+    `cross_cutting_risk` is added to the data-readiness `initial` set. Previously
+    a TRIAGE or VERIFY tick raised `ContractError("slot 'cross_cutting_risk' is
+    not registered")` and crashed the whole tick.
+  - **REVIEW is ADVISORY — `review_verdicts` retired for `review_findings`.**
+    `make_review` writes an EMPTY `review_findings` list (signal EMPTY); the
+    `_SLOT_SCHEMAS` map, the `_seed_context` seeding (REVIEW-routed only), and the
+    terminal persistence all migrate to `review_findings`.
+    `REVIEW_VERDICTS_KEY` -> `REVIEW_FINDINGS_KEY` (`'review_findings'`),
+    `persisted_review_verdicts` -> `persisted_review_findings`. `review_verdicts`
+    is no longer seeded, mapped, or persisted.
+  - **INTEGRATE is a thin merge.** It reads ONLY `verdicts` and merges each `ok`
+    verdict's PR at `auto-merge` WITHOUT any review-approval read (the merge rests
+    on IMPLEMENT's deterministic gate + VERIFY + guardrails + the trust ladder).
+    `make_integrate`'s factory binding is unchanged.
+  - **`review_findings` flush through REPORT.** The terminal REPORT flush gathers
+    the `review_findings` slot as an ADDITIONAL discoveries source into
+    `_flush_report`/`_gather_discoveries`; the findings (already DiscoveredIssue-
+    conforming, with a stable `dedup_key`) file via `wi.file_discoveries` on the
+    SAME journaled-idempotency + dedup-vs-open (`known_open=work_items`) path as
+    handoff discoveries.
+  - **`AGENT_PORT_TEMPLATES['REVIEW']` writes `review_findings`** (matching
+    `REVIEW_MANIFEST`).
+  - verify-integrate / work-intake / safety-governance are consumed UNCHANGED.
+
 ## feature 0.18.0 — 2026-06-21
 
 - **REPORT dedup-vs-open wiring (#224, DESIGN §3.5.4).** `_flush_report` now

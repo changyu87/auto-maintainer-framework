@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0.0",
   "owner": "changyu87",
-  "deprecation_criterion": "Superseded by the next scheduling housekeep wave's baseline; single-use measured-reduction reference for this doc-slim wave.",
-  "description": "Pre-wave line counts of scheduling doc surfaces, captured at commit 7a42f9c (before the housekeep measured doc-reduction wave). The housekeep e2e test asserts the current docs are NOT larger than these baselines (spec.md strictly smaller, contract.md unchanged), and that the load-bearing tokens survived the slim.",
-  "baseline_commit": "7a42f9c",
+  "deprecation_criterion": "Superseded by the next scheduling housekeep wave's baseline; single-use measured-reduction reference, re-anchored after the FT-E loop-redesign reconciliation added a spec section.",
+  "description": "Doc-surface line counts of scheduling. The prior wave slimmed docs/spec.md to 871 lines; the FT-E loop-redesign reconciliation (a real behavior cycle) additively re-anchors spec.md, the same way #244 retired the deletion wave's contract-unchanged gate. The housekeep e2e test now asserts the current docs are NOT larger than these re-anchored baselines and that the load-bearing tokens survived. The historical pre-wave spec baseline (commit 7a42f9c) was 871.",
+  "baseline_commit": "FT-E",
   "docs": {
-    "docs/spec.md": 871,
+    "docs/spec.md": 900,
     "docs/contract.md": 96
   }
 }

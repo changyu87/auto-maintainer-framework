@@ -43,7 +43,7 @@ _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
              "lifecycle-dispositions", "work-intake", "adapter-wiring",
              "prioritize", "implement", "agent-dispatch", "safety-governance",
-             "observability"):
+             "observability", "verify-integrate"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
@@ -664,6 +664,189 @@ def test_flush_report_dry_run_would_file_excludes_open_duplicates():
         work_items=open_items)
     assert sink.calls == [], sink.calls
     assert (filed, skipped, errored) == (0, 1, 0), (filed, skipped, errored)
+
+
+# ==========================================================================
+# Behaviour 11 (FT-E) — REVIEW's advisory review_findings flush through the
+# injected REPORT sink. REVIEW is a NON-acting agent-state writing
+# review_findings (DiscoveredIssue-conforming records with a stable dedup_key).
+# At the terminal the REPORT flush gathers them as an ADDITIONAL discoveries
+# source and files them via the SAME journaled-idempotency + dedup-vs-open
+# (known_open=work_items) path as handoffs[].discovered_work — NOT a parallel
+# filing mechanism. dedup-vs-open is honored.
+# ==========================================================================
+
+import verify_integrate as vi  # noqa: E402
+import adapter_map_config as amc  # noqa: E402
+
+
+# A route with REVIEW as the agent gate between VERIFY and INTEGRATE, no
+# IMPLEMENT/TRIAGE agent so the FIRST (and only) pause is REVIEW:
+# GUARD->DRAIN->PULL->VERIFY->REVIEW->INTEGRATE->CLEANUP->PERSIST->EXIT.
+_REVIEW_AGENT_ROUTE = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "PULL", "VERIFY", "REVIEW", "INTEGRATE",
+               "CLEANUP", "PERSIST", "EXIT", "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "VERIFY"},
+        {"state": "PULL", "signal": "EMPTY", "next": "VERIFY"},
+        {"state": "VERIFY", "signal": "OK", "next": "REVIEW"},
+        {"state": "VERIFY", "signal": "EMPTY", "next": "REVIEW"},
+        {"state": "REVIEW", "signal": "OK", "next": "INTEGRATE"},
+        {"state": "REVIEW", "signal": "EMPTY", "next": "INTEGRATE"},
+        {"state": "INTEGRATE", "signal": "OK", "next": "CLEANUP"},
+        {"state": "CLEANUP", "signal": "OK", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+_OK_PR = {
+    "number": 42,
+    "url": "https://github.com/acme/widget/pull/42",
+    "headRefName": "auto-maintainer/fix-42",
+    "baseRefName": "main",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+}
+
+
+def _patch_vi_seams():
+    saved = {"open": vi.gh_open_pr_source,
+             "branch": vi.gh_default_branch_source,
+             "merge": vi.gh_pr_merge_sink}
+
+    def _open(repo=None, label=vi.LOOP_PR_LABEL):
+        return [_OK_PR]
+
+    def _branch(repo=None):
+        return "main"
+
+    def _merge(pr_ref, repo=None):
+        return {"pr_ref": pr_ref, "url": ""}
+
+    vi.gh_open_pr_source = _open
+    vi.gh_default_branch_source = _branch
+    vi.gh_pr_merge_sink = _merge
+
+    def restore():
+        vi.gh_open_pr_source = saved["open"]
+        vi.gh_default_branch_source = saved["branch"]
+        vi.gh_pr_merge_sink = saved["merge"]
+    return restore
+
+
+def _write_review_agent_map(project_dir):
+    entry = amc._build_agent_entry(
+        "REVIEW", "auto-maintainer:auto-maintainer-reviewer")
+    amap = dict(rt.DEFAULT_ADAPTER_MAP)
+    amap["REVIEW"] = entry
+    _write_project_map(project_dir, amap)
+
+
+def _review_finding(slug, title, body):
+    """A DiscoveredIssue-conforming review_findings record (vi.ReviewFinding
+    shape) with a stable dedup_key."""
+    return vi.review_finding_record(
+        "acme/widget#42", title, body, "bug", "low", slug)
+
+
+def test_review_findings_flush_through_report_sink():
+    project_dir = tempfile.mkdtemp(prefix="sched-revfind-")
+    _write_project_route(project_dir, _REVIEW_AGENT_ROUTE)
+    _write_review_agent_map(project_dir)
+    _write_governance(project_dir, {"mode": "auto-merge"})
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+
+    sink = _RecordingSink()
+    restore = _patch_vi_seams()
+    try:
+        paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                             state_path=state_path, journal_path=journal_path,
+                             source=_stub_source(), now=_DAY1)
+        assert paused["status"] == "paused", paused
+        assert paused["state"] == "REVIEW", paused
+        d = paused["dispatches"][0]
+        assert d["writes"] == "review_findings", d
+        findings = [_review_finding("over-built", "PR over-builds the fix",
+                                    "adds unused config")]
+        with open(d["output_path"], "w") as f:
+            json.dump(findings, f)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sig = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                              state_path=state_path, journal_path=journal_path,
+                              source=_stub_source(), now=_DAY1, resume=True,
+                              report_sink=sink)
+        trace = buf.getvalue()
+    finally:
+        restore()
+    assert sig == "idle", sig
+    # The review finding flowed through the SAME REPORT sink as handoff
+    # discoveries (one finding filed).
+    assert len(sink.calls) == 1, sink.calls
+    filed, repo = sink.calls[0]
+    assert isinstance(filed, wi.DiscoveredIssue), filed
+    assert filed.title == "PR over-builds the fix", filed
+    # The finding's own stable dedup_key (review:<pr>:<slug>) is preserved.
+    assert filed.dedup_key == "review:acme/widget#42:over-built", filed
+    assert "reported=1/0" in trace, trace
+    # The report ledger recorded the finding's dedup_key (journaled idempotency).
+    ledger = rt.persisted_report_ledger(state_path)
+    assert "review:acme/widget#42:over-built" in ledger, ledger
+    # The advisory finding did NOT block the merge (REVIEW is advisory).
+    ir = ds.DurableState(state_path).load().get("integration_result", {})
+    assert len(ir.get("merged", [])) == 1, ir
+
+
+def test_review_finding_matching_open_work_item_is_skipped():
+    """A review finding whose subject DUPLICATES an already-open PULLed issue is
+    NOT filed (dedup-vs-open honored on the SAME known_open path as handoff
+    discoveries)."""
+    # The PULL fixture issue #7 title is "Crash on empty config"; a finding with
+    # the same subject must fold into skipped, not file a duplicate.
+    project_dir = tempfile.mkdtemp(prefix="sched-revfind-dup-")
+    _write_project_route(project_dir, _REVIEW_AGENT_ROUTE)
+    _write_review_agent_map(project_dir)
+    _write_governance(project_dir, {"mode": "auto-merge"})
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+
+    sink = _RecordingSink()
+    restore = _patch_vi_seams()
+    try:
+        paused = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                             state_path=state_path, journal_path=journal_path,
+                             source=_stub_source(), now=_DAY1)
+        d = paused["dispatches"][0]
+        findings = [_review_finding("dup", "Crash on empty config",
+                                    "same subject as the open issue")]
+        with open(d["output_path"], "w") as f:
+            json.dump(findings, f)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                        state_path=state_path, journal_path=journal_path,
+                        source=_stub_source(), now=_DAY1, resume=True,
+                        report_sink=sink)
+        trace = buf.getvalue()
+    finally:
+        restore()
+    # The finding duplicated an open issue -> NOT filed; folds into skipped.
+    assert sink.calls == [], sink.calls
+    assert "reported=0/1" in trace, trace
+    assert rt.persisted_report_ledger(state_path) == {}
 
 
 if __name__ == "__main__":
