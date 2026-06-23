@@ -129,6 +129,9 @@ _LOAD_BEARING_DOCS = (
     "accepted",
     "rejected",
     "auto-maintainer-triager",
+    # FT-B — TRIAGE cross-cutting-risk slot (DESIGN §3.5.9).
+    "CrossCuttingRisk",
+    "cross_cutting_risk",
     # Slice 3 — REPORT public surface (documented in spec; must survive).
     "DiscoveredIssue",
     "ReportResult",

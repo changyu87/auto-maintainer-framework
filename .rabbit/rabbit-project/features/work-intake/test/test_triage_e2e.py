@@ -80,6 +80,11 @@ def _fresh_ctx(work_items=None):
         wi.WORK_ORDERS_SLOT["schema"],
         version=wi.WORK_ORDERS_SLOT["version"],
     )
+    ctx.register_slot(
+        wi.CROSS_CUTTING_RISK_SLOT["name"],
+        wi.CROSS_CUTTING_RISK_SLOT["schema"],
+        version=wi.CROSS_CUTTING_RISK_SLOT["version"],
+    )
     if work_items is not None:
         ctx.write("work_items", [it.to_dict() for it in work_items])
     return ctx
@@ -295,6 +300,9 @@ def test_pull_then_triage_pipeline_e2e():
     ctx.register_slot(
         wi.WORK_ORDERS_SLOT["name"], wi.WORK_ORDERS_SLOT["schema"],
         version=wi.WORK_ORDERS_SLOT["version"])
+    ctx.register_slot(
+        wi.CROSS_CUTTING_RISK_SLOT["name"], wi.CROSS_CUTTING_RISK_SLOT["schema"],
+        version=wi.CROSS_CUTTING_RISK_SLOT["version"])
 
     # PULL fixture: one fresh open issue, updated just before REF_NOW so it
     # survives the staleness gate.
