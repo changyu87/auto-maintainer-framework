@@ -1,6 +1,6 @@
 {
   "name": "verify-integrate",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/verify-integrate/src/**"

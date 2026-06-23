@@ -494,24 +494,21 @@ def gh_default_branch_source(repo=None, runner=subprocess.run):
     return out.stdout.strip()
 
 
-# The repo-relative root under which sibling feature directories live. The default
-# complement-runner resolves `<features_root>/<feature>/test/run.py`. It is
-# computed once relative to this module's location (src/ -> feature dir -> the
-# `rabbit-project/features` parent) so the resolver locates real siblings in
-# production; tests inject a `features_root` pointing at a fixture tree.
-_DEFAULT_FEATURES_ROOT = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-def feature_run_py_path(feature, features_root=None):
+def feature_run_py_path(feature, features_root):
     """Deterministic resolver of a named feature's `test/run.py`.
 
-    Returns `<features_root>/<feature>/test/run.py`. `features_root` defaults to
-    the sibling-features directory this module lives under; tests inject a fixture
-    root so they never touch real sibling suites or the network. Pure: it computes
-    a path string, it does not check the filesystem (the runner does)."""
-    root = features_root if features_root is not None else _DEFAULT_FEATURES_ROOT
-    return os.path.join(root, feature, "test", "run.py")
+    Returns `<features_root>/<feature>/test/run.py`. `features_root` is a
+    runtime-injected locator and is REQUIRED — there is no source-tree default:
+    the shipped, self-contained plugin lib cannot assume its own on-disk layout,
+    so the caller (scheduling) injects the sibling-features root. A None
+    `features_root` raises rather than silently joining onto a path that does not
+    exist in the plugin tree. Pure: it computes a path string, it does not check
+    the filesystem (the runner does)."""
+    if features_root is None:
+        raise ValueError(
+            "feature_run_py_path requires a non-None features_root "
+            "(runtime-injected locator; no source-tree default)")
+    return os.path.join(features_root, feature, "test", "run.py")
 
 
 def _summary_line(text):
@@ -646,6 +643,16 @@ def _cross_break_reason(failing_features, triager_reason):
             f"(triager overlap reason: {triager_reason})")
 
 
+# The reason stamped on cross_check + every verdict when a cross-cutting batch is
+# flagged (risk=True) but the complement CANNOT run because `features_root` is
+# unconfigured. The flagged risk is then UNVERIFIABLE, so VERIFY conservatively
+# gates — an unverifiable at-risk batch must never auto-merge (§3.7.1). Loud and
+# recorded, never silent.
+_UNVERIFIABLE_REASON = (
+    "complement run skipped: features_root not configured — "
+    "cross-cutting risk unverifiable")
+
+
 class Verify:
     """The VERIFY state (thinned by DESIGN §3.7.1/§3.7.2 + §3.7.6).
 
@@ -687,30 +694,43 @@ class Verify:
 
     def _run_complement(self, ctx):
         """Run the conditional cross-feature complement (§3.7.6). Returns a
-        CrossCheck. risk=False or an absent slot -> ran=False, no runner call."""
+        `(CrossCheck, gate_reason)` pair. `gate_reason` is non-None when every
+        verdict this tick must be flipped ok=False:
+
+          - risk=False or an absent slot -> (ran=False, None): VERIFY stays thin.
+          - risk=True but `features_root` is unconfigured -> the complement CANNOT
+            run, so (ran=False with the unverifiable reason, that reason):
+            conservatively GATE — an unverifiable at-risk batch must not merge.
+          - risk=True with a configured root -> run each named feature's run.py;
+            (ran=True, the cross-break reason) when any complement FAILS, else
+            (ran=True, None).
+        """
         risk_dict = _read_optional_slot(ctx, "cross_cutting_risk")
         if not risk_dict or not risk_dict.get("risk"):
-            return CrossCheck(ran=False, reason="", results=[])
+            return CrossCheck(ran=False, reason="", results=[]), None
+        if self._features_root is None:
+            return (CrossCheck(ran=False, reason=_UNVERIFIABLE_REASON,
+                               results=[]),
+                    _UNVERIFIABLE_REASON)
         reason = risk_dict.get("reason", "")
         results = [
             self._complement_runner(feature, features_root=self._features_root)
             for feature in risk_dict.get("features", [])
         ]
-        return CrossCheck(ran=True, reason=reason, results=results)
+        failing = [r["feature"] for r in results if not r.get("passed")]
+        gate_reason = _cross_break_reason(failing, reason) if failing else None
+        return CrossCheck(ran=True, reason=reason, results=results), gate_reason
 
     def run(self, ctx):
         prs = self._source(repo=self._repo, label=LOOP_PR_LABEL)
         default_branch = self._resolve_default_branch()
         verdicts = [derive_verdict(pr, default_branch).to_dict() for pr in prs]
 
-        cross_check = self._run_complement(ctx)
-        failing = [r["feature"] for r in cross_check.results
-                   if not r.get("passed")]
-        if failing:
-            break_reason = _cross_break_reason(failing, cross_check.reason)
+        cross_check, gate_reason = self._run_complement(ctx)
+        if gate_reason:
             for vd in verdicts:
                 vd["ok"] = False
-                vd["reasons"] = list(vd.get("reasons") or []) + [break_reason]
+                vd["reasons"] = list(vd.get("reasons") or []) + [gate_reason]
 
         signal = "OK" if verdicts else "EMPTY"
         return fc.StateResult(signal=signal, writes={

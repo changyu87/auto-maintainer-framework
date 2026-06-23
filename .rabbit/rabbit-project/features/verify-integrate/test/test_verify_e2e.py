@@ -479,6 +479,33 @@ def test_feature_run_py_path_resolves_under_injected_root():
 
 
 # --------------------------------------------------------------------------
+# Behaviour (the FT-D fix): there is NO __file__-derived default features-root.
+# `feature_run_py_path` REQUIRES a non-None features_root — calling it without
+# one (or with None) raises, never silently falling back to a source-tree path
+# that does not exist in the shipped, self-contained plugin lib.
+# --------------------------------------------------------------------------
+
+def test_no_default_features_root_constant_in_module():
+    assert not hasattr(vi, "_DEFAULT_FEATURES_ROOT")
+
+
+def test_feature_run_py_path_requires_features_root():
+    raised = False
+    try:
+        vi.feature_run_py_path("scheduling")
+    except (ValueError, TypeError):
+        raised = True
+    assert raised, "feature_run_py_path must require a non-None features_root"
+
+    raised_none = False
+    try:
+        vi.feature_run_py_path("scheduling", features_root=None)
+    except (ValueError, TypeError):
+        raised_none = True
+    assert raised_none, "explicit None features_root must also raise"
+
+
+# --------------------------------------------------------------------------
 # Behaviour (determinism seam): default_complement_runner shells the resolved
 # run.py via an INJECTED fake subprocess runner — no network — and maps the
 # returncode to the {feature, passed, returncode, summary} verdict shape. A
@@ -602,7 +629,7 @@ def test_verify_risk_true_runs_complement_per_feature():
         return [_pr(number=1)]
 
     verify = vi.Verify(source=stub_source, default_branch=_DEFAULT_BRANCH,
-                       complement_runner=spy_runner)
+                       complement_runner=spy_runner, features_root="/tmp/feats")
     ctx = _fresh_ctx(cross_cutting_risk={
         "schema_version": "1.0.0", "risk": True,
         "features": ["scheduling", "fsm-contracts"],
@@ -635,7 +662,8 @@ def test_verify_failing_complement_flips_all_verdicts():
         return [_pr(number=1), _pr(number=2)]  # both mergeable+default -> ok
 
     verify = vi.Verify(source=stub_source, default_branch=_DEFAULT_BRANCH,
-                       complement_runner=failing_runner)
+                       complement_runner=failing_runner,
+                       features_root="/tmp/feats")
     ctx = _fresh_ctx(cross_cutting_risk={
         "schema_version": "1.0.0", "risk": True,
         "features": ["scheduling", "fsm-contracts"],
@@ -671,7 +699,8 @@ def test_verify_passing_complement_keeps_ok():
         return [_pr(number=1)]
 
     verify = vi.Verify(source=stub_source, default_branch=_DEFAULT_BRANCH,
-                       complement_runner=passing_runner)
+                       complement_runner=passing_runner,
+                       features_root="/tmp/feats")
     ctx = _fresh_ctx(cross_cutting_risk={
         "schema_version": "1.0.0", "risk": True,
         "features": ["scheduling"], "reason": "shared registry"})
@@ -682,3 +711,70 @@ def test_verify_passing_complement_keeps_ok():
     v = ctx.read("verdicts")[0]
     assert v["ok"] is True
     assert not any("cross-feature break" in r.lower() for r in v["reasons"])
+
+
+# --------------------------------------------------------------------------
+# E2E Behaviour (the FT-D fix / §3.7.1 conservative gate): risk=True but the
+# features_root is UNCONFIGURED (None) -> the complement CANNOT run, so VERIFY
+# conservatively GATES: cross_check records ran=False with a 'not configured'
+# reason AND every verdict is flipped ok=False with that same reason. A flagged
+# cross-cutting batch that cannot be verified must NEVER auto-merge — the gate
+# is loud and recorded, never silent. The complement-runner is NOT invoked.
+# --------------------------------------------------------------------------
+
+def test_verify_risk_true_but_features_root_unconfigured_gates_all():
+    calls = {"runner": 0}
+
+    def spy_runner(feature, features_root=None):  # noqa: ARG001
+        calls["runner"] += 1
+        return {"feature": feature, "passed": True, "returncode": 0,
+                "summary": ""}
+
+    def stub_source(repo=None, label=None):  # noqa: ARG001
+        return [_pr(number=1), _pr(number=2)]  # both mergeable+default -> ok
+
+    # features_root left at its default None -> unconfigured.
+    verify = vi.Verify(source=stub_source, default_branch=_DEFAULT_BRANCH,
+                       complement_runner=spy_runner)
+    ctx = _fresh_ctx(cross_cutting_risk={
+        "schema_version": "1.0.0", "risk": True,
+        "features": ["scheduling", "fsm-contracts"],
+        "reason": "both touch the slot registry"})
+    result = verify.run(ctx)
+    fc.apply_result(ctx, vi.VERIFY_MANIFEST, result,
+                    fc.SignalVocabulary(vi.VERIFY_SIGNALS))
+
+    # The complement was NOT invoked — it cannot run without a features_root.
+    assert calls["runner"] == 0
+
+    cc = ctx.read("cross_check")
+    assert cc["ran"] is False
+    assert "features_root not configured" in cc["reason"]
+    assert "cross-cutting risk unverifiable" in cc["reason"]
+    assert cc["results"] == []
+
+    # Every verdict is conservatively gated ok=False with the same reason.
+    verdicts = ctx.read("verdicts")
+    assert len(verdicts) == 2
+    assert all(v["ok"] is False for v in verdicts)
+    for v in verdicts:
+        joined = " ".join(v["reasons"])
+        assert "features_root not configured" in joined
+        assert "cross-cutting risk unverifiable" in joined
+
+
+# --------------------------------------------------------------------------
+# Behaviour (the FT-D fix / shipped-lib self-containment): the verify_integrate
+# source the plugin ships must carry NO 'rabbit-project' and NO '.rabbit' path
+# substring. Those source-tree-only paths do not exist in the self-contained
+# plugin lib; packaging-config's self-containment guard caught the leak.
+# --------------------------------------------------------------------------
+
+def test_src_has_no_source_tree_path_substrings():
+    src_path = os.path.join(_SRC, "verify_integrate.py")
+    with open(src_path) as f:
+        text = f.read()
+    assert "rabbit-project" not in text, \
+        "shipped lib must not reference the rabbit-project source-tree path"
+    assert ".rabbit" not in text, \
+        "shipped lib must not reference the .rabbit source-tree path"

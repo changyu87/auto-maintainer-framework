@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.4.0
+version: 0.5.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult schemas reach a breaking major version.
 ---
@@ -106,15 +106,24 @@ backlog issues by the downstream REPORT port and fixed on a later tick.
   reason}`). When `risk` is True it runs, via an INJECTABLE complement-runner
   (default: shell each named feature's `test/run.py` via subprocess, self-contained
   here — modeled on FT-A's `test_gate.py`, NOT an import of `implement`; a
-  deterministic injectable feature-root resolver locates each run.py so tests
+  deterministic feature-root resolver locates each run.py so tests
   never hit a real sibling suite or the network), the run.py of EACH feature in
   `cross_cutting_risk.features`. Results land in the versioned `cross_check` slot.
+  The `features_root` is a runtime-injected locator with NO source-tree default:
+  the shipped lib is self-contained and cannot assume its own on-disk layout, so
+  the resolver REQUIRES a `features_root` and the caller (scheduling) injects it.
   If ANY complement FAILS, every verdict this tick is marked `ok=False` with a
   specific cross-feature-break reason (naming the failing feature + the triager's
   overlap reason), so INTEGRATE merges nothing from a batch that breaks an at-risk
-  sibling. When `risk` is False (or the slot is absent), NO complement runs and
-  `cross_check` records `ran=False` — VERIFY stays thin; verdicts reflect only
-  mergeable+base.
+  sibling. **Conservative gate when unverifiable (§3.7.1):** when `risk` is True
+  but the `features_root` is NOT configured, the complement CANNOT run, so VERIFY
+  conservatively GATES — `cross_check` records `ran=False` with reason
+  `complement run skipped: features_root not configured — cross-cutting risk
+  unverifiable`, and EVERY verdict is marked `ok=False` with that same reason. A
+  flagged cross-cutting batch that cannot be verified must NEVER auto-merge; the
+  gate is loud and recorded, never silent. When `risk` is False (or the slot is
+  absent), NO complement runs and `cross_check` records `ran=False` — VERIFY stays
+  thin; verdicts reflect only mergeable+base.
 - Writes the `verdicts` and `cross_check` slots; emits `OK` if any open PRs were
   found else `EMPTY`.
 - Read-only w.r.t. GitHub: VERIFY never merges, closes, or writes to GitHub.
