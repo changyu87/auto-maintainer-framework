@@ -1,11 +1,11 @@
 {
   "name": "packaging-config",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "owner": "changyu87",
   "paths": [],
   "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-06-22",
-  "spec_change_reason": "#263/#264 release rebuild: regenerate the committed plugins/auto-maintainer/ tree from current src to deploy the #255 model-review evidence gate, #252 prioritize serialization, and #259/#260/#261; bump plugin v0.6.0; add a build-drift guard test (committed tree == fresh build)."
+  "updated": "2026-06-23",
+  "spec_change_reason": "v0.7.0 loop-redesign final release: add implement's test_gate.py to _LIBS (pure byte-copied, stdlib-only) so it ships at plugins/auto-maintainer/lib/test_gate.py; bump plugin v0.7.0 in plugin.json + marketplace.json; regenerate the committed plugin tree from current src; add e2e tests for the byte-identical test_gate ship and the 0.7.0 version."
 }

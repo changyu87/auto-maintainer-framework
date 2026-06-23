@@ -100,23 +100,19 @@ _HANDOFF_EXAMPLE = {
     "blocked_reason": None,
 }
 
-# A concrete ReviewVerdict (the shape REVIEW produces per open PR, #209). A real
-# example value — mirrors verify_integrate.ReviewVerdict.to_dict. The reviewer
-# emits the ARRAY of these (one per PR), so the template's output_example wraps it.
-_REVIEW_VERDICT_EXAMPLE = {
-    "schema_version": vi.REVIEW_VERDICT_SCHEMA_VERSION,
-    "pr_ref": "owner/repo#1",
-    "approved": False,
+# A concrete review_findings record (the ADVISORY shape REVIEW produces, FT-C). A
+# real example value — mirrors verify_integrate.ReviewFinding.to_dict / the
+# DiscoveredIssue field set. The reviewer emits the ARRAY of these (one per
+# material finding), so the template's output_example wraps it.
+_REVIEW_FINDING_EXAMPLE = {
+    "schema_version": vi.REVIEW_FINDINGS_SCHEMA_VERSION,
+    "title": "PR solves a different problem than the issue asked for",
+    "body": "src/foo.py:12 — the change adds an unrelated config knob.",
+    "kind": "bug",
     "severity": "high",
-    "findings": [
-        {
-            "kind": "spec",
-            "severity": "high",
-            "file": "src/foo.py",
-            "line": 12,
-            "note": "solved a different problem than the issue asked for",
-        }
-    ],
+    "target": "project",
+    "dedup_key": "review:owner/repo#1:over-built",
+    "filed_by": "autonomous-maintainer",
 }
 
 AGENT_PORT_TEMPLATES = {
@@ -142,17 +138,18 @@ AGENT_PORT_TEMPLATES = {
         "isolation": "worktree",
         "output_example": _HANDOFF_EXAMPLE,
     },
-    # REVIEW: the model-backed gate (#209). Maps verdicts -> review_verdicts,
-    # NON-acting (read-only judgment — no outward effect), ONE dispatch over the
-    # whole open-PR set (the reviewer emits one ReviewVerdict per PR). The signal
-    # is nonempty_else_empty (OK when any verdicts were produced, else EMPTY).
+    # REVIEW: the ADVISORY quality state (FT-C). Maps verdicts -> review_findings,
+    # NON-acting (read-only judgment — no outward effect; NOT a merge gate), ONE
+    # dispatch over the whole open-PR set (the reviewer emits one review finding
+    # record per material finding). The signal is nonempty_else_empty (OK when any
+    # findings were produced, else EMPTY).
     "REVIEW": {
-        "writes": vi.REVIEW_VERDICTS_SLOT["name"],
+        "writes": vi.REVIEW_FINDINGS_SLOT["name"],
         "reads": vi.REVIEW_MANIFEST.reads,
         "emits": list(vi.REVIEW_MANIFEST.emits),
         "cardinality": "once",
         "signal_rule": "nonempty_else_empty",
-        "output_example": [_REVIEW_VERDICT_EXAMPLE],
+        "output_example": [_REVIEW_FINDING_EXAMPLE],
     },
 }
 

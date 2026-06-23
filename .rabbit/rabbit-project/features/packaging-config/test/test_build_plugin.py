@@ -528,15 +528,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Minor (v0.6.0, #263/#264 release rebuild): version bumped to 0.6.0 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. v0.6.0 is the
-# release that deploys the merged-but-unshipped src fixes into the committed
-# plugin tree — the #255 model-review evidence gate (verify_integrate's
-# review_evidence_valid / batch_is_untrustworthy), the #252 prioritize
-# serialization, and #259/#260/#261 — by regenerating the committed plugin tree
-# from CURRENT src. (Supersedes the v0.5.0 aggressive-default minor.)
+# Minor (v0.7.0, loop-redesign final release): version bumped to 0.7.0 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. v0.7.0 is the
+# FINAL release of the loop-redesign cycle — it ships the deterministic
+# test_gate.py into lib/ (the IMPLEMENT doer's stdlib-only test gate) and
+# rebuilds the committed plugin tree from CURRENT src. (Supersedes the v0.6.0
+# release-rebuild minor.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_6_0_and_consistent():
+def test_version_bumped_to_0_7_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -548,10 +547,10 @@ def test_version_bumped_to_0_6_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.6.0", \
-            f"plugin.json version must be 0.6.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.6.0", \
-            "marketplace.json plugin entry version must be 0.6.0"
+        assert pdata.get("version") == "0.7.0", \
+            f"plugin.json version must be 0.7.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.0", \
+            "marketplace.json plugin entry version must be 0.7.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2249,3 +2248,49 @@ def test_committed_verify_integrate_carries_255_evidence_gate():
         "committed verify_integrate must carry the #255 review_evidence_valid gate"
     assert "batch_is_untrustworthy" in body, \
         "committed verify_integrate must carry the #255 batch_is_untrustworthy gate"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.0 (loop-redesign final), test_gate.py ship: implement's
+# test_gate.py — the IMPLEMENT doer's deterministic test gate — ships under
+# lib/. It imports ONLY stdlib (argparse/json/os/subprocess/sys) and NO sibling
+# lib, so it is a PURE byte-copied lib (in _LIBS, NOT _NORMALIZED_LIBS) — copied
+# verbatim like fsm_contracts/agent_dispatch/observability. Prove the fresh
+# build ships lib/test_gate.py byte-identical to implement/src/test_gate.py.
+# ---------------------------------------------------------------------------
+def test_test_gate_lib_present_and_byte_identical():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        dst = os.path.join(lib, "test_gate.py")
+        assert os.path.isfile(dst), \
+            "lib/test_gate.py must ship in the plugin tree"
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "implement", "src", "test_gate.py",
+        )
+        with open(src, "rb") as a, open(dst, "rb") as b:
+            assert a.read() == b.read(), \
+                "test_gate.py is not byte-identical to its source"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.0: the byte-copied test_gate.py must not leak a path back into
+# the source feature tree — the headline clean-ship invariant applies to it too
+# (it is pure stdlib, so this is a sanity guard mirroring the other pure libs).
+# ---------------------------------------------------------------------------
+def test_shipped_test_gate_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        with open(
+            os.path.join(lib, "test_gate.py"), encoding="utf-8"
+        ) as fh:
+            body = fh.read()
+        assert ".rabbit" not in body, "shipped test_gate leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "shipped test_gate references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)

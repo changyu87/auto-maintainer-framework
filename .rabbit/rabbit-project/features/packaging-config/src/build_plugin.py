@@ -87,7 +87,7 @@ The build is deterministic and idempotent: it rebuilds the plugin tree from
 scratch each run (removing any prior tree first) and emits byte-stable JSON,
 so re-running on unchanged sources yields a byte-identical tree.
 
-Version: 0.6.0
+Version: 0.7.0
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the framework adopts a different
   distribution channel than a self-hosted Claude Code plugin marketplace, or
@@ -106,7 +106,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.6.0"
+_PLUGIN_VERSION = "0.7.0"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -183,6 +183,12 @@ _LIBS = {
     # own bootstrap resolves it from lib/ once shipped, so it is NOT normalized.
     "observability.py": os.path.join(
         _FEATURES_REL, "observability", "src", "observability.py",
+    ),
+    # test_gate is the IMPLEMENT doer's deterministic test gate. It imports only
+    # stdlib (argparse/json/os/subprocess/sys) and NO sibling lib, so it ships
+    # byte-for-byte alongside the other pure libs — NOT normalized.
+    "test_gate.py": os.path.join(
+        _FEATURES_REL, "implement", "src", "test_gate.py",
     ),
 }
 
