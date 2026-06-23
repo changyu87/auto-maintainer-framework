@@ -498,6 +498,16 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 - **3.5.7** Dependency / ordering via native issue dependencies. **[v1]**
 - **3.5.8** WHAT-generation / spec adapter (per decision 2.1; default off, rabbit
   wires it on). **[v1 seam, default off]**
+- **3.5.9** **Cross-cutting-risk annotation.** TRIAGE is the only state with the
+  whole-batch view, so it flags when accepted work orders' blast radii may overlap
+  across features and writes a `cross_cutting_risk` slot (affected features +
+  reason) for VERIFY to act on (§3.7.6). Same-feature overlap is handled by
+  serialization (§3.8.6 / #252); this flag is for the residual **semantic
+  cross-feature** case (a break with no merge conflict). **[v1]**
+- **3.5.10** **Human-guidance follow.** PULL carries each issue's latest comments
+  into the WorkItem (#213) and TRIAGE re-enters on an advanced `updated_at`
+  (§3.5.3); so when a `blocked-but-open` item (§3.6.7) receives a new human
+  comment, the next IMPLEMENT attempt sees and follows that guidance. **[v1]**
 
 ### 3.6 IMPLEMENT Contract
 - **3.6.1** `Handoff` schema — the swap seam (section 2.6). **[v1]**
@@ -507,22 +517,89 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
   section 3.4.6 agent-adapter: the in-session orchestrator dispatches the
   implementer at L1 with `per_item` cardinality and Agent-tool worktree
   isolation.)*
-- **3.6.3** Default implementer = generic implement-then-PR. **[v1]**
-- **3.6.4** TDD implementer as an optional bundled adapter (rabbit's path).
-  **[v1, optional]** *Rationale:* keeps TDD available without making it a
-  prerequisite.
+- **3.6.3** Default implementer = **self-gating implement-then-PR**. The
+  implementer owns its own correctness gate: in its isolated worktree it makes
+  the change and **deterministically runs the touched feature's tests (`run.py`)
+  via script-backed TDD steps** (reused from rabbit's `tdd-step.py`) — the run is
+  enforced and recorded by a script, **never a model self-assertion** (a model
+  "I ran it, it passed" claim is untrustworthy — the REVIEW rubber-stamp lesson,
+  #255). It **iterates internally** (RED→GREEN) until the suite passes or it
+  gives up. This iterate loop lives INSIDE the subagent, so it is **never a
+  `route.json` edge** — the route stays a single linear path
+  (`TRIAGE→IMPLEMENT→VERIFY→INTEGRATE`), keeping user-authored routing simple.
+  **[v1]**
+- **3.6.4** TDD-step harness as the DEFAULT gate (promoted from optional): a PR
+  is only opened from a deterministically-green worktree. The generic
+  no-test-discipline implementer is no longer the default. **[v1]**
 - **3.6.5** Long-run / partial-completion handling (label-before-dispatch
   visibility; resumable mid-implement). **[v1]**
+- **3.6.6** The implementer does **not** self-review for quality. Overloading one
+  subagent with edit + review degrades both and is drift-prone (too much context
+  in one head). Code-quality review is a **separate REVIEW state** with its own
+  fresh-context reviewer subagent (§3.7.7) — an INDEPENDENT, unbiased pass rather
+  than the author grading its own diff. The implementer's job ends at a
+  deterministically-green PR (§3.6.3). **[v1]**
+- **3.6.7** Threshold → **blocked-but-open**: when the per-item retry counter
+  hits K (§3.8.5) the implementer reports `blocked` with a clear, specific reason
+  and the issue **stays open and flagged** — never closed, never silently
+  dropped. Re-entry is automatic on issue change (§3.5.3), including a new human
+  comment the next attempt must follow (§3.5.10). **[v1]**
 
-### 3.7 VERIFY & INTEGRATE
+### 3.7 VERIFY, REVIEW & INTEGRATE
+Route order is `… → IMPLEMENT → VERIFY → REVIEW → INTEGRATE → …` — still a single
+straight line, **no feedback edge**. IMPLEMENT is the correctness gate, VERIFY the
+(conditional) integration gate, REVIEW the advisory quality pass, INTEGRATE the
+thin merge.
+The correctness test-gate lives in IMPLEMENT (§3.6.3), which deterministically
+runs the **touched** feature's `run.py` before a PR is opened. VERIFY therefore
+does NOT blanket re-run those tests (redundant); it is the **conditional
+cross-feature integration gate** plus the thin merge-safety check.
 - **3.7.1** VERIFY gate = `{ok, reasons[]}`, conservative default (no merge unless
-  explicitly green). **[v1]**
-- **3.7.2** Default gates: CI status + test pass. **[v1]**
+  explicitly green). For a normal single-feature, serialized PR (already green per
+  §3.6.3) VERIFY is **thin**: mergeable + base == default + guardrails. **[v1]**
+- **3.7.2** Default gates: mergeable + base + guardrails, AND the upstream
+  deterministic `run.py` pass from IMPLEMENT (§3.6.3). A consuming repo's CI, if
+  present, is **optional defense-in-depth** — the loop does NOT depend on it,
+  because the deterministic test run is in-cycle (the rabbit pattern). **[v1]**
 - **3.7.3** INTEGRATE = pluggable VCS hook covering merge + release + branch
-  cleanup. **[v1]**
+  cleanup — a **thin guardrailed merge** (mergeable + base + guardrails), trusting
+  IMPLEMENT's deterministic verify and VERIFY's conditional integration run. **[v1]**
 - **3.7.4** Idempotent release / tag (create-if-not-exists). **[v1]**
 - **3.7.5** Non-git VCS adapters (GitLab MR / Gerrit). **[deferred]**
   *Rationale:* port exists; extra backends are additive.
+- **3.7.6** **Conditional cross-feature integration run.** When TRIAGE set the
+  `cross_cutting_risk` slot (§3.5.9) — passed through IMPLEMENT untouched (its
+  manifest neither reads nor clears it; non-adjacent states communicate via the
+  blackboard, never a state jump) — VERIFY deterministically runs the
+  **complement** suites: the feature `run.py`s NOT covered by this tick's
+  per-feature implementers, to catch a semantic cross-feature break that has no
+  merge conflict (the residual case serialization §3.8.6 cannot catch). This is
+  VERIFY's substantive job — not a redundant blanket re-run, but the integration
+  check only the full-picture triager can request. Otherwise VERIFY stays thin
+  (§3.7.1). **[v1]**
+- **3.7.7** **REVIEW = advisory quality state** (after VERIFY, before INTEGRATE).
+  A dedicated, fresh-context **reviewer subagent** reads the PR diff (base..head)
+  and assesses quality — correctness smells the tests missed, design, simplicity.
+  It **touches no code and does NOT block the merge**; it emits feedback only.
+  Because REVIEW is advisory (NOT the merge gate — IMPLEMENT's deterministic
+  `run.py` is), a lazy or rubber-stamping reviewer costs only *missed quality
+  notes*, never an unsafe merge — structurally defusing what made the old
+  REVIEW-gates-merge design (#209/#255) dangerous. **[v1]**
+- **3.7.8** REVIEW reuses the Claude superpowers **code-review** and **simplify**
+  guidance. Since a subagent cannot dispatch another subagent (the 2-level
+  nesting cap, §3.6.2), the reviewer **inlines those `.md` bodies verbatim** into
+  its own agent file rather than calling them as subagents (a maintained copy —
+  re-sync when upstream changes). **[v1]**
+- **3.7.9** **Feedback path = the issue backlog, not a route edge.** From its
+  findings the reviewer **files issues into the project repo** with GitHub-proper
+  `kind` (bug / enhancement / chore) and `priority` (low / normal / high /
+  critical). Those issues are pulled, triaged, and fixed on a **subsequent tick**
+  through the normal straight-line flow — quality improves over time WITHOUT a
+  feedback edge in `route.json`. The reviewer MUST **dedup against open issues**
+  (§3.5.3 / #224) and respect a **severity floor** (file material findings, not
+  nitpicks) so it neither spams the tracker nor causes quality-churn. Consequence
+  accepted: a merged PR's quality/edge issues are remediated on a later tick, not
+  blocked now — sound, because IMPLEMENT already gated correctness. **[v1]**
 
 ### 3.8 Safety, Authority & Governance
 - **3.8.1** Declarative guardrails (red-flags as config the host enforces: never
