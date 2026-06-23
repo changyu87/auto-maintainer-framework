@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.3.0
+version: 0.4.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult schemas reach a breaking major version.
 ---
@@ -10,9 +10,9 @@ deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or
 ## Purpose
 
 The act-side CLOSE of the loop (DESIGN §1.1, §3.7): after `IMPLEMENT` opens a PR,
-`VERIFY` gates it (CI + mergeability), `INTEGRATE` merges it (the VCS hook), and
-`CLEANUP` does branch/release hygiene. These are the stages between "a PR exists"
-and "the work is landed and tidied".
+`VERIFY` gates it (mergeability + base; CI optional), `INTEGRATE` merges it (the
+VCS hook), and `CLEANUP` does branch/release hygiene. These are the stages between
+"a PR exists" and "the work is landed and tidied".
 
 All three are **script-tier, deterministic `gh`** — no model. VERIFY is read-only
 and always safe; INTEGRATE performs the single highest-stakes action in the system
@@ -41,19 +41,26 @@ durable PR-ledger to drift.
 ## Slot contract (DESIGN §2.6, refined)
 
 ```
-state      reads                writes              signals
-VERIFY     (gh: open PRs)       verdicts            OK | EMPTY
-REVIEW     verdicts             review_findings     OK | EMPTY
-INTEGRATE  verdicts             integration_result  OK
-CLEANUP    integration_result  —                    OK
+state      reads                            writes              signals
+VERIFY     cross_cutting_risk (gh: open PRs) verdicts, cross_check  OK | EMPTY
+REVIEW     verdicts                         review_findings     OK | EMPTY
+INTEGRATE  verdicts                         integration_result  OK
+CLEANUP    integration_result              —                    OK
 ```
 
 ## Schemas (owned here, machine-first, versioned)
 
 - **`Verdict`** — one per open loop PR: `{ schema_version, pr_ref, url, ok,
   ci_state: passing|pending|failing|unknown, mergeable: bool, base, reasons: [str] }`.
-  `ok` is the conservative AND: CI passing AND mergeable AND base == default
-  branch. `reasons` explains a non-ok verdict.
+  `ok` is the conservative AND of the BLOCKING conditions: mergeable AND
+  base == default branch. CI is RECORDED (`ci_state`) but is OPTIONAL — it no
+  longer gates `ok` (DESIGN §3.7.1/§3.7.2: the correctness gate lives in
+  IMPLEMENT). `reasons` explains a non-ok verdict.
+- **`CrossCheck`** — the conditional cross-feature complement-run result
+  (§3.7.6): `{ schema_version, ran: bool, reason, results: [{feature, passed,
+  returncode, summary}] }`. `ran` is True only when TRIAGE flagged
+  `cross_cutting_risk`; `results` is one entry per at-risk feature whose run.py
+  was run.
 - **`IntegrationResult`** — `{ schema_version, merged: [{pr_ref, url}],
   skipped: [{pr_ref, reason}], errors: [{pr_ref, reason}] }`. Idempotent: an
   already-merged PR leaves the open set, so a re-run never double-merges.
@@ -80,7 +87,7 @@ so a lazy reviewer costs only missed quality notes, never an unsafe merge (this
 structurally defuses the #255 rubber-stamp danger). The findings are filed as
 backlog issues by the downstream REPORT port and fixed on a later tick.
 
-## VERIFY (slice 1)
+## VERIFY (slice 1 — THIN, DESIGN §3.7.1/§3.7.2/§3.7.6)
 
 - Lists the loop's open PRs via an INJECTABLE source (production: `gh pr list
   --label auto-maintainer --state open --json number,url,headRefName,baseRefName,
@@ -89,10 +96,29 @@ backlog issues by the downstream REPORT port and fixed on a later tick.
 - For each PR derives a `Verdict`: `ci_state` from the status-check rollup
   (all SUCCESS → passing; any FAILURE → failing; any PENDING → pending; none →
   unknown), `mergeable` from gh's `mergeable` field, `base` from `baseRefName`;
-  `ok = ci_state==passing AND mergeable AND base==<default branch>`.
-- Writes the `verdicts` slot; emits `OK` if any open PRs were found else `EMPTY`.
-- Read-only: VERIFY never merges, closes, or writes to GitHub. Always runs at
-  every trust mode (it only reports).
+  `ok = mergeable AND base==<default branch>`. CI is RECORDED but OPTIONAL: a
+  pending/unknown/failing CI does NOT flip `ok` and contributes no `reasons`
+  entry. The hard correctness gate lives in IMPLEMENT (FT-A runs the touched
+  feature's run.py before the PR opens); the loop's own CI is a hollow
+  byte-compile gate a pending run would otherwise wedge every merge on.
+- **Conditional cross-feature complement run (§3.7.6).** VERIFY reads the
+  `cross_cutting_risk` slot (work-intake's `CrossCuttingRisk`: `{risk, features,
+  reason}`). When `risk` is True it runs, via an INJECTABLE complement-runner
+  (default: shell each named feature's `test/run.py` via subprocess, self-contained
+  here — modeled on FT-A's `test_gate.py`, NOT an import of `implement`; a
+  deterministic injectable feature-root resolver locates each run.py so tests
+  never hit a real sibling suite or the network), the run.py of EACH feature in
+  `cross_cutting_risk.features`. Results land in the versioned `cross_check` slot.
+  If ANY complement FAILS, every verdict this tick is marked `ok=False` with a
+  specific cross-feature-break reason (naming the failing feature + the triager's
+  overlap reason), so INTEGRATE merges nothing from a batch that breaks an at-risk
+  sibling. When `risk` is False (or the slot is absent), NO complement runs and
+  `cross_check` records `ran=False` — VERIFY stays thin; verdicts reflect only
+  mergeable+base.
+- Writes the `verdicts` and `cross_check` slots; emits `OK` if any open PRs were
+  found else `EMPTY`.
+- Read-only w.r.t. GitHub: VERIFY never merges, closes, or writes to GitHub.
+  Always runs at every trust mode (it only reports).
 
 ## INTEGRATE (slice 2)
 
@@ -133,9 +159,12 @@ CLEANUP → PERSIST → EXIT`.
 
 ## Invariants
 
-- VERIFY is read-only (no GitHub writes); INTEGRATE merges ONLY at `auto-merge`
-  and ONLY a PR that is `ok` AND passes guardrails.
-- Deterministic given the injected `gh` seams; no model, no wall-clock beyond gh.
+- VERIFY is read-only w.r.t. GitHub (no GitHub writes); INTEGRATE merges ONLY at
+  `auto-merge` and ONLY a PR that is `ok` AND passes guardrails.
+- VERIFY's `ok` is mergeable+base only (CI recorded, not gating); a failing
+  cross-feature complement flips every verdict `ok=False`.
+- Deterministic given the injected `gh` + complement-runner seams; no model, no
+  wall-clock beyond gh.
 - Idempotent: a merged PR leaves the open set, so re-running never double-merges;
   release/tag is create-if-not-exists.
 - Cross-tick: the open-PR set is sourced LIVE from GitHub (the `auto-maintainer`
@@ -148,8 +177,9 @@ CLEANUP → PERSIST → EXIT`.
 - Rich release pipelines / changelog generation.
 - **Backoff (§3.8.5)** — a consecutive-failure counter that defers/escalates a
   PR after K failing verdicts is NOT implemented in v1: re-checking a red PR is
-  cheap and never merges, so VERIFY simply re-checks every tick until CI goes
-  green (the cross-tick model above), which already bounds the risk. The K
+  cheap and never merges, so VERIFY simply re-checks every tick until the PR
+  becomes mergeable (the cross-tick model above), which already bounds the risk.
+  The K
   threshold exists today only as a `safety-governance` config knob
   (`backoff.threshold`); wiring it into a durable cross-tick counter — plus any
   aggressive backoff / circuit-breaker tuning — is deferred.
