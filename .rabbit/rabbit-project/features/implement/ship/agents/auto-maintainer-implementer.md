@@ -108,7 +108,7 @@ On the **accept path**, after committing and BEFORE `gh pr create`, run the gate
 script against the feature you touched:
 
 ```
-python3 <repo>/rabbit-project/features/implement/src/test_gate.py \
+python3 "${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py" \
     <feature-dir> --verdict-out <verdict-path>
 ```
 
