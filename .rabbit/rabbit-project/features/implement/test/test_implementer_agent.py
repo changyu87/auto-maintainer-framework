@@ -99,6 +99,33 @@ def test_shipped_implementer_body_guards_discovered_work_against_known_open():
         "body must state discovered_work is for NEW problems only")
 
 
+def test_shipped_implementer_body_invokes_deterministic_test_gate():
+    """FT-A (DESIGN §3.6.3): IMPLEMENT is the deterministic correctness gate. On
+    the accept path, after committing and BEFORE opening the PR, the implementer
+    MUST invoke the gate script (test_gate.py) which runs the target's run.py and
+    records a machine-checkable verdict — never a model self-assertion (#255).
+    The body must name the gate script and tie its use to the accept path."""
+    body = _body().lower().replace("*", "")
+    assert "test_gate.py" in body, (
+        "body must instruct the implementer to invoke the gate script")
+    # the gate produces the verdict that is embedded; the pass is the SCRIPT's
+    # recorded result, not the model's prose.
+    assert "test_verdict" in body, (
+        "body must instruct embedding the script-produced test_verdict")
+
+
+def test_shipped_implementer_body_opened_only_with_passing_verdict():
+    """The accept path may report status:opened ONLY when the gate's recorded
+    verdict passes; the body must state the verdict is the SCRIPT's result, never
+    the model's claim, and that a failing/missing verdict blocks the open."""
+    body = _body().lower().replace("*", "")
+    # opened is conditioned on the gate passing
+    assert "opened" in body
+    assert "test_verdict" in body
+    # the pass must come from the script, not a model assertion
+    assert "script" in body
+
+
 def test_shipped_implementer_body_instructs_emitting_concerns():
     """v2.5.0 (auto-maintainer-framework#212): the implementer is the PRODUCER of
     the Handoff's `concerns[]` — residual doubts on an opened handoff for the

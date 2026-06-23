@@ -2,9 +2,9 @@
   "schema_version": "1.0.0",
   "owner": "changyu87",
   "deprecation_criterion": "Superseded by the next implement housekeep wave's baseline; single-use measured-reduction reference for this doc-slim wave.",
-  "description": "Line counts of implement doc surfaces used as the housekeep measured-reduction reference. The housekeep e2e test asserts the current docs are NOT LARGER than these baselines, records the measured reduced|no-op verdict, and asserts the load-bearing tokens survived. Reduction is REPORTED, never MANDATED: an already-clean no-op is a valid PASS (coding-rules §6 / measure-reduction.py contract). The spec.md baseline was advanced 206 -> 220 in v2.5.0 (auto-maintainer-framework#212) to absorb the new, load-bearing `concerns[]`-emission bullet — the gate still forbids GROWTH past this advanced reference.",
+  "description": "Line counts of implement doc surfaces used as the housekeep measured-reduction reference. The housekeep e2e test asserts the current docs are NOT LARGER than these baselines, records the measured reduced|no-op verdict, and asserts the load-bearing tokens survived. Reduction is REPORTED, never MANDATED: an already-clean no-op is a valid PASS (coding-rules §6 / measure-reduction.py contract). The spec.md baseline was advanced 206 -> 220 in v2.5.0 (auto-maintainer-framework#212) to absorb the new, load-bearing `concerns[]`-emission bullet, then 220 -> 271 (and contract.md 32 -> 35) in FT-A (DESIGN §3.6.3) to absorb the load-bearing deterministic-test-gate section (test_gate.py + the test_verdict evidence field + the validity predicate) — the gate still forbids GROWTH past this advanced reference.",
   "docs": {
-    "docs/spec.md": 220,
-    "docs/contract.md": 32
+    "docs/spec.md": 271,
+    "docs/contract.md": 35
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "implement",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/implement/src/**"
@@ -8,7 +8,7 @@
   "created": "2026-06-12T06:10:37Z",
   "deprecation_criterion": "Superseded when the model-backed implement-then-PR doer (DESIGN \u00a73.6.2/\u00a73.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-06-21",
-  "spec_change_reason": "v2.5.0 implementer emits concerns[] on an opened handoff (auto-maintainer-framework#212, producer half): the shipped-subagent prompt now instructs the implementer to populate the Handoff's `concerns[]` (residual doubts on this PR for the REVIEW gate / human to look harder at) on the accept path, distinguishing a concern from a `discovered_work[]` item and from `status: blocked`; spec.md documents the behaviour and a guarding test asserts the concerns language in the shipped agent body. The `concerns` schema field (v1.1.0) and the REVIEW gate's look-harder-at-concerns lens already existed; without this producer instruction the field was always empty in practice.",
+  "updated": "2026-06-23",
+  "spec_change_reason": "FT-A (DESIGN \u00a73.6.3): make IMPLEMENT the deterministic correctness gate. Ship src/test_gate.py \u2014 a self-contained script (no rabbit-framework runtime dependency) that runs a target feature's test/run.py via subprocess and records a machine-checkable verdict {feature, passed, returncode, summary} to a known artifact path. Add validate_handoff() to implement.py: an opened handoff is valid only with a passing SCRIPT-produced test_verdict; a missing/failing verdict is invalid. Update ship/agents/auto-maintainer-implementer.md so the accept path invokes the gate after committing and may only report status:opened with the passing verdict embedded (the pass is the script's recorded result, never the model's prose; #255 lesson). spec.md/contract.md document the gate, the test_verdict field, and the predicate; e2e tests prove pass/fail recording and predicate rejection.",
   "spec_no_change_reason": "DOC-dimension measured-reduction housekeep wave: coding-rules \u00a76 verify-or-flag pass applied to docs/spec.md + docs/contract.md. Every path ref (ship/agents/auto-maintainer-implementer.md), cross-feature ref (adapter-wiring, scheduling.run_tick, safety-governance), and behaviour claim verified LIVE via find/grep/ls; no proven-dead content found. Honest verdict: no-op (already-clean), a valid PASS. No spec body change; the wave ships the gating housekeep e2e test + baseline fixture only."
 }

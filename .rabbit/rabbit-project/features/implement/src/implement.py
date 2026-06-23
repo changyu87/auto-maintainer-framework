@@ -36,6 +36,8 @@ Deprecation criterion: Superseded when the model-backed implement-then-PR doer
   Handoff schema reaches a breaking major version. See docs/spec.md.
 """
 
+import collections
+
 # fsm-contracts is a sibling feature; tests inject its src/ onto sys.path
 # exactly as the work-intake adapters do, so importing by module name resolves
 # the sibling src/ on the path.
@@ -140,6 +142,38 @@ def run(ctx):
 
     signal = "BLOCKED" if any_blocked else "OK"
     return fc.StateResult(signal=signal, writes={"handoffs": handoffs})
+
+
+# Result of the deterministic handoff validity predicate (DESIGN §3.6.3): a
+# machine-checkable {valid, reason}. reason is None when valid, else a short
+# string naming why the handoff is rejected.
+ValidationResult = collections.namedtuple("ValidationResult", ["valid", "reason"])
+
+
+def validate_handoff(handoff):
+    """Deterministic validity predicate over a Handoff (DESIGN §3.6.3, FT-A).
+
+    IMPLEMENT is the deterministic correctness gate: an `opened` handoff (an
+    `accepted` order that opened a PR) is VALID only when it carries a
+    `test_verdict` whose `passed` is True. The verdict is the SCRIPT-produced
+    result recorded by test_gate.py — never the model's prose. An opened handoff
+    with a missing or failing verdict is INVALID. A non-`opened` handoff
+    (`planned` dry-run, `blocked`, reject-path `closed`) opened no PR and so
+    requires no verdict to be valid.
+
+    Pure function of the handoff dict: same input -> same ValidationResult.
+    """
+    if handoff.get("status") != "opened":
+        return ValidationResult(True, None)
+
+    verdict = handoff.get("test_verdict")
+    if not isinstance(verdict, dict):
+        return ValidationResult(
+            False, "opened handoff is missing the script-produced test_verdict")
+    if verdict.get("passed") is not True:
+        return ValidationResult(
+            False, "opened handoff carries a failing test_verdict")
+    return ValidationResult(True, None)
 
 
 def factory(runtime):  # noqa: ARG001 - IMPLEMENT binds no runtime config

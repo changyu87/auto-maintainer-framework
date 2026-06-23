@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.4.0
+version: 0.6.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -78,6 +78,49 @@ the loop and any implementer).
   1.0.0 consumer reading a 1.1.0 handoff simply ignores the new field; nothing
   that existed in 1.0.0 changed.
 
+## Deterministic correctness gate (DESIGN §3.6.3, FT-A)
+
+IMPLEMENT is the **deterministic correctness gate** of the loop. The
+model-backed implementer must not be merely *instructed* to run the target's
+tests and *assert* a pass in its Handoff — a model "I ran it, it passed" claim
+is untrustworthy (the #255 REVIEW rubber-stamp lesson). The gate is owned by a
+SCRIPT, never the model's prose.
+
+### Gate script — `src/test_gate.py`
+
+A self-contained script (NO rabbit-framework runtime dependency) that runs the
+TARGET feature's `test/run.py` via `subprocess` and records a machine-checkable
+verdict to a known artifact path:
+
+```json
+{"feature": "<target-feature-name>", "passed": true, "returncode": 0,
+ "summary": "<final line of run.py output>"}
+```
+
+- Invocation: `test_gate.py <feature-dir> --verdict-out <path>`.
+- `passed` is `True` only when the target's `run.py` exits 0. A failing suite, a
+  missing `test/run.py`, or any nonzero exit yields `passed=False`.
+- The gate ALWAYS writes the verdict artifact (pass or fail) and mirrors the
+  target's pass/fail in its OWN exit code so a caller detects it deterministically.
+- The verdict is byte-deterministic for a given target: same input → equal
+  recorded verdict.
+
+### Handoff `test_verdict` evidence + validity predicate
+
+The Handoff schema gains an OPTIONAL `test_verdict` evidence field carrying the
+SCRIPT-produced verdict described above. `implement.py` exposes a deterministic
+validity predicate `validate_handoff(handoff) -> ValidationResult(valid, reason)`:
+
+- An `opened` handoff (an `accepted` order that opened a PR) is VALID **only**
+  when it carries a `test_verdict` whose `passed` is `True`. An opened handoff
+  with a missing or failing verdict is INVALID.
+- A non-`opened` handoff (`planned` dry-run, `blocked`, reject-path `closed`)
+  opened no PR and so requires no verdict to be valid.
+
+The pass embedded in an opened handoff is the SCRIPT's recorded result, never
+the model's claim — a fabricated "passed" cannot survive the gate because the
+script ran the actual (possibly failing) target.
+
 ## Behaviour
 
 1. Read `execution_plan` from `TickContext`.
@@ -117,6 +160,14 @@ the output path. Its rendered prompt is the complete handoff contract (the
   (it owns the WHAT, DESIGN §2.1), run the project's checks, and **open a PR
   against the default branch — never merge**. If it cannot complete an accepted
   order it reports `status: blocked` and leaves no open PR.
+- **Deterministic test-gate on the accept path (v2.6.0, DESIGN §3.6.3).** After
+  committing and BEFORE `gh pr create`, the subagent MUST invoke the gate script
+  `test_gate.py` against the touched target feature; the gate runs `run.py` and
+  records the `test_verdict`. The subagent may only report `status: opened` when
+  that SCRIPT-produced verdict passes, and it embeds the verdict in the Handoff's
+  `test_verdict` field — the pass is the script's recorded result, never the
+  model's prose. A failing or missing verdict is NOT an open: the order is
+  reported `status: blocked` with no open PR.
 - **Pre-handoff self-review (v2.3.0).** On the accept path, after committing and
   BEFORE `gh pr create`, the subagent runs a structured self-review against its
   OWN committed diff (it reads the actual diff, not its intent) and fixes any gap
