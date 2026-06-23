@@ -262,7 +262,7 @@ def test_make_review_writes_empty_review_findings():
            "source": None, "now": None, "governance": {"mode": "auto-merge"}}
     manifest, run = rt.make_review(rti)
     assert manifest is vi.REVIEW_MANIFEST
-    assert manifest.writes == ["review_findings"], manifest.writes
+    assert list(manifest.writes) == ["review_findings"], manifest.writes
     ctx = fc.TickContext()
     ctx.register_slot("verdicts", {"type": "array"}, version="1.0.0")
     ctx.register_slot("review_findings", {"type": "array"}, version="1.0.0")
@@ -285,7 +285,7 @@ def test_integrate_factory_binds_governance_mode_no_review_read():
         manifest, run = rt.make_integrate(rti)
         assert manifest is vi.INTEGRATE_MANIFEST
         # The manifest reads ONLY verdicts (no review_verdicts coupling).
-        assert manifest.reads == ["verdicts"], manifest.reads
+        assert list(manifest.reads) == ["verdicts"], manifest.reads
         assert callable(run)
         # The bound run, invoked over a ctx with one ok verdict and NO
         # review_verdicts slot at all, merges via the sink at auto-merge.

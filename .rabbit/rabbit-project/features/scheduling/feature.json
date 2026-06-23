@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-green",
-  "updated": "2026-06-21",
-  "spec_change_reason": "#244 contract/spec drift correction (additive): corrected the stale tick-interval never-clause (#17 RESOLVED — start.py reads heartbeat.interval_minutes), documented the REVIEW gate (#209) + verify-integrate VERIFY/INTEGRATE/CLEANUP consumption in the contract, and aligned version labels (spec/contract frontmatter -> 0.17.0, contract start.py -> v0.5.0, start skill -> v0.3.0)."
+  "tdd_state": "impl",
+  "updated": "2026-06-23",
+  "spec_change_reason": "FT-E loop-redesign reconciliation: scheduling consumes the redesigned verify-integrate + work-intake contracts. VERIFY now reads cross_cutting_risk + writes cross_check (FT-B/D); _seed_context registers + seeds cross_cutting_risk (no-risk default) when TRIAGE or VERIFY is routed and cross_check when VERIFY is routed, fixing the TRIAGE/VERIFY tick ContractError crash. REVIEW is ADVISORY: review_verdicts is retired in favour of review_findings (FT-C) \u2014 make_review writes EMPTY review_findings, _seed_context/_SLOT_SCHEMAS/persistence migrate to review_findings, REVIEW_VERDICTS_KEY->REVIEW_FINDINGS_KEY, persisted_review_verdicts->persisted_review_findings. INTEGRATE is a thin merge reading ONLY verdicts (no review-approval read). review_findings flush through the terminal REPORT port on the same file_discoveries idempotency + dedup-vs-open path. AGENT_PORT_TEMPLATES['REVIEW'] writes review_findings."
 }

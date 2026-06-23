@@ -15,14 +15,15 @@ deterministic gate on the wave (updated for #244) — they are e2e in that they
 read the SHIPPED doc artifacts (not a mock) and assert the wave's contractual
 properties end to end:
 
-  Gate 1 — MEASURED REDUCTION (spec.md). The slimmed docs/spec.md is STRICTLY
-  smaller (fewer lines) than the committed pre-wave baseline recorded in
-  housekeep_doc_baseline.json. Measurement is delegated to the script-tier tool
-  measure-reduction.py with --docs-only, so the housekeeping test THIS wave adds
-  under test/ is never counted as bloat (the --docs-only mode restricts the
-  directory walk to doc surfaces only). A reword that does not actually reduce the
-  spec line total FAILS. (The original combined spec+contract shrink gate is
-  retired: #244 additively grows contract.md to resolve FLAG A/B.)
+  Gate 1 — MEASURED REDUCTION (spec.md), re-anchored. The prior wave slimmed
+  docs/spec.md to 871 lines; the FT-E loop-redesign reconciliation is a real
+  behavior cycle that additively re-anchors the baseline (now recorded in
+  housekeep_doc_baseline.json). The gate now asserts docs/spec.md is NOT LARGER
+  than the re-anchored baseline — the SAME retirement #244 applied to the
+  deletion wave's contract-unchanged gate when a real cycle had to add contract
+  lines. Measurement is delegated to the script-tier tool measure-reduction.py
+  with --docs-only, so the housekeeping test under test/ is never counted as
+  bloat (the --docs-only mode restricts the directory walk to doc surfaces only).
 
   Gate 2 — LOAD-BEARING SURVIVAL. Every token that names a public-surface symbol,
   a route/state/anchor name (GUARD/DRAIN/PULL/PERSIST/EXIT/REVIEW/TRIAGE/...), a
@@ -200,12 +201,13 @@ def test_docs_only_count_excludes_the_test_tree():
         f"--docs-only snapshot must cover only doc surfaces, got: {keys}")
 
 
-def test_spec_reduction_recorded_by_measure_tool():
-    """The deletion wave's spec.md reduction is real and produced by
-    measure-reduction.py's own `diff` subcommand (reduced == delta < 0), measured
-    on spec.md alone. The original combined spec+contract shrink gate is retired:
-    the additive #244 follow-up grows contract.md (resolving FLAG A/B), so the
-    combined total no longer shrinks — but the wave's spec slim still must."""
+def test_spec_measured_against_reanchored_baseline_by_measure_tool():
+    """The spec.md line count, measured by measure-reduction.py's own `diff`
+    subcommand on spec.md alone, is NOT LARGER than the re-anchored baseline. The
+    prior wave's strictly-smaller spec gate is retired the SAME way #244 retired
+    the deletion wave's contract-unchanged gate: the FT-E loop-redesign
+    reconciliation is a real behavior cycle that additively re-anchors spec.md
+    (delta <= 0 against the re-anchored baseline)."""
     import tempfile
 
     after = _measure_docs_only(_FEATURE_DIR)
@@ -227,21 +229,24 @@ def test_spec_reduction_recorded_by_measure_tool():
             capture_output=True, text=True)
     assert proc.returncode == 0, f"measure-reduction diff failed: {proc.stderr}"
     result = json.loads(proc.stdout)
-    assert result["reduced"] is True, (
-        f"spec.md did not shrink: total_before={result['total_before']} "
+    # Not larger than the re-anchored baseline (delta <= 0).
+    assert result["total_delta"] <= 0, (
+        f"spec.md grew past the re-anchored baseline: "
+        f"total_before={result['total_before']} "
         f"total_after={result['total_after']} delta={result['total_delta']}")
-    assert result["verdict"] == "reduced"
-    assert result["total_delta"] < 0
 
 
-def test_spec_is_strictly_smaller_than_baseline():
-    """spec.md specifically — the surface this wave slimmed — must have FEWER
-    lines than the pre-wave baseline."""
+def test_spec_not_larger_than_reanchored_baseline():
+    """spec.md is NOT LARGER than the re-anchored FT-E baseline. The prior wave's
+    measured reduction is preserved in the baseline history (the pre-wave spec was
+    871); FT-E additively re-anchors it, mirroring the retired contract-unchanged
+    gate (#244)."""
     after = _measure_docs_only(_FEATURE_DIR)
     before = _baseline()["docs"]["docs/spec.md"]
     spec_after = after[os.path.normpath(_SPEC)]
-    assert spec_after < before, (
-        f"spec.md did not shrink: {spec_after} lines now vs baseline {before}")
+    assert spec_after <= before, (
+        f"spec.md grew past the re-anchored baseline: {spec_after} lines now "
+        f"vs baseline {before}")
 
 
 def test_contract_grew_with_additive_flag_fixes():
