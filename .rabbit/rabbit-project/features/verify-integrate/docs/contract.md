@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.3.0
+version: 0.4.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict schemas reach a breaking major version. See spec.md / feature.json.
 ---
@@ -12,14 +12,14 @@ deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or
   "provides": {
     "files": [
       "Verdict slot schema (versioned, machine-first: pr_ref, url, ok, ci_state, mergeable, base, reasons)",
-      "ReviewVerdict slot schema (versioned, machine-first: pr_ref, approved, severity, findings[], evidence{files_examined[], rationale}) — the model-backed REVIEW gate's output (#209); evidence is REQUIRED for a valid approval (#255)",
-      "REVIEW_MANIFEST/REVIEW_SIGNALS + REVIEW_VERDICTS_SLOT + is_review_approved(): REVIEW is a NON-ACTING agent-state (reads verdicts, writes review_verdicts, emits OK|EMPTY) dispatched to the auto-maintainer-reviewer subagent; the schema/manifest live here, the dispatch is wired in scheduling",
-      "review_evidence_valid(rv) + batch_is_untrustworthy(review_verdicts): the deterministic evidence-gated trust backstop INTEGRATE ANDs into its merge condition (#255) — an approved verdict lacking evidence is invalid, and an all-approved/zero-findings/no-evidence batch is untrustworthy and merges nothing",
+      "review_findings slot schema + REVIEW_FINDINGS_SLOT + review_finding_record(): the ADVISORY REVIEW state's output (DESIGN §3.7.7) — a list of records each conforming EXACTLY to work-intake's DiscoveredIssue.to_dict (schema_version, title, body, kind, severity, target, dedup_key, filed_by), so REPORT files them unchanged",
+      "ReviewVerdict slot schema (retained, versioned: pr_ref, approved, severity, findings[], evidence{files_examined[], rationale}) + review_evidence_valid(rv) + batch_is_untrustworthy(review_verdicts): deterministic evidence validators consumed by scheduling + the packaging-config release gate; NO LONGER a merge gate (REVIEW is advisory)",
+      "REVIEW_MANIFEST/REVIEW_SIGNALS + REVIEW_VERDICTS_SLOT: REVIEW is a NON-ACTING agent-state (reads verdicts, writes review_findings, emits OK|EMPTY) dispatched to the auto-maintainer-reviewer subagent; the schema/manifest live here, the dispatch is wired in scheduling",
       "IntegrationResult slot schema (versioned: merged, skipped, errors)",
       "VERIFY state: run(TickContext) -> StateResult, reads the loop's open PRs via gh, writes verdicts, emits OK|EMPTY (read-only, deterministic)",
-      "INTEGRATE state: run(TickContext) -> StateResult, reads verdicts + review_verdicts, writes integration_result, emits OK (merges only at auto-merge, guardrail-gated, AND only a review-APPROVED PR)",
+      "INTEGRATE state: run(TickContext) -> StateResult, reads verdicts (thin — no review_verdicts coupling), writes integration_result, emits OK (merges only at auto-merge, guardrail-gated)",
       "CLEANUP state: run(TickContext) -> StateResult, reads integration_result, emits OK (branch/release hygiene, idempotent)",
-      "ship/agents/auto-maintainer-reviewer.md — the model-backed reviewer subagent (spec-compliance + code-quality over the PR base..head diff)"
+      "ship/agents/auto-maintainer-reviewer.md — the ADVISORY quality reviewer subagent (code-review + code-simplify lenses over the PR base..head diff; emits review_findings, never merges/approves)"
     ],
     "scripts": [],
     "skills": []
@@ -35,11 +35,11 @@ deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or
   },
   "invokes": {"scripts": [], "agents": ["auto-maintainer-reviewer (the REVIEW agent-state's subagent; dispatched by the scheduling executor, not called directly here)"], "external": ["gh", "git"]},
   "never": [
-    "calls a model from its SCRIPT states (VERIFY/INTEGRATE/CLEANUP stay deterministic gh/git script-tier; REVIEW is the one model-backed state, a non-acting agent-state dispatched by scheduling)",
-    "merges anywhere except at trust mode auto-merge AND only a PR that is ok AND review-APPROVED-WITH-EVIDENCE (a valid evidence-carrying ReviewVerdict, never a contentless rubber-stamp) AND from a trustworthy review batch AND passes merge_guardrails",
+    "calls a model from its SCRIPT states (VERIFY/INTEGRATE/CLEANUP stay deterministic gh/git script-tier; REVIEW is the one model-backed state, a non-acting ADVISORY agent-state dispatched by scheduling)",
+    "merges anywhere except at trust mode auto-merge AND only a PR that is ok AND passes merge_guardrails (REVIEW is advisory — INTEGRATE does NOT gate merge on a review approval)",
     "merges a PR with a non-default base, a dirty/conflicting tree, or failing/pending CI",
     "maintains a durable PR-ledger (GitHub is the source of truth, queried live by label)",
-    "writes the tracker/issues (REPORT/work-intake owns outbound issue writes)",
+    "writes the tracker/issues (REPORT/work-intake owns outbound issue writes; REVIEW only PRODUCES review_findings records conforming to work-intake's DiscoveredIssue schema)",
     "edits files in other features"
   ]
 }

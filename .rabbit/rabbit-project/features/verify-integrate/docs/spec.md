@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.2.0
+version: 0.3.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult schemas reach a breaking major version.
 ---
@@ -43,6 +43,7 @@ durable PR-ledger to drift.
 ```
 state      reads                writes              signals
 VERIFY     (gh: open PRs)       verdicts            OK | EMPTY
+REVIEW     verdicts             review_findings     OK | EMPTY
 INTEGRATE  verdicts             integration_result  OK
 CLEANUP    integration_result  —                    OK
 ```
@@ -56,27 +57,28 @@ CLEANUP    integration_result  —                    OK
 - **`IntegrationResult`** — `{ schema_version, merged: [{pr_ref, url}],
   skipped: [{pr_ref, reason}], errors: [{pr_ref, reason}] }`. Idempotent: an
   already-merged PR leaves the open set, so a re-run never double-merges.
-- **`ReviewVerdict`** — one model-backed verdict per open loop PR:
-  `{ schema_version, pr_ref, approved, severity, findings: [{kind, severity,
-  file, line, note}], evidence: {files_examined: [str], rationale: str} }`.
-  `evidence` is REQUIRED for an approval (#255): a genuine approval names the
-  files the reviewer examined (from `gh pr diff`) and a substantive rationale.
+- **`review_findings` record** — one MATERIAL finding the advisory reviewer
+  emits, conforming EXACTLY to work-intake's `DiscoveredIssue.to_dict`:
+  `{ schema_version, title, body, kind, severity, target, dedup_key, filed_by }`.
+  `kind` in {bug, enhancement, chore}; `target` = `project`; `filed_by` =
+  `autonomous-maintainer`; `dedup_key` is stable (`review:<pr_ref>:<slug>`) so
+  REPORT files it idempotently. `review_finding_record(...)` builds one.
+- **`ReviewVerdict`** — the retained `{ schema_version, pr_ref, approved,
+  severity, findings, evidence }` schema. It is NO LONGER a merge gate; the
+  deterministic `review_evidence_valid` / `batch_is_untrustworthy` validators
+  ship on (consumed by scheduling + the packaging-config release gate).
 
-## Evidence-gated trust (#255 — the deterministic REVIEW backstop)
+## REVIEW is advisory (DESIGN §3.7.7 — no longer a merge gate)
 
-The REVIEW gate is model-backed, so its `approved` flag cannot be trusted alone:
-a model that rubber-stamps every PR (all `approved`, `findings: []`, no evidence)
-would otherwise drive autonomous merges. INTEGRATE ANDs a DETERMINISTIC trust
-check into its merge condition — it does NOT trust the model:
-
-- `review_evidence_valid(rv)` — an approval is valid only when `evidence` names
-  at least one `files_examined` entry AND a substantive (non-blank, multi-word)
-  `rationale`. `is_review_approved` ANDs this in, so an approved-without-evidence
-  verdict reads as not-approved and is never merged (a rubber-stamp is INVALID).
-- `batch_is_untrustworthy(review_verdicts)` — the fabricated-batch signature:
-  every verdict approved, zero findings, no valid evidence anywhere. INTEGRATE
-  merges NO PR from such a batch (all routed to `skipped`, re-review next tick).
-  A batch carrying evidence or any real rejection is trustworthy.
+REVIEW is a non-acting agent-state: the `auto-maintainer-reviewer` subagent reads
+each open loop PR's base..head diff (`gh pr diff`) and emits MATERIAL quality
+findings as durable `review_findings` records (respecting a severity floor — no
+nitpicks). It writes the `review_findings` slot and emits `OK` when there were
+PRs to review else `EMPTY`. REVIEW NEVER gates merge: the merge decision rests on
+IMPLEMENT's deterministic run.py gate plus VERIFY + guardrails + the trust ladder,
+so a lazy reviewer costs only missed quality notes, never an unsafe merge (this
+structurally defuses the #255 rubber-stamp danger). The findings are filed as
+backlog issues by the downstream REPORT port and fixed on a later tick.
 
 ## VERIFY (slice 1)
 
@@ -94,11 +96,12 @@ check into its merge condition — it does NOT trust the model:
 
 ## INTEGRATE (slice 2)
 
-- Reads `verdicts`. For each `ok` verdict, consults the **guardrails**
-  (`safety_governance.merge_guardrails`, §3.8.1) and, if clean, merges via an
-  injectable merge sink (production: `gh pr merge <pr> --merge --delete-branch`).
-  Records `IntegrationResult`. Non-ok verdicts and guardrail violations go to
-  `skipped`.
+- THIN merge (DESIGN §3.7.3). Reads ONLY `verdicts` (no review-approval
+  coupling — REVIEW is advisory). For each `ok` verdict, consults the
+  **guardrails** (`safety_governance.merge_guardrails`, §3.8.1) and, if clean,
+  merges via an injectable merge sink (production: `gh pr merge <pr> --merge
+  --delete-branch`). Records `IntegrationResult`. Non-ok verdicts and guardrail
+  violations go to `skipped`.
 - **Trust-gated by `permits("merge", mode)`** (§3.8.2): merge is permitted ONLY
   at `auto-merge`. At `dry-run` and the default `propose`, INTEGRATE is a NO-OP
   that logs the would-merge intent — a human merges. Arming autonomous merge is
