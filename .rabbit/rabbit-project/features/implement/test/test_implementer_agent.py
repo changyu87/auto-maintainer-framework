@@ -114,6 +114,30 @@ def test_shipped_implementer_body_invokes_deterministic_test_gate():
         "body must instruct embedding the script-produced test_verdict")
 
 
+def test_shipped_implementer_invokes_gate_at_deployed_plugin_lib_path():
+    """Deployment correctness: the shipped subagent runs inside an INSTALLED
+    Claude Code plugin, where the gate lives at ${CLAUDE_PLUGIN_ROOT}/lib/. The
+    body MUST invoke the gate via the deployed convention
+    `${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py` (mirroring scheduling's shipped
+    skills), not via a DEV source-tree path."""
+    body = _body()
+    assert "${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py" in body, (
+        "body must invoke the gate at the deployed "
+        "${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py path")
+
+
+def test_shipped_implementer_body_has_no_source_tree_leak():
+    """The shipped body runs from the installed plugin and must NOT reference the
+    dev source tree: neither the `rabbit-project` source path nor the `.rabbit`
+    workspace dir may appear (those are non-functional in the installed plugin
+    and leak the dev layout)."""
+    body = _body()
+    assert "rabbit-project" not in body, (
+        "shipped body must not reference the dev source path 'rabbit-project'")
+    assert ".rabbit" not in body, (
+        "shipped body must not reference the '.rabbit' workspace dir")
+
+
 def test_shipped_implementer_body_opened_only_with_passing_verdict():
     """The accept path may report status:opened ONLY when the gate's recorded
     verdict passes; the body must state the verdict is the SCRIPT's result, never
