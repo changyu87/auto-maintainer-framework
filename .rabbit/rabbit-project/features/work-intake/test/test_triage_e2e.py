@@ -130,7 +130,8 @@ def test_triage_manifest_declares_reads_writes_emits():
     m = wi.TRIAGE_MANIFEST
     assert isinstance(m, fc.StateManifest)
     assert m.reads == ("work_items",)
-    assert m.writes == ("work_orders",)
+    # TRIAGE writes work_orders AND the cross_cutting_risk slot (DESIGN §3.5.9).
+    assert m.writes == ("work_orders", "cross_cutting_risk")
     assert set(m.emits) == {"OK", "EMPTY"}
 
 

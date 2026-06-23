@@ -174,6 +174,9 @@ def test_triage_carries_comments_onto_workorder():
                       version=wi.WORK_ITEMS_SLOT["version"])
     ctx.register_slot(wi.WORK_ORDERS_SLOT["name"], wi.WORK_ORDERS_SLOT["schema"],
                       version=wi.WORK_ORDERS_SLOT["version"])
+    ctx.register_slot(wi.CROSS_CUTTING_RISK_SLOT["name"],
+                      wi.CROSS_CUTTING_RISK_SLOT["schema"],
+                      version=wi.CROSS_CUTTING_RISK_SLOT["version"])
     items = wi.parse_gh_issues(GH_JSON_WITH_COMMENTS)
     ctx.write("work_items", [it.to_dict() for it in items])
 

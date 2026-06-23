@@ -4,6 +4,36 @@ All notable changes to this feature are recorded here. Versions follow the
 `version:` frontmatter in `spec.md` / `contract.md` and the `feature.json`
 `version` field.
 
+## feature 0.6.0 / spec 0.6.0 / contract 0.6.0 — 2026-06-23
+
+- **TRIAGE cross-cutting-risk slot** (FT-B, DESIGN §3.5.9). TRIAGE is the only
+  state with the whole-batch view, so it now writes a machine-first
+  `cross_cutting_risk` slot for VERIFY (§3.7.6) to act on.
+- New `CrossCuttingRisk` slot schema `{risk, features, reason}` (versioned,
+  machine-first) with `to_dict`/`from_dict` and the `CROSS_CUTTING_RISK_SLOT`
+  descriptor (mirrors `WORK_ORDERS_SLOT`).
+- `Triage.run` ALWAYS writes `cross_cutting_risk` (a default no-risk verdict when
+  no batch annotation is supplied) so VERIFY can always read it;
+  `TRIAGE_MANIFEST.writes` now declares both `work_orders` and
+  `cross_cutting_risk`.
+- New `normalize_cross_cutting_risk(annotation)` — a pure, deterministic
+  normalizer/validator folding a batch annotation `{features, reason}` into a
+  `CrossCuttingRisk`: `risk=true` only on ≥2 DISTINCT features AND a non-empty
+  reason; single-feature/empty/whitespace → no-risk; malformed input rejected.
+- `Triage(now=, cross_cutting_annotation=)` accepts the batch annotation,
+  normalized once at construction.
+- Shipped triager `auto-maintainer-triager` bumped to 1.3.0: it now emits the
+  batch-level cross-cutting-risk annotation (affected features + specific reason)
+  when blast radii overlap across DIFFERENT features — read-only judgment in its
+  handoff, protocol-free.
+- The housekeep doc baseline is re-based to the post-FT-B doc surfaces (FT-B
+  additively documents the new public surface); the gate stays a re-bloat
+  regression guard.
+- New tests: CrossCuttingRisk roundtrip + schema_version; slot descriptor;
+  normalizer risk=true on ≥2 features+reason; no-risk on single/empty/whitespace;
+  validator rejects malformed; TRIAGE always writes the default slot (incl.
+  all-rejected); risk=true slot from annotation; manifest declares the write.
+
 ## feature 0.5.0 / spec 0.5.0 / contract 0.5.0 — 2026-06-21
 
 - **REPORT dedup-vs-open** (#224, DESIGN §3.5.4 applied to the REPORT side).
