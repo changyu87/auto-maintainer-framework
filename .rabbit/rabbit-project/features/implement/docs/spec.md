@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.6.0
+version: 0.6.1
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -97,7 +97,7 @@ verdict to a known artifact path:
  "summary": "<final line of run.py output>"}
 ```
 
-- Invocation: `test_gate.py <feature-dir> --verdict-out <path>`.
+- Invocation: `test_gate.py <feature-dir> --verdict-out <path>`. The script ships to the installed plugin's lib directory; the implementer subagent invokes it via the deployed Claude Code convention `${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py` (mirroring scheduling's shipped skills), never a dev source-tree path.
 - `passed` is `True` only when the target's `run.py` exits 0. A failing suite, a
   missing `test/run.py`, or any nonzero exit yields `passed=False`.
 - The gate ALWAYS writes the verdict artifact (pass or fail) and mirrors the
@@ -162,7 +162,7 @@ the output path. Its rendered prompt is the complete handoff contract (the
   order it reports `status: blocked` and leaves no open PR.
 - **Deterministic test-gate on the accept path (v2.6.0, DESIGN §3.6.3).** After
   committing and BEFORE `gh pr create`, the subagent MUST invoke the gate script
-  `test_gate.py` against the touched target feature; the gate runs `run.py` and
+  at its deployed location `${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py` against the touched target feature; the gate runs `run.py` and
   records the `test_verdict`. The subagent may only report `status: opened` when
   that SCRIPT-produced verdict passes, and it embeds the verdict in the Handoff's
   `test_verdict` field — the pass is the script's recorded result, never the
