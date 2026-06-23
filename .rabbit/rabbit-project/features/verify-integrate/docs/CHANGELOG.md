@@ -2,6 +2,41 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.6.0 — 2026-06-21
+
+VERIFY becomes THIN + gains the conditional cross-feature complement run
+(DESIGN §3.7.1, §3.7.2, §3.7.6 — FT-D of the loop redesign).
+
+- **Thin VERIFY (CI optional).** `derive_verdict`'s `ok` is now
+  `mergeable AND base == default_branch` — the hard CI requirement is DROPPED from
+  `ok`. `ci_state` is still DERIVED and RECORDED on the `Verdict` (informational
+  defense-in-depth), but a pending/unknown/failing CI no longer flips `ok` and no
+  longer contributes a `reasons` entry. The correctness gate lives in IMPLEMENT
+  (FT-A runs the touched feature's run.py before a PR opens); the loop's own CI is
+  a hollow byte-compile gate a pending run would otherwise wedge merges on.
+- **Conditional cross-feature complement run (§3.7.6).** `Verify.run` now READS
+  the `cross_cutting_risk` slot (work-intake's `CrossCuttingRisk`). When
+  `risk=True` it runs, via an INJECTABLE complement-runner
+  (`default_complement_runner`, self-contained — shells each named feature's
+  `test/run.py` via subprocess, modeled on FT-A's `test_gate.py`, NOT an import of
+  `implement`), the run.py of each at-risk feature. A deterministic injectable
+  `feature_run_py_path()` resolver locates each run.py so tests never hit a real
+  sibling suite or the network. Results land in the new versioned `cross_check`
+  slot (`CrossCheck`: `{ran, reason, results[{feature, passed, returncode,
+  summary}]}` + `CROSS_CHECK_SLOT`). When `risk=False`/absent, NO complement runs
+  and `cross_check` records `ran=False` (thin).
+- **Complement GATE.** If ANY complement suite FAILS, every verdict this tick is
+  marked `ok=False` with a specific cross-feature-break reason (failing feature +
+  the triager's overlap reason), so INTEGRATE merges nothing from a batch that
+  breaks an at-risk sibling. All pass (or `risk=False`) → verdicts unaffected.
+- **Manifest.** `VERIFY_MANIFEST.reads` gains `cross_cutting_risk`; `writes` gains
+  `cross_check` (keeps `verdicts`). Signals stay OK|EMPTY.
+- **Re-baselined housekeep doc fixture** for this wave's load-bearing doc growth
+  (the cross_check schema + the §3.7.6 complement behavior).
+- Out of scope (FT-E): scheduling registering/seeding `cross_cutting_risk` /
+  `cross_check` and `route.json`. Until then VERIFY's tests inject the slot
+  directly and the runtime tolerates its absence (thin path).
+
 ## 0.5.0 — 2026-06-23
 
 REVIEW becomes ADVISORY; INTEGRATE becomes a THIN guardrailed merge
