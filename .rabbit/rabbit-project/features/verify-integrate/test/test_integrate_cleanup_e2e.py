@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """End-to-end + unit tests for the verify-integrate INTEGRATE + CLEANUP states (slice 2).
 
-INTEGRATE is the single highest-stakes act-side state (DESIGN §3.7): it reads the
-`verdicts` slot and, for each `ok` verdict, merges the PR via an INJECTABLE merge
-sink (production: `gh pr merge <pr> --merge --delete-branch`; tests pass a stub —
-the determinism seam, no network). A merge happens ONLY when permits('merge',
-mode) is True (the trust-ladder gate, auto-merge only) AND
-merge_guardrails(pr_meta, default_branch) passes. Non-ok verdicts, not-permitted
-modes (dry-run/propose NO-OP), and guardrail violations go to `skipped`; a merge
-sink that raises records the PR under `errors`. INTEGRATE writes the
+INTEGRATE is the single highest-stakes act-side state (DESIGN §3.7). After the
+loop redesign (DESIGN §3.7.3) it is a THIN merge: it reads the `verdicts` slot
+and, for each `ok` verdict, merges the PR via an INJECTABLE merge sink
+(production: `gh pr merge <pr> --merge --delete-branch`; tests pass a stub — the
+determinism seam, no network). A merge happens ONLY when permits('merge', mode)
+is True (the trust-ladder gate, auto-merge only) AND merge_guardrails(pr_meta,
+default_branch) passes. INTEGRATE NO LONGER reads review_verdicts or gates on a
+model review approval — REVIEW is now an ADVISORY quality state (DESIGN §3.7.7),
+not a merge gate (the deterministic IMPLEMENT run.py gate + VERIFY + guardrails +
+trust ladder are the merge gates). Non-ok verdicts, not-permitted modes
+(dry-run/propose NO-OP), and guardrail violations go to `skipped`; a merge sink
+that raises records the PR under `errors`. INTEGRATE writes the
 `integration_result` slot and emits OK.
 
 CLEANUP (v1-thin) reads `integration_result` and emits OK: branch cleanup is
@@ -90,47 +94,21 @@ def _recording_sink():
 
 
 def _fresh_ctx():
+    """A TickContext with the slots INTEGRATE/CLEANUP touch. After the loop
+    redesign INTEGRATE reads ONLY `verdicts` (the review-approval coupling is
+    gone), so review_verdicts is NOT registered here."""
     ctx = fc.TickContext()
     ctx.register_slot(
         vi.VERDICTS_SLOT["name"],
         vi.VERDICTS_SLOT["schema"],
         version=vi.VERDICTS_SLOT["version"],
     )
-    # INTEGRATE now also reads the model-backed REVIEW gate's review_verdicts
-    # slot (#209). Register it and seed it empty; merge-expecting tests write
-    # approving verdicts via _approve below.
-    ctx.register_slot(
-        vi.REVIEW_VERDICTS_SLOT["name"],
-        vi.REVIEW_VERDICTS_SLOT["schema"],
-        version=vi.REVIEW_VERDICTS_SLOT["version"],
-    )
-    ctx.write(vi.REVIEW_VERDICTS_SLOT["name"], [])
     ctx.register_slot(
         vi.INTEGRATION_RESULT_SLOT["name"],
         vi.INTEGRATION_RESULT_SLOT["schema"],
         version=vi.INTEGRATION_RESULT_SLOT["version"],
     )
     return ctx
-
-
-def _approve(ctx, *numbers, approved=True):
-    """Write one ReviewVerdict per PR number into the review_verdicts slot, so
-    INTEGRATE's model-backed REVIEW gate (#209) permits merge. pr_ref mirrors the
-    _verdict builder (acme/widget#<number>).
-
-    A GENUINE approval carries evidence (#255): the files the reviewer actually
-    examined plus a substantive rationale. An approved verdict WITHOUT evidence
-    is invalid (rubber-stamp) and INTEGRATE refuses to merge it — so this helper
-    populates evidence by default, mirroring what the reviewer subagent must do
-    after running `gh pr diff`."""
-    rvs = [vi.ReviewVerdict(
-        pr_ref=f"acme/widget#{n}", approved=approved,
-        evidence={
-            "files_examined": [f"src/file_{n}.py"],
-            "rationale": (f"Reviewed the base..head diff for #{n}; the change "
-                          f"implements exactly what the source issue asked."),
-        }).to_dict() for n in numbers]
-    ctx.write(vi.REVIEW_VERDICTS_SLOT["name"], rvs)
 
 
 # ==========================================================================
@@ -177,14 +155,15 @@ def test_integration_result_slot_descriptor_is_versioned():
 
 
 # ==========================================================================
-# Behaviour: INTEGRATE manifest is {reads: [verdicts], writes:
-# [integration_result], emits: [OK]} and conforms to the fsm-contracts shape.
+# Behaviour (loop redesign §3.7.3): INTEGRATE is THIN — its manifest reads ONLY
+# `verdicts` (NOT review_verdicts), writes integration_result, emits OK.
 # ==========================================================================
 
 def test_integrate_manifest_declares_reads_writes_emits():
     m = vi.INTEGRATE_MANIFEST
     assert isinstance(m, fc.StateManifest)
-    assert m.reads == ("verdicts", "review_verdicts")
+    assert m.reads == ("verdicts",)
+    assert "review_verdicts" not in m.reads
     assert m.writes == ("integration_result",)
     assert set(m.emits) == {"OK"}
 
@@ -197,7 +176,8 @@ def test_integrate_signal_vocabulary_is_closed():
 
 # ==========================================================================
 # E2E Behaviour: at auto-merge, a clean ok verdict is MERGED via the stub sink;
-# integration_result records it under `merged`; signal OK.
+# integration_result records it under `merged`; signal OK. NO review approval is
+# present in the context — the thin INTEGRATE merges anyway (RED criterion).
 # ==========================================================================
 
 def test_integrate_e2e_auto_merge_merges_ok_verdict():
@@ -206,7 +186,7 @@ def test_integrate_e2e_auto_merge_merges_ok_verdict():
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [_verdict(number=1, ok=True)])
-    _approve(ctx, 1)
+    # No review_verdicts written — the thin INTEGRATE does not need them.
 
     result = integrate.run(ctx)
     assert fc.validate_state_result(result).passed is True
@@ -222,6 +202,32 @@ def test_integrate_e2e_auto_merge_merges_ok_verdict():
     assert res["skipped"] == []
     assert res["errors"] == []
     assert res["schema_version"] == vi.INTEGRATION_RESULT_SCHEMA_VERSION
+
+
+# ==========================================================================
+# E2E Behaviour (RED criterion): an ok+guardrail-passing PR is NOT skipped for
+# lack of review approval. With NO review machinery in context AND a review_findings
+# slot that is empty/absent, the ok PR still merges (REVIEW is advisory now).
+# ==========================================================================
+
+def test_integrate_e2e_merges_ok_pr_without_any_review_approval():
+    sink = _recording_sink()
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
+                             default_branch=_DEFAULT_BRANCH)
+    ctx = _fresh_ctx()
+    ctx.write("verdicts", [_verdict(number=99, ok=True)])
+
+    res = ctx_run(integrate, ctx)
+    assert sink.calls == ["acme/widget#99"]
+    assert [m["pr_ref"] for m in res["merged"]] == ["acme/widget#99"]
+    assert res["skipped"] == []
+
+
+def ctx_run(integrate, ctx):
+    result = integrate.run(ctx)
+    vocab = fc.SignalVocabulary(vi.INTEGRATE_SIGNALS)
+    fc.apply_result(ctx, vi.INTEGRATE_MANIFEST, result, vocab)
+    return ctx.read("integration_result")
 
 
 # ==========================================================================
@@ -261,7 +267,6 @@ def test_integrate_e2e_propose_mode_not_permitted_skipped_sink_not_called():
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [_verdict(number=3, ok=True)])
-    _approve(ctx, 3)  # pass the REVIEW gate so the propose NO-OP is exercised
 
     result = integrate.run(ctx)
     assert result.signal == "OK"
@@ -286,7 +291,6 @@ def test_integrate_e2e_dry_run_mode_not_permitted_skipped():
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [_verdict(number=4, ok=True)])
-    _approve(ctx, 4)  # pass the REVIEW gate so the dry-run NO-OP is exercised
 
     result = integrate.run(ctx)
     vocab = fc.SignalVocabulary(vi.INTEGRATE_SIGNALS)
@@ -311,7 +315,6 @@ def test_integrate_e2e_guardrail_violation_skipped_sink_not_called():
     ctx = _fresh_ctx()
     # ok flag is True but the base is wrong — the guardrail must still block it.
     ctx.write("verdicts", [_verdict(number=5, ok=True, base="release-1.x")])
-    _approve(ctx, 5)  # pass the REVIEW gate so the guardrail backstop is exercised
 
     result = integrate.run(ctx)
     vocab = fc.SignalVocabulary(vi.INTEGRATE_SIGNALS)
@@ -338,7 +341,6 @@ def test_integrate_e2e_merge_sink_raises_records_error():
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [_verdict(number=6, ok=True)])
-    _approve(ctx, 6)
 
     result = integrate.run(ctx)
     assert result.signal == "OK"
@@ -369,7 +371,6 @@ def test_integrate_e2e_mixed_batch_partitions():
                  reasons=["CI not passing (ci_state=pending)"]),
         _verdict(number=3, ok=True, base="release-1.x"),
     ])
-    _approve(ctx, 1, 2, 3)
 
     result = integrate.run(ctx)
     vocab = fc.SignalVocabulary(vi.INTEGRATE_SIGNALS)
@@ -399,7 +400,6 @@ def test_integrate_e2e_uses_real_safety_governance():
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     ctx.write("verdicts", [_verdict(number=8, ok=True)])
-    _approve(ctx, 8)
     integrate.run(ctx)
     assert sink.calls == ["acme/widget#8"]
 
@@ -492,8 +492,9 @@ def test_cleanup_e2e_empty_integration_result_emits_ok():
 
 
 # ==========================================================================
-# REVIEW gate (#209): the model-backed ReviewVerdict schema + the gate INTEGRATE
-# ANDs into its merge condition.
+# REVIEW schema retention (#209): the ReviewVerdict schema is KEPT (scheduling +
+# packaging-config still consume it), even though INTEGRATE no longer gates on
+# it. Its round-trip + slot descriptor stay covered.
 # ==========================================================================
 
 def test_review_verdict_round_trip():
@@ -513,8 +514,6 @@ def test_review_verdict_defaults_no_findings():
     d = rv.to_dict()
     assert d["severity"] == "none"
     assert d["findings"] == []
-    # evidence is part of the machine-first schema (#255); it defaults to an
-    # empty (invalid-for-approval) structure and round-trips.
     assert d["evidence"] == {"files_examined": [], "rationale": ""}
     assert vi.ReviewVerdict.from_dict(d) == rv
 
@@ -524,91 +523,3 @@ def test_review_verdicts_slot_descriptor_is_versioned():
     assert slot["name"] == "review_verdicts"
     assert slot["schema"] == {"type": "array"}
     assert slot["version"] == vi.REVIEW_VERDICT_SCHEMA_VERSION
-
-
-def test_review_manifest_declares_reads_writes_emits():
-    m = vi.REVIEW_MANIFEST
-    assert isinstance(m, fc.StateManifest)
-    assert m.reads == ("verdicts",)
-    assert m.writes == ("review_verdicts",)
-    assert set(m.emits) == {"OK", "EMPTY"}
-
-
-_EVIDENCE = {"files_examined": ["src/a.py"],
-             "rationale": "Read the diff; it matches the issue."}
-
-
-def test_is_review_approved_predicate():
-    rvs = [vi.ReviewVerdict(pr_ref="acme/widget#1", approved=True,
-                            evidence=_EVIDENCE).to_dict(),
-           vi.ReviewVerdict(pr_ref="acme/widget#2", approved=False).to_dict()]
-    assert vi.is_review_approved(rvs, "acme/widget#1") is True
-    assert vi.is_review_approved(rvs, "acme/widget#2") is False
-    # Conservative: a PR with NO review verdict reads as not-approved.
-    assert vi.is_review_approved(rvs, "acme/widget#3") is False
-    assert vi.is_review_approved([], "acme/widget#1") is False
-    assert vi.is_review_approved(None, "acme/widget#1") is False
-
-
-def test_integrate_skips_ok_but_not_reviewed_pr():
-    """An ok verdict whose PR has NO review verdict is NOT merged (conservative
-    not-approved); the sink is never called and the skip reason names review."""
-    sink = _recording_sink()
-    integrate = vi.Integrate(mode="gated-merge", merge_sink=sink,
-                             default_branch=_DEFAULT_BRANCH)
-    ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=10, ok=True)])
-    # review_verdicts seeded empty by _fresh_ctx — no approval for #10.
-
-    result = integrate.run(ctx)
-    assert result.signal == "OK"
-    vocab = fc.SignalVocabulary(vi.INTEGRATE_SIGNALS)
-    fc.apply_result(ctx, vi.INTEGRATE_MANIFEST, result, vocab)
-
-    res = ctx.read("integration_result")
-    assert sink.calls == []
-    assert res["merged"] == []
-    assert len(res["skipped"]) == 1
-    assert res["skipped"][0]["pr_ref"] == "acme/widget#10"
-    assert "review" in res["skipped"][0]["reason"].lower()
-
-
-def test_integrate_skips_ok_but_not_approved_pr_with_findings():
-    """An ok verdict whose PR was REVIEWED but NOT approved is skipped; the skip
-    reason carries the review severity + finding notes."""
-    sink = _recording_sink()
-    integrate = vi.Integrate(mode="gated-merge", merge_sink=sink,
-                             default_branch=_DEFAULT_BRANCH)
-    ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=11, ok=True)])
-    ctx.write("review_verdicts", [vi.ReviewVerdict(
-        pr_ref="acme/widget#11", approved=False, severity="blocker",
-        findings=[{"kind": "spec", "severity": "blocker", "file": "x.py",
-                   "line": 3, "note": "over-built: added an unrequested CLI"}]
-    ).to_dict()])
-
-    result = integrate.run(ctx)
-    vocab = fc.SignalVocabulary(vi.INTEGRATE_SIGNALS)
-    fc.apply_result(ctx, vi.INTEGRATE_MANIFEST, result, vocab)
-
-    res = ctx.read("integration_result")
-    assert sink.calls == []
-    assert res["merged"] == []
-    assert len(res["skipped"]) == 1
-    reason = res["skipped"][0]["reason"]
-    assert "blocker" in reason
-    assert "over-built" in reason
-
-
-def test_integrate_merges_ok_and_approved_pr():
-    """The happy path: an ok verdict whose PR IS review-approved merges at
-    gated-merge (review-approval ANDed into the merge condition)."""
-    sink = _recording_sink()
-    integrate = vi.Integrate(mode="gated-merge", merge_sink=sink,
-                             default_branch=_DEFAULT_BRANCH)
-    ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=12, ok=True)])
-    _approve(ctx, 12)
-
-    integrate.run(ctx)
-    assert sink.calls == ["acme/widget#12"]
