@@ -2,9 +2,22 @@
 """verify-integrate — slice 1: the read-only VERIFY gate.
 
 The act-side CLOSE of the loop (DESIGN §3.7): after IMPLEMENT opens a PR, VERIFY
-gates it on CI + mergeability + base. VERIFY is READ-ONLY and always safe — it
-lists the loop's open PRs and derives one Verdict per PR; it never merges,
-closes, or writes to GitHub.
+is THIN (DESIGN §3.7.1/§3.7.2) — it gates a PR on mergeability + base only. CI is
+RECORDED on the Verdict (informational defense-in-depth) but no longer gates `ok`:
+the correctness test-gate now lives in IMPLEMENT (FT-A runs the touched feature's
+run.py before a PR opens), and the loop's own CI is a hollow byte-compile gate
+that a pending/absent run would otherwise wedge every merge on. VERIFY is
+READ-ONLY and always safe — it lists the loop's open PRs and derives one Verdict
+per PR; it never merges, closes, or writes to GitHub.
+
+VERIFY's substantive job is the CONDITIONAL cross-feature complement run (DESIGN
+§3.7.6): when TRIAGE flagged `cross_cutting_risk` (§3.5.9), VERIFY deterministically
+runs the at-risk features' run.py suites to catch a semantic cross-feature break
+that has no merge conflict (the residual-case serialization §3.8.6 cannot catch).
+If ANY complement suite fails, every verdict this tick is marked ok=False with a
+specific cross-feature-break reason, so INTEGRATE merges nothing from a batch that
+breaks an at-risk sibling. When risk is False (or the slot is absent), VERIFY does
+NO complement run and stays thin.
 
 The cross-tick model (refines DESIGN §2.6): a PR's CI runs asynchronously, so
 GitHub — not a durable ledger — is the source of truth for the loop's open PRs.
@@ -21,10 +34,17 @@ never a flaky live call). The default-branch lookup is likewise injectable.
 Public surface (slice 1):
   - VERDICT_SCHEMA_VERSION + Verdict — the typed, versioned verdict schema.
   - VERDICTS_SLOT     — the fsm-contracts slot registration descriptor.
+  - CROSS_CHECK_SCHEMA_VERSION + CrossCheck — the typed, versioned cross-feature
+    complement-run result schema.
+  - CROSS_CHECK_SLOT  — the fsm-contracts slot registration descriptor.
   - VERIFY_MANIFEST   — the VERIFY state's {reads, writes, emits} manifest.
   - VERIFY_SIGNALS    — the closed signal set VERIFY may emit (OK | EMPTY).
   - gh_open_pr_source()       — the production source: shells the gh CLI.
   - gh_default_branch_source() — the production default-branch resolver.
+  - feature_run_py_path(feature, features_root) — the deterministic resolver of a
+    named feature's test/run.py (the complement-runner's locator seam).
+  - default_complement_runner(...) — the production complement-runner: shells the
+    named feature's test/run.py via subprocess (the determinism seam).
   - derive_verdict(pr_dict, default_branch) — the pure verdict derivation.
   - Verify            — the VERIFY state; run(TickContext) -> StateResult.
 
@@ -59,7 +79,7 @@ Public surface (slice 2 — INTEGRATE + CLEANUP):
   - CLEANUP_MANIFEST / CLEANUP_SIGNALS — CLEANUP's manifest + signal set.
   - Cleanup — the CLEANUP state (v1-thin pass-through; run -> OK).
 
-Version: 0.5.0
+Version: 0.6.0
 Owner: changyu87
 Deprecation criterion: Superseded when the loop adopts a non-git VCS backend,
   or a model-backed verify/integrate policy replaces the deterministic gh-based
@@ -68,7 +88,9 @@ Deprecation criterion: Superseded when the loop adopts a non-git VCS backend,
 """
 
 import json
+import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from typing import List
 
@@ -98,12 +120,14 @@ VERDICT_SCHEMA_VERSION = "1.0.0"
 
 @dataclass(eq=True)
 class Verdict:
-    """One verdict per open loop PR (DESIGN §3.7).
+    """One verdict per open loop PR (DESIGN §3.7, thinned by §3.7.1/§3.7.2).
 
-    `ok` is the conservative AND: CI passing AND mergeable AND base == default
-    branch. `ci_state` is one of passing|pending|failing|unknown. `reasons`
-    explains a non-ok verdict (empty when ok). `to_dict`/`from_dict` give a
-    machine-first, versioned representation for the `verdicts` blackboard slot.
+    `ok` is the conservative AND of the BLOCKING conditions: mergeable AND
+    base == default branch. CI is NO LONGER a blocking condition (the correctness
+    gate lives in IMPLEMENT); `ci_state` (one of passing|pending|failing|unknown)
+    is still RECORDED as informational defense-in-depth but does not flip `ok`.
+    `reasons` explains a non-ok verdict (empty when ok). `to_dict`/`from_dict`
+    give a machine-first, versioned representation for the `verdicts` slot.
     """
 
     pr_ref: str
@@ -148,13 +172,62 @@ VERDICTS_SLOT = {
     "version": VERDICT_SCHEMA_VERSION,
 }
 
+# The versioned CrossCheck schema (machine-first; bumped on a breaking field-set
+# change). Records the CONDITIONAL cross-feature complement run (DESIGN §3.7.6).
+CROSS_CHECK_SCHEMA_VERSION = "1.0.0"
+
+
+@dataclass(eq=True)
+class CrossCheck:
+    """The result of VERIFY's conditional cross-feature complement run (§3.7.6).
+
+    `ran` is True only when TRIAGE flagged cross_cutting_risk (risk=True) and the
+    at-risk features' suites were therefore run; `reason` echoes the triager's
+    overlap reason (empty when ran=False). `results` is one entry per named
+    at-risk feature: `{feature, passed, returncode, summary}` (mirroring FT-A's
+    test-gate verdict shape). `to_dict`/`from_dict` give a machine-first,
+    versioned representation for the `cross_check` blackboard slot.
+    """
+
+    ran: bool
+    reason: str = ""
+    results: List[dict] = field(default_factory=list)
+
+    def to_dict(self):
+        return {
+            "schema_version": CROSS_CHECK_SCHEMA_VERSION,
+            "ran": bool(self.ran),
+            "reason": self.reason,
+            "results": [dict(r) for r in self.results],
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            ran=bool(d["ran"]),
+            reason=d.get("reason", ""),
+            results=[dict(r) for r in d.get("results", [])],
+        )
+
+
+# The fsm-contracts slot descriptor. `cross_check` is an object slot (a single
+# CrossCheck dict); the slot version tracks the schema version. Mirrors
+# VERDICTS_SLOT's shape (name/schema/version).
+CROSS_CHECK_SLOT = {
+    "name": "cross_check",
+    "schema": {"type": "object"},
+    "version": CROSS_CHECK_SCHEMA_VERSION,
+}
+
 # Closed signal set VERIFY emits: OK when any open PRs were found, else EMPTY.
 VERIFY_SIGNALS = ["OK", "EMPTY"]
 
-# Per-state manifest (bounded-scope contract): reads NOTHING (the open-PR set is
-# sourced live from gh, not a slot — the cross-tick model), writes the verdicts
-# slot, emits OK | EMPTY.
-VERIFY_MANIFEST = fc.StateManifest(reads=[], writes=["verdicts"],
+# Per-state manifest (bounded-scope contract): reads `cross_cutting_risk` (the
+# work-intake CrossCuttingRisk slot — the open-PR set itself is sourced live from
+# gh, NOT a slot, per the cross-tick model), writes the `verdicts` and
+# `cross_check` slots, emits OK | EMPTY.
+VERIFY_MANIFEST = fc.StateManifest(reads=["cross_cutting_risk"],
+                                   writes=["verdicts", "cross_check"],
                                    emits=VERIFY_SIGNALS)
 
 
@@ -427,6 +500,62 @@ def gh_default_branch_source(repo=None, runner=subprocess.run):
     return out.stdout.strip()
 
 
+def feature_run_py_path(feature, features_root):
+    """Deterministic resolver of a named feature's `test/run.py`.
+
+    Returns `<features_root>/<feature>/test/run.py`. `features_root` is a
+    runtime-injected locator and is REQUIRED — there is no source-tree default:
+    the shipped, self-contained plugin lib cannot assume its own on-disk layout,
+    so the caller (scheduling) injects the sibling-features root. A None
+    `features_root` raises rather than silently joining onto a path that does not
+    exist in the plugin tree. Pure: it computes a path string, it does not check
+    the filesystem (the runner does)."""
+    if features_root is None:
+        raise ValueError(
+            "feature_run_py_path requires a non-None features_root "
+            "(runtime-injected locator; no source-tree default)")
+    return os.path.join(features_root, feature, "test", "run.py")
+
+
+def _summary_line(text):
+    """The final non-empty line of run.py output — the conventional
+    `N passed, M failed` summary the feature runners emit. Pure."""
+    for line in reversed((text or "").splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def default_complement_runner(feature, features_root=None,
+                              runner=subprocess.run):
+    """Production complement-runner: run a named feature's `test/run.py` via
+    subprocess and return a machine-checkable result dict
+    `{feature, passed, returncode, summary}` (the FT-A test-gate verdict shape).
+
+    Self-contained: it shells the target's OWN run.py (no rabbit-framework runtime
+    dependency, no import of the implement feature). A missing run.py is recorded
+    as passed=False (never a silent pass). The subprocess `runner` and the
+    `features_root` locator are INJECTABLE seams so tests drive a stub with no
+    network and no real sibling suite (spec-rules §1)."""
+    run_py = feature_run_py_path(feature, features_root)
+    if not os.path.isfile(run_py):
+        return {
+            "feature": feature,
+            "passed": False,
+            "returncode": 1,
+            "summary": f"no test/run.py found for feature {feature!r}",
+        }
+    proc = runner([sys.executable, run_py],
+                  capture_output=True, text=True,
+                  cwd=os.path.dirname(os.path.dirname(run_py)))
+    return {
+        "feature": feature,
+        "passed": proc.returncode == 0,
+        "returncode": proc.returncode,
+        "summary": _summary_line(proc.stdout) or _summary_line(proc.stderr),
+    }
+
+
 def _derive_pr_ref(url, number):
     """Derive a stable `owner/repo#number` ref from a PR URL, falling back to
     `#number` when the URL is not the expected GitHub pull form."""
@@ -465,11 +594,13 @@ def _ci_state(rollup):
 def derive_verdict(pr_dict, default_branch):
     """Pure derivation of a Verdict from a gh-shaped open-PR dict.
 
-    `ci_state` from the status-check rollup, `mergeable` from gh's `mergeable`
-    field (MERGEABLE -> True; CONFLICTING/UNKNOWN/anything else -> False,
-    conservative), `base` from `baseRefName`. `ok` is the conservative AND:
-    ci_state == "passing" AND mergeable AND base == default_branch. `reasons`
-    lists each failing condition for a non-ok verdict. Deterministic; no I/O.
+    `ci_state` from the status-check rollup (RECORDED, informational), `mergeable`
+    from gh's `mergeable` field (MERGEABLE -> True; CONFLICTING/UNKNOWN/anything
+    else -> False, conservative), `base` from `baseRefName`. `ok` is the
+    conservative AND of the BLOCKING conditions ONLY: mergeable AND
+    base == default_branch (DESIGN §3.7.1/§3.7.2 — CI is recorded but no longer
+    gates ok). `reasons` lists each failing BLOCKING condition for a non-ok
+    verdict; a non-passing CI does NOT contribute a reason. Deterministic; no I/O.
     """
     number = pr_dict["number"]
     url = pr_dict.get("url", "")
@@ -478,8 +609,6 @@ def derive_verdict(pr_dict, default_branch):
     mergeable = (pr_dict.get("mergeable") or "").upper() == "MERGEABLE"
 
     reasons = []
-    if ci_state != "passing":
-        reasons.append(f"CI not passing (ci_state={ci_state})")
     if not mergeable:
         reasons.append(
             f"not mergeable (mergeable={pr_dict.get('mergeable')})")
@@ -499,36 +628,121 @@ def derive_verdict(pr_dict, default_branch):
     )
 
 
-class Verify:
-    """The VERIFY state. Lists the loop's open PRs via the injectable source,
-    derives one Verdict per PR, writes the `verdicts` slot, and emits OK if any
-    open PRs were found else EMPTY.
+def _read_optional_slot(ctx, name):
+    """Read a slot if it is registered AND written, else None — VERIFY tolerates
+    an absent `cross_cutting_risk` slot (runtime seeding is FT-E; until then a tick
+    simply has no risk verdict, which is the thin no-complement path). The
+    fsm-contracts ctx.read raises on an unregistered/unwritten slot, so this
+    guards both cases without coupling VERIFY to the seeding order."""
+    try:
+        return ctx.read(name)
+    except fc.ContractError:
+        return None
 
-    READ-ONLY: VERIFY never merges, closes, or writes to GitHub. The only edges
-    it touches are the read-only PR source and the default-branch resolver, both
-    injectable (the determinism seam). The default branch is resolved once per
-    run via `default_branch_source` unless `default_branch` is supplied directly.
+
+# The cross-feature-break reason stamped on every verdict when a complement suite
+# fails. Names the failing feature + the triager's overlap reason so INTEGRATE's
+# skip reason is locatable to the at-risk sibling that broke (spec-rules §1).
+def _cross_break_reason(failing_features, triager_reason):
+    feats = ", ".join(failing_features)
+    return (f"cross-feature break: at-risk sibling suite(s) failed [{feats}] "
+            f"(triager overlap reason: {triager_reason})")
+
+
+# The reason stamped on cross_check + every verdict when a cross-cutting batch is
+# flagged (risk=True) but the complement CANNOT run because `features_root` is
+# unconfigured. The flagged risk is then UNVERIFIABLE, so VERIFY conservatively
+# gates — an unverifiable at-risk batch must never auto-merge (§3.7.1). Loud and
+# recorded, never silent.
+_UNVERIFIABLE_REASON = (
+    "complement run skipped: features_root not configured — "
+    "cross-cutting risk unverifiable")
+
+
+class Verify:
+    """The VERIFY state (thinned by DESIGN §3.7.1/§3.7.2 + §3.7.6).
+
+    Lists the loop's open PRs via the injectable source, derives one Verdict per
+    PR (ok = mergeable AND base==default branch; CI recorded but not gating),
+    writes the `verdicts` slot, and emits OK if any open PRs were found else EMPTY.
+
+    Cross-feature complement run (§3.7.6): VERIFY reads the `cross_cutting_risk`
+    slot (work-intake's CrossCuttingRisk). When risk is True it runs, via the
+    injectable `complement_runner`, the run.py of EACH named at-risk feature and
+    records the per-feature results in the `cross_check` slot. If ANY complement
+    suite fails, every verdict this tick is marked ok=False with a specific
+    cross-feature-break reason, so INTEGRATE merges nothing from a batch that
+    breaks an at-risk sibling. When risk is False/absent, NO complement runs and
+    `cross_check` records ran=False (VERIFY stays thin); verdicts reflect only
+    mergeable+base.
+
+    READ-ONLY w.r.t. GitHub: VERIFY never merges, closes, or writes to GitHub. Its
+    edges are the read-only PR source, the default-branch resolver, and the
+    complement-runner — all injectable (the determinism seam).
     """
 
     def __init__(self, source=gh_open_pr_source, repo=None,
                  default_branch=None,
-                 default_branch_source=gh_default_branch_source):
+                 default_branch_source=gh_default_branch_source,
+                 complement_runner=default_complement_runner,
+                 features_root=None):
         self._source = source
         self._repo = repo
         self._default_branch = default_branch
         self._default_branch_source = default_branch_source
+        self._complement_runner = complement_runner
+        self._features_root = features_root
 
     def _resolve_default_branch(self):
         if self._default_branch is not None:
             return self._default_branch
         return self._default_branch_source(self._repo)
 
-    def run(self, ctx):  # noqa: ARG002 — ctx is the fsm-contracts TickContext
+    def _run_complement(self, ctx):
+        """Run the conditional cross-feature complement (§3.7.6). Returns a
+        `(CrossCheck, gate_reason)` pair. `gate_reason` is non-None when every
+        verdict this tick must be flipped ok=False:
+
+          - risk=False or an absent slot -> (ran=False, None): VERIFY stays thin.
+          - risk=True but `features_root` is unconfigured -> the complement CANNOT
+            run, so (ran=False with the unverifiable reason, that reason):
+            conservatively GATE — an unverifiable at-risk batch must not merge.
+          - risk=True with a configured root -> run each named feature's run.py;
+            (ran=True, the cross-break reason) when any complement FAILS, else
+            (ran=True, None).
+        """
+        risk_dict = _read_optional_slot(ctx, "cross_cutting_risk")
+        if not risk_dict or not risk_dict.get("risk"):
+            return CrossCheck(ran=False, reason="", results=[]), None
+        if self._features_root is None:
+            return (CrossCheck(ran=False, reason=_UNVERIFIABLE_REASON,
+                               results=[]),
+                    _UNVERIFIABLE_REASON)
+        reason = risk_dict.get("reason", "")
+        results = [
+            self._complement_runner(feature, features_root=self._features_root)
+            for feature in risk_dict.get("features", [])
+        ]
+        failing = [r["feature"] for r in results if not r.get("passed")]
+        gate_reason = _cross_break_reason(failing, reason) if failing else None
+        return CrossCheck(ran=True, reason=reason, results=results), gate_reason
+
+    def run(self, ctx):
         prs = self._source(repo=self._repo, label=LOOP_PR_LABEL)
         default_branch = self._resolve_default_branch()
         verdicts = [derive_verdict(pr, default_branch).to_dict() for pr in prs]
+
+        cross_check, gate_reason = self._run_complement(ctx)
+        if gate_reason:
+            for vd in verdicts:
+                vd["ok"] = False
+                vd["reasons"] = list(vd.get("reasons") or []) + [gate_reason]
+
         signal = "OK" if verdicts else "EMPTY"
-        return fc.StateResult(signal=signal, writes={"verdicts": verdicts})
+        return fc.StateResult(signal=signal, writes={
+            "verdicts": verdicts,
+            "cross_check": cross_check.to_dict(),
+        })
 
 
 # ==========================================================================

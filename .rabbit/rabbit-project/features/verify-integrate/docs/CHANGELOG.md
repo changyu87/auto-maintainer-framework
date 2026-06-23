@@ -2,6 +2,28 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.7.0 — 2026-06-21
+
+Fix the FT-D `features_root` self-containment bug packaging-config's
+self-containment guard caught, and conservatively gate an unverifiable
+cross-cutting batch (§3.7.1).
+
+- **No source-tree default for `features_root`.** Deleted the
+  `_DEFAULT_FEATURES_ROOT` constant (the `dirname(dirname(dirname(__file__)))`
+  computation) and its comment. `feature_run_py_path(feature, features_root)` now
+  REQUIRES a non-None `features_root` (pure path-join; raises on None) — the
+  shipped, self-contained plugin lib cannot assume its own on-disk layout, so the
+  caller (scheduling) injects the locator at runtime.
+- **Conservative gate when unverifiable (§3.7.1).** When
+  `cross_cutting_risk.risk=True` but `features_root` is unconfigured, the
+  complement CANNOT run, so `Verify.run` now GATES: `cross_check` records
+  `ran=False` with reason `complement run skipped: features_root not configured —
+  cross-cutting risk unverifiable`, and EVERY verdict is marked `ok=False` with
+  that same reason. A flagged cross-cutting batch that cannot be verified must
+  never auto-merge — loud and recorded, never silent.
+- **Self-contained source.** The shipped `verify_integrate.py` now carries NO
+  `rabbit-project` and NO `.rabbit` path substring; a test asserts this.
+
 ## 0.6.0 — 2026-06-21
 
 VERIFY becomes THIN + gains the conditional cross-feature complement run
