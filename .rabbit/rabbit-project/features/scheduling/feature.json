@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "updated": "2026-06-24",
   "spec_change_reason": "Self-healing known-port adapter-map migration (dogfood REVIEW root-cause fix). A stale persisted project-local adapter-map.json known-port agent entry wired under an older template (e.g. a v0.6.0 REVIEW writing the retired review_verdicts slot with an old output_example) broke the redesigned (FT-C/D) loop where REVIEW writes review_findings. adapter_map_config.migrate_known_port_entries(adapter_map) is a PURE dict->dict transform: for each (port, entry) where ad.is_agent_entry(entry) AND port in AGENT_PORT_TEMPLATES it REBUILDS the entry via _build_agent_entry(port, existing dispatch[0].subagent_type), re-deriving writes/cardinality/output_example/inputs/manifest/signal/effect/isolation from the LIVE template while preserving ONLY subagent_type; script strings, custom-port agent entries, and non-agent entries are left unchanged; returns a NEW dict (no input mutation); idempotent. run_tick passes it as the migrate= hook of its single aw.build_loop(...) call (lazily importing adapter_map_config at the call site to avoid the adapter_map_config->run_tick circular import), so a stale entry self-heals on load before resolve+validate every tick."
 }
