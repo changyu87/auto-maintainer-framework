@@ -1,6 +1,6 @@
 ---
 feature: adapter-wiring
-version: 0.3.0
+version: 0.4.0
 owner: changyu87
 deprecation_criterion: Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it.
 ---
@@ -120,9 +120,17 @@ slice) consumes it to build + dispatch invocation envelopes. Because
    over the resolved manifests, plus the anchor invariants (entry is GUARD;
    PERSIST precedes EXIT; EXIT terminal route present). A bad route/wiring fails
    **before any tick runs**.
-5. **`build_loop(default_route, default_map, runtime, start, initial) -> (route, states)`**
+5. **`build_loop(default_route, default_map, runtime, start, initial, migrate=None) -> (route, states)`**
    — convenience: load + resolve + validate, returning exactly what
-   `tick_orchestrator.run(route, states, ctx, vocab, start)` needs.
+   `tick_orchestrator.run(route, states, ctx, vocab, start)` needs. The optional
+   `migrate` is a pure `dict -> dict` callable run on the loaded adapter-map
+   AFTER `load_adapter_map` and BEFORE `resolve_states`/`validate_wiring`, so a
+   caller (e.g. scheduling) can self-heal stale adapter-map entries on load. The
+   migrated map feeds resolve + validate exactly like a loaded map, so a bad
+   transform surfaces as a `WiringError` (never a silent pass). `migrate=None`
+   (the default) is byte-for-byte unchanged behaviour; adapter-wiring stays
+   template-agnostic — it only invokes the supplied callable and knows nothing
+   about what it rewrites.
 
 ## Adapter authoring / scaffold tool (§3.4.4, the BYO convenience)
 

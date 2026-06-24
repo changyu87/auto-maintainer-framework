@@ -28,8 +28,8 @@ Public surface:
   - load_adapter_map(default_map, project_dir) -> map
   - resolve_states(route, adapter_map, runtime) -> states
   - validate_wiring(route, manifests, start, initial) -> CheckResult
-  - build_loop(default_route, default_map, runtime, start, initial)
-        -> (route, states)
+  - build_loop(default_route, default_map, runtime, start, initial,
+        migrate=None) -> (route, states)
   - scaffold_adapter(port, src_dir, ...) -> path     (§3.4.4 authoring tool)
   - wire_adapter(port, address, project_dir, ...) -> (route, map)
   - validate_adapter_conformance(address, runtime, ...) -> CheckResult
@@ -57,7 +57,7 @@ tick-orchestrator (validate_signals, validate_data_readiness), and
 agent-dispatch (is_agent_entry, validate_agent_adapter); it does not
 re-implement them.
 
-Version: 0.3.0
+Version: 0.4.0
 Owner: changyu87
 Deprecation criterion: Superseded when the route/adapter wiring model changes
   incompatibly (e.g. the adapter factory convention or route.json schema
@@ -325,14 +325,26 @@ def validate_wiring(route, manifests, start, initial):
                                  "anchor-conforming"])
 
 
-def build_loop(default_route, default_map, runtime, start, initial):
+def build_loop(default_route, default_map, runtime, start, initial,
+               migrate=None):
     """Load + resolve + validate, returning (route, states) ready for
     tick_orchestrator.run(route, states, ctx, vocab, start). The project_dir is
     read from `runtime['project_dir']`. A bad route/wiring raises WiringError
-    before anything runs."""
+    before anything runs.
+
+    `migrate` is an optional pure dict -> dict callable run on the loaded
+    adapter-map AFTER load_adapter_map and BEFORE resolve_states, so a caller
+    (e.g. scheduling) can self-heal stale adapter-map entries on load. The
+    migrated map feeds resolve + validate exactly like a loaded map, so a bad
+    transform surfaces as a WiringError (never a silent pass). adapter-wiring
+    stays template-agnostic: it only invokes the supplied callable and knows
+    nothing about what it rewrites. migrate=None (the default) is byte-for-byte
+    unchanged behaviour."""
     project_dir = runtime["project_dir"]
     route = load_route(default_route, project_dir)
     adapter_map = load_adapter_map(default_map, project_dir)
+    if migrate is not None:
+        adapter_map = migrate(adapter_map)
     states = resolve_states(route, adapter_map, runtime)
 
     manifests = {name: m for name, (m, _r) in states.items()}

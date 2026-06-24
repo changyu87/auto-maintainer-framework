@@ -678,3 +678,94 @@ def test_e2e_build_loop_rejects_invalid_wiring_before_running():
             pass
         else:
             raise AssertionError("build_loop must raise WiringError on invalid wiring")
+
+
+# ==========================================================================
+# Behaviour 7 — build_loop optional `migrate` hook. A project may supply an
+# optional pure dict -> dict callable that transforms the loaded adapter-map
+# AFTER load and BEFORE resolve/validate, so scheduling can self-heal stale
+# adapter-map entries on load. adapter-wiring stays template-agnostic: it only
+# invokes the supplied callable; it knows nothing about what it rewrites.
+# migrate=None (the default) is byte-for-byte unchanged behaviour.
+# ==========================================================================
+
+def test_build_loop_migrate_applies_before_resolve():
+    """A migrate callable rewrites the loaded adapter-map before resolve, so the
+    resolved states reflect the TRANSFORMED entry, not the original one."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        # The default map points WORK at a stale/non-resolvable address; the
+        # migrate hook heals it to the real stub before resolve runs.
+        stale_map = dict(_SPINE_MAP)
+        stale_map["WORK"] = "stale_module_that_does_not_exist:make"
+
+        def migrate(amap):
+            healed = dict(amap)
+            healed["WORK"] = "stub_work:make"
+            return healed
+
+        route, states = aw.build_loop(
+            _SPINE_ROUTE, stale_map, _runtime(proj),
+            start="GUARD", initial=[], migrate=migrate)
+
+        # WORK resolved against the MIGRATED address, not the stale one.
+        manifest, run = states["WORK"]
+        assert isinstance(manifest, fc.StateManifest)
+        assert callable(run)
+
+        # And the resolved loop still drives to terminal end-to-end.
+        ctx = fc.TickContext()
+        ctx.register_slot("count", {"type": "integer"}, version="1.0.0")
+        vocab = fc.SignalVocabulary(_SIGNALS)
+        result = to.run(route, states, ctx, vocab, start="GUARD")
+        assert result.final_state == "EXIT"
+        assert result.path == ["GUARD", "WORK", "PERSIST", "EXIT"]
+
+
+def test_build_loop_no_migrate_is_backward_compatible():
+    """migrate=None (the default) leaves behaviour byte-for-byte unchanged: the
+    loaded map is resolved as-is."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        # Default-kwarg call (no migrate) and explicit migrate=None must both
+        # behave exactly like the legacy build_loop.
+        route_a, states_a = aw.build_loop(
+            _SPINE_ROUTE, _SPINE_MAP, _runtime(proj),
+            start="GUARD", initial=[])
+        route_b, states_b = aw.build_loop(
+            _SPINE_ROUTE, _SPINE_MAP, _runtime(proj),
+            start="GUARD", initial=[], migrate=None)
+
+        assert route_a == route_b == _SPINE_ROUTE
+        assert set(states_a) == set(states_b) == set(_SPINE_ROUTE["states"])
+
+        ctx = fc.TickContext()
+        ctx.register_slot("count", {"type": "integer"}, version="1.0.0")
+        vocab = fc.SignalVocabulary(_SIGNALS)
+        result = to.run(route_b, states_b, ctx, vocab, start="GUARD")
+        assert result.final_state == "EXIT"
+        assert result.path == ["GUARD", "WORK", "PERSIST", "EXIT"]
+
+
+def test_build_loop_migrate_bad_map_surfaces_wiring_error():
+    """A migrate that produces a MALFORMED map surfaces as a WiringError (never a
+    silent pass): the migrated map feeds resolve + validate exactly like a
+    loaded map, so a bad transform fails at LOAD."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+
+        def migrate(amap):
+            healed = dict(amap)
+            # Heal WORK into an unimportable module — the migrated map must
+            # fail resolution as a locatable WiringError naming the port.
+            healed["WORK"] = "no_such_migrated_module:make"
+            return healed
+
+        try:
+            aw.build_loop(_SPINE_ROUTE, _SPINE_MAP, _runtime(proj),
+                          start="GUARD", initial=[], migrate=migrate)
+        except aw.WiringError as exc:
+            assert "WORK" in str(exc)
+        else:
+            raise AssertionError(
+                "a malformed migrated map must raise WiringError")
