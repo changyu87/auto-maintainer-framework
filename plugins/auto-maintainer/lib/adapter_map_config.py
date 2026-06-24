@@ -259,25 +259,39 @@ def migrate_known_port_entries(adapter_map):
     """Self-heal stale KNOWN-port agent entries against the LIVE templates.
 
     A persisted project-local ``adapter-map.json`` known-port agent entry wired
-    under an OLDER template carries retired template fields (e.g. a v0.6.0 REVIEW
-    entry that writes the retired ``review_verdicts`` slot with an old
+    under an OLDER template carries a RETIRED ``writes`` slot (e.g. a v0.6.0
+    REVIEW entry that writes the retired ``review_verdicts`` slot with an old
     ``output_example``), which breaks the redesigned loop. This pure dict -> dict
-    transform re-derives every such entry from the current template:
+    transform re-derives ONLY those RETIRED-slot entries from the current template.
 
-    For each ``(port, entry)``: when ``ad.is_agent_entry(entry)`` AND ``port`` is
-    a KNOWN agent-capable port (in ``AGENT_PORT_TEMPLATES``), REBUILD the entry via
+    The re-derive is SURGICAL, not blanket (#279 regression fix). An earlier
+    blanket re-derive rebuilt EVERY known-port agent entry, which CLOBBERED valid
+    customizations — the dogfood IMPLEMENT writes the still-valid ``handoffs`` slot
+    but reads ``work_orders`` (NOT the template's ``execution_plan``) in a
+    NO-PRIORITIZE route; the blanket re-derive rewrote its ``inputs`` to
+    ``execution_plan`` (never produced) -> ``adapter_wiring`` WiringError -> the
+    loop would not start.
+
+    For each ``(port, entry)``: REBUILD the entry via
     ``_build_agent_entry(port, <entry's existing dispatch[0].subagent_type>)`` —
     re-deriving writes / cardinality / output_example / inputs / manifest / signal
     / effect / isolation from the live template while preserving ONLY the
-    ``subagent_type``. Script (string) entries, custom-port agent entries (a port
-    NOT in the templates, whose fields cannot be inferred), and non-agent entries
-    are left UNCHANGED.
+    ``subagent_type`` — ONLY when ``ad.is_agent_entry(entry)`` AND ``port`` is a
+    KNOWN agent-capable port (in ``AGENT_PORT_TEMPLATES``) AND the entry's
+    ``dispatch[0]['writes']`` is NOT among the live templates' writes slots (a
+    RETIRED slot). Otherwise the entry is returned UNCHANGED. This heals REVIEW
+    (writes ``review_verdicts`` -> ``review_findings``) while PRESERVING IMPLEMENT
+    (writes ``handoffs`` -> untouched, custom ``work_orders`` read kept). Script
+    (string) entries, custom-port agent entries (a port NOT in the templates), and
+    non-agent entries are also left UNCHANGED.
 
     Returns a NEW dict — the input is never mutated. Idempotent: re-running on an
     already-current entry is a no-op."""
+    valid_writes = {tmpl["writes"] for tmpl in AGENT_PORT_TEMPLATES.values()}
     out = {}
     for port, entry in adapter_map.items():
-        if ad.is_agent_entry(entry) and port in AGENT_PORT_TEMPLATES:
+        if (ad.is_agent_entry(entry) and port in AGENT_PORT_TEMPLATES
+                and entry["dispatch"][0]["writes"] not in valid_writes):
             subagent_type = entry["dispatch"][0]["subagent_type"]
             out[port] = _build_agent_entry(port, subagent_type)
         else:

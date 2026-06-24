@@ -1,5 +1,25 @@
 # scheduling — Changelog
 
+## feature 0.21.1 — 2026-06-21
+
+- **Surgical known-port migration — preserve valid customizations (#279
+  regression fix).** `migrate_known_port_entries` previously re-derived EVERY
+  known-port agent entry from the live template, which CLOBBERED valid
+  customizations. The dogfood route has NO PRIORITIZE and wires IMPLEMENT to read
+  `work_orders` (not the template's `execution_plan`); the blanket re-derive
+  rewrote IMPLEMENT's `inputs` to `execution_plan` — never produced in that route
+  — so `adapter-wiring`'s data-readiness check raised `WiringError` and the loop
+  would not start.
+  - The re-derive is now SURGICAL: compute
+    `valid_writes = {tmpl['writes'] for tmpl in AGENT_PORT_TEMPLATES.values()}`
+    and re-derive an entry ONLY when `ad.is_agent_entry(entry)` AND
+    `port in AGENT_PORT_TEMPLATES` AND its `dispatch[0]['writes']` is NOT in
+    `valid_writes` (a RETIRED slot). Otherwise the entry is returned UNCHANGED.
+  - This HEALS REVIEW (writes `review_verdicts` ∉ `valid_writes` →
+    `review_findings`) while PRESERVING IMPLEMENT (writes `handoffs` ∈
+    `valid_writes` → untouched, its custom `work_orders` read kept). Still pure
+    (new dict, no input mutation) and idempotent.
+
 ## feature 0.21.0 — 2026-06-21
 
 - **Issue/PR-named Agent dispatch descriptions.** The PAUSED dispatch
