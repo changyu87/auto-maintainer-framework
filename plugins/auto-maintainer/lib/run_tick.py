@@ -1854,6 +1854,27 @@ def _clear_checkpoint(state_path):
         ds.DurableState(state_path).save(doc)
 
 
+def _checkpoint_compatible(checkpoint, ctx):
+    """Whether a durable PAUSED `checkpoint` is compatible with the CURRENT
+    (freshly-seeded) wiring carried by `ctx` (upgrade-in-flight crash guard).
+
+    True when the checkpoint is empty/absent OR its pending dispatch `writes` slot
+    is registered in `ctx.registered_slots()`. False when the pending writes slot
+    is NOT registered — a retired/renamed slot after a plugin upgrade (e.g. a
+    v0.7.0 checkpoint paused at REVIEW writing the retired `review_verdicts` slot
+    that the redesigned loop replaced with `review_findings`). The adapter-map
+    migration self-heals the live CONFIG, but the persisted checkpoint bypasses it;
+    re-emitting / resuming such a checkpoint applies the subagent output to the
+    unregistered slot and raises fc.ContractError. Pure + deterministic — no wall
+    clock, no network."""
+    if not checkpoint:
+        return True
+    writes = checkpoint.get("pending", {}).get("writes")
+    if writes is None:
+        return True
+    return writes in ctx.registered_slots()
+
+
 def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
     """Build the PAUSED result by RE-LOADING the just-written checkpoint and
     rendering from its restored slot snapshot, then DELETE any pre-existing file
@@ -2136,6 +2157,35 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
     # across ticks AND stable across a single tick's `--step` -> `--resume`. It is
     # NEVER the wall clock and never the work `counter` (which a read-only route
     # never bumps). It also seeds the rendered dispatch's {tick_id} slot value.
+
+    # Stale/incompatible-checkpoint discard-and-fresh (upgrade-in-flight crash
+    # guard). A checkpoint paused at an agent-state under an OLDER wiring carries a
+    # `pending.writes` slot the CURRENT (migrated, seeded) wiring no longer
+    # registers (e.g. a v0.7.0 REVIEW checkpoint writing the retired
+    # `review_verdicts` slot). The adapter-map migration self-heals the live config
+    # but the persisted checkpoint bypasses it: re-emitting it (--step) or applying
+    # its output to the unregistered slot (--resume) raises fc.ContractError. So
+    # BEFORE the resume / crash-safety-re-emit branches: seed a fresh ctx (the same
+    # seed used downstream) and, when the checkpoint is present but NOT compatible,
+    # _clear_checkpoint, record the discard, and FORCE the fresh path (resume=False
+    # semantics) so the tick re-walks from GUARD and re-pauses with the CURRENT
+    # writes slot. The fresh re-walk relies on the existing acted-ledger / re-entry
+    # idempotency, so it never double-acts an already-open PR.
+    if checkpoint and not _checkpoint_compatible(checkpoint, ctx_seed()):
+        stale_pending = checkpoint.get("pending", {})
+        _clear_checkpoint(state_path)
+        if events is not None:
+            events.emit("tick_start", detail={
+                "source": route_src, "mode": mode,
+                "checkpoint_discarded": {
+                    "state": stale_pending.get("state"),
+                    "writes": stale_pending.get("writes"),
+                }})
+        ctx = ctx_seed()
+        return _drive_agent_tick(
+            route, states, ctx, state_path, "GUARD", mode, tick_id,
+            agentstates, ["GUARD"], [], output_dir, gov, budget_clock,
+            events=events, pr_state_source=pr_state_source) + (ctx,)
 
     if resume:
         # RESUME: the checkpoint must exist (a resume without a prior PAUSE is a

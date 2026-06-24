@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.2
+version: 0.7.3
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -360,3 +360,16 @@ merged fix. Invariant: version 0.7.2 is consistent across `plugin.json` +
 `marketplace.json`; the committed tree matches a fresh build with no source-tree
 leak; the shipped `lib/adapter_map_config.py` carries the `valid_writes`
 surgical gate; still idempotent.
+
+## Plugin patch v0.7.3 — stale-checkpoint discard fix release: deploy #285
+
+Re-ship the committed plugin tree so the merged stale-checkpoint discard fix
+(#285) reaches the installed plugin: `run_tick` now discards a persisted PAUSED
+checkpoint that is incompatible with the current route/context — gated by the
+`_checkpoint_compatible` guard — instead of resuming against a stale checkpoint.
+No build LOGIC change beyond `_PLUGIN_VERSION → 0.7.3`; the committed tree is
+regenerated from current src so the shipped bytes match the merged fix.
+Invariant: version 0.7.3 is consistent across `plugin.json` +
+`marketplace.json`; the committed tree matches a fresh build with no source-tree
+leak; the shipped `lib/run_tick.py` carries the `_checkpoint_compatible` guard;
+still idempotent.
