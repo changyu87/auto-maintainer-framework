@@ -528,16 +528,16 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Patch (v0.7.3, stale-checkpoint discard fix release): version bumped to
-# 0.7.3 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.7.3 is the release that DEPLOYS the merged stale-checkpoint discard fix
-# (#285) into the installed plugin: run_tick now discards a persisted PAUSED
-# checkpoint that is incompatible with the current route/context (via the
-# `_checkpoint_compatible` guard) instead of resuming against it. It
-# regenerates the committed plugin tree from CURRENT src. (Supersedes the v0.7.2
-# surgical adapter-map migration release.)
+# Patch (v0.7.4, per-item dispatch-description fix release): version bumped to
+# 0.7.4 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.7.4 is the release that DEPLOYS the merged per-item dispatch-description
+# fix (#288) into the installed plugin: run_tick's _dispatch_description now
+# branches on cardinality so a per_item fan-out ALWAYS names the item ref
+# (distinct parallel subagents) instead of an explicit description winning
+# verbatim. It regenerates the committed plugin tree from CURRENT src.
+# (Supersedes the v0.7.3 stale-checkpoint discard release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_3_and_consistent():
+def test_version_bumped_to_0_7_4_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -549,10 +549,10 @@ def test_version_bumped_to_0_7_3_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.3", \
-            f"plugin.json version must be 0.7.3, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.3", \
-            "marketplace.json plugin entry version must be 0.7.3"
+        assert pdata.get("version") == "0.7.4", \
+            f"plugin.json version must be 0.7.4, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.4", \
+            "marketplace.json plugin entry version must be 0.7.4"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2386,6 +2386,64 @@ def test_shipped_run_tick_carries_checkpoint_compat_guard():
         assert "_checkpoint_compatible" in shipped, \
             "shipped run_tick must carry the #285 checkpoint-compat guard " \
             "(_checkpoint_compatible)"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.4 (#288), per-item dispatch-description deploy confirmation: the
+# whole point of this release is that the committed (shipped) run_tick carries
+# the #288 per-item dispatch-description fix — _dispatch_description now branches
+# on cardinality (`if "item" in env:`) so a per_item fan-out ALWAYS names the
+# item ref (distinct parallel subagents) instead of letting an explicit
+# dispatch_entry['description'] win verbatim. Assert the COMMITTED lib — the
+# bytes an installed plugin runs — carries the branch, AND that it is
+# byte-identical to a fresh normalization of the current scheduling source (so
+# the committed tree genuinely shipped the merged #288 fix).
+# ---------------------------------------------------------------------------
+def test_committed_run_tick_carries_288_per_item_dispatch_desc():
+    mod = _load_build()
+    committed_rt = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib", "run_tick.py",
+    )
+    assert os.path.isfile(committed_rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(committed_rt, encoding="utf-8") as fh:
+        committed = fh.read()
+    assert 'if "item" in env:' in committed, \
+        "committed run_tick must carry the #288 per-item dispatch-description " \
+        "branch (if \"item\" in env: → always name the item ref)"
+
+    # byte-identical to the build's own normalization of the CURRENT scheduling
+    # source — proving the committed tree shipped the merged #288 fix.
+    src = os.path.join(
+        _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+        "scheduling", "src", "run_tick.py",
+    )
+    _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS["run_tick.py"]
+    expected = mod._normalize_lib(src, anchor, bootstrap)
+    assert committed == expected, \
+        "committed run_tick drifted from a fresh normalization of the " \
+        "current scheduling source — regenerate the plugin tree"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.4 (#288), shipped-build per-item dispatch-description: the freshly
+# built run_tick (the bytes the regenerated tree ships) carries the #288
+# per-item dispatch-description branch. This proves the build's normalization of
+# the current scheduling source delivers the #288 fix into the plugin lib/.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_carries_per_item_dispatch_desc():
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            shipped = fh.read()
+        assert 'if "item" in env:' in shipped, \
+            "shipped run_tick must carry the #288 per-item dispatch-description " \
+            "branch (if \"item\" in env:)"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
