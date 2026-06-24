@@ -528,16 +528,16 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Patch (v0.7.4, per-item dispatch-description fix release): version bumped to
-# 0.7.4 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.7.4 is the release that DEPLOYS the merged per-item dispatch-description
-# fix (#288) into the installed plugin: run_tick's _dispatch_description now
-# branches on cardinality so a per_item fan-out ALWAYS names the item ref
-# (distinct parallel subagents) instead of an explicit description winning
-# verbatim. It regenerates the committed plugin tree from CURRENT src.
-# (Supersedes the v0.7.3 stale-checkpoint discard release.)
+# Patch (v0.7.5, advisory-REVIEW merge-fix release): version bumped to
+# 0.7.5 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.7.5 is the release that DEPLOYS the merged advisory-REVIEW fix (#290) into
+# the installed plugin: the REVIEW adapter-map template's signal is always_ok,
+# so a clean (zero-finding) review emits OK and ALWAYS continues to INTEGRATE
+# instead of EMPTY-branching past the merge. It regenerates the committed
+# plugin tree from CURRENT src.
+# (Supersedes the v0.7.4 per-item dispatch-description release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_4_and_consistent():
+def test_version_bumped_to_0_7_5_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -549,10 +549,10 @@ def test_version_bumped_to_0_7_4_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.4", \
-            f"plugin.json version must be 0.7.4, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.4", \
-            "marketplace.json plugin entry version must be 0.7.4"
+        assert pdata.get("version") == "0.7.5", \
+            f"plugin.json version must be 0.7.5, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.5", \
+            "marketplace.json plugin entry version must be 0.7.5"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2322,6 +2322,44 @@ def test_committed_adapter_map_config_carries_283_surgical_migration():
 
     # byte-identical to the build's own normalization of the CURRENT scheduling
     # source — proving the committed tree shipped the merged #283 fix.
+    src = os.path.join(
+        _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+        "scheduling", "src", "adapter_map_config.py",
+    )
+    _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS["adapter_map_config.py"]
+    expected = mod._normalize_lib(src, anchor, bootstrap)
+    assert committed == expected, \
+        "committed adapter_map_config drifted from a fresh normalization of " \
+        "the current scheduling source — regenerate the plugin tree"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.5 (#290), advisory-REVIEW merge-fix deploy confirmation: the
+# whole point of this release is that the committed (shipped)
+# adapter_map_config carries the #290 advisory-REVIEW fix — the REVIEW
+# adapter-map template's signal is `always_ok`, so a clean (zero-finding)
+# review emits OK and ALWAYS continues to INTEGRATE instead of EMPTY-branching
+# past the merge. Assert the COMMITTED lib — the bytes an installed plugin runs
+# — carries the always_ok signal_rule on the REVIEW template, AND that it is
+# byte-identical to a fresh normalization of the current scheduling source (so
+# the committed tree genuinely shipped the merged #290 fix).
+# ---------------------------------------------------------------------------
+def test_committed_adapter_map_config_carries_290_review_always_ok():
+    mod = _load_build()
+    committed_amc = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib",
+        "adapter_map_config.py",
+    )
+    assert os.path.isfile(committed_amc), \
+        "committed lib/adapter_map_config.py must ship in the plugin tree"
+    with open(committed_amc, encoding="utf-8") as fh:
+        committed = fh.read()
+    assert '"signal_rule": "always_ok"' in committed, \
+        "committed adapter_map_config must carry the #290 advisory-REVIEW " \
+        "fix (the REVIEW template's signal_rule is always_ok)"
+
+    # byte-identical to the build's own normalization of the CURRENT scheduling
+    # source — proving the committed tree shipped the merged #290 fix.
     src = os.path.join(
         _REPO_ROOT, ".rabbit", "rabbit-project", "features",
         "scheduling", "src", "adapter_map_config.py",
