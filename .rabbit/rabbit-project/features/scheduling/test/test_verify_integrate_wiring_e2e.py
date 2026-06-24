@@ -256,8 +256,10 @@ def test_cleanup_factory_wraps_sibling_state():
 
 def test_make_review_writes_empty_review_findings():
     """The deterministic default make_review is a no-op ADVISORY reviewer: it
-    reads the verdicts slot and writes an EMPTY review_findings list (signal
-    EMPTY). It no longer writes review_verdicts and is no longer a merge gate."""
+    reads the verdicts slot and writes an EMPTY review_findings list. Because
+    REVIEW is ADVISORY (never a merge gate), its no-op ALWAYS continues to
+    INTEGRATE — it emits OK (always_ok), not EMPTY. It no longer writes
+    review_verdicts."""
     rti = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
            "source": None, "now": None, "governance": {"mode": "auto-merge"}}
     manifest, run = rt.make_review(rti)
@@ -268,7 +270,7 @@ def test_make_review_writes_empty_review_findings():
     ctx.register_slot("review_findings", {"type": "array"}, version="1.0.0")
     ctx.write("verdicts", [vi.derive_verdict(_OK_PR, _DEFAULT_BRANCH).to_dict()])
     result = run(ctx)
-    assert result.signal == "EMPTY", result
+    assert result.signal == "OK", result
     assert result.writes == {"review_findings": []}, result.writes
 
 

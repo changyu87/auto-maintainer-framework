@@ -332,7 +332,7 @@ def test_resume_with_compatible_checkpoint_applies_output_unchanged():
     project_dir, cfg, state_path, journal_path = _setup_review_project()
     paused = _reach_review_pause(project_dir, cfg, state_path, journal_path)
     # Write the subagent output file for the REVIEW dispatch (an EMPTY advisory
-    # review_findings list — signal EMPTY -> PERSIST).
+    # review_findings list — REVIEW is advisory/always_ok, signal OK -> PERSIST).
     out_path = paused["dispatches"][0]["output_path"]
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w") as f:
