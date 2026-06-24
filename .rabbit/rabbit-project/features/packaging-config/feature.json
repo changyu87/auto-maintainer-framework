@@ -1,11 +1,11 @@
 {
   "name": "packaging-config",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "owner": "changyu87",
   "paths": [],
   "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-06-23",
-  "spec_change_reason": "v0.7.0 loop-redesign final release: add implement's test_gate.py to _LIBS (pure byte-copied, stdlib-only) so it ships at plugins/auto-maintainer/lib/test_gate.py; bump plugin v0.7.0 in plugin.json + marketplace.json; regenerate the committed plugin tree from current src; add e2e tests for the byte-identical test_gate ship and the 0.7.0 version."
+  "updated": "2026-06-24",
+  "spec_change_reason": "v0.7.1 dogfood-fix release: bump plugin v0.7.1 in plugin.json + marketplace.json and regenerate the committed plugin tree from current src so the merged dogfood fixes (PRs #277-#280: agent-dispatch empty-schema guard, adapter-wiring build_loop migrate hook, scheduling adapter-map known-port auto-migration, issue/PR-named dispatch descriptions) reach the installed plugin; rename the version test to 0_7_1, add deployed-fix assertions, and advance the housekeep doc baseline for the appended per-release section."
 }

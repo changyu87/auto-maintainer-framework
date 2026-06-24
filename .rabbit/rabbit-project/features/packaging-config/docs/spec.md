@@ -331,3 +331,19 @@ lands at `plugins/auto-maintainer/lib/test_gate.py` byte-identical to its
 tree is regenerated from current src. Invariant: the built tree ships
 `lib/test_gate.py` byte-identical with no `.rabbit` leak; version 0.7.0 is
 consistent across `plugin.json` + `marketplace.json`; still idempotent.
+
+## Plugin patch v0.7.1 — dogfood-fix release: deploy PRs #277-#280
+
+Re-ship the committed plugin tree so the merged dogfood fixes reach the
+installed plugin: the agent-dispatch empty-schema guard (#277:
+`_expected_type` derives no type for an empty `{}` schema, accepting any
+top-level type), the adapter-wiring `build_loop` `migrate` hook (#278: the
+config self-heal seam), the scheduling adapter-map known-port auto-migration
+(#279: `migrate_known_port_entries`), and the issue/PR-named dispatch
+descriptions (#280). No build LOGIC change beyond `_PLUGIN_VERSION → 0.7.1`;
+the committed tree is regenerated from current src so the shipped bytes match
+the merged fixes (a stale installed adapter-map self-heals on the next tick).
+Invariant: version 0.7.1 is consistent across `plugin.json` + `marketplace.json`;
+the committed tree matches a fresh build with no source-tree leak; the shipped
+`lib/{agent_dispatch,adapter_wiring,adapter_map_config}.py` carry the three
+merged fixes; still idempotent.

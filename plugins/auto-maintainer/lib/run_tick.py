@@ -1093,16 +1093,75 @@ def _pause_result(name, agentstate, slot_values, tick_id, mode, output_dir,
     return {"status": "paused", "state": name, "dispatches": dispatches}
 
 
+def _ref_of(value):
+    """The `#NNN` issue/PR ref of a single dispatch value, or None.
+
+    A string ref (e.g. a work-order id `wo-owner/repo#275` or a PR ref
+    `owner/repo#276`) yields `#` + the substring after the LAST `#`. A dict
+    prefers `pr_ref`, then `number`, then `id` (mirroring the per_item id
+    precedence used elsewhere). Returns the `#`-prefixed ref string or None."""
+    if isinstance(value, dict):
+        for key in ("pr_ref", "number", "id"):
+            if value.get(key) is not None:
+                return _ref_of(value[key])
+        return None
+    if isinstance(value, int):
+        return f"#{value}"
+    if isinstance(value, str) and value:
+        tail = value.rsplit("#", 1)[-1]
+        return f"#{tail}" if tail else None
+    return None
+
+
+def _dispatch_refs(env):
+    """The issue/PR refs this dispatch works on, as `#NNN` strings (pure,
+    deterministic, no mutation of `env`).
+
+    For a per_item dispatch (`env` carries `item`) the ref is that item's ref.
+    For a once dispatch the refs are collected from `env['inputs']` — each input
+    slot that holds a list-of-dicts contributes a ref per element (from `pr_ref`,
+    e.g. REVIEW verdicts, or `number`, e.g. TRIAGE work_items). Refs are
+    de-duped, order-preserving."""
+    refs = []
+    if "item" in env:
+        ref = _ref_of(env["item"])
+        if ref:
+            refs.append(ref)
+    else:
+        for value in env.get("inputs", {}).values():
+            if isinstance(value, list):
+                for element in value:
+                    ref = _ref_of(element)
+                    if ref and ref not in refs:
+                        refs.append(ref)
+    return refs
+
+
+# Cap on how many refs the description names before summarizing the rest.
+_DISPATCH_REFS_CAP = 6
+
+
 def _dispatch_description(dispatch_entry, name, env):
-    """The description the executor passes to Agent for this dispatch: the
-    dispatch entry's `description` when present, else a sensible default
-    (`f"{state}: {item}"` for a per_item dispatch, else `f"{state} dispatch"`)."""
+    """The description the executor passes to Agent for this dispatch.
+
+    Precedence: (0) the dispatch entry's explicit `description` wins verbatim;
+    else (a)/(b) NAME the issue/PR refs this dispatch works on
+    (`f"{name} #275"`, `f"{name} #276, #277"`) so parallel subagents show
+    distinct names; else (c) the `f"{name} dispatch"` fallback. A long ref list
+    is capped at `_DISPATCH_REFS_CAP` with a `+K more` suffix."""
     desc = dispatch_entry.get("description")
     if desc:
         return desc
-    if "item" in env:
-        return f"{name}: {env['item']}"
-    return f"{name} dispatch"
+    refs = _dispatch_refs(env)
+    if not refs:
+        return f"{name} dispatch"
+    if len(refs) > _DISPATCH_REFS_CAP:
+        shown = refs[:_DISPATCH_REFS_CAP]
+        suffix = f", +{len(refs) - _DISPATCH_REFS_CAP} more"
+    else:
+        shown = refs
+        suffix = ""
+    return f"{name} {', '.join(shown)}{suffix}"
 
 
 # The INERT handoff a dry-run trust-gated acting agent-state synthesizes per

@@ -528,14 +528,15 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Minor (v0.7.0, loop-redesign final release): version bumped to 0.7.0 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. v0.7.0 is the
-# FINAL release of the loop-redesign cycle — it ships the deterministic
-# test_gate.py into lib/ (the IMPLEMENT doer's stdlib-only test gate) and
-# rebuilds the committed plugin tree from CURRENT src. (Supersedes the v0.6.0
-# release-rebuild minor.)
+# Patch (v0.7.1, dogfood-fix release): version bumped to 0.7.1 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. v0.7.1 is the
+# release that DEPLOYS the merged dogfood fixes (PRs #277-#280) into the
+# installed plugin: the agent-dispatch empty-schema guard, the adapter-wiring
+# build_loop migrate hook, the scheduling adapter-map known-port auto-migration,
+# and the issue/PR-named dispatch descriptions. It regenerates the committed
+# plugin tree from CURRENT src. (Supersedes the v0.7.0 loop-redesign final.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_0_and_consistent():
+def test_version_bumped_to_0_7_1_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -547,10 +548,10 @@ def test_version_bumped_to_0_7_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.0", \
-            f"plugin.json version must be 0.7.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.0", \
-            "marketplace.json plugin entry version must be 0.7.0"
+        assert pdata.get("version") == "0.7.1", \
+            f"plugin.json version must be 0.7.1, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.1", \
+            "marketplace.json plugin entry version must be 0.7.1"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2248,6 +2249,50 @@ def test_committed_verify_integrate_carries_255_evidence_gate():
         "committed verify_integrate must carry the #255 review_evidence_valid gate"
     assert "batch_is_untrustworthy" in body, \
         "committed verify_integrate must carry the #255 batch_is_untrustworthy gate"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.1 (#277-#280), dogfood-fix deploy confirmation: the whole point
+# of this release is that the committed (shipped) libs carry the three merged
+# dogfood fixes — the agent-dispatch empty-schema guard (#277), the
+# adapter-wiring build_loop migrate hook (#278), and the scheduling adapter-map
+# known-port auto-migration (#279) — which the stale committed tree could lack.
+# Assert the COMMITTED libs — the bytes an installed plugin runs — carry each
+# fix. These guard against shipping a tree that drifted from the merged src.
+# ---------------------------------------------------------------------------
+def test_committed_libs_carry_277_278_279_dogfood_fixes():
+    lib = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer", "lib")
+
+    # #277: agent_dispatch's _expected_type derives no type for an EMPTY dict
+    # (the empty-schema accept-as-is guard) — the non-empty-dict -> "object"
+    # branch.
+    ad = os.path.join(lib, "agent_dispatch.py")
+    assert os.path.isfile(ad), \
+        "committed lib/agent_dispatch.py must ship in the plugin tree"
+    with open(ad, encoding="utf-8") as fh:
+        ad_body = fh.read()
+    assert "isinstance(schema, dict) and schema" in ad_body, \
+        "committed agent_dispatch must carry the #277 empty-schema guard " \
+        "(non-empty dict -> object; empty {} derives no type)"
+
+    # #278: adapter_wiring.build_loop carries the optional migrate hook.
+    aw = os.path.join(lib, "adapter_wiring.py")
+    assert os.path.isfile(aw), \
+        "committed lib/adapter_wiring.py must ship in the plugin tree"
+    with open(aw, encoding="utf-8") as fh:
+        aw_body = fh.read()
+    assert "migrate=None" in aw_body, \
+        "committed adapter_wiring must carry the #278 build_loop migrate hook"
+
+    # #279: adapter_map_config exposes migrate_known_port_entries.
+    amc = os.path.join(lib, "adapter_map_config.py")
+    assert os.path.isfile(amc), \
+        "committed lib/adapter_map_config.py must ship in the plugin tree"
+    with open(amc, encoding="utf-8") as fh:
+        amc_body = fh.read()
+    assert "def migrate_known_port_entries(" in amc_body, \
+        "committed adapter_map_config must carry the #279 " \
+        "migrate_known_port_entries known-port auto-migration"
 
 
 # ---------------------------------------------------------------------------
