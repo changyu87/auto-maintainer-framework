@@ -399,15 +399,17 @@ def make_review(runtime):  # noqa: ARG001 - REVIEW binds no runtime config
     This deterministic factory is the resolvable DEFAULT for the REVIEW port (so
     the port resolves for wiring validation even when DEFAULT_ROUTE omits it, the
     ports-and-adapters promise). Its run is a CONSERVATIVE no-op: it reads the
-    verdicts slot and writes an EMPTY review_findings list (signal EMPTY). REVIEW
-    is ADVISORY — NO LONGER a merge gate — so an absent/no-op reviewer costs only
-    missed advisory notes, never an unsafe merge (INTEGRATE merges ok verdicts on
-    its own deterministic gate + VERIFY + guardrails + the trust ladder). Wire the
-    agent reviewer to emit real findings. Returns REVIEW_MANIFEST + the no-op run
-    callable."""
+    verdicts slot and writes an EMPTY review_findings list. Because REVIEW is
+    ADVISORY — NO LONGER a merge gate — it must ALWAYS continue to INTEGRATE: the
+    no-op emits OK (not EMPTY) regardless of how many findings it produced, so a
+    clean review never EMPTY-branches past the merge (the dogfood unmerged-PR
+    fix). An absent/no-op reviewer costs only missed advisory notes, never an
+    unsafe merge (INTEGRATE merges ok verdicts on its own deterministic gate +
+    VERIFY + guardrails + the trust ladder). Wire the agent reviewer to emit real
+    findings. Returns REVIEW_MANIFEST + the no-op run callable."""
     def _run(ctx):
         ctx.read("verdicts")
-        return fc.StateResult(signal="EMPTY", writes={"review_findings": []})
+        return fc.StateResult(signal="OK", writes={"review_findings": []})
     return vi.REVIEW_MANIFEST, _run
 
 

@@ -141,14 +141,19 @@ AGENT_PORT_TEMPLATES = {
     # REVIEW: the ADVISORY quality state (FT-C). Maps verdicts -> review_findings,
     # NON-acting (read-only judgment — no outward effect; NOT a merge gate), ONE
     # dispatch over the whole open-PR set (the reviewer emits one review finding
-    # record per material finding). The signal is nonempty_else_empty (OK when any
-    # findings were produced, else EMPTY).
+    # record per material finding). The signal is always_ok: REVIEW is ADVISORY,
+    # so it must NEVER branch the loop's flow on how many findings it produced — a
+    # clean (zero-finding) review emits OK and ALWAYS continues to INTEGRATE,
+    # never EMPTY-branching past the merge (the dogfood unmerged-PR fix). The
+    # declared emits stay [OK, EMPTY] (verify-integrate REVIEW_MANIFEST,
+    # UNCHANGED) so a seeded route carrying a REVIEW--EMPTY-->PERSIST edge still
+    # validates; that EMPTY edge is now valid-but-dead.
     "REVIEW": {
         "writes": vi.REVIEW_FINDINGS_SLOT["name"],
         "reads": vi.REVIEW_MANIFEST.reads,
         "emits": list(vi.REVIEW_MANIFEST.emits),
         "cardinality": "once",
-        "signal_rule": "nonempty_else_empty",
+        "signal_rule": "always_ok",
         "output_example": [_REVIEW_FINDING_EXAMPLE],
     },
 }
