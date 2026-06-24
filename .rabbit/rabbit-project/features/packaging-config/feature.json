@@ -1,11 +1,11 @@
 {
   "name": "packaging-config",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "test-red",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-24",
-  "spec_change_reason": "v0.7.5 advisory-REVIEW merge-fix release: bump plugin v0.7.5 in plugin.json + marketplace.json and regenerate the committed plugin tree from current src so the merged advisory-REVIEW fix (#290: the REVIEW adapter-map template's signal is always_ok so a clean zero-finding review emits OK and ALWAYS continues to INTEGRATE instead of EMPTY-branching past the merge) reaches the installed plugin; rename the version test to 0_7_5, add test_committed_adapter_map_config_carries_290_review_always_ok asserting the shipped lib carries the REVIEW always_ok signal_rule, and advance the housekeep doc baseline (388 -> 401) for the appended per-release section."
+  "spec_change_reason": "v0.7.6 immediate-refire enhancement release: bump plugin v0.7.6 in plugin.json + marketplace.json and regenerate the committed plugin tree from current src so the merged immediate-refire enhancement (#292: scheduling's run_tick EXIT anchor is wrapped with the _work_remains predicate over the remaining work + the durable backoff ledger, so a completed tick with remaining actionable work signals refire and the loop runs the next tick immediately instead of waiting for the heartbeat; the shipped tick skill v0.5.0 documents the refire loop) reaches the installed plugin; rename the version test to 0_7_6, add test_committed_run_tick_carries_292_immediate_refire + test_shipped_run_tick_carries_immediate_refire asserting the shipped run_tick carries _work_remains and the tick skill documents the refire loop, update the stale tick-skill version test to 0.5.0, and advance the housekeep doc baseline (401 -> 416) for the appended per-release section."
 }
