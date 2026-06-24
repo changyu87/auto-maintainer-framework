@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.21.0
+version: 0.21.1
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -867,38 +867,38 @@ not in dependency-free adapter-wiring.
 ### Self-healing known-port migration — `migrate_known_port_entries`
 
 A persisted project-local `adapter-map.json` known-port agent entry wired under
-an OLDER template version carries RETIRED template fields. A REVIEW entry wired
-under v0.6.0 writes the retired `review_verdicts` slot with an old
-`output_example`; the redesigned loop (FT-C/D) has REVIEW write `review_findings`,
-so the stale entry breaks the loop (the dogfood REVIEW failure). Because
-scheduling owns `AGENT_PORT_TEMPLATES` + `_build_agent_entry`, it owns the pure
-migration that re-derives those entries from the LIVE template on load.
-
+an OLDER template version carries a RETIRED `writes` slot (e.g. a v0.6.0 REVIEW
+entry writing the retired `review_verdicts` slot, which the redesigned loop
+(FT-C/D) replaced with `review_findings`). scheduling owns `AGENT_PORT_TEMPLATES`
++ `_build_agent_entry`, so it owns the pure migration
 `migrate_known_port_entries(adapter_map) -> adapter_map` (in
-`adapter_map_config.py`) is a PURE dict → dict transform:
-
-- For each `(port, entry)`: if `ad.is_agent_entry(entry)` AND `port in
-  AGENT_PORT_TEMPLATES`, REBUILD the entry via
-  `_build_agent_entry(port, <entry's existing dispatch[0].subagent_type>)` —
-  re-deriving `writes` / `cardinality` / `output_example` / `inputs` / `manifest`
-  / `signal` / `effect` / `isolation` from the live template, preserving ONLY the
-  `subagent_type`.
-- Left UNCHANGED: script (string) entries, custom-port agent entries (a port NOT
-  in `AGENT_PORT_TEMPLATES`, whose fields cannot be inferred), and non-agent
-  entries.
-- Returns a NEW dict — it NEVER mutates the input. It is idempotent (re-running
-  on an already-current entry is a no-op).
+`adapter_map_config.py`) that heals such RETIRED-slot entries against the LIVE
+template on load. It is a PURE dict → dict transform (NEW dict, no input
+mutation, idempotent), and **SURGICAL, not blanket** (#279): an earlier blanket
+re-derive rebuilt EVERY known-port agent entry, CLOBBERING valid customizations —
+the dogfood IMPLEMENT writes the still-valid `handoffs` slot but reads
+`work_orders` (NOT the template's `execution_plan`) in a NO-PRIORITIZE route, and
+the blanket re-derive rewrote its `inputs` to `execution_plan` (never produced),
+raising `adapter-wiring` `WiringError`. So: compute `valid_writes =
+{tmpl['writes'] for tmpl in AGENT_PORT_TEMPLATES.values()}`. For each
+`(port, entry)`: REBUILD via
+`_build_agent_entry(port, <entry's existing dispatch[0].subagent_type>)` —
+re-deriving every template field (writes / cardinality / output_example / inputs /
+manifest / signal / effect / isolation) and preserving ONLY the `subagent_type` —
+ONLY when `ad.is_agent_entry(entry)` AND `port in AGENT_PORT_TEMPLATES` AND the
+entry's `dispatch[0]['writes']` is NOT in `valid_writes` (a RETIRED slot).
+Otherwise the entry is returned UNCHANGED (valid-writes
+customizations, script strings, custom-port agent entries, and non-agent entries
+are all preserved). It heals REVIEW (`review_verdicts` → `review_findings`) while
+PRESERVING IMPLEMENT (`handoffs` untouched, custom `work_orders` read kept).
 
 It is wired into `run_tick` as the `migrate=` hook of the single
-`aw.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, ...)` call (the hook
-runs on the loaded map AFTER `load_adapter_map`, BEFORE `resolve_states`), so a
-stale persisted entry self-heals on every tick BEFORE resolve+validate. Because
-`adapter_map_config` imports `run_tick`, `run_tick` imports
-`adapter_map_config` LAZILY at the call site (a deferred `import
-adapter_map_config` inside the tick body) — there is NO module-level
-`run_tick → adapter_map_config` import, which would be circular. A route with a
-default (string) adapter-map is byte-for-byte unchanged: every entry is a script
-string, so the migration rebuilds nothing.
+`aw.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, ...)` call (running on
+the loaded map AFTER `load_adapter_map`, BEFORE `resolve_states`), so a stale
+persisted entry self-heals on every tick BEFORE resolve+validate. Because
+`adapter_map_config` imports `run_tick`, `run_tick` imports `adapter_map_config`
+LAZILY at the call site (a deferred `import adapter_map_config` inside the tick
+body, never a module-level import, which would be circular).
 
 ## Known gaps / deferred
 

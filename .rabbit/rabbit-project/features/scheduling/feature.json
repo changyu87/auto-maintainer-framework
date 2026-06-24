@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.21.0",
+  "version": "0.21.1",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",

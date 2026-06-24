@@ -6,38 +6,56 @@ ROOT-CAUSE fix for the dogfood REVIEW failure: a stale persisted
 template fields — e.g. a REVIEW entry that writes the RETIRED ``review_verdicts``
 slot with an old ``output_example`` — which breaks the redesigned (FT-C/D) loop
 where REVIEW writes ``review_findings``. scheduling owns ``AGENT_PORT_TEMPLATES``
-+ ``_build_agent_entry``, so it owns the pure migration that re-derives every
-known-port agent entry from the LIVE template, preserving ONLY the
-``subagent_type``.
++ ``_build_agent_entry``, so it owns the pure migration that heals such RETIRED
+entries against the LIVE template, preserving ONLY the ``subagent_type``.
+
+SURGICAL re-derive (#279 regression fix): an EARLIER blanket re-derive rebuilt
+EVERY known-port agent entry from the template, which CLOBBERED valid
+customizations — the dogfood IMPLEMENT writes the still-valid ``handoffs`` slot
+but reads ``work_orders`` (NOT the template's ``execution_plan``) in a
+NO-PRIORITIZE route; the blanket re-derive rewrote its ``inputs`` to
+``execution_plan`` (never produced) → ``adapter_wiring`` ``WiringError`` → the
+loop would not start. ``migrate_known_port_entries`` now re-derives ONLY a
+RETIRED-SLOT entry (an agent entry on a known port whose ``dispatch[0].writes``
+is NOT among the live templates' writes slots), and leaves a valid-writes
+customization UNCHANGED.
 
 ``migrate_known_port_entries(adapter_map) -> adapter_map`` (adapter_map_config):
 
-  - For each (port, entry): if ``ad.is_agent_entry(entry)`` AND port is in
-    ``AGENT_PORT_TEMPLATES``, REBUILD the entry via
-    ``_build_agent_entry(port, entry's existing dispatch[0].subagent_type)`` —
-    re-deriving writes / cardinality / output_example / inputs / manifest /
-    signal / effect / isolation from the live template, preserving ONLY the
-    subagent_type.
-  - Leave UNCHANGED: script (string) entries, custom-port agent entries (a port
-    NOT in AGENT_PORT_TEMPLATES), and non-agent entries.
+  - ``valid_writes`` = the set of every live template's ``writes`` slot.
+  - For each (port, entry): re-derive via
+    ``_build_agent_entry(port, entry's existing dispatch[0].subagent_type)`` ONLY
+    when ``ad.is_agent_entry(entry)`` AND ``port in AGENT_PORT_TEMPLATES`` AND
+    the entry's ``dispatch[0]['writes']`` is NOT in ``valid_writes`` (a RETIRED
+    slot). Otherwise return the entry UNCHANGED.
+  - Leave UNCHANGED: a valid-writes known-port entry (even with customized
+    reads/task), script (string) entries, custom-port agent entries (a port NOT
+    in AGENT_PORT_TEMPLATES), and non-agent entries.
   - Returns a NEW dict (never mutates the input). Idempotent.
 
 It is wired into ``run_tick`` as the ``migrate=`` hook of the single
 ``aw.build_loop(...)`` call, so the heal happens on load BEFORE resolve+validate.
 
-Behaviours exercised (every one has a test; the REVIEW heal additionally has an
-e2e run_tick --step test, per the E2E TEST RULE):
+Behaviours exercised (every one has a test; the REVIEW heal and the IMPLEMENT
+preservation additionally have an e2e ``build_loop`` test, per the E2E TEST RULE):
 
-  A. heals a stale REVIEW entry: review_verdicts + an old output_example ->
+  A. heals a RETIRED-slot REVIEW entry: review_verdicts + an old output_example ->
      review_findings + the current example + manifest.writes == review_findings;
      subagent_type preserved.
   B. idempotent on an already-current entry, AND the input dict is not mutated.
   C. a custom-port agent entry (port not in templates) + a script string entry
      are left UNCHANGED.
-  D. e2e: run_tick --step over a VERIFY->REVIEW route whose project-local
+  D. a VALID-writes known-port entry with a customized read (IMPLEMENT writes
+     handoffs, reads work_orders) is UNCHANGED — the custom inputs/task survive.
+  E. e2e: run_tick --step over a VERIFY->REVIEW route whose project-local
      adapter-map.json has a STALE REVIEW agent entry reaches the REVIEW pause
      whose dispatch writes review_findings AND whose checkpoint per-dispatch
      schema is the array slot schema ({"type":"array"}).
+  F. e2e: ``build_loop(migrate=...)`` over a NO-PRIORITIZE route
+     GUARD..PULL->TRIAGE->IMPLEMENT->VERIFY->REVIEW->INTEGRATE with a custom
+     IMPLEMENT (reads work_orders) + stale REVIEW (review_verdicts) adapter-map
+     resolves WITHOUT WiringError: IMPLEMENT is preserved (reads work_orders),
+     REVIEW is healed to review_findings.
 
 Owner: changyu87
 """
@@ -98,8 +116,8 @@ def _current_review_entry(subagent_type):
 
 
 # ==========================================================================
-# Behaviour A — heals a stale REVIEW entry (writes + example + manifest), keeps
-# the subagent_type.
+# Behaviour A — heals a RETIRED-slot REVIEW entry (writes + example + manifest),
+# keeps the subagent_type.
 # ==========================================================================
 
 def test_migrate_heals_stale_review_entry():
@@ -202,7 +220,77 @@ def test_migrate_leaves_script_and_custom_port_entries_unchanged():
 
 
 # ==========================================================================
-# Behaviour D — e2e: run_tick --step over a VERIFY->REVIEW route whose
+# Behaviour D — a VALID-writes known-port entry with a customized read is
+# UNCHANGED (the #279 regression fix). The dogfood IMPLEMENT writes the still-
+# valid `handoffs` slot but reads `work_orders` (NOT the template's
+# `execution_plan`); the surgical migration must NOT clobber it.
+# ==========================================================================
+
+# The dogfood IMPLEMENT entry: writes the VALID `handoffs` slot, reads
+# `work_orders` (custom, not the template's `execution_plan`), carries a custom
+# `task` + `description`. A blanket re-derive would rewrite inputs to
+# `execution_plan`; the surgical migration must leave it byte-identical.
+_CUSTOM_IMPLEMENT = {
+    "kind": "agent",
+    "manifest": {"reads": ["work_orders"], "writes": ["handoffs"],
+                 "emits": ["OK", "BLOCKED"]},
+    "dispatch": [
+        {
+            "subagent_type": "auto-maintainer:auto-maintainer-implementer",
+            "inputs": ["work_orders"],
+            "writes": "handoffs",
+            "cardinality": {"per_item": "work_orders"},
+            "effect": "implement",
+            "isolation": "worktree",
+            "description": "auto-maintainer implement",
+            "task": "Enact this ONE work order's triage decision.",
+            "output_example": {
+                "schema_version": "1.0.0",
+                "work_order_id": "wo-owner/repo#1",
+                "status": "opened",
+                "artifact": {"kind": "pr", "ref": "https://x/pull/1"},
+                "discovered_work": [],
+                "blocked_reason": None,
+            },
+        }
+    ],
+    "signal": {"rule": "blocked_if_any"},
+}
+
+
+def test_migrate_leaves_valid_writes_custom_read_entry_unchanged():
+    amap = {"IMPLEMENT": copy.deepcopy(_CUSTOM_IMPLEMENT)}
+    out = amc.migrate_known_port_entries(amap)
+    healed = out["IMPLEMENT"]
+    # writes is a VALID live-template slot (handoffs), so the entry is NOT
+    # re-derived — the custom `work_orders` read survives verbatim.
+    assert healed == _CUSTOM_IMPLEMENT, healed
+    dispatch = healed["dispatch"][0]
+    assert dispatch["inputs"] == ["work_orders"], dispatch
+    assert dispatch["writes"] == "handoffs", dispatch
+    # The custom task/description are preserved (a blanket re-derive would drop
+    # them).
+    assert dispatch["task"] == "Enact this ONE work order's triage decision."
+    assert dispatch["description"] == "auto-maintainer implement"
+
+
+def test_migrate_mixed_map_heals_retired_preserves_valid():
+    """A single map with BOTH a stale REVIEW (retired writes -> healed) and a
+    custom IMPLEMENT (valid writes -> preserved) does each correctly."""
+    amap = {
+        "IMPLEMENT": copy.deepcopy(_CUSTOM_IMPLEMENT),
+        "REVIEW": copy.deepcopy(_STALE_REVIEW),
+    }
+    out = amc.migrate_known_port_entries(amap)
+    # IMPLEMENT preserved.
+    assert out["IMPLEMENT"] == _CUSTOM_IMPLEMENT, out["IMPLEMENT"]
+    # REVIEW healed.
+    assert out["REVIEW"]["dispatch"][0]["writes"] == \
+        vi.REVIEW_FINDINGS_SLOT["name"], out["REVIEW"]
+
+
+# ==========================================================================
+# Behaviour E — e2e: run_tick --step over a VERIFY->REVIEW route whose
 # project-local adapter-map.json has a STALE REVIEW agent entry reaches the
 # REVIEW pause writing review_findings; the checkpoint per-dispatch schema is
 # the array slot schema.
@@ -313,3 +401,90 @@ def test_e2e_step_over_stale_review_reaches_review_pause_writing_review_findings
     checkpoint = doc[rt.TICK_CHECKPOINT_KEY]
     cp_dispatch = checkpoint["pending"]["dispatches"][0]
     assert cp_dispatch["schema"] == vi.REVIEW_FINDINGS_SLOT["schema"], checkpoint
+
+
+# ==========================================================================
+# Behaviour F — e2e: build_loop(migrate=...) over the dogfood-shaped NO-PRIORITIZE
+# route GUARD..PULL->TRIAGE->IMPLEMENT->VERIFY->REVIEW->INTEGRATE with a custom
+# IMPLEMENT (reads work_orders) + stale REVIEW (review_verdicts) resolves WITHOUT
+# WiringError: IMPLEMENT is PRESERVED (still reads work_orders), REVIEW is HEALED.
+# The OLD blanket migration would rewrite IMPLEMENT to read execution_plan (never
+# produced — no PRIORITIZE) and raise WiringError; the surgical migration must not.
+# ==========================================================================
+
+import adapter_wiring as aw  # noqa: E402
+
+_NO_PRIORITIZE_ROUTE = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "PULL", "TRIAGE", "IMPLEMENT", "VERIFY",
+               "REVIEW", "INTEGRATE", "PERSIST", "EXIT", "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "TRIAGE"},
+        {"state": "PULL", "signal": "EMPTY", "next": "TRIAGE"},
+        {"state": "TRIAGE", "signal": "OK", "next": "IMPLEMENT"},
+        {"state": "TRIAGE", "signal": "EMPTY", "next": "VERIFY"},
+        {"state": "IMPLEMENT", "signal": "OK", "next": "VERIFY"},
+        {"state": "IMPLEMENT", "signal": "BLOCKED", "next": "VERIFY"},
+        {"state": "VERIFY", "signal": "OK", "next": "REVIEW"},
+        {"state": "VERIFY", "signal": "EMPTY", "next": "PERSIST"},
+        {"state": "REVIEW", "signal": "OK", "next": "INTEGRATE"},
+        {"state": "REVIEW", "signal": "EMPTY", "next": "PERSIST"},
+        {"state": "INTEGRATE", "signal": "OK", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+
+def _setup_dogfood_project():
+    project_dir = tempfile.mkdtemp(prefix="sched-dogfood-")
+    cfg = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(cfg, exist_ok=True)
+    with open(os.path.join(cfg, "route.json"), "w") as f:
+        json.dump(_NO_PRIORITIZE_ROUTE, f)
+    amap = dict(rt.DEFAULT_ADAPTER_MAP)
+    amap["TRIAGE"] = amc._build_agent_entry("TRIAGE", "my-triager")
+    amap["IMPLEMENT"] = copy.deepcopy(_CUSTOM_IMPLEMENT)
+    amap["REVIEW"] = copy.deepcopy(_STALE_REVIEW)
+    with open(os.path.join(cfg, "adapter-map.json"), "w") as f:
+        json.dump(amap, f)
+    return project_dir, cfg
+
+
+def test_e2e_build_loop_preserves_implement_heals_review_no_wiring_error():
+    project_dir, cfg = _setup_dogfood_project()
+    runtime = {
+        "project_dir": project_dir,
+        "runtime_dir": cfg,
+        "source": None,
+        "now": None,
+        "governance": {"mode": "auto-merge"},
+    }
+    # The surgical migration resolves WITHOUT WiringError; the OLD blanket
+    # re-derive would rewrite IMPLEMENT to read execution_plan (never produced)
+    # and raise here.
+    route, states = aw.build_loop(
+        _NO_PRIORITIZE_ROUTE, rt.DEFAULT_ADAPTER_MAP, runtime,
+        "GUARD", rt._INITIAL_SLOTS,
+        migrate=amc.migrate_known_port_entries)
+
+    # IMPLEMENT PRESERVED — its manifest still READS work_orders (not the
+    # template's execution_plan).
+    implement_manifest = states["IMPLEMENT"][0]
+    assert "work_orders" in list(implement_manifest.reads), implement_manifest.reads
+    assert "execution_plan" not in list(implement_manifest.reads), \
+        implement_manifest.reads
+    # REVIEW HEALED — its manifest WRITES review_findings (not review_verdicts).
+    review_manifest = states["REVIEW"][0]
+    assert vi.REVIEW_FINDINGS_SLOT["name"] in list(review_manifest.writes), \
+        review_manifest.writes
+    assert "review_verdicts" not in list(review_manifest.writes), \
+        review_manifest.writes
