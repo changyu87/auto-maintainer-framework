@@ -528,15 +528,15 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Patch (v0.7.1, dogfood-fix release): version bumped to 0.7.1 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. v0.7.1 is the
-# release that DEPLOYS the merged dogfood fixes (PRs #277-#280) into the
-# installed plugin: the agent-dispatch empty-schema guard, the adapter-wiring
-# build_loop migrate hook, the scheduling adapter-map known-port auto-migration,
-# and the issue/PR-named dispatch descriptions. It regenerates the committed
-# plugin tree from CURRENT src. (Supersedes the v0.7.0 loop-redesign final.)
+# Patch (v0.7.2, surgical adapter-map migration fix release): version bumped to
+# 0.7.2 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.7.2 is the release that DEPLOYS the merged surgical adapter-map migration
+# fix (#283) into the installed plugin: the scheduling adapter-map migration now
+# only heals retired-writes entries and preserves valid custom wiring. It
+# regenerates the committed plugin tree from CURRENT src. (Supersedes the v0.7.1
+# dogfood-fix release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_1_and_consistent():
+def test_version_bumped_to_0_7_2_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -548,10 +548,10 @@ def test_version_bumped_to_0_7_1_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.1", \
-            f"plugin.json version must be 0.7.1, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.1", \
-            "marketplace.json plugin entry version must be 0.7.1"
+        assert pdata.get("version") == "0.7.2", \
+            f"plugin.json version must be 0.7.2, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.2", \
+            "marketplace.json plugin entry version must be 0.7.2"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2293,6 +2293,43 @@ def test_committed_libs_carry_277_278_279_dogfood_fixes():
     assert "def migrate_known_port_entries(" in amc_body, \
         "committed adapter_map_config must carry the #279 " \
         "migrate_known_port_entries known-port auto-migration"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.2 (#283), surgical adapter-map migration deploy confirmation:
+# the whole point of this release is that the committed (shipped)
+# adapter_map_config carries the #283 surgical migration fix — the migration
+# only heals retired-writes entries and preserves valid custom wiring, gated by
+# the `valid_writes` set derived from the agent-port templates. Assert the
+# COMMITTED lib — the bytes an installed plugin runs — carries the gate, AND
+# that it is byte-identical to a fresh normalization of the current scheduling
+# source (so the committed tree genuinely shipped the merged #283 fix).
+# ---------------------------------------------------------------------------
+def test_committed_adapter_map_config_carries_283_surgical_migration():
+    mod = _load_build()
+    committed_amc = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib",
+        "adapter_map_config.py",
+    )
+    assert os.path.isfile(committed_amc), \
+        "committed lib/adapter_map_config.py must ship in the plugin tree"
+    with open(committed_amc, encoding="utf-8") as fh:
+        committed = fh.read()
+    assert "valid_writes" in committed, \
+        "committed adapter_map_config must carry the #283 surgical " \
+        "migration gate (valid_writes set preserves valid custom wiring)"
+
+    # byte-identical to the build's own normalization of the CURRENT scheduling
+    # source — proving the committed tree shipped the merged #283 fix.
+    src = os.path.join(
+        _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+        "scheduling", "src", "adapter_map_config.py",
+    )
+    _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS["adapter_map_config.py"]
+    expected = mod._normalize_lib(src, anchor, bootstrap)
+    assert committed == expected, \
+        "committed adapter_map_config drifted from a fresh normalization of " \
+        "the current scheduling source — regenerate the plugin tree"
 
 
 # ---------------------------------------------------------------------------
