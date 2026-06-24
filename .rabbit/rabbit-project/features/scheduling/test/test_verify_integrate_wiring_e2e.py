@@ -245,6 +245,95 @@ def test_verify_factory_wraps_sibling_state():
     assert callable(run)
 
 
+def _seed_verify_ctx(risk_dict=None):
+    """A TickContext seeded with the slots VERIFY reads/writes, optionally with a
+    `cross_cutting_risk` verdict written (the TRIAGE cross-cutting signal §3.5.9)."""
+    ctx = fc.TickContext()
+    ctx.register_slot("cross_cutting_risk", {"type": "object"}, version="1.0.0")
+    ctx.register_slot("verdicts", {"type": "array"}, version="1.0.0")
+    ctx.register_slot("cross_check", {"type": "object"}, version="1.0.0")
+    if risk_dict is not None:
+        ctx.write("cross_cutting_risk", risk_dict)
+    return ctx
+
+
+def _write_feature_run_py(features_root, feature, returncode):
+    """Write a minimal <features_root>/<feature>/test/run.py that exits with
+    `returncode` — the real default_complement_runner shells this via subprocess."""
+    test_dir = os.path.join(features_root, feature, "test")
+    os.makedirs(test_dir, exist_ok=True)
+    with open(os.path.join(test_dir, "run.py"), "w") as f:
+        f.write("import sys\n")
+        f.write("print('all 1 passed' if %d == 0 else '1 failure(s)')\n"
+                % returncode)
+        f.write("sys.exit(%d)\n" % returncode)
+
+
+def test_make_verify_unconfigured_features_root_gates_flagged_tick():
+    """Unconfigured features_root (the null config default) stays CONSERVATIVE: a
+    risk=True tick cannot resolve the at-risk features, so VERIFY gates every
+    verdict with the unverifiable reason and records cross_check ran=False."""
+    rti = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
+           "source": None, "now": None,
+           "governance": {"mode": "auto-merge", "features_root": None}}
+    restore = _patch_vi_seams(None)
+    try:
+        manifest, run = rt.make_verify(rti)
+        assert manifest is vi.VERIFY_MANIFEST
+        ctx = _seed_verify_ctx({"risk": True, "features": ["scheduling"],
+                                "reason": "shared route schema"})
+        result = run(ctx)
+    finally:
+        restore()
+    # The complement could NOT run; cross_check records ran=False + the reason.
+    cc = result.writes["cross_check"]
+    assert cc["ran"] is False, cc
+    assert cc["reason"] == vi._UNVERIFIABLE_REASON, cc
+    # Every verdict is conservatively gated ok=False with that reason.
+    verdicts = result.writes["verdicts"]
+    assert verdicts and all(not v["ok"] for v in verdicts), verdicts
+    assert all(vi._UNVERIFIABLE_REASON in v["reasons"] for v in verdicts), verdicts
+
+
+def test_make_verify_configured_features_root_runs_real_complement():
+    """A configured features_root makes a risk=True tick RUN each named feature's
+    run.py (the real subprocess complement) and gate only on a real failure: a
+    passing sibling leaves verdicts ok, a failing sibling flips them ok=False."""
+    features_root = tempfile.mkdtemp(prefix="sched-feat-root-")
+    _write_feature_run_py(features_root, "good-feature", returncode=0)
+    _write_feature_run_py(features_root, "bad-feature", returncode=1)
+    base_rti = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
+                "source": None, "now": None,
+                "governance": {"mode": "auto-merge",
+                               "features_root": features_root}}
+
+    restore = _patch_vi_seams(None)
+    try:
+        # A passing at-risk sibling: the complement RAN and verdicts stay ok.
+        _, run = rt.make_verify(base_rti)
+        ok_result = run(_seed_verify_ctx(
+            {"risk": True, "features": ["good-feature"], "reason": "shared"}))
+        # A failing at-risk sibling: the complement RAN and gates every verdict.
+        _, run = rt.make_verify(base_rti)
+        bad_result = run(_seed_verify_ctx(
+            {"risk": True, "features": ["bad-feature"], "reason": "shared"}))
+    finally:
+        restore()
+
+    ok_cc = ok_result.writes["cross_check"]
+    assert ok_cc["ran"] is True, ok_cc
+    assert all(r["passed"] for r in ok_cc["results"]), ok_cc
+    assert all(v["ok"] for v in ok_result.writes["verdicts"]), ok_result.writes
+
+    bad_cc = bad_result.writes["cross_check"]
+    assert bad_cc["ran"] is True, bad_cc
+    assert any(not r["passed"] for r in bad_cc["results"]), bad_cc
+    bad_verdicts = bad_result.writes["verdicts"]
+    assert bad_verdicts and all(not v["ok"] for v in bad_verdicts), bad_verdicts
+    assert any("cross-feature break" in reason
+               for v in bad_verdicts for reason in v["reasons"]), bad_verdicts
+
+
 def test_cleanup_factory_wraps_sibling_state():
     rti = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
            "source": None, "now": None,

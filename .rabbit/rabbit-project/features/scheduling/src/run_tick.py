@@ -372,16 +372,25 @@ def make_implement(runtime):  # noqa: ARG001 - IMPLEMENT binds no runtime config
     return im.IMPLEMENT_MANIFEST, im.run
 
 
-def make_verify(runtime):  # noqa: ARG001 - VERIFY binds no governance config
+def make_verify(runtime):
     """VERIFY adapter (verify-integrate): the READ-ONLY act-side gate that lists
     the loop's open PRs (live `gh`, injectable) and writes one Verdict per PR into
-    the `verdicts` slot. Binds no governance (VERIFY never merges); the PR source
-    + default-branch resolver default to verify-integrate's live `gh` seams.
-    Returns the sibling manifest + the state's bound run callable."""
+    the `verdicts` slot. Binds no MERGE governance (VERIFY never merges); the PR
+    source + default-branch resolver default to verify-integrate's live `gh`
+    seams. Returns the sibling manifest + the state's bound run callable.
+
+    Cross-feature complement (§3.7.6): binds the maintained project's
+    `features_root` from the loaded central config so a cross-cutting-flagged tick
+    (TRIAGE cross_cutting_risk.risk=True) runs each at-risk feature's run.py and
+    gates only on a real complement failure. When `features_root` is unconfigured
+    (the null default) it stays None and VERIFY conservatively gates a flagged
+    tick (an unverifiable at-risk batch must never auto-merge)."""
     # Reference the module seams at factory-call time (not the def-time defaults)
     # so an injected/overridden source is honored.
+    features_root = runtime["governance"].get("features_root")
     verify = vi.Verify(source=vi.gh_open_pr_source, repo=runtime.get("repo"),
-                       default_branch_source=vi.gh_default_branch_source)
+                       default_branch_source=vi.gh_default_branch_source,
+                       features_root=features_root)
     return vi.VERIFY_MANIFEST, verify.run
 
 

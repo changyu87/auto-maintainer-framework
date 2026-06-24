@@ -97,9 +97,14 @@ MAINTAINER_REPO = "changyu87/auto-maintainer-framework"
 # decision; a finite ceiling is opt-in. window_tz `local` is the host's local
 # timezone. heartbeat.interval_minutes (tick cadence, §3.3.2) defaults 3;
 # backoff.threshold (consecutive-blocked count K, §3.8.5) defaults 5.
+# features_root (the MAINTAINED project's features directory, §3.7.6) defaults
+# null (UNCONFIGURED): VERIFY's cross-feature complement then conservatively
+# gates a cross-cutting-flagged tick. It is config-driven because the maintained
+# repo's layout is not fixed; an explicit path opts the complement run in.
 DEFAULT_GOVERNANCE = {
     "schema_version": GOVERNANCE_SCHEMA_VERSION,
     "mode": "propose",
+    "features_root": None,
     "budget": {
         "per_day_tokens": None,
         "window_tz": "local",
@@ -148,11 +153,16 @@ def _overlay(raw):
     a removed top-level maintainer_repo are silently dropped (tolerated, ignored).
     An explicit key (including a `null` value) overrides the default; an absent
     key keeps the default. A legacy `mode: "gated-merge"` is tolerated and mapped
-    forward to `auto-merge` (the rename coexistence migration).
+    forward to `auto-merge` (the rename coexistence migration). An explicit
+    top-level `features_root` (the maintained project's features directory, used
+    by VERIFY's cross-feature complement, §3.7.6) is surfaced; absent keeps the
+    null default (UNCONFIGURED -> the complement conservatively gates).
     """
     config = _copy_defaults()
     if "mode" in raw:
         config["mode"] = _normalize_mode(raw["mode"])
+    if "features_root" in raw:
+        config["features_root"] = raw["features_root"]
     budget = raw.get("budget", {})
     for key in ("per_day_tokens", "window_tz"):
         if key in budget:
