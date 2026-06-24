@@ -1,5 +1,31 @@
 # scheduling — Changelog
 
+## feature 0.24.0 — 2026-06-21
+
+- **Advisory REVIEW must ALWAYS flow to INTEGRATE — `always_ok` (dogfood
+  unmerged-PR root-cause fix).** REVIEW became ADVISORY in the loop redesign
+  (FT-C/D) — it files findings as issues, it is NOT a merge gate — but its
+  `AGENT_PORT_TEMPLATES['REVIEW']['signal_rule']` was still `nonempty_else_empty`
+  (gate-era leftover). A clean PR yields ZERO `review_findings` → the rule
+  emitted `EMPTY` → a route edge `REVIEW--EMPTY-->PERSIST` SKIPPED INTEGRATE, so
+  `integration_result` stayed empty every tick and mergeable PRs were never
+  merged.
+  - `AGENT_PORT_TEMPLATES['REVIEW']['signal_rule']` is now `always_ok` (the
+    closed-vocabulary rule already in `agent_dispatch.compute_signal`, returning
+    `OK` for any slot value), so a zero-finding review emits `OK` and continues
+    to INTEGRATE.
+  - `make_review`'s deterministic no-op `_run` now emits `OK` (was `EMPTY`) while
+    still writing an EMPTY `review_findings` list.
+  - REVIEW's declared `emits` stay `[OK, EMPTY]` (verify-integrate
+    `REVIEW_MANIFEST`, UNCHANGED) so a seeded route carrying a
+    `REVIEW--EMPTY-->PERSIST` edge keeps passing `validate_signals` — the EMPTY
+    edge is now valid-but-dead (never taken); no `route.json` change.
+  - `migrate_known_port_entries` re-derives a stale REVIEW entry from this
+    template, so a healed entry carries `signal_rule='always_ok'` automatically.
+  - verify-integrate, agent-dispatch, `route.json`, and the packaging release
+    are NOT touched. Edits live ONLY in scheduling
+    (`adapter_map_config.py` + `run_tick.py` + tests/docs).
+
 ## feature 0.23.0 — 2026-06-24
 
 - **per_item dispatch description ALWAYS names the item ref (FT-4 dogfood gap

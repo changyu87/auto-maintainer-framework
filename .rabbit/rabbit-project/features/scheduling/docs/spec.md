@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.23.0
+version: 0.24.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -101,12 +101,27 @@ live ONLY in `run_tick.py` + `adapter_map_config.py`.
   registered")`.
 - **REVIEW is ADVISORY — `review_verdicts` retired for `review_findings` (FT-C
   §3.7.7).** REVIEW reads `verdicts` and writes the advisory `review_findings`
-  slot (DiscoveredIssue-conforming records with stable `dedup_key`s). The default
-  `make_review` is a no-op writing an EMPTY `review_findings` list (signal EMPTY).
+  slot (DiscoveredIssue-conforming records with stable `dedup_key`s).
   REVIEW is NO LONGER a merge gate. `_seed_context` seeds `review_findings` only
   when REVIEW is routed; `review_verdicts` is no longer seeded/mapped/persisted.
   `persisted_review_findings` replaces `persisted_review_verdicts`;
   `REVIEW_VERDICTS_KEY` -> `REVIEW_FINDINGS_KEY`.
+- **Advisory REVIEW ALWAYS flows to INTEGRATE (`always_ok`).** Because REVIEW is
+  advisory, it must NEVER branch the loop's flow on how many findings it
+  produced. Its `AGENT_PORT_TEMPLATES['REVIEW']['signal_rule']` is `always_ok`
+  (the closed-vocabulary rule in `agent_dispatch.compute_signal` that returns
+  `OK` for any slot value), so a clean review (ZERO `review_findings`) emits `OK`
+  and continues to INTEGRATE rather than EMPTY-branching past it. The default
+  `make_review` no-op likewise emits `OK` (not `EMPTY`) while still writing an
+  EMPTY `review_findings` list. This fixes the dogfood bug where a zero-finding
+  review emitted `EMPTY`, took a `REVIEW--EMPTY-->PERSIST` edge, SKIPPED
+  INTEGRATE, and left mergeable PRs unmerged every tick. REVIEW's declared
+  `emits` stay `[OK, EMPTY]` (verify-integrate's `REVIEW_MANIFEST`, UNCHANGED) so
+  a seeded route that still carries a `REVIEW--EMPTY-->PERSIST` edge keeps
+  passing `validate_signals` — that EMPTY edge is now valid-but-dead (never
+  taken), and no `route.json` change is required. `migrate_known_port_entries`
+  re-derives a stale REVIEW entry from this template, so a healed entry carries
+  `signal_rule='always_ok'` automatically.
 - **INTEGRATE is a THIN merge (FT-C/D).** Reads ONLY `verdicts`; merges each `ok`
   verdict's PR via `sg.permits('merge', mode)` + `merge_guardrails` with NO
   review-approval read (the merge rests on IMPLEMENT's gate + VERIFY + guardrails
