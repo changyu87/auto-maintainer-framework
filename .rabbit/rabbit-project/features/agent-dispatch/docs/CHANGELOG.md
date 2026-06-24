@@ -4,6 +4,23 @@ All notable changes to the agent-adapter schema, the invocation envelope, and
 the deterministic helper surface are recorded here. Versions follow the
 `version` field in `spec.md` / `contract.md` / `feature.json`.
 
+## 0.3.2
+
+Fix empty-schema misclassification in `validate_output`. The live bug:
+`_expected_type({})` returned `"object"`, so an empty `schema` dict `{}` — the
+`_SLOT_SCHEMAS.get(writes, {})` "no schema, accept anything" sentinel — was
+read as `{"type": "object"}`. `validate_output` then spuriously rejected a
+valid top-level list with `expected top-level type object, got list`.
+
+- `_expected_type`: an **empty** dict `{}` now returns `None`, imposing no
+  top-level type check (the content is accepted as-is). A **non-empty** dict
+  without a `"type"` key still derives `"object"`; `{"type": ...}` still
+  returns that type; a list still derives `"array"` — all unchanged.
+- No other behavior changes: `validate_agent_adapter`, `build_envelopes`,
+  `render` (scheduling, fence-stripping, JSON parsing), `collect_outputs`,
+  and `compute_signal` are untouched.
+- Library remains deterministic and effect-free.
+
 ## 0.3.1
 
 Fix free-text fence collision in `render` (#126). The live bug: `render`
