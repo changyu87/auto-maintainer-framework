@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.21.1
+version: 0.22.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -899,6 +899,45 @@ persisted entry self-heals on every tick BEFORE resolve+validate. Because
 `adapter_map_config` imports `run_tick`, `run_tick` imports `adapter_map_config`
 LAZILY at the call site (a deferred `import adapter_map_config` inside the tick
 body, never a module-level import, which would be circular).
+
+## Stale/incompatible tick-checkpoint discard-and-fresh (upgrade-in-flight crash fix)
+
+The adapter-map migration above self-heals the live CONFIG, but a durable
+**`tick_checkpoint`** paused at an agent-state under an OLDER wiring BYPASSES it:
+its `pending.writes` names a slot the current (migrated, seeded) wiring NO LONGER
+registers — e.g. a v0.7.0 checkpoint paused at REVIEW with
+`pending.writes='review_verdicts'`, the slot the loop redesign (FT-C/D) retired
+in favour of `review_findings`. Before this slice the runner re-emitted the stale
+dispatch on `--step` and, on `--resume`, applied the subagent output to the
+unregistered slot — raising `fc.ContractError("slot 'review_verdicts' is not
+registered")` and CRASHING `run_tick` with a Python traceback, not a graceful
+status. `start.py --clear-only` clears the disposition latch, NOT the checkpoint,
+so `/auto-maintainer:start` could not recover. The runner now treats such a
+checkpoint as STALE: discard it and run a fresh tick.
+
+- **Pure predicate `_checkpoint_compatible(checkpoint, ctx) -> bool`.** True when
+  the checkpoint is empty/absent OR its pending dispatch `writes` slot is in
+  `ctx.registered_slots()` (the freshly-seeded current wiring). False when the
+  pending writes slot is unregistered (a retired/renamed slot after an upgrade).
+  It is pure and deterministic — no wall clock, no network.
+- **Discard-and-fresh guard in `_run_agent_tick`.** After loading the checkpoint
+  (`persisted_tick_checkpoint`) and BEFORE the resume / crash-safety-re-emit
+  branches, run_tick seeds a fresh ctx (the same `ctx_seed` used downstream) and
+  checks `_checkpoint_compatible`. When the checkpoint is present but INCOMPATIBLE
+  it `_clear_checkpoint(state_path)` to drop the stale `TICK_CHECKPOINT_KEY`,
+  records the discard (the stale pending `state` + `writes`) on the `tick_start`
+  event detail (`checkpoint_discarded`), sets the local checkpoint to `{}`, and
+  FORCES the fresh path (resume=False semantics) so the tick re-walks from GUARD
+  and re-pauses at the agent-state with the CURRENT migrated writes slot. This
+  applies on BOTH `--step` (no resume) and `--resume` (resume=True): a stale
+  checkpoint NEVER reaches `_resume_agent_state` / `_emit_pause_from_checkpoint`.
+  (The new event detail stays within observability's closed `EVENT_KINDS` — it is
+  a `tick_start` detail field, not a new event kind.)
+- **Safe, idempotent re-walk.** The fresh re-walk after discard relies on the
+  EXISTING acted-ledger / re-entry guards (§3.2.4, #204) so re-running
+  PULL..IMPLEMENT does not double-act an already-open PR.
+- A COMPATIBLE checkpoint (pending writes registered) is UNCHANGED — still
+  re-emitted on `--step` and resumed on `--resume` exactly as before.
 
 ## Known gaps / deferred
 

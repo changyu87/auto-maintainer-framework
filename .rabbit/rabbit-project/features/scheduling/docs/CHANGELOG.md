@@ -1,5 +1,38 @@
 # scheduling — Changelog
 
+## feature 0.22.0 — 2026-06-24
+
+- **Stale/incompatible tick-checkpoint discard-and-fresh (third dogfood crash
+  root-cause fix).** The adapter-map migration self-heals the live CONFIG, but a
+  durable `tick_checkpoint` paused at an agent-state under an OLDER wiring
+  BYPASSES it: its `pending.writes` names a slot the current (migrated, seeded)
+  wiring no longer registers — e.g. a v0.7.0 checkpoint paused at REVIEW writing
+  the retired `review_verdicts` slot (the redesign FT-C/D replaced it with
+  `review_findings`). `run_tick` re-emitted the stale dispatch on `--step` and
+  applied the subagent output to the unregistered slot on `--resume` →
+  `fc.ContractError("slot 'review_verdicts' is not registered")` CRASH (a Python
+  traceback, not a graceful status). `start.py --clear-only` clears the
+  disposition latch, NOT the checkpoint, so `/auto-maintainer:start` could not
+  recover.
+  - **Pure predicate `_checkpoint_compatible(checkpoint, ctx) -> bool`:** True
+    when the checkpoint is empty/absent OR its pending dispatch `writes` slot is
+    in `ctx.registered_slots()`; False when the pending writes slot is
+    unregistered (a retired/renamed slot after an upgrade).
+  - **Discard-and-fresh guard in `_run_agent_tick`:** after loading the
+    checkpoint and BEFORE the resume / crash-safety-re-emit branches, seed a
+    fresh ctx and check `_checkpoint_compatible`; when present but INCOMPATIBLE,
+    `_clear_checkpoint`, record the discard (stale pending `state` + `writes`) on
+    the `tick_start` event `detail.checkpoint_discarded`, set the local
+    checkpoint to `{}`, and FORCE the fresh path (resume=False semantics) so the
+    tick re-walks from GUARD and re-pauses with the CURRENT migrated writes slot.
+    Applies on BOTH `--step` and `--resume` — a stale checkpoint never reaches
+    `_resume_agent_state` / `_emit_pause_from_checkpoint`.
+  - The fresh re-walk relies on the EXISTING acted-ledger / re-entry idempotency
+    (§3.2.4, #204), so re-running PULL..IMPLEMENT never double-acts an open PR. A
+    COMPATIBLE checkpoint is UNCHANGED — still re-emitted on `--step` / resumed on
+    `--resume`. Stays within observability's closed `EVENT_KINDS` (a `tick_start`
+    detail field, not a new event kind).
+
 ## feature 0.21.1 — 2026-06-21
 
 - **Surgical known-port migration — preserve valid customizations (#279
