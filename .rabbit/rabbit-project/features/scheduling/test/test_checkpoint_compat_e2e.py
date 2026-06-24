@@ -64,6 +64,7 @@ import verify_integrate as vi  # noqa: E402
 import work_intake as wi  # noqa: E402
 import durable_state as ds  # noqa: E402
 import fsm_contracts as fc  # noqa: E402
+import lifecycle_dispositions as ld  # noqa: E402
 import run_tick as rt  # noqa: E402
 import adapter_map_config as amc  # noqa: E402
 
@@ -183,6 +184,15 @@ def _make_stale_checkpoint(state_path):
     return ckpt
 
 
+def _simulate_upgrade_restart(runtime_dir):
+    """Model the real upgrade-in-flight scenario: the `--step` process that paused
+    the tick (and holds the single-writer mutex) has EXITED before the post-upgrade
+    re-step / resume runs, so its lock is stale/reclaimable. The tests run all
+    steps in ONE live process, which would keep that lock live and make GUARD halt;
+    releasing it here reproduces the cross-process reality the discard targets."""
+    ld.release_lock(runtime_dir)
+
+
 # ==========================================================================
 # Behaviours A/B/C — the pure predicate _checkpoint_compatible.
 # ==========================================================================
@@ -228,6 +238,7 @@ def test_step_discards_stale_checkpoint_and_pauses_fresh_review_findings():
     project_dir, cfg, state_path, journal_path = _setup_review_project()
     _reach_review_pause(project_dir, cfg, state_path, journal_path)
     _make_stale_checkpoint(state_path)
+    _simulate_upgrade_restart(cfg)
 
     # --step again. Without the discard guard the runner would re-emit the stale
     # checkpoint (pending.writes='review_verdicts'); with it the stale checkpoint
@@ -260,6 +271,7 @@ def test_resume_with_stale_checkpoint_discards_no_contract_error():
     project_dir, cfg, state_path, journal_path = _setup_review_project()
     _reach_review_pause(project_dir, cfg, state_path, journal_path)
     _make_stale_checkpoint(state_path)
+    _simulate_upgrade_restart(cfg)
 
     # --resume. Without the guard this applies the subagent output to the
     # unregistered review_verdicts slot -> fc.ContractError crash. With it the
