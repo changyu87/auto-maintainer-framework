@@ -1140,12 +1140,25 @@ _DISPATCH_REFS_CAP = 6
 def _dispatch_description(dispatch_entry, name, env):
     """The description the executor passes to Agent for this dispatch.
 
-    Precedence: (0) the dispatch entry's explicit `description` wins verbatim;
-    else (a)/(b) NAME the issue/PR refs this dispatch works on
-    (`f"{name} #275"`, `f"{name} #276, #277"`) so parallel subagents show
-    distinct names; else (c) the `f"{name} dispatch"` fallback. A long ref list
-    is capped at `_DISPATCH_REFS_CAP` with a `+K more` suffix."""
+    Branches on cardinality so parallel subagents show distinct names:
+
+    - **per_item** (`env` carries `item`) → ALWAYS name the item ref. The base
+      is the explicit `dispatch_entry['description']` when present, else the
+      state `name`; the item ref is appended → `f"{base} {ref}"` (e.g.
+      `auto-maintainer implement #275`). When the item yields NO derivable ref,
+      fall back to the explicit description verbatim when present, else
+      `f"{name} dispatch"`. The explicit description is a PREFIX here, never the
+      verbatim whole — so a per_item fan-out never collapses to one static label.
+    - **once** (no `item`) → (0) the explicit `description` wins verbatim; else
+      NAME the collected refs (`f"{name} #276, #277"`); else `f"{name} dispatch"`.
+      A long ref list is capped at `_DISPATCH_REFS_CAP` with a `+K more` suffix."""
     desc = dispatch_entry.get("description")
+    if "item" in env:
+        ref = _ref_of(env["item"])
+        if ref:
+            base = desc if desc else name
+            return f"{base} {ref}"
+        return desc if desc else f"{name} dispatch"
     if desc:
         return desc
     refs = _dispatch_refs(env)
