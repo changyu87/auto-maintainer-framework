@@ -9,15 +9,25 @@ instead of a single generic "<state> dispatch" label.
 
 Precedence (deterministic, pure):
 
-  (0) An explicit `dispatch_entry['description']` still WINS verbatim.
-  (a) per_item (the envelope carries `item`, e.g. a work-order id
-      'wo-owner/repo#275') -> derive '#' + the substring after the LAST '#'
-      -> 'IMPLEMENT #275'. A dict item prefers pr_ref / number / id.
-  (b) once (no `item`) -> scan `env['inputs']` list-of-dicts, collecting a ref
+  PER_ITEM (the envelope carries `item`, e.g. a work-order id
+      'wo-owner/repo#275') -> ALWAYS name the item ref. The base is the
+      explicit `dispatch_entry['description']` when present, else the state
+      name; the item ref is appended -> 'auto-maintainer implement #275' /
+      'IMPLEMENT #275'. A dict item prefers pr_ref / number / id. When the
+      item yields NO derivable ref, fall back to the explicit description
+      (verbatim) when present, else '<name> dispatch'.
+  ONCE (no `item`) -> (0) an explicit `dispatch_entry['description']` still
+      WINS verbatim; else scan `env['inputs']` list-of-dicts, collecting a ref
       per element from `pr_ref` (REVIEW verdicts) or `number` (TRIAGE
       work_items) -> 'REVIEW #276, #277' / 'TRIAGE #275, #276' (de-duped,
-      order-preserving, capped ~6 with '+K more').
-  (c) no refs -> the existing '<name> dispatch' fallback.
+      order-preserving, capped ~6 with '+K more'); else the existing
+      '<name> dispatch' fallback.
+
+The per_item-always-names-the-ref rule (this cycle) is the dogfood fix: the
+IMPLEMENT adapter entry carries an explicit description 'auto-maintainer
+implement', so under the old explicit-wins-verbatim precedence EVERY per-item
+implementer subagent showed the same static label with no number, defeating
+distinct parallel names.
 
 A small pure helper `_dispatch_refs(env)` collects the refs; both it and
 `_dispatch_description` are pure and deterministic. The dispatch PROMPT body,
@@ -109,15 +119,46 @@ def test_triage_once_description_names_work_item_numbers():
     assert desc == "TRIAGE #275, #276", desc
 
 
-# --- (0) explicit description wins verbatim ---------------------------------
+# --- per_item: explicit description is a PREFIX, item ref appended ----------
 
-def test_explicit_description_wins_verbatim():
-    """An explicit dispatch_entry['description'] is returned verbatim even when
-    refs could be derived."""
-    entry = {"description": "implement a work order in an isolated worktree"}
+def test_per_item_explicit_description_is_prefix_with_item_ref():
+    """The dogfood case: a per_item IMPLEMENT dispatch whose entry carries the
+    explicit description 'auto-maintainer implement' (from set-agent) plus a
+    work-order item id 'wo-owner/repo#275' names the item ref AS WELL — the
+    explicit description is the PREFIX, not the verbatim whole. Without this,
+    every parallel implementer subagent showed the same static label with no
+    number (the FT-4 gap)."""
+    entry = {"description": "auto-maintainer implement"}
     env = {"item": "wo-owner/repo#275", "inputs": {}}
     assert (rt._dispatch_description(entry, "IMPLEMENT", env)
-            == "implement a work order in an isolated worktree")
+            == "auto-maintainer implement #275")
+
+
+def test_per_item_explicit_description_falls_back_when_no_ref():
+    """A per_item dispatch whose item yields NO derivable ref falls back to the
+    explicit description verbatim (graceful, no trailing ' ' / 'None')."""
+    entry = {"description": "auto-maintainer implement"}
+    env = {"item": {"foo": "bar"}, "inputs": {}}
+    assert (rt._dispatch_description(entry, "IMPLEMENT", env)
+            == "auto-maintainer implement")
+
+
+def test_per_item_no_explicit_description_uses_name_prefix():
+    """Regression-protect FT-4: a per_item dispatch with NO explicit description
+    + an item id '...#275' still derives 'IMPLEMENT #275' (name as prefix)."""
+    env = {"item": "wo-owner/repo#275", "inputs": {}}
+    assert rt._dispatch_description({}, "IMPLEMENT", env) == "IMPLEMENT #275"
+
+
+# --- (0) once: explicit description wins verbatim ---------------------------
+
+def test_once_explicit_description_wins_verbatim():
+    """A ONCE dispatch (no `item`) with an explicit description is returned
+    verbatim even when refs could be derived from inputs."""
+    entry = {"description": "review the open PRs once"}
+    env = {"inputs": {"verdicts": [{"pr_ref": "owner/repo#276"}]}}
+    assert (rt._dispatch_description(entry, "REVIEW", env)
+            == "review the open PRs once")
 
 
 # --- (c) no refs: existing '<name> dispatch' fallback -----------------------
