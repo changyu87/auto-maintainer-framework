@@ -528,16 +528,18 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Patch (v0.7.5, advisory-REVIEW merge-fix release): version bumped to
-# 0.7.5 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.7.5 is the release that DEPLOYS the merged advisory-REVIEW fix (#290) into
-# the installed plugin: the REVIEW adapter-map template's signal is always_ok,
-# so a clean (zero-finding) review emits OK and ALWAYS continues to INTEGRATE
-# instead of EMPTY-branching past the merge. It regenerates the committed
-# plugin tree from CURRENT src.
-# (Supersedes the v0.7.4 per-item dispatch-description release.)
+# Patch (v0.7.6, immediate-refire enhancement release): version bumped to
+# 0.7.6 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.7.6 is the release that DEPLOYS the merged immediate-refire enhancement
+# (#292) into the installed plugin: scheduling's run_tick EXIT anchor is
+# wrapped with the immediate-refire predicate (_work_remains over the remaining
+# work + the durable backoff ledger), so a completed tick with remaining
+# actionable work signals refire and the loop runs the next tick immediately
+# instead of waiting for the heartbeat; the shipped tick skill documents the
+# refire loop. It regenerates the committed plugin tree from CURRENT src.
+# (Supersedes the v0.7.5 advisory-REVIEW merge-fix release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_5_and_consistent():
+def test_version_bumped_to_0_7_6_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -549,10 +551,10 @@ def test_version_bumped_to_0_7_5_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.5", \
-            f"plugin.json version must be 0.7.5, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.5", \
-            "marketplace.json plugin entry version must be 0.7.5"
+        assert pdata.get("version") == "0.7.6", \
+            f"plugin.json version must be 0.7.6, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.6", \
+            "marketplace.json plugin entry version must be 0.7.6"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1698,7 +1700,7 @@ def test_shipped_start_skill_is_v0_3_0_clear_only_executor_config_interval():
 # from its checkpoint), and it does NOT reference the old dispatch-result.json
 # marshalling path.
 # ---------------------------------------------------------------------------
-def test_shipped_tick_skill_is_v0_4_0_resume_no_file_arg():
+def test_shipped_tick_skill_is_v0_5_0_resume_no_file_arg():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1708,8 +1710,9 @@ def test_shipped_tick_skill_is_v0_4_0_resume_no_file_arg():
         assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.4.0\n" in body, \
-            "shipped tick skill frontmatter version must be 0.4.0"
+        assert "\nversion: 0.5.0\n" in body, \
+            "shipped tick skill frontmatter version must be 0.5.0 " \
+            "(#292 immediate-refire loop documented)"
         assert "run_tick.py --resume" in body, \
             "shipped tick skill must reference run_tick.py --resume"
         assert "dispatch-result.json" not in body, \
@@ -2369,6 +2372,86 @@ def test_committed_adapter_map_config_carries_290_review_always_ok():
     assert committed == expected, \
         "committed adapter_map_config drifted from a fresh normalization of " \
         "the current scheduling source — regenerate the plugin tree"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.6 (#292), immediate-refire enhancement deploy confirmation: the
+# whole point of this release is that the committed (shipped) run_tick carries
+# the #292 immediate-refire predicate — scheduling's EXIT anchor is wrapped so
+# a completed tick with remaining actionable work signals refire and the loop
+# runs the next tick immediately instead of waiting for the heartbeat (the
+# `_work_remains` predicate over the remaining work + the durable backoff
+# ledger) — AND that the shipped tick skill documents the refire loop. Assert
+# the COMMITTED lib — the bytes an installed plugin runs — carries the
+# predicate, that it is byte-identical to a fresh normalization of the current
+# scheduling source (so the committed tree genuinely shipped the merged #292
+# enhancement), and that the committed tick skill documents the refire loop.
+# ---------------------------------------------------------------------------
+def test_committed_run_tick_carries_292_immediate_refire():
+    mod = _load_build()
+    committed_rt = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib", "run_tick.py",
+    )
+    assert os.path.isfile(committed_rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(committed_rt, encoding="utf-8") as fh:
+        committed = fh.read()
+    assert "_work_remains" in committed, \
+        "committed run_tick must carry the #292 immediate-refire predicate " \
+        "(_work_remains over the remaining work + the durable backoff ledger)"
+
+    # byte-identical to the build's own normalization of the CURRENT scheduling
+    # source — proving the committed tree shipped the merged #292 enhancement.
+    src = os.path.join(
+        _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+        "scheduling", "src", "run_tick.py",
+    )
+    _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS["run_tick.py"]
+    expected = mod._normalize_lib(src, anchor, bootstrap)
+    assert committed == expected, \
+        "committed run_tick drifted from a fresh normalization of the " \
+        "current scheduling source — regenerate the plugin tree"
+
+    # The shipped tick skill documents the refire loop (#292).
+    committed_skill = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "skills", "tick", "SKILL.md",
+    )
+    assert os.path.isfile(committed_skill), \
+        "committed skills/tick/SKILL.md must ship in the plugin tree"
+    with open(committed_skill, encoding="utf-8") as fh:
+        skill = fh.read()
+    assert "refire" in skill, \
+        "committed tick SKILL.md must document the #292 refire loop"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.6 (#292), shipped-build immediate-refire: the freshly built
+# run_tick (the bytes the regenerated tree ships) carries the #292
+# immediate-refire predicate, and the freshly built tick skill documents the
+# refire loop. This proves the build's normalization of the current scheduling
+# source delivers the #292 enhancement into the plugin tree.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_carries_immediate_refire():
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            shipped = fh.read()
+        assert "_work_remains" in shipped, \
+            "shipped run_tick must carry the #292 immediate-refire predicate " \
+            "(_work_remains)"
+        skill = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "tick", "SKILL.md",
+        )
+        with open(skill, encoding="utf-8") as fh:
+            skill_body = fh.read()
+        assert "refire" in skill_body, \
+            "shipped tick SKILL.md must document the #292 refire loop"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
