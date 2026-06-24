@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.5
+version: 0.7.6
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -399,3 +399,18 @@ Invariant: version 0.7.5 is consistent across `plugin.json` +
 `marketplace.json`; the committed tree matches a fresh build with no source-tree
 leak; the shipped `lib/adapter_map_config.py` carries the REVIEW `always_ok`
 signal_rule; still idempotent.
+
+## Plugin patch v0.7.6 — immediate-refire enhancement release: deploy #292
+
+Re-ship the committed plugin tree so the merged immediate-refire enhancement
+(#292) reaches the installed plugin: scheduling's `run_tick` EXIT anchor is
+wrapped with the `_work_remains` predicate (over the remaining work + the
+durable backoff ledger), so a completed tick that still has actionable work
+signals `refire` and the loop runs the next tick immediately instead of waiting
+for the heartbeat; the shipped tick skill (v0.5.0) documents the refire loop.
+No build LOGIC change beyond `_PLUGIN_VERSION → 0.7.6`; the committed tree is
+regenerated from current src so the shipped bytes match the merged enhancement.
+Invariant: version 0.7.6 is consistent across `plugin.json` +
+`marketplace.json`; the committed tree matches a fresh build with no source-tree
+leak; the shipped `lib/run_tick.py` carries the `_work_remains` refire predicate
+and the shipped tick skill documents the refire loop; still idempotent.

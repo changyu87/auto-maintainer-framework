@@ -1,5 +1,27 @@
 # Changelog — packaging-config
 
+## 0.7.6 — immediate-refire enhancement release: deploy #292
+
+- Bump `_PLUGIN_VERSION` 0.7.5 -> 0.7.6 (`plugin.json` + `marketplace.json`).
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so the merged
+  immediate-refire enhancement (#292) reaches the installed plugin: scheduling's
+  `run_tick` EXIT anchor is wrapped with the `_work_remains` predicate (over the
+  remaining work + the durable backoff ledger), so a completed tick that still
+  has actionable work signals `refire` and the loop runs the next tick
+  immediately instead of waiting for the heartbeat; the shipped tick skill
+  (v0.5.0) documents the refire loop. No build LOGIC change beyond the version
+  bump.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_6_and_consistent`, add
+  `test_committed_run_tick_carries_292_immediate_refire` (committed
+  `lib/run_tick.py` carries `_work_remains`, matches a fresh normalization of
+  the source, and the committed tick skill documents the refire loop) and
+  `test_shipped_run_tick_carries_immediate_refire` (the freshly built tree ships
+  the predicate + refire-documenting skill); update the stale tick-skill version
+  test to 0.5.0; advance the housekeep doc baseline (401 -> 416) for the
+  appended per-release spec section.
+
 ## 0.7.5 — advisory-REVIEW merge-fix release: deploy #290
 
 - Bump `_PLUGIN_VERSION` 0.7.4 -> 0.7.5 (`plugin.json` + `marketplace.json`).

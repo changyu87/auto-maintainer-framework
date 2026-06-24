@@ -327,11 +327,114 @@ def make_guard(runtime):
     return guard.manifest, guard.run
 
 
+def _work_remains(work_items, backoff_ledger, threshold, now):
+    """Pure predicate (§3.3.3 immediate-refire): True when ANY work_item is
+    actionable, so the loop should run the NEXT tick IMMEDIATELY rather than wait
+    the heartbeat interval.
+
+    A work_item is actionable when it is BOTH:
+      - TRIAGE-acceptable: the deterministic work-intake validity gate accepts it
+        (well-formed + open + not-stale, keyed off the injectable `now` so
+        staleness is deterministic). An invalid / closed / stale item never
+        counts.
+      - NOT blocked-and-unchanged: a `blocked`-deferred item whose backoff entry
+        has reached the deferral threshold AND whose issue updated_at has NOT
+        advanced past the deferral pin is INERT (re-dispatching it would thrash),
+        so it does NOT count. A blocked item whose updated_at advanced past the
+        pin (a human touched it) IS actionable again and counts.
+
+    `backoff_ledger` maps {work_item_id: {blocked_count, deferred_at_updated_at}}
+    (BACKOFF_LEDGER_KEY). `threshold` is the configured backoff threshold K. Pure
+    and deterministic — no wall clock (the reference time is the injected `now`),
+    no network, no durable-state read."""
+    triage = wi.Triage(now=now)
+    ledger = backoff_ledger or {}
+    for raw in work_items or []:
+        item = wi.WorkItem.from_dict(raw)
+        if triage.classify(item)[0] != "accepted":
+            continue
+        entry = ledger.get(item.id)
+        if entry and entry.get("blocked_count", 0) >= threshold:
+            # Blocked-and-unchanged when the issue updated_at is NOT strictly
+            # after the deferral pin (GitHub updated_at is an ISO-8601
+            # lexicographically-sortable timestamp, so a string `>` is the
+            # correct chronological compare, mirroring the §3.8.5 re-entry gate).
+            pin = entry.get("deferred_at_updated_at")
+            if not (pin and (item.updated_at or "") > pin):
+                continue  # deferred + unchanged -> inert, not actionable
+        return True
+    return False
+
+
 def make_exit(runtime):
-    """EXIT anchor (lifecycle-dispositions): tick-outcome -> disposition +
-    signal, releasing the mutex, bound to the runtime marker dir."""
+    """EXIT anchor (lifecycle-dispositions) WRAPPED with immediate-refire
+    (§3.3.3): tick-outcome -> disposition + signal, releasing the mutex, bound to
+    the runtime marker dir.
+
+    When the inner EXIT would otherwise IDLE (tick_outcome == "empty") AND the
+    route can ACT on work (an acting agent-state is present) AND actionable work
+    remains (_work_remains over the REMAINING work + the durable backoff ledger),
+    the wrapper REWRITES the outcome to "work-remains" so EXIT selects
+    RUNNING/refire and the loop runs the next tick immediately instead of waiting
+    the heartbeat. It overrides ONLY the "empty" outcome — a restart/fault
+    outcome (or an already-"work-remains" one) is delegated UNCHANGED. The
+    read-and-idle default route + any empty-pool tick keep IDLING: with no acting
+    agent-state present the override never fires.
+
+    "Remaining" work is COMMITTED work the loop did NOT finish this tick: a
+    work_item that BECAME an accepted work_order this tick (the triager committed
+    to it) but was neither acted (its work_order is not in the durable
+    acted-ledger) nor handled this tick (the doer wrote no handoff for it). The
+    canonical case is PRIORITIZE's same-feature SERIALIZATION (#214): two orders
+    touching one feature fan out at most one per tick, DEFERRING the rest — a
+    deferred order is real backlog the loop should pick up immediately, not wait
+    the heartbeat for. An item the triager DROPPED (pulled but never an accepted
+    work_order) is NOT committed work and never drives a refire (respect the
+    triager). _work_remains (pure) then applies the TRIAGE-acceptability +
+    backoff-deferred-unchanged gate over that remaining set.
+
+    The acting-route gate lives here (not in _work_remains) because _work_remains
+    is the pure, route-agnostic actionable-work predicate; whether the loop SHOULD
+    refire on it depends on the route actually having an acting stage to do the
+    work next tick (the dry-run inert IMPLEMENT / read-and-idle spine leaves no
+    real work, so it idles, per spec)."""
     exit_state = ld.Exit(runtime["runtime_dir"])
-    return exit_state.manifest, exit_state.run
+    inner_run = exit_state.run
+    manifest = fc.StateManifest(
+        reads=["tick_outcome", wi.WORK_ITEMS_SLOT["name"], "state_path"],
+        writes=["tick_outcome"],
+        emits=list(exit_state.manifest.emits))
+
+    def run(ctx):
+        if (ctx.read("tick_outcome") == "empty"
+                and runtime.get("has_acting_agent")):
+            state_path = ctx.read("state_path")
+            work_items = ctx.read(wi.WORK_ITEMS_SLOT["name"]) or []
+            # The acted-ledger (work_order_id-keyed, `wo-<work_item_id>`) records
+            # items whose PR already opened/closed — done, never re-acted.
+            acted = persisted_acted_ledger(state_path)
+            # This tick's accepted work_orders = the COMMITTED work. handoffs /
+            # work_orders are read DEFENSIVELY (absent on a route without those
+            # slots), so EXIT's manifest declares neither.
+            wo_to_wi = _work_order_to_work_item(
+                _read_slot_or(ctx, wi.WORK_ORDERS_SLOT["name"], []))
+            committed_wi = set(wo_to_wi.values())
+            # Items HANDLED this tick (the doer wrote ANY handoff — opened /
+            # closed / planned / blocked): no immediate refire makes progress.
+            handoffs = _read_slot_or(ctx, im.HANDOFFS_SLOT["name"], [])
+            handled_wi = {wo_to_wi.get(h.get("work_order_id")) for h in handoffs}
+            remaining = [
+                it for it in work_items
+                if it.get("id") in committed_wi
+                and f"wo-{it.get('id')}" not in acted
+                and it.get("id") not in handled_wi]
+            backoff = persisted_backoff_ledger(state_path)
+            threshold = _backoff_threshold(runtime.get("governance") or {})
+            if _work_remains(remaining, backoff, threshold, runtime.get("now")):
+                ctx.write("tick_outcome", "work-remains")
+        return inner_run(ctx)
+
+    return manifest, run
 
 
 def make_drain(runtime):  # noqa: ARG001 - DRAIN reads its paths from ctx slots
@@ -532,6 +635,12 @@ _VOCAB = fc.SignalVocabulary([
 # data-readiness honest for a VERIFY-without-TRIAGE route without requiring TRIAGE
 # to be present. The retired review_verdicts slot is gone (REVIEW is advisory;
 # INTEGRATE reads only verdicts).
+#
+# EXIT now READS work_items (the §3.3.3 immediate-refire wrapper inspects the
+# pulled work_items to decide whether to refire), but work_items is NOT added to
+# the `initial` set: PULL writes it and PULL precedes EXIT on every routed path,
+# so data-readiness is already satisfied — AND keeping it OUT of `initial`
+# preserves the read-before-write rejection of a bad TRIAGE-before-PULL override.
 _INITIAL_SLOTS = ["state_path", "journal_path", "counter", "tick_outcome",
                   "cross_cutting_risk"]
 
@@ -2440,6 +2549,17 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # never a stale cross-tick last_triaged value (§3.5.3).
     has_triage_agent = any(
         wi.WORK_ITEMS_SLOT["name"] in st.manifest.reads
+        for st in agentstates.values())
+
+    # Whether the route has an ACTING agent-state (a dispatch entry carrying a
+    # truthy `effect`, e.g. an IMPLEMENT agent that opens PRs) — the gate for the
+    # §3.3.3 immediate-refire in make_exit's EXIT wrapper. It is threaded onto the
+    # SAME runtime dict the EXIT factory closed over at build time, so EXIT reads
+    # it at run time. With no acting agent-state the read-and-idle spine + the
+    # dry-run inert IMPLEMENT keep IDLING (back-compat): the refire override never
+    # fires.
+    runtime["has_acting_agent"] = any(
+        st.entry["dispatch"][0].get("effect")
         for st in agentstates.values())
 
     # Spend metering on ALL agent-state resumes (acting OR non-acting): fold the
