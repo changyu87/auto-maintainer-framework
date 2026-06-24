@@ -852,6 +852,60 @@ def test_validate_output_example_schema_dict_means_object():
     assert isinstance(err, str)
 
 
+# E2E Behaviour: an EMPTY schema dict {} is the "no schema / accept-as-is"
+# sentinel (the _SLOT_SCHEMAS.get(writes, {}) miss). It must NOT be read as
+# {"type": "object"} — it imposes NO top-level type check, so any valid JSON
+# top-level value (list, object, scalar) is accepted.
+
+def test_validate_output_empty_schema_accepts_list():
+    ok, parsed = ad.validate_output('[1, 2, 3]', {})
+    assert ok is True
+    assert parsed == [1, 2, 3]
+
+
+def test_validate_output_empty_schema_accepts_object():
+    ok, parsed = ad.validate_output('{"a": 1}', {})
+    assert ok is True
+    assert parsed == {"a": 1}
+
+
+def test_validate_output_empty_schema_accepts_scalar():
+    ok, parsed = ad.validate_output('5', {})
+    assert ok is True
+    assert parsed == 5
+
+
+def test_validate_output_empty_schema_does_not_impose_type():
+    # _expected_type({}) imposes no top-level type check (returns None).
+    assert ad._expected_type({}) is None
+
+
+# A NON-empty {"type": ...} dict still imposes its declared top-level type;
+# the empty-dict fix must not weaken these.
+
+def test_validate_output_type_object_still_rejects_list():
+    ok, err = ad.validate_output('[1, 2]', {"type": "object"})
+    assert ok is False
+    assert isinstance(err, str)
+    assert err
+
+
+def test_validate_output_type_array_still_rejects_object():
+    ok, err = ad.validate_output('{"a": 1}', {"type": "array"})
+    assert ok is False
+    assert isinstance(err, str)
+    assert err
+
+
+def test_validate_output_nonempty_example_dict_still_rejects_list():
+    # A NON-empty example dict still derives object and rejects a top-level
+    # list. Only the EMPTY dict is the accept-as-is sentinel.
+    ok, err = ad.validate_output('[1, 2]', {"id": "example"})
+    assert ok is False
+    assert isinstance(err, str)
+    assert err
+
+
 # ==========================================================================
 # E2E Behaviour: collect_outputs — `once` returns the single value; `per_item`
 # returns the ordered list of element outputs.
