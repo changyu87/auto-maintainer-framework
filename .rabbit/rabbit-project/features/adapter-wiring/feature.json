@@ -7,6 +7,6 @@
   ],
   "created": "2026-06-11T12:56:11Z",
   "deprecation_criterion": "Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it.",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "updated": "2026-06-24"
 }
