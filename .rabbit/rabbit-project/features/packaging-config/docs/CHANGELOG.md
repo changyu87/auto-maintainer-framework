@@ -1,5 +1,24 @@
 # Changelog — packaging-config
 
+## 0.7.4 — per-item dispatch-description fix release: deploy #288
+
+- Bump `_PLUGIN_VERSION` 0.7.3 -> 0.7.4 (`plugin.json` + `marketplace.json`).
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so the merged per-item
+  dispatch-description fix (#288) reaches the installed plugin: `run_tick`'s
+  `_dispatch_description` now branches on cardinality (`if "item" in env:`) so a
+  per_item fan-out ALWAYS names the item ref (distinct parallel subagents)
+  instead of letting an explicit `dispatch_entry['description']` win verbatim.
+  The drifted `lib/run_tick.py` is re-normalized from the updated source; the two
+  version strings also change.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_4_and_consistent`, add
+  `test_committed_run_tick_carries_288_per_item_dispatch_desc` and
+  `test_shipped_run_tick_carries_per_item_dispatch_desc` asserting the shipped
+  lib carries the per-item dispatch-description branch and matches a fresh
+  normalization of the source, and advance the housekeep doc baseline
+  (375 -> 388) for the appended per-release spec section.
+
 ## 0.7.3 — stale-checkpoint discard fix release: deploy #285
 
 - Bump `_PLUGIN_VERSION` 0.7.2 -> 0.7.3 (`plugin.json` + `marketplace.json`).
