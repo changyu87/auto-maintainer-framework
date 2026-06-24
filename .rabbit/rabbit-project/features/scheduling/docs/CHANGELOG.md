@@ -1,5 +1,27 @@
 # scheduling — Changelog
 
+## feature 0.20.0 — 2026-06-21
+
+- **Self-healing known-port adapter-map migration (dogfood REVIEW root-cause
+  fix).** A stale persisted project-local `adapter-map.json` known-port agent
+  entry wired under an older template (e.g. a v0.6.0 REVIEW writing the retired
+  `review_verdicts` slot with an old `output_example`) breaks the redesigned
+  (FT-C/D) loop, where REVIEW writes `review_findings`.
+  - `adapter_map_config.migrate_known_port_entries(adapter_map) -> adapter_map`:
+    a PURE dict → dict transform. For each `(port, entry)` where
+    `ad.is_agent_entry(entry)` AND `port in AGENT_PORT_TEMPLATES`, it REBUILDS the
+    entry via `_build_agent_entry(port, <existing dispatch[0].subagent_type>)` —
+    re-deriving `writes`/`cardinality`/`output_example`/`inputs`/`manifest`/
+    `signal`/`effect`/`isolation` from the LIVE template while preserving ONLY the
+    `subagent_type`. Script (string) entries, custom-port agent entries (port not
+    in templates), and non-agent entries are left UNCHANGED. Returns a NEW dict
+    (never mutates the input); idempotent.
+  - `run_tick` passes it as the `migrate=` hook of its single `aw.build_loop(...)`
+    call, so a stale entry self-heals on load BEFORE resolve+validate every tick.
+    `run_tick` imports `adapter_map_config` LAZILY at the call site to avoid the
+    `adapter_map_config → run_tick` circular import. A default (string)
+    adapter-map is byte-for-byte unchanged.
+
 ## feature 0.19.0 — 2026-06-21
 
 - **Redesigned-loop reconciliation (FT-E).** scheduling now consumes the

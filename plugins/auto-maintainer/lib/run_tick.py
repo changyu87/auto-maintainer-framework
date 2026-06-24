@@ -2292,11 +2292,17 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
             new_budget_state = sg.record_spend(new_budget_state, budget_clock,
                                                tick_spend)
 
-    # Route-as-data: load (override else default) -> resolve -> validate. A bad
-    # override raises WiringError here, before any tick body runs.
+    # Route-as-data: load (override else default) -> migrate -> resolve ->
+    # validate. A bad override raises WiringError here, before any tick body runs.
+    # The migrate hook self-heals stale KNOWN-port agent entries (e.g. a v0.6.0
+    # REVIEW writing the retired review_verdicts slot) against the live templates
+    # BEFORE resolve+validate. adapter_map_config imports run_tick, so it is
+    # imported LAZILY here to avoid a module-level circular import.
+    import adapter_map_config  # noqa: E402 - lazy: avoids circular import
     route, states = aw.build_loop(
         DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime,
-        start="GUARD", initial=_INITIAL_SLOTS)
+        start="GUARD", initial=_INITIAL_SLOTS,
+        migrate=adapter_map_config.migrate_known_port_entries)
 
     # The agent-states resolved in this route ({name: AgentState}). When empty,
     # the route is pure-script and runs the UNCHANGED tick_orchestrator.run path.

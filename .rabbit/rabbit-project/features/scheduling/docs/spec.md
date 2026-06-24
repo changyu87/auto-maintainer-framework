@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.19.0
+version: 0.20.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -855,6 +855,42 @@ owners (work-intake `WORK_ORDERS_SLOT`, implement `HANDOFFS_SLOT`, …) so a bar
 `subagent_type` is enough to produce a valid agent entry. This per-port knowledge
 is why the adapter-map CLI lives in scheduling (which imports those slot owners),
 not in dependency-free adapter-wiring.
+
+### Self-healing known-port migration — `migrate_known_port_entries`
+
+A persisted project-local `adapter-map.json` known-port agent entry wired under
+an OLDER template version carries RETIRED template fields. A REVIEW entry wired
+under v0.6.0 writes the retired `review_verdicts` slot with an old
+`output_example`; the redesigned loop (FT-C/D) has REVIEW write `review_findings`,
+so the stale entry breaks the loop (the dogfood REVIEW failure). Because
+scheduling owns `AGENT_PORT_TEMPLATES` + `_build_agent_entry`, it owns the pure
+migration that re-derives those entries from the LIVE template on load.
+
+`migrate_known_port_entries(adapter_map) -> adapter_map` (in
+`adapter_map_config.py`) is a PURE dict → dict transform:
+
+- For each `(port, entry)`: if `ad.is_agent_entry(entry)` AND `port in
+  AGENT_PORT_TEMPLATES`, REBUILD the entry via
+  `_build_agent_entry(port, <entry's existing dispatch[0].subagent_type>)` —
+  re-deriving `writes` / `cardinality` / `output_example` / `inputs` / `manifest`
+  / `signal` / `effect` / `isolation` from the live template, preserving ONLY the
+  `subagent_type`.
+- Left UNCHANGED: script (string) entries, custom-port agent entries (a port NOT
+  in `AGENT_PORT_TEMPLATES`, whose fields cannot be inferred), and non-agent
+  entries.
+- Returns a NEW dict — it NEVER mutates the input. It is idempotent (re-running
+  on an already-current entry is a no-op).
+
+It is wired into `run_tick` as the `migrate=` hook of the single
+`aw.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, ...)` call (the hook
+runs on the loaded map AFTER `load_adapter_map`, BEFORE `resolve_states`), so a
+stale persisted entry self-heals on every tick BEFORE resolve+validate. Because
+`adapter_map_config` imports `run_tick`, `run_tick` imports
+`adapter_map_config` LAZILY at the call site (a deferred `import
+adapter_map_config` inside the tick body) — there is NO module-level
+`run_tick → adapter_map_config` import, which would be circular. A route with a
+default (string) adapter-map is byte-for-byte unchanged: every entry is a script
+string, so the migration rebuilds nothing.
 
 ## Known gaps / deferred
 

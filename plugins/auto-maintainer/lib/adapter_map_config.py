@@ -255,6 +255,36 @@ def _build_agent_entry(port, subagent_type, writes=None, effect=None,
     return entry
 
 
+def migrate_known_port_entries(adapter_map):
+    """Self-heal stale KNOWN-port agent entries against the LIVE templates.
+
+    A persisted project-local ``adapter-map.json`` known-port agent entry wired
+    under an OLDER template carries retired template fields (e.g. a v0.6.0 REVIEW
+    entry that writes the retired ``review_verdicts`` slot with an old
+    ``output_example``), which breaks the redesigned loop. This pure dict -> dict
+    transform re-derives every such entry from the current template:
+
+    For each ``(port, entry)``: when ``ad.is_agent_entry(entry)`` AND ``port`` is
+    a KNOWN agent-capable port (in ``AGENT_PORT_TEMPLATES``), REBUILD the entry via
+    ``_build_agent_entry(port, <entry's existing dispatch[0].subagent_type>)`` —
+    re-deriving writes / cardinality / output_example / inputs / manifest / signal
+    / effect / isolation from the live template while preserving ONLY the
+    ``subagent_type``. Script (string) entries, custom-port agent entries (a port
+    NOT in the templates, whose fields cannot be inferred), and non-agent entries
+    are left UNCHANGED.
+
+    Returns a NEW dict — the input is never mutated. Idempotent: re-running on an
+    already-current entry is a no-op."""
+    out = {}
+    for port, entry in adapter_map.items():
+        if ad.is_agent_entry(entry) and port in AGENT_PORT_TEMPLATES:
+            subagent_type = entry["dispatch"][0]["subagent_type"]
+            out[port] = _build_agent_entry(port, subagent_type)
+        else:
+            out[port] = entry
+    return out
+
+
 def _cmd_show(project_dir):
     amap = load_map(project_dir)
     path = _override_path(project_dir)
