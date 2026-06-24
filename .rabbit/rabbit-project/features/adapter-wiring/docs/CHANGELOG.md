@@ -3,6 +3,20 @@
 All notable changes to this feature are recorded here. Versions follow the
 spec/contract `version:` frontmatter.
 
+## 0.4.0
+
+- Public surface change (additive): `build_loop` gains an optional `migrate=None`
+  kwarg — a pure `dict -> dict` callable run on the loaded adapter-map AFTER
+  `load_adapter_map` and BEFORE `resolve_states`/`validate_wiring`, so a caller
+  (e.g. scheduling) can self-heal stale adapter-map entries on load. The migrated
+  map feeds resolve + validate exactly like a loaded map, so a malformed
+  transform surfaces as a `WiringError` (never a silent pass).
+- adapter-wiring stays template-agnostic: it only invokes the supplied callable
+  and carries no knowledge of what it rewrites (no template/port-template
+  coupling — that belongs to scheduling).
+- Backward compatible: `migrate=None` (the default) is byte-for-byte unchanged
+  behaviour; the loaded map is resolved as-is.
+
 ## 0.3.0
 
 - New §3.4.4 adapter authoring/scaffold tool (additive, #52): `scaffold_adapter`

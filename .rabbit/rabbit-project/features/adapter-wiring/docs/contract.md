@@ -1,6 +1,6 @@
 ---
 feature: adapter-wiring
-version: 0.3.0
+version: 0.4.0
 owner: changyu87
 deprecation_criterion: Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it (see feature.json / docs/spec.md).
 ---
@@ -42,7 +42,7 @@ contract a third-party adapter implements.
       "load_adapter_map(default_map, project_dir) -> map  # values: 'module:factory' string OR agent-adapter object",
       "resolve_states(route, adapter_map, runtime) -> states  # {state: (manifest, run_callable | AgentState)}",
       "validate_wiring(route, manifests, start, initial) -> CheckResult",
-      "build_loop(default_route, default_map, runtime, start, initial) -> (route, states)",
+      "build_loop(default_route, default_map, runtime, start, initial, migrate=None) -> (route, states)  # optional migrate: pure dict->dict run on the loaded adapter-map after load, before resolve/validate",
       "the adapter factory convention: 'module:factory', factory(runtime) -> (StateManifest, run_callable)",
       "AgentState(manifest, dispatch, signal, entry): the resolved form of an agent-adapter object entry",
       "scaffold_adapter(port, src_dir, factory, default_signal, overwrite) -> (path, address)  # §3.4.4 authoring tool: emit a skeleton conforming to the factory convention",

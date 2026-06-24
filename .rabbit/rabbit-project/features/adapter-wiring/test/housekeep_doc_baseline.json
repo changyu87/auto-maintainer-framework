@@ -2,10 +2,10 @@
   "schema_version": "1.0.0",
   "owner": "changyu87",
   "deprecation_criterion": "Superseded when adapter-wiring's docs are restructured by a later wave that re-baselines this fixture; until then it is the measured-reduction reference for the housekeep doc-slim wave.",
-  "description": "Reference line counts of adapter-wiring docs. Re-baselined when the §3.4.4 adapter authoring/scaffold tool (#52) added a public-surface section to spec.md and contract.md (a doc restructure, authorized by this fixture's deprecation_criterion). The housekeep e2e test asserts the current docs are no LARGER than these baselines (no doc growth past the reference) and that the load-bearing tokens survived.",
-  "baseline_commit": "feat/adapter-scaffold-52",
+  "description": "Reference line counts of adapter-wiring docs. Re-baselined when the build_loop optional `migrate` hook added the public-surface documentation for the dict->dict adapter-map migration callable to spec.md (a doc restructure for an additive public-surface change, authorized by this fixture's deprecation_criterion). The housekeep e2e test asserts the current docs are no LARGER than these baselines (no doc growth past the reference) and that the load-bearing tokens survived.",
+  "baseline_commit": "feat/adapter-wiring-buildloop-migrate-hook",
   "docs": {
-    "docs/spec.md": 188,
+    "docs/spec.md": 196,
     "docs/contract.md": 81
   }
 }
