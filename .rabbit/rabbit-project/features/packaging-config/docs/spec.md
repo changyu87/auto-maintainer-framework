@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.0
+version: 0.7.2
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -347,3 +347,16 @@ Invariant: version 0.7.1 is consistent across `plugin.json` + `marketplace.json`
 the committed tree matches a fresh build with no source-tree leak; the shipped
 `lib/{agent_dispatch,adapter_wiring,adapter_map_config}.py` carry the three
 merged fixes; still idempotent.
+
+## Plugin patch v0.7.2 — surgical adapter-map migration fix release: deploy #283
+
+Re-ship the committed plugin tree so the merged surgical adapter-map migration
+fix (#283) reaches the installed plugin: the scheduling adapter-map migration
+now only heals retired-writes entries and preserves valid custom wiring (the
+`valid_writes` set, derived from the agent-port templates, gates which entries
+are migrated). No build LOGIC change beyond `_PLUGIN_VERSION → 0.7.2`; the
+committed tree is regenerated from current src so the shipped bytes match the
+merged fix. Invariant: version 0.7.2 is consistent across `plugin.json` +
+`marketplace.json`; the committed tree matches a fresh build with no source-tree
+leak; the shipped `lib/adapter_map_config.py` carries the `valid_writes`
+surgical gate; still idempotent.

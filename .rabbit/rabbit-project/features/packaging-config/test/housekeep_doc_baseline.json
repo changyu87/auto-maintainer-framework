@@ -2,10 +2,10 @@
   "schema_version": "1.0.0",
   "owner": "changyu87",
   "deprecation_criterion": "Superseded by the next packaging-config housekeep wave's baseline; single-use measured-reduction reference for this doc-slim wave.",
-  "description": "Line counts of packaging-config doc surfaces. Originally captured at commit 6137941 (spec.md 323) before the housekeep measured doc-reduction wave; spec.md advanced to 333 by the v0.7.0 loop-redesign release and to 349 by the v0.7.1 dogfood-fix release, each appending a required per-release section recording its version bump + deployed fixes. The housekeep e2e test asserts the current docs are no LARGER than these baselines (a reduced|no-op verdict), spec.md is not larger, and the load-bearing tokens survived the slim.",
+  "description": "Line counts of packaging-config doc surfaces. Originally captured at commit 6137941 (spec.md 323) before the housekeep measured doc-reduction wave; spec.md advanced to 333 by the v0.7.0 loop-redesign release, to 349 by the v0.7.1 dogfood-fix release, and to 362 by the v0.7.2 surgical adapter-map migration release, each appending a required per-release section recording its version bump + deployed fixes. The housekeep e2e test asserts the current docs are no LARGER than these baselines (a reduced|no-op verdict), spec.md is not larger, and the load-bearing tokens survived the slim.",
   "baseline_commit": "6137941",
   "docs": {
-    "docs/spec.md": 349,
+    "docs/spec.md": 362,
     "docs/contract.md": 41
   }
 }

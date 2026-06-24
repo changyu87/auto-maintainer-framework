@@ -1,5 +1,22 @@
 # Changelog — packaging-config
 
+## 0.7.2 — surgical adapter-map migration fix release: deploy #283
+
+- Bump `_PLUGIN_VERSION` 0.7.1 -> 0.7.2 (`plugin.json` + `marketplace.json`).
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so the merged surgical
+  adapter-map migration fix (#283) reaches the installed plugin: the scheduling
+  adapter-map migration now only heals retired-writes entries and preserves
+  valid custom wiring (gated by the `valid_writes` set derived from the
+  agent-port templates). Only the two version strings change in the committed
+  tree; `lib/adapter_map_config.py` already matched the merged source.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_2_and_consistent`, add
+  `test_committed_adapter_map_config_carries_283_surgical_migration` asserting
+  the shipped lib carries the `valid_writes` gate and matches a fresh
+  normalization of the source, and advance the housekeep doc baseline
+  (349 -> 362) for the appended per-release spec section.
+
 ## 0.7.1 — dogfood-fix release: deploy PRs #277-#280
 
 - Bump `_PLUGIN_VERSION` 0.7.0 -> 0.7.1 (`plugin.json` + `marketplace.json`).
