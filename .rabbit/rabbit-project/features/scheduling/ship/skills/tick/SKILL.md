@@ -1,7 +1,7 @@
 ---
 name: tick
-description: Run exactly one auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute one tick or step the maintainer loop once, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) — passing each one's description and (when present) isolation — and resumes, reporting the dispatched subagents' token usage, until the tick completes.
-version: 0.4.0
+description: Run an auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute a tick or step the maintainer loop, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) — passing each one's description and (when present) isolation — and resumes, reporting the dispatched subagents' token usage, until the tick completes. When a completed tick's final signal is `refire` (actionable work remains), it runs another tick immediately, looping until a non-refire signal (idle/halt/break) so the loop drains its backlog without waiting for the heartbeat.
+version: 0.5.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when Claude Code can dispatch subagents from within a script (removing the need for a session-mediated executor), or when the tick CLI's --step/--resume protocol reaches a breaking major version.
 ---
@@ -27,9 +27,11 @@ how large the output is.
 The runner is advanced by exactly two commands, and **mixing them up corrupts
 the tick**:
 
-- **`--step`** — call it **exactly ONCE, as the very first runner command of the
-  tick**. The only other time you may call `--step` is to **re-emit a pause after
-  an `invalid_output`** (see step 5). NEVER for anything else.
+- **`--step`** — call it **exactly ONCE per tick, as that tick's very first
+  runner command**. (A `refire` starts a NEW tick, which gets its own single
+  `--step` — see step 2.) The only other time you may call `--step` is to
+  **re-emit a pause after an `invalid_output`** (see step 5). NEVER for anything
+  else.
 - **`--resume`** — the ONLY way to advance after you have dispatched the
   subagent(s) for a pause. After **every** `paused` you handle, the next runner
   command is `--resume` — never `--step`.
@@ -69,7 +71,16 @@ until `done`.**
    result. From here on you advance ONLY with `--resume` (except an
    `invalid_output` re-emit, step 5).
 
-2. If `status` is `"done"`: print the `trace` and stop — the tick is complete.
+2. If `status` is `"done"`: print the `trace`, then look at the `signal`:
+   - `signal` is `"refire"` — the tick finished but **actionable work remains**
+     (e.g. PRIORITIZE deferred a same-feature order to a later tick). Don't wait
+     for the heartbeat: **immediately begin ANOTHER tick** by going back to step 1
+     (a fresh `--step`). Keep looping — tick, and if it `refire`s, tick again —
+     **until** a completed tick reports a **non-refire** signal (`idle`, `halt`,
+     or `break`). Then stop. The recurring cron heartbeat is only the safety net;
+     refire is what keeps a busy loop draining its backlog promptly.
+   - any other `signal` (`idle` / `halt` / `break` / …) — the loop has no
+     immediate follow-on work, so stop here; the next heartbeat will tick again.
 
 3. If `status` is `"paused"`: for **each** entry in `dispatches` (in order),
    dispatch the subagent with that entry's exact rendered prompt, passing the
@@ -123,10 +134,15 @@ until `done`.**
 
 ## Rules
 
-- **`--step` once to begin; `--resume` after every dispatch; `--step` again ONLY
-  to re-emit after `invalid_output`.** Never `--step` mid-tick after a successful
-  dispatch — that skips the resume that applies outputs and fires the terminal
-  REPORT flush.
+- **`--step` once to begin EACH tick; `--resume` after every dispatch; `--step`
+  again ONLY to re-emit after `invalid_output`.** Never `--step` mid-tick after a
+  successful dispatch — that skips the resume that applies outputs and fires the
+  terminal REPORT flush.
+- **Loop on `refire`.** A `done` tick whose `signal` is `refire` means actionable
+  work remains; immediately run another tick (a fresh `--step`) and keep looping
+  until a tick reports a non-refire signal (`idle`/`halt`/`break`). The runner
+  decides refire-vs-idle deterministically — you only relay the loop. The cron
+  heartbeat is the safety net, not the primary driver.
 - Dispatch a subagent ONLY for the entries the runner hands you, with the
   prompt, `description`, and (when present) `isolation` the runner provides,
   verbatim — do not alter them or invoke any other subagent. The prompt is the

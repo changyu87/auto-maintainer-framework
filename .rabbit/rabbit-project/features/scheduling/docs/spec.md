@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.24.0
+version: 0.25.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -964,6 +964,66 @@ checkpoint as STALE: discard it and run a fresh tick.
 - A COMPATIBLE checkpoint (pending writes registered) is UNCHANGED — still
   re-emitted on `--step` and resumed on `--resume` exactly as before.
 
+## Immediate-refire when actionable work remains (§3.3.3)
+
+Owner-requested enhancement: the loop should run the **next tick IMMEDIATELY**
+when actionable work remains, instead of waiting the full heartbeat interval.
+This completes the immediate-refire mechanism (DESIGN §3.3.3). It consumes
+`work-intake` (Triage) + `lifecycle-dispositions` (Exit) + `durable-state`
+UNCHANGED; edits live ONLY in scheduling (`run_tick.py` + the tick executor
+skill).
+
+- **Pure predicate `_work_remains(work_items, backoff_ledger, threshold, now)`.**
+  Returns True when ANY work_item is BOTH:
+  - **TRIAGE-acceptable** — the deterministic work-intake validity gate accepts
+    it (`wi.Triage(now=now).classify(item)[0] == "accepted"`: well-formed +
+    open + not-stale, keyed off the injectable `now`). An invalid / closed /
+    stale / malformed item never counts.
+  - **NOT blocked-and-unchanged** — blocked-and-unchanged means the item's
+    backoff entry has `blocked_count >= threshold` AND the item's `updated_at` is
+    NOT strictly after `entry.deferred_at_updated_at` (a deferred + unchanged
+    item is inert; re-dispatching it would thrash, §3.8.5). A blocked item whose
+    `updated_at` ADVANCED past the pin IS actionable again and counts.
+
+  It is pure and deterministic — no wall clock (the reference time is the
+  injected `now`), no network, no durable-state read.
+
+- **EXIT wrapped with immediate-refire (`make_exit`).** `make_exit(runtime)`
+  WRAPS `lifecycle-dispositions`' `Exit`. Its `run(ctx)` reads `tick_outcome` +
+  `work_items` + `state_path` from ctx and loads the durable backoff ledger
+  (`persisted_backoff_ledger(ctx.read("state_path"))`). When the inner outcome is
+  `empty` AND the route has an **acting agent-state** (a dispatch entry carrying a
+  truthy `effect`, threaded onto the runtime dict as `has_acting_agent`) AND
+  `_work_remains` over the **remaining** work, it rewrites `tick_outcome` to
+  `work-remains` so the inner EXIT selects `RUNNING`/`refire`; otherwise the inner
+  EXIT runs unchanged. It overrides **ONLY** the `empty` outcome — a
+  `restart`/`fault` (or already-`work-remains`) outcome is delegated UNCHANGED.
+  `threshold` is `_backoff_threshold(runtime["governance"])`; `now` is
+  `runtime.get("now")`. EXIT's manifest now `reads=[tick_outcome, work_items,
+  state_path]`, `writes=[tick_outcome]`, `emits` = the inner Exit's
+  refire/idle/break/halt; `work_items` is added to the data-readiness `initial`
+  set (it is seeded unconditionally, so every route leaves it readable for EXIT).
+
+- **"Remaining" work = work_items MINUS done/stalled this tick.** The refire
+  decision excludes items already in the durable acted-ledger (PR opened/closed —
+  done, never re-acted) and items the doer reported `blocked` THIS tick (no
+  progress / budget-deferred — busy-refiring them would loop). `_work_remains`
+  then applies the acceptability + backoff-deferred-unchanged gate over that
+  remaining set. The acting-route gate lives in `make_exit` (not in the pure
+  predicate) because whether the loop SHOULD refire depends on the route having an
+  acting stage to do the work next tick.
+
+- **Back-compat.** The read-and-idle **DEFAULT_ROUTE** spine + any **empty-pool**
+  tick still IDLE: with no acting agent-state present `has_acting_agent` is False
+  and the override never fires (the dry-run inert IMPLEMENT / pure-read routes
+  leave no real work, so they idle, per the read-and-idle design). All existing
+  scheduling tests stay green.
+
+- **The tick executor skill loops on `refire`.** `ship/skills/tick/SKILL.md`
+  documents the refire-loop: when a completed tick's final signal is `refire`,
+  run ANOTHER tick immediately, looping until a non-refire signal
+  (`idle`/`halt`/`break`). The cron heartbeat remains the safety net.
+
 ## Known gaps / deferred
 
 - The executor (the session-side actor that performs the Agent dispatch and
@@ -975,9 +1035,10 @@ checkpoint as STALE: discard it and run a fresh tick.
   above). The tick **interval is config-driven** (`heartbeat.interval_minutes`,
   default 3) — #17 resolved.
 - System-cron scheduler backend (§3.3.1) — slice 1 is in-session heartbeat only.
-- TRIAGE/IMPLEMENT/VERIFY/INTEGRATE — the loop now PULLs (read-and-idle); acting
-  on `work_items` lands with later features, at which point EXIT becomes
-  work-driven (refire while actionable work remains).
+- TRIAGE/IMPLEMENT/VERIFY/INTEGRATE — the loop PULLs (read-and-idle) and, on an
+  ACTING route, EXIT is now **work-driven**: it refires while actionable work
+  remains (see "Immediate-refire when actionable work remains" above). The
+  read-and-idle default route still idles.
 - Full RESTART_NEEDED→SessionStart auto-resume (§3.3.4) — follow-up.
 
 ## Interfaces (composition)

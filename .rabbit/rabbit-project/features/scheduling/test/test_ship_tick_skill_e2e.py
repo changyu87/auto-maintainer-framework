@@ -199,9 +199,9 @@ def test_ship_start_skill_heartbeat_interval_is_config_driven():
 # file; the skill marshals NO content.)
 # --------------------------------------------------------------------------
 
-def test_ship_tick_skill_version_is_0_4_0():
+def test_ship_tick_skill_version_is_0_5_0():
     fields = _parse_frontmatter(_TICK_SKILL)
-    assert fields.get("version") == "0.4.0", fields
+    assert fields.get("version") == "0.5.0", fields
 
 
 def test_ship_tick_skill_step_resume_protocol_is_hardened():
