@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.20.0
+version: 0.21.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -426,14 +426,22 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
   - **Permitted (`propose` / `auto-merge`):** `run_tick` proceeds to the
     normal PAUSE-for-dispatch path unchanged, so the executor dispatches the real
     subagent.
-- **isolation + description in the PAUSED dispatches.** When building the PAUSED
-  `dispatches[]` (the permitted path), each dispatch record now also carries
-  `isolation` (the dispatch entry's `isolation`, e.g. `"worktree"`, or null when
-  absent) and `description` (the dispatch entry's `description` if present, else a
-  default `f"{state} dispatch"`, or `f"{state}: {item}"` for a per_item dispatch).
-  These let the executor call `Agent(subagent_type, description=...,
-  prompt=..., isolation=...)`. `subagent_type`, `prompt`, `writes`,
-  `output_path`, `signal_rule`, and `cardinality` are unchanged.
+- **isolation + description in the PAUSED dispatches.** Each PAUSED dispatch
+  record (the permitted path) carries `isolation` (the entry's `isolation`, e.g.
+  `"worktree"`, or null) and a `description`, so the executor can call
+  `Agent(subagent_type, description=..., prompt=..., isolation=...)`.
+  `subagent_type`, `prompt`, `writes`, `output_path`, `signal_rule`, and
+  `cardinality` are unchanged. The `description` NAMES the issue/PR each subagent
+  works on so parallel subagents (an IMPLEMENT per-item fan-out, a REVIEW once
+  dispatch over several PRs) show DISTINCT names, not one generic
+  `<state> dispatch`. The pure `_dispatch_description(dispatch_entry, name, env)` +
+  `_dispatch_refs(env)` derive it: (0) an explicit `dispatch_entry['description']`
+  wins verbatim; (a) per_item (`env` carries `item`, e.g. `wo-owner/repo#275`) →
+  `#` + the substring after the LAST `#` → `IMPLEMENT #275` (a dict item prefers
+  `pr_ref`/`number`/`id`); (b) once (no `item`) → scan `env['inputs']`
+  list-of-dicts for `pr_ref` (REVIEW verdicts) or `number` (TRIAGE work_items) →
+  `REVIEW #276, #277` / `TRIAGE #275, #276` (de-duped, order-preserving, capped at
+  six with `+K more`); (c) no refs → the `f"{state} dispatch"` fallback.
 - **No budget pre-gate / acted-ledger / spend metering this slice.** ONLY the
   effect-based trust-gate (dry-run inert vs dispatch) + isolation/description in
   the PAUSED dispatches. Read products stay #64 per-tick ephemeral; the budget

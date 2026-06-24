@@ -1,5 +1,25 @@
 # scheduling — Changelog
 
+## feature 0.21.0 — 2026-06-21
+
+- **Issue/PR-named Agent dispatch descriptions.** The PAUSED dispatch
+  `description` now NAMES the issue/PR each subagent works on, so parallel
+  subagents (an IMPLEMENT per-item fan-out, a REVIEW once dispatch over several
+  PRs) show DISTINCT, recognizable names instead of one generic
+  `<state> dispatch`.
+  - `_dispatch_description(dispatch_entry, name, env)` precedence: (0) an explicit
+    `dispatch_entry['description']` still wins verbatim; (a) per_item (envelope
+    carries `item`, e.g. `wo-owner/repo#275`) → `#` + the substring after the LAST
+    `#` → `IMPLEMENT #275` (a dict item prefers `pr_ref` / `number` / `id`); (b)
+    once (no `item`) → scan `env['inputs']` list-of-dicts for `pr_ref` (REVIEW
+    verdicts) or `number` (TRIAGE work_items) → `REVIEW #276, #277` /
+    `TRIAGE #275, #276` (de-duped, order-preserving, capped at six with `+K more`);
+    (c) no refs → the existing `f"{state} dispatch"` fallback.
+  - A new pure helper `_dispatch_refs(env)` collects the refs; both it and
+    `_dispatch_description` are pure/deterministic. The dispatch prompt body,
+    `output_path`, schema, signal logic, and cardinality are UNCHANGED — only the
+    description label.
+
 ## feature 0.20.0 — 2026-06-21
 
 - **Self-healing known-port adapter-map migration (dogfood REVIEW root-cause
