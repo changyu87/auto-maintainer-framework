@@ -1,5 +1,21 @@
 # Changelog — packaging-config
 
+## 0.7.5 — advisory-REVIEW merge-fix release: deploy #290
+
+- Bump `_PLUGIN_VERSION` 0.7.4 -> 0.7.5 (`plugin.json` + `marketplace.json`).
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so the merged
+  advisory-REVIEW fix (#290) reaches the installed plugin: the REVIEW
+  adapter-map template's signal is now `always_ok`, so a clean (zero-finding)
+  review emits OK and ALWAYS continues to INTEGRATE instead of EMPTY-branching
+  past the merge. No build LOGIC change beyond the version bump.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_5_and_consistent`, add
+  `test_committed_adapter_map_config_carries_290_review_always_ok` asserting the
+  shipped `lib/adapter_map_config.py` carries the REVIEW `always_ok` signal_rule
+  and matches a fresh normalization of the source, and advance the housekeep doc
+  baseline (388 -> 401) for the appended per-release spec section.
+
 ## 0.7.4 — per-item dispatch-description fix release: deploy #288
 
 - Bump `_PLUGIN_VERSION` 0.7.3 -> 0.7.4 (`plugin.json` + `marketplace.json`).

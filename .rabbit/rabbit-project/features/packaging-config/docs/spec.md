@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.4
+version: 0.7.5
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -386,3 +386,16 @@ the shipped bytes match the merged fix. Invariant: version 0.7.4 is consistent
 across `plugin.json` + `marketplace.json`; the committed tree matches a fresh
 build with no source-tree leak; the shipped `lib/run_tick.py` carries the #288
 per-item dispatch-description branch; still idempotent.
+
+## Plugin patch v0.7.5 — advisory-REVIEW merge-fix release: deploy #290
+
+Re-ship the committed plugin tree so the merged advisory-REVIEW fix (#290)
+reaches the installed plugin: the REVIEW adapter-map template's signal is now
+`always_ok`, so a clean (zero-finding) review emits OK and ALWAYS continues to
+INTEGRATE instead of EMPTY-branching past the merge (the dogfood unmerged-PR
+fix). No build LOGIC change beyond `_PLUGIN_VERSION → 0.7.5`; the committed tree
+is regenerated from current src so the shipped bytes match the merged fix.
+Invariant: version 0.7.5 is consistent across `plugin.json` +
+`marketplace.json`; the committed tree matches a fresh build with no source-tree
+leak; the shipped `lib/adapter_map_config.py` carries the REVIEW `always_ok`
+signal_rule; still idempotent.
