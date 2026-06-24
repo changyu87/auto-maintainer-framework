@@ -29,7 +29,7 @@ Public surface:
   - collect_outputs(adapter_entry, outputs) -> slot_value.
   - compute_signal(rule, slot_value) -> signal.
 
-Version: 0.3.0
+Version: 0.3.2
 Owner: changyu87
 Deprecation criterion: Superseded when the agent-adapter schema or
   invocation-envelope reaches a breaking major version, or when subagent
@@ -398,13 +398,15 @@ def _strip_fences(text):
 def _expected_type(schema):
     """Derive the expected top-level type name from `schema`. A {"type": ...}
     dict names it directly; otherwise a rich EXAMPLE shape derives it (a list
-    -> "array", any other dict -> "object"). Returns None when no top-level
-    type can be derived (the content is then accepted as-is)."""
+    -> "array", any NON-EMPTY dict -> "object"). An EMPTY dict {} is the
+    "no schema / accept-as-is" sentinel (the _SLOT_SCHEMAS.get(writes, {})
+    miss) and derives no type. Returns None when no top-level type can be
+    derived (the content is then accepted as-is)."""
     if isinstance(schema, dict) and "type" in schema:
         return schema["type"]
     if isinstance(schema, list):
         return "array"
-    if isinstance(schema, dict):
+    if isinstance(schema, dict) and schema:
         return "object"
     return None
 

@@ -1,6 +1,6 @@
 ---
 feature: agent-dispatch
-version: 0.3.1
+version: 0.3.2
 owner: changyu87
 deprecation_criterion: Superseded when the agent-adapter schema or invocation-envelope reaches a breaking major version, or when subagent dispatch moves to a transport other than the in-session Agent tool.
 ---
@@ -120,9 +120,11 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
 - `validate_output(file_content, schema) -> (ok, parsed | error)` — parse the
   JSON content the subagent wrote to its output file (tolerating code fences),
   check it structurally conforms to `schema` (at least the declared top-level
-  type — when `schema` is a rich example, a list means array and a dict means
-  object), return the parsed value or a locatable error so the executor can
-  **re-dispatch on mismatch**.
+  type — when `schema` is a rich example, a list means array and a non-empty
+  dict means object), return the parsed value or a locatable error so the
+  executor can **re-dispatch on mismatch**. An **empty `schema` dict `{}`** is
+  the "no schema / accept-as-is" sentinel (the `_SLOT_SCHEMAS.get(writes, {})`
+  miss): it imposes **no** top-level type check, so any valid JSON value passes.
 - `collect_outputs(adapter_entry, outputs) -> slot_value` — assemble dispatch
   outputs into the target slot value (`once` → the value itself; `per_item` →
   the list of element outputs).
