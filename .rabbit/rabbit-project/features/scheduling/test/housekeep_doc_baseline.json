@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0.0",
   "owner": "changyu87",
-  "deprecation_criterion": "Superseded by the next scheduling housekeep wave's baseline; single-use measured-reduction reference, re-anchored after the stale/incompatible tick-checkpoint discard-and-fresh cycle added a spec section.",
-  "description": "Doc-surface line counts of scheduling. The prior wave slimmed docs/spec.md to 871 lines; the FT-E loop-redesign reconciliation re-anchored it to 900; the self-healing known-port adapter-map migration re-anchored it to 936; the issue/PR-named dispatch-description cycle re-anchored spec.md to 944; the stale/incompatible tick-checkpoint discard-and-fresh cycle (a real behavior cycle) additively re-anchors spec.md to 983, the same way #244 retired the deletion wave's contract-unchanged gate. The housekeep e2e test asserts the current docs are NOT larger than these re-anchored baselines and that the load-bearing tokens survived. The historical pre-wave spec baseline (commit 7a42f9c) was 871; FT-E was 900.",
-  "baseline_commit": "checkpoint-compat",
+  "deprecation_criterion": "Superseded by the next scheduling housekeep wave's baseline; single-use measured-reduction reference, re-anchored after the per_item dispatch-description-always-names-the-ref cycle clarified a spec section.",
+  "description": "Doc-surface line counts of scheduling. The prior wave slimmed docs/spec.md to 871 lines; the FT-E loop-redesign reconciliation re-anchored it to 900; the self-healing known-port adapter-map migration re-anchored it to 936; the issue/PR-named dispatch-description cycle re-anchored spec.md to 944; the stale/incompatible tick-checkpoint discard-and-fresh cycle re-anchored spec.md to 983; the per_item dispatch-description-always-names-the-ref cycle (a real behavior cycle) additively re-anchors spec.md to 993, the same way #244 retired the deletion wave's contract-unchanged gate. The housekeep e2e test asserts the current docs are NOT larger than these re-anchored baselines and that the load-bearing tokens survived. The historical pre-wave spec baseline (commit 7a42f9c) was 871; FT-E was 900.",
+  "baseline_commit": "peritem-desc",
   "docs": {
-    "docs/spec.md": 983,
+    "docs/spec.md": 993,
     "docs/contract.md": 96
   }
 }

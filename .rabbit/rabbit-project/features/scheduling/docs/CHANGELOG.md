@@ -1,5 +1,27 @@
 # scheduling — Changelog
 
+## feature 0.23.0 — 2026-06-24
+
+- **per_item dispatch description ALWAYS names the item ref (FT-4 dogfood gap
+  fix).** FT-4 made `_dispatch_description` name the issue/PR ref, but under
+  precedence (0) an explicit `dispatch_entry['description']` won VERBATIM. The
+  dogfood IMPLEMENT entry carries an explicit description `auto-maintainer
+  implement` (from set-agent), so EVERY per-item implementer subagent showed the
+  same static label with no number — defeating the distinct parallel names the
+  enhancement was for (TRIAGE, which has no explicit description, correctly
+  showed the number). `_dispatch_description` now branches on cardinality:
+  - **per_item** (`env` carries `item`) → ALWAYS append the item ref. The base
+    is the explicit description when present, else the state name:
+    `auto-maintainer implement #275` / `IMPLEMENT #275`. When the item yields no
+    derivable ref → the explicit description verbatim when present, else
+    `f"{name} dispatch"`.
+  - **once** (no `item`) → UNCHANGED: explicit description verbatim; else the
+    de-duped collected refs `f"{name} #a, #b"` (capped `+K more`); else
+    `f"{name} dispatch"`.
+  `_ref_of` / `_dispatch_refs` are unchanged. Edits live ONLY in scheduling
+  (`run_tick.py` + tests/docs); the dispatched prompt body / output_path /
+  schema / signal are untouched (label only).
+
 ## feature 0.22.0 — 2026-06-24
 
 - **Stale/incompatible tick-checkpoint discard-and-fresh (third dogfood crash

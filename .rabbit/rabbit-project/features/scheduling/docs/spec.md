@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.22.0
+version: 0.23.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -435,13 +435,23 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
   works on so parallel subagents (an IMPLEMENT per-item fan-out, a REVIEW once
   dispatch over several PRs) show DISTINCT names, not one generic
   `<state> dispatch`. The pure `_dispatch_description(dispatch_entry, name, env)` +
-  `_dispatch_refs(env)` derive it: (0) an explicit `dispatch_entry['description']`
-  wins verbatim; (a) per_item (`env` carries `item`, e.g. `wo-owner/repo#275`) →
-  `#` + the substring after the LAST `#` → `IMPLEMENT #275` (a dict item prefers
-  `pr_ref`/`number`/`id`); (b) once (no `item`) → scan `env['inputs']`
-  list-of-dicts for `pr_ref` (REVIEW verdicts) or `number` (TRIAGE work_items) →
-  `REVIEW #276, #277` / `TRIAGE #275, #276` (de-duped, order-preserving, capped at
-  six with `+K more`); (c) no refs → the `f"{state} dispatch"` fallback.
+  `_dispatch_refs(env)` derive it, branching on cardinality:
+  - **per_item** (`env` carries `item`, e.g. `wo-owner/repo#275`) → ALWAYS name
+    the item ref so parallel per-item subagents are DISTINCT. The base is the
+    explicit `dispatch_entry['description']` when present, else the state name;
+    the item ref (`#` + the substring after the LAST `#`; a dict item prefers
+    `pr_ref`/`number`/`id`) is APPENDED → `auto-maintainer implement #275`
+    (explicit base) / `IMPLEMENT #275` (name base). When the item yields NO
+    derivable ref → the explicit description verbatim when present, else
+    `f"{name} dispatch"`. The explicit description is a PREFIX, never the
+    verbatim whole, on the per_item path — the FT-4 gap (auto-maintainer-framework#280
+    follow-up) where the dogfood IMPLEMENT entry's explicit `auto-maintainer
+    implement` made every per-item subagent show the same numberless label.
+  - **once** (no `item`) → (0) an explicit `dispatch_entry['description']` wins
+    verbatim; else scan `env['inputs']` list-of-dicts for `pr_ref` (REVIEW
+    verdicts) or `number` (TRIAGE work_items) → `REVIEW #276, #277` /
+    `TRIAGE #275, #276` (de-duped, order-preserving, capped at six with
+    `+K more`); else the `f"{state} dispatch"` fallback.
 - **No budget pre-gate / acted-ledger / spend metering this slice.** ONLY the
   effect-based trust-gate (dry-run inert vs dispatch) + isolation/description in
   the PAUSED dispatches. Read products stay #64 per-tick ephemeral; the budget
