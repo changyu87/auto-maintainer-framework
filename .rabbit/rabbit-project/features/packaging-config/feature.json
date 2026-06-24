@@ -1,11 +1,11 @@
 {
   "name": "packaging-config",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-24",
-  "spec_change_reason": "v0.7.2 surgical adapter-map migration fix release: bump plugin v0.7.2 in plugin.json + marketplace.json and regenerate the committed plugin tree from current src so the merged surgical adapter-map migration fix (#283: scheduling adapter-map migration only heals retired-writes entries and preserves valid custom wiring via the valid_writes gate) reaches the installed plugin; rename the version test to 0_7_2, add test_committed_adapter_map_config_carries_283_surgical_migration asserting the shipped lib carries the valid_writes gate, and advance the housekeep doc baseline (349 -> 362) for the appended per-release section."
+  "spec_change_reason": "v0.7.3 stale-checkpoint discard fix release: bump plugin v0.7.3 in plugin.json + marketplace.json and regenerate the committed plugin tree from current src so the merged stale-checkpoint discard fix (#285: run_tick discards a persisted PAUSED checkpoint incompatible with the current route/context via the _checkpoint_compatible guard instead of resuming against a stale checkpoint) reaches the installed plugin; rename the version test to 0_7_3, add test_committed_run_tick_carries_285_checkpoint_compat_guard and test_shipped_run_tick_carries_checkpoint_compat_guard asserting the shipped lib carries the _checkpoint_compatible guard, and advance the housekeep doc baseline (362 -> 375) for the appended per-release section."
 }

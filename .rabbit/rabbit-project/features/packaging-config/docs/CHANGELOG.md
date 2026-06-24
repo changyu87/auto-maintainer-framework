@@ -1,5 +1,23 @@
 # Changelog — packaging-config
 
+## 0.7.3 — stale-checkpoint discard fix release: deploy #285
+
+- Bump `_PLUGIN_VERSION` 0.7.2 -> 0.7.3 (`plugin.json` + `marketplace.json`).
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so the merged
+  stale-checkpoint discard fix (#285) reaches the installed plugin: `run_tick`
+  now discards a persisted PAUSED checkpoint that is incompatible with the
+  current route/context (gated by the `_checkpoint_compatible` guard) instead of
+  resuming against a stale checkpoint. The drifted `lib/run_tick.py` is
+  re-normalized from the updated source; the two version strings also change.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_3_and_consistent`, add
+  `test_committed_run_tick_carries_285_checkpoint_compat_guard` and
+  `test_shipped_run_tick_carries_checkpoint_compat_guard` asserting the shipped
+  lib carries the `_checkpoint_compatible` guard and matches a fresh
+  normalization of the source, and advance the housekeep doc baseline
+  (362 -> 375) for the appended per-release spec section.
+
 ## 0.7.2 — surgical adapter-map migration fix release: deploy #283
 
 - Bump `_PLUGIN_VERSION` 0.7.1 -> 0.7.2 (`plugin.json` + `marketplace.json`).
