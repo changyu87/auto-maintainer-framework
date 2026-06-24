@@ -132,16 +132,33 @@ def test_work_remains_false_for_invalid_items():
 # Behaviour 2 — the EXIT wrapper (make_exit) refire/idle + non-override.
 # ==========================================================================
 
-def _exit_ctx(state_path, work_items, outcome="empty"):
-    """A minimal TickContext with the slots make_exit's EXIT run reads."""
+def _work_order_for(item):
+    """An accepted work_order dict for a work_item (the COMMITTED-work signal the
+    refire wrapper keys on: work_item -> wo-<id>)."""
+    return {"schema_version": "1.0.0", "id": f"wo-{item['id']}",
+            "work_item_id": item["id"], "title": item["title"], "body": "",
+            "url": "", "labels": [], "decision": "accepted", "reason": "",
+            "created_at": ""}
+
+
+def _exit_ctx(state_path, work_items, outcome="empty", committed=True):
+    """A minimal TickContext with the slots make_exit's EXIT run reads/consults.
+
+    When `committed` is True the work_items are also registered as accepted
+    work_orders this tick (the committed-work signal the refire wrapper requires);
+    set it False to model items the triager dropped (no work_order)."""
     ctx = fc.TickContext()
     ctx.register_slot("tick_outcome", {"type": "string"}, version="1.0.0")
     ctx.register_slot("state_path", {"type": "string"}, version="1.0.0")
     ctx.register_slot(wi.WORK_ITEMS_SLOT["name"], wi.WORK_ITEMS_SLOT["schema"],
                       version=wi.WORK_ITEMS_SLOT["version"])
+    ctx.register_slot(wi.WORK_ORDERS_SLOT["name"], wi.WORK_ORDERS_SLOT["schema"],
+                      version=wi.WORK_ORDERS_SLOT["version"])
     ctx.write("tick_outcome", outcome)
     ctx.write("state_path", state_path)
     ctx.write(wi.WORK_ITEMS_SLOT["name"], work_items)
+    ctx.write(wi.WORK_ORDERS_SLOT["name"],
+              [_work_order_for(it) for it in work_items] if committed else [])
     return ctx
 
 
@@ -168,6 +185,19 @@ def test_make_exit_emits_idle_when_no_actionable_work():
     state_path = os.path.join(root, "state.json")
     _manifest, run = rt.make_exit(_exit_runtime(runtime_dir, acting=True))
     ctx = _exit_ctx(state_path, [])  # empty pool -> no actionable work
+    result = run(ctx)
+    assert result.signal == "idle", result.signal
+    assert ctx.read("tick_outcome") == "empty"
+
+
+def test_make_exit_idle_for_item_dropped_by_triage():
+    """An acceptable work_item the triager DROPPED (pulled but never an accepted
+    work_order) is NOT committed work -> no refire (respect the triager)."""
+    root = tempfile.mkdtemp(prefix="sched-refire-exit-dropped-")
+    runtime_dir = os.path.join(root, "runtime")
+    state_path = os.path.join(root, "state.json")
+    _manifest, run = rt.make_exit(_exit_runtime(runtime_dir, acting=True))
+    ctx = _exit_ctx(state_path, [_item(7)], committed=False)
     result = run(ctx)
     assert result.signal == "idle", result.signal
     assert ctx.read("tick_outcome") == "empty"
@@ -206,7 +236,7 @@ def test_make_exit_manifest_reads_work_items_and_state_path():
     assert "tick_outcome" in manifest.reads
     assert wi.WORK_ITEMS_SLOT["name"] in manifest.reads
     assert "state_path" in manifest.reads
-    assert manifest.writes == ["tick_outcome"], manifest.writes
+    assert list(manifest.writes) == ["tick_outcome"], manifest.writes
     for sig in ("refire", "idle", "break", "halt"):
         assert sig in manifest.emits, manifest.emits
 
@@ -350,12 +380,18 @@ def _setup_agent_project():
     return project_dir, cfg, state_path, journal_path
 
 
-# A canned TRIAGE output accepting ONLY work_item #7 (the agent triager skips
-# #9). #9 stays a deterministically-acceptable, un-acted work_item.
-_CANNED_ONE_ORDER = json.dumps([
+# A canned TRIAGE output accepting BOTH work_items as work_orders that share the
+# SAME target feature (`feature:widget` label). PRIORITIZE serializes them (#214):
+# it fans out at most ONE per feature per tick, DEFERRING the other — so IMPLEMENT
+# acts on wo-#7 and wo-#9 stays committed-but-un-handled backlog -> refire.
+_CANNED_TWO_SAME_FEATURE = json.dumps([
     {"schema_version": "1.0.0", "id": "wo-acme/widget#7",
      "work_item_id": "acme/widget#7", "title": "Crash on empty config",
-     "body": "", "url": "", "labels": [], "decision": "accepted",
+     "body": "", "url": "", "labels": ["feature:widget"], "decision": "accepted",
+     "reason": "", "created_at": ""},
+    {"schema_version": "1.0.0", "id": "wo-acme/widget#9",
+     "work_item_id": "acme/widget#9", "title": "Add retry knob",
+     "body": "", "url": "", "labels": ["feature:widget"], "decision": "accepted",
      "reason": "", "created_at": ""},
 ])
 
@@ -378,21 +414,22 @@ def _write_outputs(paused, contents):
             f.write(content)
 
 
-def test_run_tick_refires_when_acceptable_work_remains_unacted():
-    """HEADLINE: an acting route that opens a PR for #7 but leaves #9 (a
-    deterministically-acceptable, un-acted work_item) returns `refire`, so the
-    loop runs the next tick immediately instead of waiting the heartbeat."""
+def test_run_tick_refires_when_committed_work_deferred_by_prioritize():
+    """HEADLINE: two work_orders share a feature, so PRIORITIZE defers one (#214);
+    the acting route opens a PR for wo-#7 and leaves wo-#9 as committed-but-
+    un-handled backlog -> run_tick returns `refire`, so the loop runs the next
+    tick immediately instead of waiting the heartbeat."""
     project_dir, cfg, state_path, journal_path = _setup_agent_project()
 
-    # Step 1: TRIAGE (agent) pauses; canned output accepts ONLY #7.
+    # Step 1: TRIAGE (agent) pauses; canned output accepts BOTH (same feature).
     paused = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
                          state_path=state_path, journal_path=journal_path,
                          source=_stub_source(), now=_NOW)
     assert paused["status"] == "paused" and paused["state"] == "TRIAGE", paused
-    _write_outputs(paused, [_CANNED_ONE_ORDER])
+    _write_outputs(paused, [_CANNED_TWO_SAME_FEATURE])
 
-    # Step 2: resume -> PRIORITIZE orders wo-#7 -> IMPLEMENT (acting) pauses to
-    # dispatch wo-#7.
+    # Step 2: resume -> PRIORITIZE serializes the same-feature orders (defers
+    # wo-#9) -> IMPLEMENT (acting) pauses to dispatch ONLY wo-#7.
     paused2 = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
                           state_path=state_path, journal_path=journal_path,
                           source=_stub_source(), now=_NOW, resume=True)
@@ -406,28 +443,48 @@ def test_run_tick_refires_when_acceptable_work_remains_unacted():
     signal = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
                          state_path=state_path, journal_path=journal_path,
                          source=_stub_source(), now=_NOW, resume=True)
-    # #7 is now acted (in the acted-ledger); #9 is still a deterministically
-    # acceptable, un-acted work_item -> actionable work remains -> refire.
+    # #7 is now acted; wo-#9 is committed (an accepted work_order) but was
+    # deferred (never handled this tick) -> actionable work remains -> refire.
     assert signal == "refire", signal
     assert ld.read_disposition(cfg) == ld.Disposition.RUNNING
 
 
-def test_run_tick_idles_when_no_actionable_work_remains():
-    """The SAME acting route over an all-stale pool: no item is TRIAGE-acceptable,
-    so EXIT idles (no refire)."""
+# Canned TRIAGE accepting BOTH work_items as DISTINCT-feature work_orders, so
+# PRIORITIZE keeps both and IMPLEMENT dispatches both (no deferral).
+_CANNED_TWO_DISTINCT_FEATURE = json.dumps([
+    {"schema_version": "1.0.0", "id": "wo-acme/widget#7",
+     "work_item_id": "acme/widget#7", "title": "Crash on empty config",
+     "body": "", "url": "", "labels": ["feature:alpha"], "decision": "accepted",
+     "reason": "", "created_at": ""},
+    {"schema_version": "1.0.0", "id": "wo-acme/widget#9",
+     "work_item_id": "acme/widget#9", "title": "Add retry knob",
+     "body": "", "url": "", "labels": ["feature:beta"], "decision": "accepted",
+     "reason": "", "created_at": ""},
+])
+
+
+def test_run_tick_idles_when_all_committed_work_acted():
+    """The SAME acting route where every accepted work_order is acted this tick
+    (distinct features, both dispatched + opened) -> no committed work remains
+    un-handled -> EXIT idles (no refire)."""
     project_dir, cfg, state_path, journal_path = _setup_agent_project()
     paused = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
                          state_path=state_path, journal_path=journal_path,
-                         source=_stub_source(), now=_NOW_STALE)
+                         source=_stub_source(), now=_NOW)
     assert paused["status"] == "paused" and paused["state"] == "TRIAGE", paused
-    # Canned TRIAGE accepts nothing (empty work_orders); resume drives past
-    # PRIORITIZE/IMPLEMENT (nothing to act on) to EXIT.
-    _write_outputs(paused, [json.dumps([])])
+    _write_outputs(paused, [_CANNED_TWO_DISTINCT_FEATURE])
+    paused2 = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source(), now=_NOW, resume=True)
+    assert paused2["status"] == "paused" and paused2["state"] == "IMPLEMENT", \
+        paused2
+    assert len(paused2["dispatches"]) == 2, paused2
+    _write_outputs(paused2, [_canned_handoff(d["item"])
+                             for d in paused2["dispatches"]])
     signal = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
                          state_path=state_path, journal_path=journal_path,
-                         source=_stub_source(), now=_NOW_STALE, resume=True)
-    # Every pulled item is stale at _NOW_STALE -> not acceptable -> no actionable
-    # work remains -> idle.
+                         source=_stub_source(), now=_NOW, resume=True)
+    # Both work_orders acted (opened) -> no committed work left -> idle.
     assert signal == "idle", signal
     assert ld.read_disposition(cfg) == ld.Disposition.IDLE
 

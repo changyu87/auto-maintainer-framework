@@ -1,5 +1,39 @@
 # scheduling — Changelog
 
+## feature 0.25.0 — 2026-06-24
+
+- **Immediate-refire when actionable work remains (owner-requested, §3.3.3).**
+  The loop now runs the NEXT tick IMMEDIATELY when actionable work remains,
+  instead of waiting the full heartbeat interval. Consumes `work-intake`
+  (Triage) + `lifecycle-dispositions` (Exit) + `durable-state` UNCHANGED; edits
+  live ONLY in scheduling (`run_tick.py` + the tick executor skill).
+  - **Pure predicate `_work_remains(work_items, backoff_ledger, threshold,
+    now)`** — True when ANY work_item is BOTH TRIAGE-acceptable
+    (`wi.Triage(now).classify(item)[0] == "accepted"`) AND not
+    blocked-and-unchanged (NOT (`backoff[id].blocked_count >= threshold` AND
+    `item.updated_at` NOT strictly after `entry.deferred_at_updated_at`)).
+    Invalid / closed / stale items never count; a blocked item updated past the
+    pin IS actionable. Pure + deterministic (no wall clock, no network, no
+    durable read).
+  - **`make_exit` WRAPS lifecycle-dispositions' `Exit`.** EXIT's manifest now
+    `reads=[tick_outcome, work_items, state_path]`, `writes=[tick_outcome]`,
+    emits the inner refire/idle/break/halt. When the inner outcome is `empty`
+    AND the route has an ACTING agent-state (a dispatch entry with a truthy
+    `effect`, threaded as `runtime['has_acting_agent']`) AND `_work_remains` over
+    the REMAINING work (this tick's work_items MINUS acted-ledger items MINUS
+    items the doer reported `blocked` this tick), it rewrites `tick_outcome` to
+    `work-remains` so EXIT selects RUNNING/refire. It overrides ONLY the `empty`
+    outcome — restart/fault delegated UNCHANGED. `work_items` is added to the
+    data-readiness `initial` set.
+  - **Back-compat.** The read-and-idle DEFAULT route + any empty-pool tick still
+    IDLE: with no acting agent-state present the override never fires.
+  - **Tick executor skill loops on `refire`** (`ship/skills/tick/SKILL.md`,
+    v0.5.0): a `refire` final signal runs ANOTHER tick immediately, looping
+    until a non-refire signal (idle/halt/break); cron remains the safety net.
+  - `lifecycle-dispositions`, `work-intake`, `durable-state`,
+    `verify-integrate`, `agent-dispatch`, `route.json`, and the packaging
+    release are NOT touched.
+
 ## feature 0.24.0 — 2026-06-21
 
 - **Advisory REVIEW must ALWAYS flow to INTEGRATE — `always_ok` (dogfood
