@@ -540,17 +540,16 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Patch (v0.7.7, merge-sink-url + pool-based-refire release): version bumped to
-# 0.7.7 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.7.7 is the release that DEPLOYS two merged fixes into the installed plugin:
-# the verify_integrate merge sink recording the merged PR url (#294), and
-# scheduling's pool-based immediate-refire + INTEGRATE/refire observability
-# (#295: _work_remains is a triage-memory-aware POOL predicate that filters via
-# _filter_triage_work_items, and the tick_end detail surfaces merged_refs). It
-# regenerates the committed plugin tree from CURRENT src.
-# (Supersedes the v0.7.6 immediate-refire enhancement release.)
+# Release (v0.7.8, work_own_filings default-on opt-out release): version bumped
+# to 0.7.8 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.7.8 is the release that DEPLOYS the §3.11.5 work_own_filings opt-out into
+# the installed plugin: safety-governance's default-true knob (#297), work-intake
+# PULL honoring it (#298), and scheduling's make_pull threading it (#299), and it
+# surfaces the knob in the shipped default-config config.json so users can find
+# the opt-out. It regenerates the committed plugin tree from CURRENT src.
+# (Supersedes the v0.7.7 merge-sink-url + pool-based-refire release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_7_and_consistent():
+def test_version_bumped_to_0_7_8_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -562,10 +561,10 @@ def test_version_bumped_to_0_7_7_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.7", \
-            f"plugin.json version must be 0.7.7, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.7", \
-            "marketplace.json plugin entry version must be 0.7.7"
+        assert pdata.get("version") == "0.7.8", \
+            f"plugin.json version must be 0.7.8, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.8", \
+            "marketplace.json plugin entry version must be 0.7.8"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2748,5 +2747,177 @@ def test_shipped_run_tick_carries_pool_refire_and_merged_refs():
         assert "merged_refs" in shipped, \
             "shipped run_tick must surface merged_refs in the tick_end detail " \
             "(#295)"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.8 (#297/#298/#299), work_own_filings knob DISCOVERABILITY: the
+# whole point of this release is that the shipped default-config config.json
+# surfaces the §3.11.5 work_own_filings opt-out so a user inspecting the seed
+# config finds the knob to flip. Assert the freshly built default-config
+# config.json carries a top-level "work_own_filings": true at schema_version
+# 2.2.0 (matching safety-governance's GOVERNANCE_SCHEMA_VERSION), and that the
+# pre-existing keys (mode/features_root/budget/heartbeat/backoff) are unchanged.
+# ---------------------------------------------------------------------------
+def test_default_config_surfaces_work_own_filings_at_schema_2_2_0():
+    out_root = _build_into_temp()
+    try:
+        dc = os.path.join(
+            out_root, "plugins", "auto-maintainer", "default-config"
+        )
+        with open(os.path.join(dc, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        assert cfg.get("schema_version") == "2.2.0", \
+            f"seed config schema_version must be 2.2.0, got " \
+            f"{cfg.get('schema_version')!r}"
+        assert cfg.get("work_own_filings") is True, \
+            "seed config must surface the §3.11.5 work_own_filings opt-out " \
+            "(default-on true) so users can find the knob"
+        # the pre-existing keys must remain unchanged.
+        assert cfg["mode"] == "auto-merge"
+        assert cfg["features_root"] is None
+        assert cfg["budget"] == {"per_day_tokens": None, "window_tz": "local"}
+        assert cfg["heartbeat"] == {"interval_minutes": 3}
+        assert cfg["backoff"] == {"threshold": 5}
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.8 (#297/#298/#299), COMMITTED default-config knob deploy
+# confirmation: the COMMITTED default-config config.json — the seed bytes a
+# GitHub clone installs — must carry the work_own_filings:true knob at schema
+# 2.2.0. This guards against shipping a tree where the source asset was updated
+# but the committed tree was never regenerated.
+# ---------------------------------------------------------------------------
+def test_committed_default_config_surfaces_work_own_filings():
+    committed = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "default-config",
+        "config.json",
+    )
+    assert os.path.isfile(committed), \
+        "committed default-config/config.json must ship in the plugin tree"
+    with open(committed, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    assert cfg.get("schema_version") == "2.2.0", \
+        "committed seed config schema_version must be 2.2.0"
+    assert cfg.get("work_own_filings") is True, \
+        "committed seed config must surface the work_own_filings opt-out"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.8 (#297/#298/#299), shipped-libs opt-out deploy confirmation: the
+# whole point of this release is that the committed (shipped) libs carry the
+# §3.11.5 work_own_filings opt-out — safety_governance's default-true accessor
+# (#297), work_intake's Pull honoring the work_own_filings flag (#298), and
+# run_tick's make_pull threading it from the loaded config (#299). Assert the
+# COMMITTED libs — the bytes an installed plugin runs — carry each, AND that
+# each is byte-identical to a fresh normalization of its current source (so the
+# committed tree genuinely shipped the merged opt-out).
+# ---------------------------------------------------------------------------
+def test_committed_libs_carry_work_own_filings_opt_out():
+    mod = _load_build()
+    lib = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer", "lib")
+
+    # #297: safety_governance exposes the default-true work_own_filings accessor.
+    sg = os.path.join(lib, "safety_governance.py")
+    assert os.path.isfile(sg), \
+        "committed lib/safety_governance.py must ship in the plugin tree"
+    with open(sg, encoding="utf-8") as fh:
+        sg_body = fh.read()
+    assert "def work_own_filings(" in sg_body, \
+        "committed safety_governance must carry the #297 work_own_filings " \
+        "accessor (the §3.11.5 default-on opt-out reader)"
+    sg_src = os.path.join(
+        _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+        "safety-governance", "src", "safety_governance.py",
+    )
+    _r, anchor, bootstrap = mod._NORMALIZED_LIBS["safety_governance.py"]
+    assert sg_body == mod._normalize_lib(sg_src, anchor, bootstrap), \
+        "committed safety_governance drifted from a fresh normalization of " \
+        "the current source — regenerate the plugin tree"
+
+    # #298: work_intake's Pull honors the work_own_filings flag.
+    wi = os.path.join(lib, "work_intake.py")
+    assert os.path.isfile(wi), \
+        "committed lib/work_intake.py must ship in the plugin tree"
+    with open(wi, encoding="utf-8") as fh:
+        wi_body = fh.read()
+    assert "work_own_filings" in wi_body, \
+        "committed work_intake must carry the #298 work_own_filings handling " \
+        "(Pull honors the opt-out)"
+    wi_src = os.path.join(
+        _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+        "work-intake", "src", "work_intake.py",
+    )
+    _r, anchor, bootstrap = mod._NORMALIZED_LIBS["work_intake.py"]
+    assert wi_body == mod._normalize_lib(wi_src, anchor, bootstrap), \
+        "committed work_intake drifted from a fresh normalization of the " \
+        "current source — regenerate the plugin tree"
+
+    # #299: run_tick's make_pull threads work_own_filings from the config.
+    rt = os.path.join(lib, "run_tick.py")
+    assert os.path.isfile(rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(rt, encoding="utf-8") as fh:
+        rt_body = fh.read()
+    assert "work_own_filings" in rt_body, \
+        "committed run_tick must carry the #299 work_own_filings threading " \
+        "(make_pull passes it from the loaded config)"
+    rt_src = os.path.join(
+        _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+        "scheduling", "src", "run_tick.py",
+    )
+    _r, anchor, bootstrap = mod._NORMALIZED_LIBS["run_tick.py"]
+    assert rt_body == mod._normalize_lib(rt_src, anchor, bootstrap), \
+        "committed run_tick drifted from a fresh normalization of the " \
+        "current source — regenerate the plugin tree"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.8 (#297/#298/#299), shipped-build opt-out: the freshly built libs
+# (the bytes the regenerated tree ships) carry the §3.11.5 work_own_filings
+# opt-out across safety_governance / work_intake / run_tick. This proves the
+# build's normalization of the current sources delivers the merged opt-out into
+# the plugin lib/, and that work_intake's Pull honors it at runtime when imported
+# from lib/ alone.
+# ---------------------------------------------------------------------------
+def test_shipped_libs_carry_work_own_filings_opt_out():
+    import subprocess
+    import sys
+
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        for fname, token in (
+            ("safety_governance.py", "def work_own_filings("),
+            ("work_intake.py", "work_own_filings"),
+            ("run_tick.py", "work_own_filings"),
+        ):
+            with open(os.path.join(lib, fname), encoding="utf-8") as fh:
+                assert token in fh.read(), \
+                    f"shipped {fname} must carry the work_own_filings opt-out"
+        # runtime: work_intake's Pull accepts the work_own_filings flag, imported
+        # from lib/ alone — proving the #298 opt-out is honored once installed.
+        probe = (
+            "import sys; "
+            f"sys.path.insert(0, {lib!r}); "
+            "import work_intake; "
+            "p = work_intake.Pull(work_own_filings=False); "
+            "assert p._work_own_filings is False; "
+            "import safety_governance as sg; "
+            "assert sg.work_own_filings({}) is True; "
+            "print('OK')"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            env={"PYTHONPATH": ""},
+            cwd=out_root,
+        )
+        assert proc.returncode == 0, \
+            f"shipped work_own_filings opt-out not honored: {proc.stderr}"
+        assert proc.stdout.strip() == "OK"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)

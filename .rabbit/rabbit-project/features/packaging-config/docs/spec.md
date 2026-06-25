@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.7
+version: 0.7.8
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -431,3 +431,25 @@ Invariant: version 0.7.7 is consistent across `plugin.json` +
 leak; the shipped `lib/verify_integrate.py` carries `_pr_url` and the shipped
 `lib/run_tick.py` carries the `_filter_triage_work_items` pool-refire +
 `merged_refs` tick_end detail; still idempotent.
+
+## Plugin patch v0.7.8 — work_own_filings default-on opt-out release: deploy #297/#298/#299
+
+Re-ship the committed plugin tree so the §3.11.5 `work_own_filings` opt-out
+reaches the installed plugin, and surface the knob in the shipped default-config
+so users can find it. The opt-out is implemented across three sibling features
+that this release ships as-is: safety-governance's default-true accessor (#297:
+`safety_governance.work_own_filings(config)` defaults `True`), work-intake's
+PULL honoring the flag (#298: `work_intake.Pull(work_own_filings=…)` drops
+loop-filed items only under the `False` opt-out), and scheduling's `make_pull`
+threading it from the loaded central config (#299). The shipped
+`default-config/config.json` now bumps its `schema_version` 2.1.0 → 2.2.0
+(matching safety-governance's `GOVERNANCE_SCHEMA_VERSION`) and adds a top-level
+`"work_own_filings": true` so the default-on policy is discoverable as a knob to
+opt out; the existing keys (mode/features_root/budget/heartbeat/backoff) are
+unchanged. No build LOGIC change beyond `_PLUGIN_VERSION → 0.7.8` + the
+default-config asset edit; the committed tree is regenerated from current src.
+Invariant: version 0.7.8 is consistent across `plugin.json` +
+`marketplace.json`; the shipped `default-config/config.json` carries
+`work_own_filings: true` at schema 2.2.0; the committed/shipped
+`lib/{safety_governance,work_intake,run_tick}.py` carry the opt-out; the
+committed tree matches a fresh build with no source-tree leak; still idempotent.
