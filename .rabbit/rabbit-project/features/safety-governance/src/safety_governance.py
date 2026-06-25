@@ -4,8 +4,9 @@
 A pure, deterministic decision library over a machine-first, versioned CENTRAL
 config (config.json). Decision surfaces plus one effectful halt helper:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.1.0),
-     DEFAULT_GOVERNANCE, load_config(project_dir). The config is project-local at
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.2.0),
+     DEFAULT_GOVERNANCE, load_config(project_dir), work_own_filings(config). The
+     config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
      §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
      defaults, and a present file is backfilled key-by-key from the defaults. A
@@ -83,8 +84,11 @@ import lifecycle_dispositions as ld
 # set; distinct from the feature version. 2.0.0: config.json rename, per-tick
 # ceiling + maintainer_repo removed, heartbeat + backoff knobs added. 2.1.0:
 # trust mode `gated-merge` renamed to `auto-merge` (the legacy name is tolerated
-# on load and mapped forward, a non-breaking coexistence migration).
-GOVERNANCE_SCHEMA_VERSION = "2.1.0"
+# on load and mapped forward, a non-breaking coexistence migration). 2.2.0:
+# additive `work_own_filings` knob (default true) — the loop works its own
+# filings by default with a manual opt-out (§3.11.5); an absent key backfills
+# True, so the bump is backward compatible.
+GOVERNANCE_SCHEMA_VERSION = "2.2.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
 # config field. The loop's OWN defects route here ALWAYS, never the project
@@ -101,10 +105,16 @@ MAINTAINER_REPO = "changyu87/auto-maintainer-framework"
 # null (UNCONFIGURED): VERIFY's cross-feature complement then conservatively
 # gates a cross-cutting-flagged tick. It is config-driven because the maintained
 # repo's layout is not fixed; an explicit path opts the complement run in.
+# work_own_filings (§3.11.5) defaults True: the loop works its OWN filings by
+# default, with a manual opt-out (work_own_filings: false). The owner flipped the
+# previously-deferred "explicitly opted in" provision to default-on opt-out. Owned
+# here; work-intake PULL consumes it to apply the loopback exclusion and scheduling
+# threads it from the loaded config into PULL (separate cycles).
 DEFAULT_GOVERNANCE = {
     "schema_version": GOVERNANCE_SCHEMA_VERSION,
     "mode": "propose",
     "features_root": None,
+    "work_own_filings": True,
     "budget": {
         "per_day_tokens": None,
         "window_tz": "local",
@@ -156,13 +166,17 @@ def _overlay(raw):
     forward to `auto-merge` (the rename coexistence migration). An explicit
     top-level `features_root` (the maintained project's features directory, used
     by VERIFY's cross-feature complement, §3.7.6) is surfaced; absent keeps the
-    null default (UNCONFIGURED -> the complement conservatively gates).
+    null default (UNCONFIGURED -> the complement conservatively gates). An
+    explicit top-level `work_own_filings` (the loopback toggle, §3.11.5) is
+    surfaced; absent keeps the default True (the loop works its own filings).
     """
     config = _copy_defaults()
     if "mode" in raw:
         config["mode"] = _normalize_mode(raw["mode"])
     if "features_root" in raw:
         config["features_root"] = raw["features_root"]
+    if "work_own_filings" in raw:
+        config["work_own_filings"] = raw["work_own_filings"]
     budget = raw.get("budget", {})
     for key in ("per_day_tokens", "window_tz"):
         if key in budget:
@@ -220,6 +234,17 @@ def load_governance(project_dir):
     Consumers should migrate to load_config; this name is honored until they do.
     """
     return load_config(project_dir)
+
+
+def work_own_filings(config):
+    """Whether the loop works its OWN filings (the loopback toggle, §3.11.5).
+
+    A pure config read: returns the loaded config's `work_own_filings`, defaulting
+    to True when the key is absent (the default-on opt-out — an existing config
+    without the key opts IN). work-intake PULL consumes this to conditionally
+    apply the loopback exclusion; scheduling threads it from the loaded config.
+    """
+    return config.get("work_own_filings", True)
 
 
 # --------------------------------------------------------------------------

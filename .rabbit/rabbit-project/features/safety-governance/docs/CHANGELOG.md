@@ -5,6 +5,21 @@ All notable changes to this feature are recorded here. Versions follow the
 `version` field, and the central-config `schema_version`
 (`GOVERNANCE_SCHEMA_VERSION`).
 
+## schema 2.2.0 — 2026-06-21
+
+- **Additive `work_own_filings` knob (default `true`).** The loop works its OWN
+  filings by default, with a manual **opt-OUT** (`work_own_filings: false`).
+  §3.11.5 originally deferred this to "explicitly opted in" to prevent
+  self-amplification; the owner has flipped it to default-on opt-out.
+  - `DEFAULT_GOVERNANCE['work_own_filings']` is `True`; `_overlay` / `load_config`
+    backfill `True` when the key is absent and preserve an explicit `false`.
+  - New pure accessor `work_own_filings(config) -> bool` (default `True` when
+    absent), consumed by `work-intake` PULL and threaded by `scheduling`
+    (separate cycles).
+- **Schema bump `2.1.0` -> `2.2.0`** (`GOVERNANCE_SCHEMA_VERSION`): additive and
+  backward compatible — an existing `config.json` without the key loads with
+  `work_own_filings=True` (the new default).
+
 ## schema 2.1.0 — 2026-06-21
 
 - **Trust mode `gated-merge` renamed to `auto-merge`.** "gated" read as

@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.6.0
+version: 0.7.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0). See spec.md / feature.json.
 ---
@@ -11,7 +11,7 @@ deprecation_criterion: Superseded when trust-ladder / budget enforcement moves i
 {
   "provides": {
     "files": [
-      "Central config schema (versioned 2.1.0, machine-first: mode + budget.per_day_tokens + budget.window_tz + heartbeat.interval_minutes + backoff.threshold) + load_config(project_dir) for project-local ${CLAUDE_PROJECT_DIR}/.auto-maintainer/config.json with defaults (legacy governance.json migrated once; legacy mode 'gated-merge' mapped to 'auto-merge' on load); load_governance is a thin alias",
+      "Central config schema (versioned 2.2.0, machine-first: mode + work_own_filings + budget.per_day_tokens + budget.window_tz + heartbeat.interval_minutes + backoff.threshold) + load_config(project_dir) for project-local ${CLAUDE_PROJECT_DIR}/.auto-maintainer/config.json with defaults (legacy governance.json migrated once; legacy mode 'gated-merge' mapped to 'auto-merge' on load); load_governance is a thin alias; work_own_filings(config) accessor (default True, §3.11.5 default-on opt-out)",
       "MAINTAINER_REPO: a FIXED module constant ('changyu87/auto-maintainer-framework') for maintainer-self REPORT routing (§3.11.6) — not a config field",
       "Trust-ladder gate: permits(effect_kind, mode) over dry-run|propose|auto-merge (legacy 'gated-merge' tolerated, mapped to 'auto-merge')",
       "Merge guardrails (§3.8.1): merge_guardrails(pr_meta, default_branch, delete_branch) -> {ok, violations}, a pure declarative backstop below the trust ladder",
