@@ -178,6 +178,34 @@ def test_load_config_tolerates_and_drops_per_tick_tokens():
 
 
 # ==========================================================================
+# E2E Behaviour: features_root (§3.7.6) defaults null (UNCONFIGURED) and an
+# explicit top-level override is surfaced on the loaded config.
+# ==========================================================================
+
+def test_default_features_root_is_null():
+    """features_root (the maintained project's features dir, §3.7.6) defaults
+    null (UNCONFIGURED) — VERIFY's cross-feature complement then conservatively
+    gates a cross-cutting-flagged tick."""
+    assert sg.DEFAULT_GOVERNANCE["features_root"] is None
+    with tempfile.TemporaryDirectory() as project_dir:
+        config = sg.load_config(project_dir)
+        assert config["features_root"] is None
+
+
+def test_load_config_reads_features_root_override():
+    """An explicit top-level features_root in config.json is surfaced on the
+    loaded config so scheduling can bind it into VERIFY's complement run."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"features_root": "/srv/project/features"})
+        config = sg.load_config(project_dir)
+        assert config["features_root"] == "/srv/project/features"
+        # other defaults still present
+        assert config["mode"] == "propose"
+        assert config["backoff"]["threshold"] == 5
+
+
+# ==========================================================================
 # E2E Behaviour: heartbeat.interval_minutes and backoff.threshold overrides are
 # read and surfaced; absent sub-keys backfill from defaults.
 # ==========================================================================
