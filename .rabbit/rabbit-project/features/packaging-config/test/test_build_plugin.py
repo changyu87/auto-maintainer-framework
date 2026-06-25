@@ -47,9 +47,21 @@ def _build_into_temp():
 
 
 def _walk_paths(root):
+    """Relative paths under root, ignoring Python bytecode caches.
+
+    __pycache__/ dirs and *.pyc files are regenerated whenever the shipped
+    modules are imported or compiled in place (e.g. running this suite twice in
+    one checkout, or a CI job that compiles then tests). They are gitignored and
+    never part of the source tree, so excluding them keeps committed-vs-fresh and
+    build-idempotency comparisons from reporting spurious drift.
+    """
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
+        # prune bytecode-cache dirs so neither they nor their contents appear
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
         for name in dirnames + filenames:
+            if name.endswith(".pyc"):
+                continue
             found.append(os.path.relpath(os.path.join(dirpath, name), root))
     return found
 
