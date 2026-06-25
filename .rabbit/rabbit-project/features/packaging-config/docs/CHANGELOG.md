@@ -1,5 +1,29 @@
 # Changelog — packaging-config
 
+## 0.7.7 — merge-sink-url + pool-based-refire release: deploy #294/#295
+
+- Bump `_PLUGIN_VERSION` 0.7.6 -> 0.7.7 (`plugin.json` + `marketplace.json`).
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so two merged fixes reach
+  the installed plugin: the verify-integrate merge sink now records the merged
+  PR url (#294: `lib/verify_integrate.py` carries `_pr_url` for traceability),
+  and scheduling's pool-based immediate-refire + INTEGRATE/refire observability
+  (#295: `lib/run_tick.py`'s `_work_remains` is a triage-memory-aware POOL
+  predicate computing its candidate pool via `_filter_triage_work_items` — the
+  same §3.5.3 skip-filter TRIAGE applies — and the `tick_end` detail surfaces
+  `merged_refs`). No build LOGIC change beyond the version bump.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_7_and_consistent`; add
+  `test_committed_verify_integrate_carries_294_merged_pr_url` +
+  `test_shipped_verify_integrate_carries_merged_pr_url` (the committed/shipped
+  `lib/verify_integrate.py` carries `_pr_url` and matches a fresh normalization
+  of the source) and
+  `test_committed_run_tick_carries_295_pool_refire_and_merged_refs` +
+  `test_shipped_run_tick_carries_pool_refire_and_merged_refs` (the
+  committed/shipped `lib/run_tick.py` carries `_filter_triage_work_items` +
+  `merged_refs`); advance the housekeep doc baseline (416 -> 433) for the
+  appended per-release spec section.
+
 ## 0.7.6 — immediate-refire enhancement release: deploy #292
 
 - Bump `_PLUGIN_VERSION` 0.7.5 -> 0.7.6 (`plugin.json` + `marketplace.json`).

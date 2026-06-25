@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.6
+version: 0.7.7
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -414,3 +414,20 @@ Invariant: version 0.7.6 is consistent across `plugin.json` +
 `marketplace.json`; the committed tree matches a fresh build with no source-tree
 leak; the shipped `lib/run_tick.py` carries the `_work_remains` refire predicate
 and the shipped tick skill documents the refire loop; still idempotent.
+
+## Plugin patch v0.7.7 — merge-sink-url + pool-based-refire release: deploy #294/#295
+
+Re-ship the committed plugin tree so two merged fixes reach the installed plugin:
+the verify-integrate merge sink now records the merged PR url (#294:
+`verify_integrate` carries `_pr_url` for traceability), and scheduling's
+pool-based immediate-refire + INTEGRATE/refire observability (#295:
+`run_tick`'s `_work_remains` is a triage-memory-aware POOL predicate that
+computes its candidate pool via `_filter_triage_work_items` — the same §3.5.3
+skip-filter TRIAGE applies — and the `tick_end` detail surfaces `merged_refs`).
+No build LOGIC change beyond `_PLUGIN_VERSION → 0.7.7`; the committed tree is
+regenerated from current src so the shipped bytes match the merged fixes.
+Invariant: version 0.7.7 is consistent across `plugin.json` +
+`marketplace.json`; the committed tree matches a fresh build with no source-tree
+leak; the shipped `lib/verify_integrate.py` carries `_pr_url` and the shipped
+`lib/run_tick.py` carries the `_filter_triage_work_items` pool-refire +
+`merged_refs` tick_end detail; still idempotent.
