@@ -437,9 +437,15 @@ def make_persist(runtime):  # noqa: ARG001 - PERSIST reads its paths from ctx
 
 def make_pull(runtime):
     """PULL adapter (work-intake): fetch OPEN issues into the work_items slot.
-    Binds the injectable issue source (default = work-intake's live gh source)."""
+    Binds the injectable issue source (default = work-intake's live gh source)
+    and the §3.11.5 loopback toggle `work_own_filings` from the loaded central
+    config (default True = the loop works its own filings; an explicit false
+    opt-out makes PULL drop loop-filed items so they stay open for human
+    triage). safety-governance + work-intake are consumed UNCHANGED."""
     source = runtime.get("source") or DEFAULT_PULL_SOURCE
-    pull = wi.Pull(source=source)
+    pull = wi.Pull(
+        source=source,
+        work_own_filings=sg.work_own_filings(runtime.get("governance") or {}))
     return wi.PULL_MANIFEST, pull.run
 
 
