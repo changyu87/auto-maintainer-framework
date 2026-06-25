@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.25.0
+version: 0.26.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -694,7 +694,15 @@ kind outside the closed vocabulary):
 - **`disposition`** — the resulting disposition (with the EXIT signal).
 - **`tick_end`** — at the terminal/done, with the final signal + the four
   read-product counts (`work_items`/`work_orders`/`execution_plan`/`handoffs`) in
-  `detail`.
+  `detail`, the REPORT counts (`reported_filed`/`reported_skipped`/
+  `reported_errored`), the INTEGRATE merge results (`merged` count,
+  `integrate_skipped` count, `integrate_errored` count, and `merged_refs` — the
+  list of merged `pr_ref`s, from the `integration_result` read product), and a
+  `refire` boolean disambiguating idle-because-no-work (`false`) from
+  refire-because-work-remains (`true`). The one-line trace also gains a compact
+  `merged=<n>` token (plus `integrate_errored=<n>` only when `> 0`). All existing
+  detail keys + trace fields are preserved; a route with no INTEGRATE shows
+  `merged=0`/`merged_refs=[]`.
 
 Events are written in BOTH the pure-script done path and the agent-driver
 done/pause paths. The budget readiness gate, slot persistence, and the trace are
@@ -973,8 +981,16 @@ This completes the immediate-refire mechanism (DESIGN §3.3.3). It consumes
 UNCHANGED; edits live ONLY in scheduling (`run_tick.py` + the tick executor
 skill).
 
-- **Pure predicate `_work_remains(work_items, backoff_ledger, threshold, now)`.**
-  Returns True when ANY work_item is BOTH:
+- **Pure POOL predicate
+  `_work_remains(work_items, triage_memory, backoff_ledger, threshold, now)`.**
+  The refire question is a POOL check: *"would next tick's TRIAGE have any
+  classify-valid, non-blocked issue to judge/act on?"* — NOT the old narrow
+  committed-work check (which keyed on a PRIORITIZE same-feature deferral that a
+  no-PRIORITIZE route can essentially never trigger, so the owner never saw
+  immediate-refire). The predicate first computes
+  `candidates = _filter_triage_work_items(work_items, triage_memory)` — the SAME
+  §3.5.3 skip-filter TRIAGE applies, which drops done/deferred-AND-unchanged items
+  and KEEPS new/changed/active ones. It returns True iff ANY candidate is BOTH:
   - **TRIAGE-acceptable** — the deterministic work-intake validity gate accepts
     it (`wi.Triage(now=now).classify(item)[0] == "accepted"`: well-formed +
     open + not-stale, keyed off the injectable `now`). An invalid / closed /
@@ -985,33 +1001,38 @@ skill).
     item is inert; re-dispatching it would thrash, §3.8.5). A blocked item whose
     `updated_at` ADVANCED past the pin IS actionable again and counts.
 
-  It is pure and deterministic — no wall clock (the reference time is the
-  injected `now`), no network, no durable-state read.
+  Reusing the §3.5.3 skip-filter GUARANTEES no busy-loop: a done/deferred-unchanged
+  or persistently-rejected (closed) item is filtered out and never refires; a
+  blocked item only refires until the backoff threshold, then goes inert. It is
+  pure and deterministic — no wall clock (the reference time is the injected
+  `now`), no network, no durable-state read.
 
 - **EXIT wrapped with immediate-refire (`make_exit`).** `make_exit(runtime)`
   WRAPS `lifecycle-dispositions`' `Exit`. Its `run(ctx)` reads `tick_outcome` +
-  `work_items` + `state_path` from ctx and loads the durable backoff ledger
-  (`persisted_backoff_ledger(ctx.read("state_path"))`). When the inner outcome is
-  `empty` AND the route has an **acting agent-state** (a dispatch entry carrying a
-  truthy `effect`, threaded onto the runtime dict as `has_acting_agent`) AND
-  `_work_remains` over the **remaining** work, it rewrites `tick_outcome` to
-  `work-remains` so the inner EXIT selects `RUNNING`/`refire`; otherwise the inner
-  EXIT runs unchanged. It overrides **ONLY** the `empty` outcome — a
-  `restart`/`fault` (or already-`work-remains`) outcome is delegated UNCHANGED.
-  `threshold` is `_backoff_threshold(runtime["governance"])`; `now` is
-  `runtime.get("now")`. EXIT's manifest now `reads=[tick_outcome, work_items,
-  state_path]`, `writes=[tick_outcome]`, `emits` = the inner Exit's
-  refire/idle/break/halt; `work_items` is added to the data-readiness `initial`
-  set (it is seeded unconditionally, so every route leaves it readable for EXIT).
+  `work_items` + `state_path` from ctx and loads the durable triage memory
+  (`persisted_triage_memory(state_path)`) + backoff ledger
+  (`persisted_backoff_ledger(state_path)`) from `state_path = ctx.read("state_path")`.
+  When the inner outcome is `empty` AND the route has an **acting agent-state** (a
+  dispatch entry carrying a truthy `effect`, threaded onto the runtime dict as
+  `has_acting_agent` — the gate KEPT so the read-and-idle DEFAULT route + the
+  dry-run inert IMPLEMENT still IDLE) AND
+  `_work_remains(work_items, triage_memory, backoff, threshold, now)` is True, it
+  rewrites `tick_outcome` to `work-remains` so the inner EXIT selects
+  `RUNNING`/`refire`; otherwise the inner EXIT runs unchanged. It overrides
+  **ONLY** the `empty` outcome — a `restart`/`fault` (or already-`work-remains`)
+  outcome is delegated UNCHANGED. The old committed-work (un-acted / un-handled
+  `work_order`) gating is REMOVED; the refire keys on the POOL, not on this tick's
+  committed orders. `threshold` is `_backoff_threshold(runtime["governance"])`;
+  `now` is `runtime.get("now")`. EXIT's manifest stays `reads=[tick_outcome,
+  work_items, state_path]`, `writes=[tick_outcome]`, `emits` = the inner Exit's
+  refire/idle/break/halt; `work_items` is in the data-readiness `initial` set (it
+  is seeded unconditionally, so every route leaves it readable for EXIT).
 
-- **"Remaining" work = work_items MINUS done/stalled this tick.** The refire
-  decision excludes items already in the durable acted-ledger (PR opened/closed —
-  done, never re-acted) and items the doer reported `blocked` THIS tick (no
-  progress / budget-deferred — busy-refiring them would loop). `_work_remains`
-  then applies the acceptability + backoff-deferred-unchanged gate over that
-  remaining set. The acting-route gate lives in `make_exit` (not in the pure
-  predicate) because whether the loop SHOULD refire depends on the route having an
-  acting stage to do the work next tick.
+  The acting-route gate lives in `make_exit` (not in the pure predicate) because
+  `_work_remains` is the route-agnostic POOL predicate; whether the loop SHOULD
+  refire on a workable pool depends on the route actually having an acting stage to
+  do the work next tick (the dry-run inert IMPLEMENT / read-and-idle spine leaves no
+  real work, so it idles, per spec).
 
 - **Back-compat.** The read-and-idle **DEFAULT_ROUTE** spine + any **empty-pool**
   tick still IDLE: with no acting agent-state present `has_acting_agent` is False

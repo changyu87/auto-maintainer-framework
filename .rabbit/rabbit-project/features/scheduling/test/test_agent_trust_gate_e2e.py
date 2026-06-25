@@ -377,7 +377,11 @@ def test_propose_acting_state_resume_reaches_done():
         signal = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                              state_path=state_path, journal_path=journal_path,
                              source=_stub_source(), resume=True)
-    assert signal == "idle", signal
+    # POOL-based refire (§3.3.3): the canned doer wrote `planned` handoffs (the
+    # stub did not actually open PRs), so no item is recorded `done` in triage
+    # memory — the pool still holds the open, classify-valid #7/#9, and the propose
+    # route can act, so EXIT refires (runs the next tick immediately).
+    assert signal == "refire", signal
     assert rt.persisted_handoffs_count(state_path) == 2
 
 

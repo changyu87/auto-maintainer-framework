@@ -364,10 +364,18 @@ def test_all_items_in_ledger_acting_state_does_not_pause():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
         mode="propose")
     # Pre-seed the ledger with BOTH work_order_ids (as if a prior tick acted).
+    # The triage memory is seeded in lock-step (a prior tick records `done` in
+    # BOTH the acted-ledger AND triage_memory at resume) so the §3.3.3 POOL refire
+    # filter sees both items as done-and-unchanged and idles — matching production,
+    # where acted ⇒ recorded in triage_memory.
     doc = ds.DurableState(state_path).load()
     doc[rt.ACTED_LEDGER_KEY] = {
         "wo-acme/widget#7": {"outcome": "opened", "ref": "PR#7"},
         "wo-acme/widget#9": {"outcome": "opened", "ref": "PR#9"},
+    }
+    doc[rt.TRIAGE_MEMORY_KEY] = {
+        "acme/widget#7": {"status": "done", "updated_at": "2026-05-02T11:30:00Z"},
+        "acme/widget#9": {"status": "done", "updated_at": "2026-05-03T08:00:00Z"},
     }
     ds.DurableState(state_path).save(doc)
 
@@ -376,7 +384,7 @@ def test_all_items_in_ledger_acting_state_does_not_pause():
         result = _resume_triage(project_dir, runtime_dir, state_path,
                                 journal_path, now=_DAY1)
     # The acting state did NOT pause (every item already acted) -> the resume
-    # drove straight to DONE.
+    # drove straight to DONE; the pool is fully done-and-unchanged -> idle.
     assert result == "idle", result
     # No checkpoint left at IMPLEMENT (it never paused).
     doc = ds.DurableState(state_path).load()
@@ -428,8 +436,12 @@ def test_budget_exhausted_acting_state_defers_no_dispatch_no_spend():
     result = _resume_triage(project_dir, runtime_dir, state_path, journal_path,
                             now=_DAY1)
     # The acting state did NOT pause (budget pre-gate) -> the resume drove to
-    # DONE with the deferred (blocked) handoffs.
-    assert result == "idle", result
+    # DONE with the deferred (blocked) handoffs. POOL-based refire (§3.3.3): the
+    # items are budget-blocked this window but NOT recorded done/deferred (a budget
+    # block is below the backoff threshold), so they stay pool-workable and EXIT
+    # refires to retry. (The retry is bounded by GUARD's per-tick mutex; the items
+    # actually act once the budget window resets.)
+    assert result == "refire", result
     handoffs = rt.persisted_handoffs(state_path)
     assert len(handoffs) == 2, handoffs
     for h in handoffs:

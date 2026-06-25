@@ -9,19 +9,23 @@ durable-state UNCHANGED. Edits live ONLY in scheduling.
 
 Behaviours covered:
 
-  1. Pure predicate `_work_remains(work_items, backoff_ledger, threshold, now)`:
-       - a non-blocked TRIAGE-acceptable item        -> True
-       - a blocked item at/above threshold, unchanged -> False
-       - a blocked item whose updated_at advanced past the pin -> True
-       - an empty pool / only invalid (closed/stale/malformed) items -> False
+  1. Pure POOL predicate
+     `_work_remains(work_items, triage_memory, backoff_ledger, threshold, now)`:
+       - a NEW (not-in-memory) TRIAGE-acceptable non-blocked item -> True
+       - all items done/deferred-AND-unchanged (filtered by triage_memory) -> False
+       - a blocked item at/above threshold, unchanged                -> False
+       - a blocked item whose updated_at advanced past the pin        -> True
+       - an empty pool / only invalid (closed/stale/malformed) items  -> False
+     The predicate reuses the §3.5.3 skip-filter (_filter_triage_work_items) so a
+     done/deferred-unchanged or persistently-rejected (closed) item never refires.
   2. The EXIT wrapper (make_exit): when the inner outcome is `empty` AND the
-     route has an acting agent AND actionable work remains, it rewrites the
-     outcome to `work-remains` so EXIT emits `refire`; otherwise it emits `idle`;
-     it NEVER overrides a non-`empty` outcome (restart/fault).
-  3. run_tick script path: an acting route that reaches EXIT with an acceptable
-     work_item still un-acted returns `refire`; a route with no actionable work
-     (empty/stale pool) returns `idle`. The read-and-idle DEFAULT route + any
-     empty-pool tick still IDLE (back-compat).
+     route has an acting agent AND the POOL still holds workable work, it rewrites
+     the outcome to `work-remains` so EXIT emits `refire`; otherwise it emits
+     `idle`; it NEVER overrides a non-`empty` outcome (restart/fault).
+  3. run_tick script path: an acting route that reaches EXIT with a pool-workable
+     issue (new/changed, classify-valid, non-blocked) returns `refire`; a route
+     whose pool is all done-unchanged returns `idle`. The read-and-idle DEFAULT
+     route + any empty-pool tick still IDLE (back-compat).
   4. The shipped tick executor skill documents the refire-loop (run another tick
      immediately on a `refire` final signal, looping until a non-refire signal).
 
@@ -78,12 +82,33 @@ def _item(number, title="Fix a thing", state="OPEN",
 
 
 # ==========================================================================
-# Behaviour 1 — the pure predicate _work_remains.
+# Behaviour 1 — the pure POOL predicate _work_remains (triage-memory-aware).
 # ==========================================================================
 
-def test_work_remains_true_for_non_blocked_acceptable_item():
+def test_work_remains_true_for_new_non_blocked_acceptable_item():
+    """A NEW (not-in-memory) classify-valid non-blocked item is workable -> True.
+    Empty triage_memory keeps every item a candidate (§3.5.3 skip-filter no-op)."""
     items = [_item(7)]
-    assert rt._work_remains(items, {}, threshold=5, now=_NOW) is True
+    assert rt._work_remains(items, {}, {}, threshold=5, now=_NOW) is True
+
+
+def test_work_remains_false_when_all_done_unchanged():
+    """tick-26 case (#282/#275/#212 all done-unchanged): every item is `done` in
+    triage_memory at the SAME updated_at -> filtered out by the §3.5.3 skip-filter
+    -> no candidates -> idle (no refire)."""
+    items = [_item(282), _item(275), _item(212)]
+    memory = {it["id"]: {"status": "done", "updated_at": it["updated_at"]}
+              for it in items}
+    assert rt._work_remains(items, memory, {}, threshold=5, now=_NOW) is False
+
+
+def test_work_remains_true_for_changed_done_item():
+    """A `done` item whose updated_at ADVANCED is NOT filtered (a human touched it)
+    -> it re-enters the candidate set -> workable -> True."""
+    items = [_item(7, updated_at="2026-05-09T08:00:00Z")]
+    memory = {"acme/widget#7": {"status": "done",
+                                "updated_at": "2026-05-03T08:00:00Z"}}
+    assert rt._work_remains(items, memory, {}, threshold=5, now=_NOW) is True
 
 
 def test_work_remains_false_for_blocked_unchanged_item():
@@ -92,7 +117,7 @@ def test_work_remains_false_for_blocked_unchanged_item():
     items = [_item(7, updated_at="2026-05-03T08:00:00Z")]
     backoff = {"acme/widget#7": {"blocked_count": 5,
                                  "deferred_at_updated_at": "2026-05-03T08:00:00Z"}}
-    assert rt._work_remains(items, backoff, threshold=5, now=_NOW) is False
+    assert rt._work_remains(items, {}, backoff, threshold=5, now=_NOW) is False
 
 
 def test_work_remains_true_for_blocked_but_updated_item():
@@ -101,7 +126,7 @@ def test_work_remains_true_for_blocked_but_updated_item():
     items = [_item(7, updated_at="2026-05-09T08:00:00Z")]
     backoff = {"acme/widget#7": {"blocked_count": 5,
                                  "deferred_at_updated_at": "2026-05-03T08:00:00Z"}}
-    assert rt._work_remains(items, backoff, threshold=5, now=_NOW) is True
+    assert rt._work_remains(items, {}, backoff, threshold=5, now=_NOW) is True
 
 
 def test_work_remains_false_below_threshold_is_still_actionable():
@@ -110,56 +135,50 @@ def test_work_remains_false_below_threshold_is_still_actionable():
     items = [_item(7)]
     backoff = {"acme/widget#7": {"blocked_count": 2,
                                  "deferred_at_updated_at": None}}
-    assert rt._work_remains(items, backoff, threshold=5, now=_NOW) is True
+    assert rt._work_remains(items, {}, backoff, threshold=5, now=_NOW) is True
 
 
 def test_work_remains_false_for_empty_pool():
-    assert rt._work_remains([], {}, threshold=5, now=_NOW) is False
-    assert rt._work_remains(None, {}, threshold=5, now=_NOW) is False
+    assert rt._work_remains([], {}, {}, threshold=5, now=_NOW) is False
+    assert rt._work_remains(None, {}, {}, threshold=5, now=_NOW) is False
 
 
 def test_work_remains_false_for_invalid_items():
     """Invalid (closed / stale / malformed) items never count."""
     closed = [_item(7, state="CLOSED")]
-    assert rt._work_remains(closed, {}, threshold=5, now=_NOW) is False
+    assert rt._work_remains(closed, {}, {}, threshold=5, now=_NOW) is False
     malformed = [_item(7, title="")]
-    assert rt._work_remains(malformed, {}, threshold=5, now=_NOW) is False
+    assert rt._work_remains(malformed, {}, {}, threshold=5, now=_NOW) is False
     stale = [_item(7)]
-    assert rt._work_remains(stale, {}, threshold=5, now=_NOW_STALE) is False
+    assert rt._work_remains(stale, {}, {}, threshold=5, now=_NOW_STALE) is False
 
 
 # ==========================================================================
 # Behaviour 2 — the EXIT wrapper (make_exit) refire/idle + non-override.
 # ==========================================================================
 
-def _work_order_for(item):
-    """An accepted work_order dict for a work_item (the COMMITTED-work signal the
-    refire wrapper keys on: work_item -> wo-<id>)."""
-    return {"schema_version": "1.0.0", "id": f"wo-{item['id']}",
-            "work_item_id": item["id"], "title": item["title"], "body": "",
-            "url": "", "labels": [], "decision": "accepted", "reason": "",
-            "created_at": ""}
-
-
-def _exit_ctx(state_path, work_items, outcome="empty", committed=True):
-    """A minimal TickContext with the slots make_exit's EXIT run reads/consults.
-
-    When `committed` is True the work_items are also registered as accepted
-    work_orders this tick (the committed-work signal the refire wrapper requires);
-    set it False to model items the triager dropped (no work_order)."""
+def _exit_ctx(state_path, work_items, outcome="empty"):
+    """A minimal TickContext with the slots make_exit's POOL EXIT run reads:
+    tick_outcome, work_items, state_path. The pool predicate keys off the
+    work_items + the durable triage_memory/backoff at state_path — NOT on
+    committed work_orders (the old committed-work gate was removed)."""
     ctx = fc.TickContext()
     ctx.register_slot("tick_outcome", {"type": "string"}, version="1.0.0")
     ctx.register_slot("state_path", {"type": "string"}, version="1.0.0")
     ctx.register_slot(wi.WORK_ITEMS_SLOT["name"], wi.WORK_ITEMS_SLOT["schema"],
                       version=wi.WORK_ITEMS_SLOT["version"])
-    ctx.register_slot(wi.WORK_ORDERS_SLOT["name"], wi.WORK_ORDERS_SLOT["schema"],
-                      version=wi.WORK_ORDERS_SLOT["version"])
     ctx.write("tick_outcome", outcome)
     ctx.write("state_path", state_path)
     ctx.write(wi.WORK_ITEMS_SLOT["name"], work_items)
-    ctx.write(wi.WORK_ORDERS_SLOT["name"],
-              [_work_order_for(it) for it in work_items] if committed else [])
     return ctx
+
+
+def _save_triage_memory(state_path, memory):
+    """Persist a triage_memory under TRIAGE_MEMORY_KEY so make_exit's pool filter
+    drops the done/deferred-unchanged items (§3.5.3)."""
+    doc = {"schema_version": ds.SCHEMA_VERSION, "counter": 0,
+           rt.TRIAGE_MEMORY_KEY: memory}
+    ds.DurableState(state_path).save(doc)
 
 
 def _exit_runtime(runtime_dir, acting=True, now=_NOW):
@@ -190,17 +209,36 @@ def test_make_exit_emits_idle_when_no_actionable_work():
     assert ctx.read("tick_outcome") == "empty"
 
 
-def test_make_exit_idle_for_item_dropped_by_triage():
-    """An acceptable work_item the triager DROPPED (pulled but never an accepted
-    work_order) is NOT committed work -> no refire (respect the triager)."""
-    root = tempfile.mkdtemp(prefix="sched-refire-exit-dropped-")
+def test_make_exit_idle_when_pool_all_done_unchanged():
+    """When every pooled work_item is `done`-AND-unchanged in triage_memory, the
+    §3.5.3 skip-filter drops them all -> no pool-workable item -> idle (the
+    tick-26 all-done case)."""
+    root = tempfile.mkdtemp(prefix="sched-refire-exit-done-")
     runtime_dir = os.path.join(root, "runtime")
     state_path = os.path.join(root, "state.json")
+    item = _item(7)
+    _save_triage_memory(state_path, {
+        item["id"]: {"status": "done", "updated_at": item["updated_at"]}})
     _manifest, run = rt.make_exit(_exit_runtime(runtime_dir, acting=True))
-    ctx = _exit_ctx(state_path, [_item(7)], committed=False)
+    ctx = _exit_ctx(state_path, [item])
     result = run(ctx)
     assert result.signal == "idle", result.signal
     assert ctx.read("tick_outcome") == "empty"
+
+
+def test_make_exit_refires_on_pool_workable_item_no_committed_order():
+    """POOL semantics: an acting route refires when the pool holds a classify-valid
+    non-blocked item, EVEN with no committed work_order this tick (the old
+    committed-work gate was removed — the refire keys on the next tick's TRIAGE
+    having work to judge)."""
+    root = tempfile.mkdtemp(prefix="sched-refire-exit-pool-")
+    runtime_dir = os.path.join(root, "runtime")
+    state_path = os.path.join(root, "state.json")
+    _manifest, run = rt.make_exit(_exit_runtime(runtime_dir, acting=True))
+    ctx = _exit_ctx(state_path, [_item(7)])
+    result = run(ctx)
+    assert result.signal == "refire", result.signal
+    assert ctx.read("tick_outcome") == "work-remains"
 
 
 def test_make_exit_does_not_refire_without_acting_agent():
@@ -414,11 +452,14 @@ def _write_outputs(paused, contents):
             f.write(content)
 
 
-def test_run_tick_refires_when_committed_work_deferred_by_prioritize():
-    """HEADLINE: two work_orders share a feature, so PRIORITIZE defers one (#214);
-    the acting route opens a PR for wo-#7 and leaves wo-#9 as committed-but-
-    un-handled backlog -> run_tick returns `refire`, so the loop runs the next
-    tick immediately instead of waiting the heartbeat."""
+def test_run_tick_refires_when_pool_still_has_workable_issue():
+    """HEADLINE (POOL semantics): two work_orders share a feature, so PRIORITIZE
+    defers one (#214); the acting route opens a PR for wo-#7 (recorded `done` in
+    triage_memory) and leaves #9 un-handled. At EXIT the pool still holds #9 — a
+    classify-valid, non-blocked, not-yet-done issue the §3.5.3 skip-filter KEEPS —
+    so run_tick returns `refire`, running the next tick immediately instead of
+    waiting the heartbeat. This needs NO committed work_order at EXIT: the refire
+    keys on the next tick's TRIAGE having work to judge/act on."""
     project_dir, cfg, state_path, journal_path = _setup_agent_project()
 
     # Step 1: TRIAGE (agent) pauses; canned output accepts BOTH (same feature).
@@ -443,8 +484,9 @@ def test_run_tick_refires_when_committed_work_deferred_by_prioritize():
     signal = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
                          state_path=state_path, journal_path=journal_path,
                          source=_stub_source(), now=_NOW, resume=True)
-    # #7 is now acted; wo-#9 is committed (an accepted work_order) but was
-    # deferred (never handled this tick) -> actionable work remains -> refire.
+    # #7 is now `done` (filtered out); #9 was deferred (never handled this tick)
+    # so it is NOT in triage_memory -> the pool still holds a workable issue for
+    # next tick's TRIAGE -> refire.
     assert signal == "refire", signal
     assert ld.read_disposition(cfg) == ld.Disposition.RUNNING
 
@@ -463,10 +505,11 @@ _CANNED_TWO_DISTINCT_FEATURE = json.dumps([
 ])
 
 
-def test_run_tick_idles_when_all_committed_work_acted():
-    """The SAME acting route where every accepted work_order is acted this tick
-    (distinct features, both dispatched + opened) -> no committed work remains
-    un-handled -> EXIT idles (no refire)."""
+def test_run_tick_idles_when_pool_all_done_unchanged():
+    """The SAME acting route where every issue is acted+opened this tick (distinct
+    features, both dispatched) -> both recorded `done` in triage_memory at their
+    current updated_at -> the §3.5.3 skip-filter drops the whole pool -> no
+    pool-workable item -> EXIT idles (no refire)."""
     project_dir, cfg, state_path, journal_path = _setup_agent_project()
     paused = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
                          state_path=state_path, journal_path=journal_path,
@@ -484,7 +527,8 @@ def test_run_tick_idles_when_all_committed_work_acted():
     signal = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
                          state_path=state_path, journal_path=journal_path,
                          source=_stub_source(), now=_NOW, resume=True)
-    # Both work_orders acted (opened) -> no committed work left -> idle.
+    # Both issues acted (opened) -> both `done`-unchanged in triage_memory ->
+    # the pool is fully filtered -> idle.
     assert signal == "idle", signal
     assert ld.read_disposition(cfg) == ld.Disposition.IDLE
 
