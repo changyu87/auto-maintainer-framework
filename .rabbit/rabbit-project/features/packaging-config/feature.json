@@ -1,11 +1,11 @@
 {
   "name": "packaging-config",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-06-24",
-  "spec_change_reason": "v0.7.7 merge-sink-url + pool-based-refire release: bump plugin v0.7.7 in plugin.json + marketplace.json and regenerate the committed plugin tree from current src so two merged fixes reach the installed plugin: the verify-integrate merge sink recording the merged PR url (#294: verify_integrate carries _pr_url for traceability), and scheduling's pool-based immediate-refire + INTEGRATE/refire observability (#295: run_tick's _work_remains is a triage-memory-aware POOL predicate computing its candidate pool via _filter_triage_work_items, and the tick_end detail surfaces merged_refs); rename the version test to 0_7_7, add test_committed_verify_integrate_carries_294_merged_pr_url + test_shipped_verify_integrate_carries_merged_pr_url + test_committed_run_tick_carries_295_pool_refire_and_merged_refs + test_shipped_run_tick_carries_pool_refire_and_merged_refs asserting the shipped libs carry _pr_url and _filter_triage_work_items/merged_refs, and advance the housekeep doc baseline (416 -> 433) for the appended per-release section."
+  "updated": "2026-06-25",
+  "spec_change_reason": "v0.7.8 work_own_filings default-on opt-out release: bump plugin v0.7.8 in plugin.json + marketplace.json, surface the \u00a73.11.5 work_own_filings opt-out in the shipped default-config/config.json (schema_version 2.1.0 -> 2.2.0 + top-level work_own_filings:true, keeping mode/features_root/budget/heartbeat/backoff unchanged), and regenerate the committed plugin tree from current src so the opt-out reaches the installed plugin across three sibling features shipped as-is: safety-governance's default-true accessor (#297), work-intake's PULL honoring the flag (#298), and scheduling's make_pull threading it (#299); rename the version test to 0_7_8, add test_default_config_surfaces_work_own_filings_at_schema_2_2_0 + test_committed_default_config_surfaces_work_own_filings + test_committed_libs_carry_work_own_filings_opt_out + test_shipped_libs_carry_work_own_filings_opt_out asserting the shipped default-config knob and the shipped libs carry the opt-out, and advance the housekeep doc baseline (433 -> 455) for the appended per-release section."
 }

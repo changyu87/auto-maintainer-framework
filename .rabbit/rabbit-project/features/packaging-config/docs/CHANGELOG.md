@@ -1,5 +1,35 @@
 # Changelog — packaging-config
 
+## 0.7.8 — work_own_filings default-on opt-out release: deploy #297/#298/#299
+
+- Bump `_PLUGIN_VERSION` 0.7.7 -> 0.7.8 (`plugin.json` + `marketplace.json`).
+- Surface the §3.11.5 `work_own_filings` opt-out in the shipped
+  `default-config/config.json`: bump its `schema_version` 2.1.0 -> 2.2.0
+  (matching safety-governance's `GOVERNANCE_SCHEMA_VERSION`) and add a top-level
+  `"work_own_filings": true` (the default-on policy, so users see the knob to opt
+  out). The existing keys (mode/features_root/budget/heartbeat/backoff) are
+  unchanged.
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so the opt-out reaches the
+  installed plugin across three sibling features shipped as-is:
+  safety-governance's default-true accessor (#297:
+  `safety_governance.work_own_filings(config)` defaults `True`), work-intake's
+  PULL honoring the flag (#298: `work_intake.Pull(work_own_filings=…)`), and
+  scheduling's `make_pull` threading it from the loaded config (#299). No build
+  LOGIC change beyond the version bump + the default-config asset edit.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_8_and_consistent`; add
+  `test_default_config_surfaces_work_own_filings_at_schema_2_2_0` +
+  `test_committed_default_config_surfaces_work_own_filings` (the
+  shipped/committed seed `config.json` carries `work_own_filings: true` at schema
+  2.2.0 with the pre-existing keys unchanged) and
+  `test_committed_libs_carry_work_own_filings_opt_out` +
+  `test_shipped_libs_carry_work_own_filings_opt_out` (the committed/shipped
+  `lib/{safety_governance,work_intake,run_tick}.py` carry the opt-out and match a
+  fresh normalization of their sources; work-intake's `Pull` honors the flag at
+  runtime from `lib/` alone); advance the housekeep doc baseline (433 -> 455) for
+  the appended per-release spec section.
+
 ## 0.7.7 — merge-sink-url + pool-based-refire release: deploy #294/#295
 
 - Bump `_PLUGIN_VERSION` 0.7.6 -> 0.7.7 (`plugin.json` + `marketplace.json`).

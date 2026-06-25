@@ -1,6 +1,7 @@
 {
-  "schema_version": "2.1.0",
+  "schema_version": "2.2.0",
   "mode": "auto-merge",
+  "work_own_filings": true,
   "features_root": null,
   "budget": {
     "per_day_tokens": null,
