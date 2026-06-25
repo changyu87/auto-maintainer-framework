@@ -540,18 +540,17 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Patch (v0.7.6, immediate-refire enhancement release): version bumped to
-# 0.7.6 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.7.6 is the release that DEPLOYS the merged immediate-refire enhancement
-# (#292) into the installed plugin: scheduling's run_tick EXIT anchor is
-# wrapped with the immediate-refire predicate (_work_remains over the remaining
-# work + the durable backoff ledger), so a completed tick with remaining
-# actionable work signals refire and the loop runs the next tick immediately
-# instead of waiting for the heartbeat; the shipped tick skill documents the
-# refire loop. It regenerates the committed plugin tree from CURRENT src.
-# (Supersedes the v0.7.5 advisory-REVIEW merge-fix release.)
+# Patch (v0.7.7, merge-sink-url + pool-based-refire release): version bumped to
+# 0.7.7 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.7.7 is the release that DEPLOYS two merged fixes into the installed plugin:
+# the verify_integrate merge sink recording the merged PR url (#294), and
+# scheduling's pool-based immediate-refire + INTEGRATE/refire observability
+# (#295: _work_remains is a triage-memory-aware POOL predicate that filters via
+# _filter_triage_work_items, and the tick_end detail surfaces merged_refs). It
+# regenerates the committed plugin tree from CURRENT src.
+# (Supersedes the v0.7.6 immediate-refire enhancement release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_6_and_consistent():
+def test_version_bumped_to_0_7_7_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -563,10 +562,10 @@ def test_version_bumped_to_0_7_6_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.6", \
-            f"plugin.json version must be 0.7.6, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.6", \
-            "marketplace.json plugin entry version must be 0.7.6"
+        assert pdata.get("version") == "0.7.7", \
+            f"plugin.json version must be 0.7.7, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.7", \
+            "marketplace.json plugin entry version must be 0.7.7"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2623,5 +2622,131 @@ def test_shipped_test_gate_no_source_tree_leak():
         assert ".rabbit" not in body, "shipped test_gate leaks .rabbit"
         assert "rabbit-project" not in body, \
             "shipped test_gate references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.7 (#294), merge-sink-url deploy confirmation: the whole point of
+# this release is that the committed (shipped) verify_integrate carries the #294
+# merge-sink fix — the merge sink records the merged PR url (`_pr_url`) for
+# traceability. Assert the COMMITTED lib — the bytes an installed plugin runs —
+# carries the `_pr_url` token, AND that it is byte-identical to a fresh
+# normalization of the current verify-integrate source (so the committed tree
+# genuinely shipped the merged #294 fix).
+# ---------------------------------------------------------------------------
+def test_committed_verify_integrate_carries_294_merged_pr_url():
+    mod = _load_build()
+    committed_vi = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib", "verify_integrate.py"
+    )
+    assert os.path.isfile(committed_vi), \
+        "committed lib/verify_integrate.py must ship in the plugin tree"
+    with open(committed_vi, encoding="utf-8") as fh:
+        committed = fh.read()
+    assert "_pr_url" in committed, \
+        "committed verify_integrate must carry the #294 merge-sink PR url " \
+        "(_pr_url) the merge sink records for traceability"
+
+    # byte-identical to the build's own normalization of the CURRENT
+    # verify-integrate source — proving the committed tree shipped the #294 fix.
+    src = os.path.join(
+        _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+        "verify-integrate", "src", "verify_integrate.py",
+    )
+    _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS["verify_integrate.py"]
+    expected = mod._normalize_lib(src, anchor, bootstrap)
+    assert committed == expected, \
+        "committed verify_integrate drifted from a fresh normalization of the " \
+        "current verify-integrate source — regenerate the plugin tree"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.7 (#294), shipped-build merge-sink-url: the freshly built
+# verify_integrate (the bytes the regenerated tree ships) carries the #294
+# `_pr_url` merge-sink token. This proves the build's normalization of the
+# current verify-integrate source delivers the #294 fix into the plugin lib/.
+# ---------------------------------------------------------------------------
+def test_shipped_verify_integrate_carries_merged_pr_url():
+    out_root = _build_into_temp()
+    try:
+        vi = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib",
+            "verify_integrate.py",
+        )
+        with open(vi, encoding="utf-8") as fh:
+            shipped = fh.read()
+        assert "_pr_url" in shipped, \
+            "shipped verify_integrate must carry the #294 merge-sink PR url " \
+            "(_pr_url)"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.7 (#295), pool-based-refire + integrate observability deploy
+# confirmation: the whole point of this release is that the committed (shipped)
+# run_tick carries the #295 pool-based refire — _work_remains is redefined to a
+# triage-memory-aware POOL predicate that computes its candidate pool via
+# `_filter_triage_work_items` (the SAME §3.5.3 skip-filter TRIAGE applies) — and
+# surfaces INTEGRATE merge results in the tick_end detail via `merged_refs`.
+# Assert the COMMITTED lib — the bytes an installed plugin runs — carries both
+# tokens, AND that it is byte-identical to a fresh normalization of the current
+# scheduling source (so the committed tree genuinely shipped the merged #295
+# work).
+# ---------------------------------------------------------------------------
+def test_committed_run_tick_carries_295_pool_refire_and_merged_refs():
+    mod = _load_build()
+    committed_rt = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib", "run_tick.py",
+    )
+    assert os.path.isfile(committed_rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(committed_rt, encoding="utf-8") as fh:
+        committed = fh.read()
+    # the pool-based refire: _work_remains filters its candidate pool via
+    # _filter_triage_work_items (the §3.5.3 skip-filter).
+    assert "_filter_triage_work_items" in committed, \
+        "committed run_tick must carry the #295 pool-based refire " \
+        "(_work_remains computes candidates via _filter_triage_work_items)"
+    # the INTEGRATE/refire observability: tick_end detail surfaces merged_refs.
+    assert "merged_refs" in committed, \
+        "committed run_tick must surface merged_refs in the tick_end detail " \
+        "(#295 INTEGRATE/refire observability)"
+
+    # byte-identical to the build's own normalization of the CURRENT scheduling
+    # source — proving the committed tree shipped the merged #295 work.
+    src = os.path.join(
+        _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+        "scheduling", "src", "run_tick.py",
+    )
+    _src_rel, anchor, bootstrap = mod._NORMALIZED_LIBS["run_tick.py"]
+    expected = mod._normalize_lib(src, anchor, bootstrap)
+    assert committed == expected, \
+        "committed run_tick drifted from a fresh normalization of the " \
+        "current scheduling source — regenerate the plugin tree"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.7 (#295), shipped-build pool-refire + merged_refs: the freshly
+# built run_tick (the bytes the regenerated tree ships) carries the #295
+# pool-based refire (_filter_triage_work_items in _work_remains) and the
+# merged_refs tick_end detail. This proves the build's normalization of the
+# current scheduling source delivers the #295 work into the plugin lib/.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_carries_pool_refire_and_merged_refs():
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            shipped = fh.read()
+        assert "_filter_triage_work_items" in shipped, \
+            "shipped run_tick must carry the #295 pool-based refire " \
+            "(_filter_triage_work_items)"
+        assert "merged_refs" in shipped, \
+            "shipped run_tick must surface merged_refs in the tick_end detail " \
+            "(#295)"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
