@@ -30,6 +30,7 @@ Owner: changyu87
 """
 
 import os
+import subprocess
 import sys
 
 _FEATURE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -446,6 +447,88 @@ def test_gh_pr_merge_sink_omits_repo_flag_when_unset():
 
     vi.gh_pr_merge_sink("acme/widget#9", runner=fake_runner)
     assert "--repo" not in captured["cmd"]
+
+
+# ==========================================================================
+# Behaviour (observability fix): _pr_url derives the merged PR's web URL so a
+# merged IntegrationResult entry carries a real link instead of url:''. Pure,
+# never raises for URL derivation.
+#   - `owner/repo#number` ref -> https://github.com/owner/repo/pull/number
+#   - bare `#number` ref + repo ('owner/repo') -> derived from repo
+#   - no owner/repo derivable AND no repo -> '' (never raises)
+# ==========================================================================
+
+def test_pr_url_derives_from_owner_repo_ref():
+    assert (vi._pr_url("changyu87/auto-maintainer-framework#287", None)
+            == "https://github.com/changyu87/auto-maintainer-framework/pull/287")
+
+
+def test_pr_url_falls_back_to_repo_for_bare_number_ref():
+    assert (vi._pr_url("#287", "changyu87/auto-maintainer-framework")
+            == "https://github.com/changyu87/auto-maintainer-framework/pull/287")
+
+
+def test_pr_url_returns_empty_when_no_owner_repo_and_no_repo():
+    assert vi._pr_url("#287", None) == ""
+
+
+# ==========================================================================
+# Behaviour: gh_pr_merge_sink now returns the DERIVED url (not '') so a merged
+# entry carries a real link — a successful merge no longer looks like nothing
+# happened (observability fix). Injected succeeding runner, no network.
+# ==========================================================================
+
+def test_gh_pr_merge_sink_returns_derived_url():
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        return _FakeCompleted("")
+
+    entry = vi.gh_pr_merge_sink(
+        "changyu87/auto-maintainer-framework#287",
+        repo="changyu87/auto-maintainer-framework", runner=fake_runner)
+    assert entry["pr_ref"] == "changyu87/auto-maintainer-framework#287"
+    assert (entry["url"]
+            == "https://github.com/changyu87/auto-maintainer-framework/pull/287")
+
+
+def test_gh_pr_merge_sink_url_falls_back_to_repo_for_bare_ref():
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        return _FakeCompleted("")
+
+    entry = vi.gh_pr_merge_sink(
+        "#287", repo="changyu87/auto-maintainer-framework", runner=fake_runner)
+    assert (entry["url"]
+            == "https://github.com/changyu87/auto-maintainer-framework/pull/287")
+
+
+def test_gh_pr_merge_sink_url_empty_when_no_owner_repo_and_no_repo():
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        return _FakeCompleted("")
+
+    entry = vi.gh_pr_merge_sink("#287", runner=fake_runner)
+    assert entry["url"] == ""
+
+
+# ==========================================================================
+# Behaviour (preserved invariant): the merge call keeps check=True, so a failed
+# `gh pr merge` raises CalledProcessError — the merge fault is loud and locatable
+# at the merge boundary, never silently swallowed by the URL-derivation change.
+# ==========================================================================
+
+def test_gh_pr_merge_sink_preserves_check_true_on_failure():
+    captured = {}
+
+    def failing_runner(cmd, **kwargs):
+        captured["kwargs"] = kwargs
+        raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
+
+    raised = False
+    try:
+        vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
+                            runner=failing_runner)
+    except subprocess.CalledProcessError:
+        raised = True
+    assert raised, "a failed gh merge must propagate CalledProcessError"
+    assert captured["kwargs"].get("check") is True
 
 
 # ==========================================================================
