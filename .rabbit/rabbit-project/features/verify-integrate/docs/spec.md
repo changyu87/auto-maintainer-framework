@@ -63,7 +63,10 @@ CLEANUP    integration_result              —                    OK
   was run.
 - **`IntegrationResult`** — `{ schema_version, merged: [{pr_ref, url}],
   skipped: [{pr_ref, reason}], errors: [{pr_ref, reason}] }`. Idempotent: an
-  already-merged PR leaves the open set, so a re-run never double-merges.
+  already-merged PR leaves the open set, so a re-run never double-merges. Each
+  `merged` entry's `url` is derived from its `pr_ref` (`owner/repo#number` →
+  `.../owner/repo/pull/number`; bare `#number` uses the configured repo; neither
+  → `''`) so a successful merge is observable, not an empty link.
 - **`review_findings` record** — one MATERIAL finding the advisory reviewer
   emits, conforming EXACTLY to work-intake's `DiscoveredIssue.to_dict`:
   `{ schema_version, title, body, kind, severity, target, dedup_key, filed_by }`.

@@ -2,10 +2,10 @@
   "schema_version": "1.0.0",
   "owner": "changyu87",
   "deprecation_criterion": "Superseded by the next verify-integrate housekeep wave's baseline; single-use measured-reduction reference, re-captured whenever a feature wave legitimately extends the doc surface with load-bearing content.",
-  "description": "Line counts of verify-integrate doc surfaces, re-baselined for the FT-D features_root self-containment fix wave (delete the __file__-derived _DEFAULT_FEATURES_ROOT; require a runtime-injected features_root; conservatively gate an unverifiable cross-cutting batch), which adds the load-bearing conservative-gate behavior contract (§3.7.1) to the §3.7.6 complement-run section — load-bearing behavior content, not bloat. The housekeep e2e test asserts the current docs are NOT LARGER than these baselines (a reduced|no-op verdict) and that the load-bearing tokens survived.",
+  "description": "Line counts of verify-integrate doc surfaces, re-baselined for the merge-sink URL observability fix wave (gh_pr_merge_sink derives a real PR web link via _pr_url instead of returning url:'', so a merged IntegrationResult entry carries a usable link). The IntegrationResult schema entry in docs/spec.md gains the load-bearing url-derivation behavior contract — load-bearing behavior content, not bloat. The housekeep e2e test asserts the current docs are NOT LARGER than these baselines (a reduced|no-op verdict) and that the load-bearing tokens survived.",
   "baseline_commit": "HEAD",
   "docs": {
-    "docs/spec.md": 203,
+    "docs/spec.md": 206,
     "docs/contract.md": 51
   }
 }

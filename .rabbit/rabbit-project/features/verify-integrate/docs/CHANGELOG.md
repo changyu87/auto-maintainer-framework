@@ -2,6 +2,22 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.7.1 — 2026-06-21
+
+Observability fix: a merged `IntegrationResult` entry now carries the PR's web
+link instead of `url:''` (a successful merge previously looked like nothing
+happened).
+
+- **`_pr_url(pr_ref, repo)` (new, pure).** Derives the PR web URL:
+  `owner/repo#number` → `https://github.com/owner/repo/pull/number`; a bare
+  `#number` ref uses the configured `repo` (`owner/repo`); when neither yields an
+  `owner/repo` it returns `''`. Never raises for URL derivation.
+- **`gh_pr_merge_sink` now returns the derived url.** The `gh pr merge <number>
+  --merge --delete-branch [--repo]` call (`check=True`) is UNCHANGED — a failed
+  merge still raises `CalledProcessError`; only the returned entry changes from
+  `{pr_ref, url:''}` to `{pr_ref, url:_pr_url(pr_ref, repo)}`.
+- `Integrate.run` and the merged-entry schema are unchanged (only the url value).
+
 ## 0.7.0 — 2026-06-21
 
 Fix the FT-D `features_root` self-containment bug packaging-config's
