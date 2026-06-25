@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.7.0
+version: 0.8.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -32,8 +32,9 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 
 ```json
 {
-  "schema_version": "2.1.0",
+  "schema_version": "2.2.0",
   "mode": "propose",
+  "work_own_filings": true,
   "budget": {
     "per_day_tokens": null,
     "window_tz": "local"
@@ -64,6 +65,16 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 - `backoff.threshold` — the per-item consecutive-`blocked` count K at which the
   loop escalates + defers a work order (§3.8.5). **Default `5`.** Owned here,
   **read by `scheduling`** (`run_tick`).
+- `work_own_filings` — whether the loop works its OWN filings (the loopback
+  provision, §3.11.5). **Default `true`** per an explicit owner decision: the
+  loop works its own discoveries by default, with a manual **opt-OUT**
+  (`work_own_filings: false`). §3.11.5 originally deferred this to "explicitly
+  opted in" to prevent self-amplification; the owner has flipped it to
+  default-on opt-out. Read through the pure accessor `work_own_filings(config)`
+  (default `True` when absent — an existing config without the key opts IN).
+  Owned here; **`work-intake` PULL** consumes it to conditionally apply the
+  loopback exclusion and **`scheduling`** threads it from the loaded config into
+  PULL (both separate cycles).
 
 The runtime file stays **lean**: schema-definition metadata (`owner`,
 `deprecation_criterion`) lives in this spec, `safety_governance.py`'s module
@@ -249,6 +260,9 @@ the trust `mode` and budget ceilings without hand-editing JSON.
   is cheap and never merges, so there is no thrash to break yet).
 - **Loopback / provenance guard** (§3.11.5, `filed_by` stamp recognized by the
   TRIAGE gates) → with `outbound-report` (nothing files until REPORT exists).
+  The governance `work_own_filings` knob (default-on opt-out) is shipped here;
+  `work-intake` PULL and `scheduling` consume it to apply the loopback exclusion
+  (separate cycles).
 - **Blast-radius / learned scope** (§3.8.6) → v2.
 - **Per-day window basis other than local-tz**, and a real escalation sink
   (§3.9.3, observability) → later refinements.

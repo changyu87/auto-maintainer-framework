@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.1.0).
+"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.2.0).
 
 Every behaviour in docs/spec.md has a test here. The feature provides
 deterministic decision surfaces over a machine-first, versioned CENTRAL config
 (config.json) — DESIGN §3.8:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.1.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.2.0),
      DEFAULT_GOVERNANCE, load_config(project_dir): reads project-local
      ${project_dir}/.auto-maintainer/config.json (absent => defaults),
      backfilling missing keys from defaults. null/absent ceiling => NO LIMIT.
@@ -83,16 +83,17 @@ def _write_json(path, payload):
 
 
 # ==========================================================================
-# Behaviour: the central config schema is versioned (2.1.0) and machine-first.
+# Behaviour: the central config schema is versioned (2.2.0) and machine-first.
 # DEFAULT_GOVERNANCE matches the spec's documented defaults: mode=propose,
 # budget.per_day_tokens=null, budget.window_tz=local, heartbeat.interval_minutes=3,
-# backoff.threshold=5. The per_tick_tokens and maintainer_repo fields are REMOVED.
+# backoff.threshold=5, work_own_filings=True. The per_tick_tokens and
+# maintainer_repo fields are REMOVED.
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.1.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.2.0"
     d = sg.DEFAULT_GOVERNANCE
-    assert d["schema_version"] == "2.1.0"
+    assert d["schema_version"] == "2.2.0"
     assert d["mode"] == "propose"
     # Default per_day is NO LIMIT (null) per explicit user decision; a finite
     # ceiling is opt-in via config.json.
@@ -122,7 +123,7 @@ def test_maintainer_repo_is_fixed_constant():
 def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["schema_version"] == "2.1.0"
+        assert config["schema_version"] == "2.2.0"
         assert config["mode"] == "propose"
         assert config["budget"]["per_day_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
@@ -203,6 +204,60 @@ def test_load_config_reads_features_root_override():
         # other defaults still present
         assert config["mode"] == "propose"
         assert config["backoff"]["threshold"] == 5
+
+
+# ==========================================================================
+# E2E Behaviour: work_own_filings (§3.11.5) defaults True (the loop works its
+# OWN filings by default; a human opts OUT). DEFAULT_GOVERNANCE carries it True;
+# load_config backfills True when absent and preserves an explicit false; the
+# pure accessor work_own_filings(config) returns True by default, False when set.
+# ==========================================================================
+
+def test_default_work_own_filings_is_true():
+    """work_own_filings (§3.11.5) defaults True — the loop works its own
+    discoveries by default (the previously-deferred opt-in flipped to default-on
+    opt-out per owner decision)."""
+    assert sg.DEFAULT_GOVERNANCE["work_own_filings"] is True
+    with tempfile.TemporaryDirectory() as project_dir:
+        config = sg.load_config(project_dir)
+        assert config["work_own_filings"] is True
+
+
+def test_load_config_backfills_work_own_filings_true_when_absent():
+    """A config.json that omits work_own_filings loads with the default True
+    (backward compatible: an existing config without the key opts IN)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"mode": "propose"})
+        config = sg.load_config(project_dir)
+        assert config["work_own_filings"] is True
+        # other defaults still present
+        assert config["mode"] == "propose"
+        assert config["backoff"]["threshold"] == 5
+
+
+def test_load_config_preserves_explicit_work_own_filings_false():
+    """An explicit work_own_filings=false (the human opt-OUT) is surfaced
+    unchanged on the loaded config."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"work_own_filings": False})
+        config = sg.load_config(project_dir)
+        assert config["work_own_filings"] is False
+        # other defaults still present
+        assert config["mode"] == "propose"
+        assert config["backoff"]["threshold"] == 5
+
+
+def test_work_own_filings_accessor_default_true():
+    """The pure accessor returns True by default when the key is absent
+    (mirrors how scheduling._backoff_threshold reads backoff.threshold)."""
+    assert sg.work_own_filings({}) is True
+    assert sg.work_own_filings(sg.DEFAULT_GOVERNANCE) is True
+
+
+def test_work_own_filings_accessor_false_when_set():
+    """The pure accessor returns False when the config sets work_own_filings
+    false (the opt-OUT)."""
+    assert sg.work_own_filings({"work_own_filings": False}) is False
 
 
 # ==========================================================================
