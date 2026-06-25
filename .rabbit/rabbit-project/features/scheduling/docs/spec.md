@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.26.0
+version: 0.27.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -761,6 +761,19 @@ paths. It consumes `work_intake` (`DiscoveredIssue` / `file_discoveries` /
 - **Unchanged.** A tick with NO discoveries flushes nothing (`reported=0/0`) and
   is otherwise byte-identical. Read products stay #64 per-tick ephemeral; the
   REPORT ledger + budget window + acted-ledger are the durable cross-tick facts.
+
+## Loopback opt-out wiring — PULL honors `work_own_filings` (§3.11.5)
+
+`make_pull(runtime)` threads safety-governance's §3.11.5 loopback toggle into
+work-intake's `Pull`: it constructs
+`wi.Pull(source=source, work_own_filings=sg.work_own_filings(runtime['governance']))`.
+`runtime['governance']` is the per-tick loaded central config; `work_own_filings`
+defaults `True` when absent. The injectable `source` binding is unchanged.
+safety-governance + work-intake are consumed UNCHANGED — the edit lives ONLY in
+`make_pull`. Default / explicit-`true` → the bound `Pull` INCLUDES loop-filed
+items (the loop works its own discoveries). An explicit `work_own_filings: false`
+config → the bound `Pull` EXCLUDES loop-filed items at PULL so they stay open for
+human triage (the exclusion logic is work-intake's, consumed unchanged).
 
 ## Backoff: bounded-retry → escalate → defer for blocked work orders (§3.8.5)
 

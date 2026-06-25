@@ -1,5 +1,27 @@
 # scheduling — Changelog
 
+## feature 0.27.0 — 2026-06-21
+
+- **Loopback opt-out wiring — PULL honors `work_own_filings` (§3.11.5).**
+  `make_pull(runtime)` now threads safety-governance's `work_own_filings` knob
+  (merged) onto work-intake's `Pull` (merged):
+  `wi.Pull(source=source, work_own_filings=sg.work_own_filings(runtime['governance']))`.
+  Consumes `safety-governance` + `work-intake` UNCHANGED; the edit lives ONLY in
+  `make_pull` in `run_tick.py`. The injectable `source` binding is unchanged.
+  - **Default / explicit-`true` → INCLUDE loop-filed items** (the loop works its
+    own discoveries — the default-on behaviour, key absent defaults True).
+  - **Explicit `work_own_filings: false` → EXCLUDE loop-filed items** at PULL so
+    they stay open for human triage (the exclusion logic is work-intake's `Pull`,
+    consumed unchanged; scheduling only threads the flag).
+  - **Tests** (`test_pull_work_own_filings_e2e.py`): make_pull binds the flag
+    both ways (default/True includes, False excludes — asserted via the
+    constructed Pull and its run over a mixed batch); e2e `run_tick` over the
+    default PULL route persists a loop-filed open issue under the default config
+    and excludes it under a `work_own_filings=false` `config.json`.
+  - **Docs:** spec.md adds the "Loopback opt-out wiring" section (housekeep
+    spec baseline re-anchored 1090 → 1103); contract.md notes the
+    `work_own_filings` consumption (version 0.23.0 → 0.24.0).
+
 ## feature 0.26.0 — 2026-06-21
 
 - **Refire on ANY workable issue in the pool + INTEGRATE/refire observability
