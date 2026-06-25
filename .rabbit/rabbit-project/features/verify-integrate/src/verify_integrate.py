@@ -563,6 +563,21 @@ def _derive_pr_ref(url, number):
     return f"#{number}"
 
 
+def _pr_url(pr_ref, repo):
+    """Pure derivation of a PR's web URL from its ref so a merged entry carries a
+    real link instead of url:''. `owner/repo#number` ->
+    `https://github.com/owner/repo/pull/number`; for a bare `#number` ref the
+    `owner/repo` is taken from `repo` when given; if neither yields an owner/repo
+    the URL is '' (never raise — URL derivation is best-effort observability).
+    """
+    head, _, number = pr_ref.rpartition("#")
+    owner_repo = head or (repo or "")
+    parts = owner_repo.split("/")
+    if len(parts) == 2 and parts[0] and parts[1] and number:
+        return f"https://github.com/{parts[0]}/{parts[1]}/pull/{number}"
+    return ""
+
+
 def _ci_state(rollup):
     """Map a gh statusCheckRollup list to a ci_state.
 
@@ -808,7 +823,8 @@ def gh_pr_merge_sink(pr_ref, repo=None, runner=subprocess.run):
     """Production merge sink: shell `gh pr merge <number> --merge
     --delete-branch` (and `--repo` when given) to merge the PR and delete its
     head branch in one deterministic CLI call. Returns a {pr_ref, url} merged
-    entry. `gh` carries its own auth.
+    entry whose `url` is derived from `pr_ref` via `_pr_url` (observability: a
+    merged entry carries a real link, not url:''). `gh` carries its own auth.
 
     The PR number is parsed off the `owner/repo#number` ref (gh accepts the bare
     number when `--repo` scopes it). The subprocess `runner` is INJECTABLE
@@ -821,7 +837,7 @@ def gh_pr_merge_sink(pr_ref, repo=None, runner=subprocess.run):
     if repo:
         cmd += ["--repo", repo]
     runner(cmd, capture_output=True, text=True, check=True)
-    return {"pr_ref": pr_ref, "url": ""}
+    return {"pr_ref": pr_ref, "url": _pr_url(pr_ref, repo)}
 
 
 class Integrate:
