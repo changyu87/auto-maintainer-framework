@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.6.0
+version: 0.7.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version). See spec.md / feature.json.
 ---
@@ -21,7 +21,7 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
       "ReportResult schema (machine-first; the {filed, skipped_existing, errors} filing-batch outcome)",
       "file_discoveries(discoveries, sink, known_dedup_keys) -> ReportResult: pure REPORT orchestrator (out-of-band, not a routed state; scheduling.run_tick flushes through it)",
       "gh_issue_file_sink(discovery, repo=None, runner=...) -> {tracker_ref, url}: the production GitHub filing sink (injectable runner)",
-      "is_loop_filed(item) -> bool: the §3.11.5 loopback/provenance recognizer (LOOP_FILED_LABEL or am-dedup body marker), used by PULL to exclude the loop's own filings"
+      "is_loop_filed(item) -> bool: the §3.11.5 loopback/provenance recognizer (LOOP_FILED_LABEL or am-dedup body marker); PULL applies it as an EXCLUSION only under the work_own_filings=False opt-out (default True includes loop-filed items)"
     ],
     "scripts": [],
     "skills": [],

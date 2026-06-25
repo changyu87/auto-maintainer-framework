@@ -4,6 +4,24 @@ All notable changes to this feature are recorded here. Versions follow the
 `version:` frontmatter in `spec.md` / `contract.md` and the `feature.json`
 `version` field.
 
+## feature 0.7.0 / spec 0.7.0 / contract 0.7.0 — 2026-06-25
+
+- **PULL honors the `work_own_filings` policy knob (§3.11.5 default-ON).** The
+  owner flipped the loopback policy so the maintainer works its own filings
+  unless opted out. `Pull(work_own_filings=...)` is a new boolean parameter,
+  DEFAULT `True`: when `True` (the default) PULL INCLUDES loop-filed items
+  (`filed-by:autonomous-maintainer`) so they flow through TRIAGE/IMPLEMENT like
+  any issue; when `False` (the opt-out) PULL keeps the §3.11.5 EXCLUSION,
+  dropping any item `is_loop_filed` recognizes so it stays open for human triage.
+- `is_loop_filed`, `LOOP_FILED_LABEL`, and the REPORT stamping sink are
+  unchanged — the provenance stamp still marks loop filings; the flag only
+  governs whether PULL filters on it. The source call, `work_items` write, and
+  `OK`/`EMPTY` signal are otherwise unchanged (the signal reflects the resulting
+  set: an only-loop-filed batch is `OK` when `work_own_filings=True`, `EMPTY`
+  when `False`).
+- Scheduling threading the flag from the loaded safety-governance config into
+  `make_pull` -> `Pull` is a separate FT; this change consumes the boolean only.
+
 ## feature 0.6.0 / spec 0.6.0 / contract 0.6.0 — 2026-06-23
 
 - **TRIAGE cross-cutting-risk slot** (FT-B, DESIGN §3.5.9). TRIAGE is the only
