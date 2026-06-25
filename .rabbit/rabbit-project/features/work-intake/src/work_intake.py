@@ -273,17 +273,21 @@ class Pull:
     fixture issues — the determinism seam.
     """
 
-    def __init__(self, source=gh_issue_source, repo=None):
+    def __init__(self, source=gh_issue_source, repo=None, work_own_filings=True):
         self._source = source
         self._repo = repo
+        self._work_own_filings = work_own_filings
 
     def run(self, ctx):  # noqa: ARG002 — ctx is the fsm-contracts TickContext
         items = self._source(self._repo)
-        # §3.11.5 loopback guard: EXCLUDE items the loop filed itself so they
-        # never enter the pipeline — they stay open for human triage. This is
+        # §3.11.5 loopback guard: the exclusion is CONDITIONAL on work_own_filings
+        # (default True = the loop works its own filings, so INCLUDE loop-filed
+        # items). Only under the opt-out (work_own_filings=False) does PULL drop
+        # items the loop filed itself so they stay open for human triage. This is
         # exclusion at PULL, NOT a TRIAGE reject (a reject would route to the
         # doer's close path and CLOSE the discovery, the opposite of intent).
-        items = [item for item in items if not is_loop_filed(item)]
+        if not self._work_own_filings:
+            items = [item for item in items if not is_loop_filed(item)]
         writes = {"work_items": [item.to_dict() for item in items]}
         signal = "OK" if items else "EMPTY"
         return fc.StateResult(signal=signal, writes=writes)

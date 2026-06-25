@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.6.0
+version: 0.7.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -37,9 +37,9 @@ Greenfield. Code under `.../features/work-intake/src/`.
 
 2. **`PULL` state** — `run(TickContext) -> StateResult` (fsm-contracts contract).
    Fetches the configured repo's **open** issues, maps each to a `WorkItem`,
-   **excludes any item the loop filed itself** (`is_loop_filed`, the §3.11.5
-   loopback guard — see below), writes the surviving items to the `work_items`
-   slot, and emits `OK` if any remain else `EMPTY`. Per-state manifest:
+   under the `work_own_filings=False` opt-out **excludes loop-filed items**
+   (`is_loop_filed`, §3.11.5 — see below), writes survivors to `work_items`,
+   emits `OK` if any remain else `EMPTY`. Per-state manifest:
    `{ reads: [], writes: ["work_items"], emits: ["OK", "EMPTY"] }`.
 
 3. **Injectable issue source (determinism seam)** — the production source shells
@@ -139,20 +139,20 @@ LLM triage judge coexist: the gate is the script-tier fast path; the judge is
 the agent-tier path a project wires at the `TRIAGE` port when richer judgment is
 wanted.
 
-- **Loopback / provenance guard (§3.11.5) — enforced at PULL, by EXCLUSION (not
-  by reject).** Items the loop filed itself carry the provenance stamp
+- **Loopback / provenance guard (§3.11.5) — CONDITIONAL PULL EXCLUSION, gated on
+  `work_own_filings`.** Items the loop filed itself carry the provenance stamp
   `filed_by: autonomous-maintainer` — the `filed-by:autonomous-maintainer` label
   (and the `<!-- am-dedup:... -->` body marker REPORT writes, see Slice 3). The
-  v1 policy is that the maintainer does NOT auto-work its own filings: they stay
-  open for human triage, preventing self-amplification. Enforcement is a
-  deterministic **PULL-side EXCLUSION**: `PULL` drops any work_item for which
+  owner flipped the policy to **default-ON**: the loop works its own filings.
+  `Pull(work_own_filings=...)` is a boolean (DEFAULT `True`, the safety-governance
+  knob value): when `True` (default) PULL INCLUDES loop-filed items so they flow
+  through TRIAGE/IMPLEMENT like any issue; when `False` (the opt-out) PULL applies
+  the deterministic **EXCLUSION** — it drops any work_item for which
   `work_intake.is_loop_filed(item)` is true, so loop-filed items never become
-  `work_items` / `work_orders` and the doer never touches them. This is
+  `work_items` / `work_orders` and stay open for human triage. The exclusion is
   deliberately NOT a TRIAGE reject — a reject would route to the doer's close
-  path and CLOSE the discovery, the opposite of "leave it open for a human." The
-  triager therefore never sees loop-filed items and carries no special-case for
-  them. `is_loop_filed` lives in work-intake (next to the stamp it recognizes:
-  the label + `<!-- am-dedup: -->` body marker that `gh_issue_file_sink` writes).
+  path and CLOSE the discovery. `is_loop_filed` lives in work-intake (next to the
+  label + `<!-- am-dedup: -->` body marker that `gh_issue_file_sink` writes).
 
 ## Slice 3 — REPORT (outbound filing → DiscoveredIssue)
 
@@ -221,10 +221,10 @@ idempotency live in scheduling).
 - **Richer TRIAGE deferred:** dedup-vs-closed (§3.5.3), 1-level decompose
   (§3.5.5), dependency ordering (§3.5.7), WHAT-generation/spec seam (§3.5.8, the
   AI seam).
-- **Loopback / provenance guard (§3.11.5)** — IMPLEMENTED: `work_intake.is_loop_filed`
-  recognizes the provenance stamp and `PULL` EXCLUDES loop-filed items (they never
-  enter the pipeline; they stay open for humans). NOT a TRIAGE reject. Opt-in
-  "let the loop work its own filings" stays deferred.
+- **Loopback / provenance guard (§3.11.5)** — IMPLEMENTED + default-ON:
+  `work_intake.is_loop_filed` recognizes the provenance stamp; `PULL` includes
+  loop-filed items by default (`work_own_filings=True`, the loop works its own
+  filings) and EXCLUDES them only under the `work_own_filings=False` opt-out.
 - **`PRIORITIZE`** (execution_plan) — separate state, deferred.
 - **Non-GitHub trackers**, label/filter config, pagination tuning — deferred.
 

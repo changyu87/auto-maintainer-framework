@@ -178,6 +178,9 @@ def test_stamper_and_recognizer_agree_round_trip():
 # ==========================================================================
 
 def test_pull_excludes_loop_filed_items_keeps_survivors():
+    # work_own_filings=False is the §3.11.5 opt-out: PULL EXCLUDES loop-filed
+    # items. The default (work_own_filings=True) now INCLUDES them, so this
+    # exclusion test pins the opt-out explicitly.
     ctx = _fresh_ctx()
     items = [
         _normal_item(7),
@@ -185,7 +188,7 @@ def test_pull_excludes_loop_filed_items_keeps_survivors():
         _body_marked_item(22),
         _normal_item(9),
     ]
-    state = wi.Pull(source=_stub_source(items))
+    state = wi.Pull(source=_stub_source(items), work_own_filings=False)
 
     result = state.run(ctx)
     assert fc.validate_state_result(result).passed is True
@@ -202,9 +205,10 @@ def test_pull_excludes_loop_filed_items_keeps_survivors():
 
 
 def test_pull_all_loop_filed_emits_empty():
+    # Opt-out (work_own_filings=False): an only-loop-filed batch is EMPTY.
     ctx = _fresh_ctx()
     items = [_label_stamped_item(21), _body_marked_item(22)]
-    state = wi.Pull(source=_stub_source(items))
+    state = wi.Pull(source=_stub_source(items), work_own_filings=False)
 
     result = state.run(ctx)
     assert result.signal == "EMPTY"
@@ -212,3 +216,96 @@ def test_pull_all_loop_filed_emits_empty():
     vocab = fc.SignalVocabulary(wi.PULL_SIGNALS)
     fc.apply_result(ctx, wi.PULL_MANIFEST, result, vocab)
     assert ctx.read("work_items") == []
+
+
+# ==========================================================================
+# E2E Behaviour: default-ON policy (work_own_filings=True). The owner flipped
+# §3.11.5 so the loop works its own filings unless opted out. PULL with the
+# DEFAULT flag (and an explicit True) INCLUDES loop-filed items; the exclusion
+# only applies under the explicit opt-out (work_own_filings=False).
+# ==========================================================================
+
+def test_pull_default_includes_loop_filed_items():
+    # No work_own_filings arg -> the new default (True) -> include loop-filed.
+    ctx = _fresh_ctx()
+    items = [
+        _normal_item(7),
+        _label_stamped_item(21),
+        _body_marked_item(22),
+        _normal_item(9),
+    ]
+    state = wi.Pull(source=_stub_source(items))  # default work_own_filings
+
+    result = state.run(ctx)
+    assert fc.validate_state_result(result).passed is True
+    assert result.signal == "OK"
+
+    vocab = fc.SignalVocabulary(wi.PULL_SIGNALS)
+    fc.apply_result(ctx, wi.PULL_MANIFEST, result, vocab)
+
+    written = ctx.read("work_items")
+    numbers = {w["number"] for w in written}
+    # ALL four items survive — the loop-filed ones are NOT excluded by default.
+    assert numbers == {7, 9, 21, 22}
+    # The loop-filed items are present in the slot.
+    assert any(wi.is_loop_filed(w) for w in written)
+
+
+def test_pull_work_own_filings_true_includes_loop_filed_items():
+    # Explicit True behaves exactly like the default: include loop-filed.
+    ctx = _fresh_ctx()
+    items = [
+        _normal_item(7),
+        _label_stamped_item(21),
+        _body_marked_item(22),
+        _normal_item(9),
+    ]
+    state = wi.Pull(source=_stub_source(items), work_own_filings=True)
+
+    result = state.run(ctx)
+    assert result.signal == "OK"
+
+    vocab = fc.SignalVocabulary(wi.PULL_SIGNALS)
+    fc.apply_result(ctx, wi.PULL_MANIFEST, result, vocab)
+
+    written = ctx.read("work_items")
+    assert {w["number"] for w in written} == {7, 9, 21, 22}
+
+
+def test_pull_mixed_batch_keeps_non_loop_items_either_way():
+    # The non-loop items survive regardless of the flag; only the loop-filed
+    # items' inclusion depends on it.
+    items = [_normal_item(7), _label_stamped_item(21), _normal_item(9)]
+
+    ctx_incl = _fresh_ctx()
+    wi_pull_incl = wi.Pull(source=_stub_source(items), work_own_filings=True)
+    res_incl = wi_pull_incl.run(ctx_incl)
+    vocab = fc.SignalVocabulary(wi.PULL_SIGNALS)
+    fc.apply_result(ctx_incl, wi.PULL_MANIFEST, res_incl, vocab)
+    incl = {w["number"] for w in ctx_incl.read("work_items")}
+
+    ctx_excl = _fresh_ctx()
+    wi_pull_excl = wi.Pull(source=_stub_source(items), work_own_filings=False)
+    res_excl = wi_pull_excl.run(ctx_excl)
+    fc.apply_result(ctx_excl, wi.PULL_MANIFEST, res_excl, vocab)
+    excl = {w["number"] for w in ctx_excl.read("work_items")}
+
+    # Non-loop items {7, 9} present in BOTH; the loop-filed 21 only when included.
+    assert {7, 9}.issubset(incl)
+    assert {7, 9}.issubset(excl)
+    assert 21 in incl
+    assert 21 not in excl
+
+
+def test_pull_only_loop_filed_signal_depends_on_flag():
+    # An only-loop-filed batch yields OK when work_own_filings=True (the items
+    # survive) and EMPTY when False (they are all excluded).
+    items = [_label_stamped_item(21), _body_marked_item(22)]
+
+    ctx_true = _fresh_ctx()
+    res_true = wi.Pull(source=_stub_source(items), work_own_filings=True).run(ctx_true)
+    assert res_true.signal == "OK"
+
+    ctx_false = _fresh_ctx()
+    res_false = wi.Pull(source=_stub_source(items), work_own_filings=False).run(ctx_false)
+    assert res_false.signal == "EMPTY"
