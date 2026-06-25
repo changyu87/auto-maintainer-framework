@@ -689,10 +689,14 @@ top-level feature is required.
   **[v1]**
 - **3.11.5** Loopback / provenance guard — every loop-filed item is stamped
   `filed_by: autonomous-maintainer`. The validity and closed-dedup gates
-  (3.5.2/3.5.3) MUST recognize the stamp; v1 policy is that the loop does NOT
-  auto-work its own filings — they land for human triage unless explicitly
-  opted in — preventing self-amplification. Owned by safety-governance
-  (section 3.8). **[v1]**
+  (3.5.2/3.5.3) MUST recognize the stamp. Whether the loop auto-works its own
+  filings is governed by the `work_own_filings` config knob (safety-governance,
+  section 3.8): when enabled (the **default**), PULL includes loop-filed items so
+  the loop drives its own discovered work; when disabled (the opt-out), PULL
+  EXCLUDES them and they land for human triage — the original self-amplification
+  guard. Self-amplification under the default is bounded by the budget ceiling,
+  the backoff/defer ladder (3.8.5), discovery dedup (3.5.3), and the reviewer
+  severity floor (3.7.9). Owned by safety-governance (section 3.8). **[v1]**
 - **3.11.6** Tracker routing — `DiscoveredIssue.target` selects the destination:
   `project` defects go to the project tracker PULL reads; `maintainer-self`
   defects (bugs in the loop's own adapters or tooling — the dogfood case 3.10.5)
