@@ -316,7 +316,11 @@ def test_backoff_threshold_default_is_five():
 def test_blocked_handoff_not_recorded_in_acted_ledger():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
     signal = _block_once(project_dir, runtime_dir, state_path, journal_path)
-    assert signal == "idle", signal
+    # POOL-based refire (§3.3.3): a blocked item BELOW the backoff threshold is NOT
+    # deferred — it stays retryable, so it remains pool-workable and the acting
+    # propose route refires (runs the next tick immediately to retry). Only a
+    # blocked-PAST-threshold (deferred-unchanged) item goes inert and idles.
+    assert signal == "refire", signal
     # The blocked work order is NOT in the acted-ledger (leak fixed).
     assert rt.persisted_acted_ledger(state_path) == {}, \
         rt.persisted_acted_ledger(state_path)

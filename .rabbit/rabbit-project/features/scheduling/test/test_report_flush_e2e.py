@@ -324,7 +324,11 @@ def _drive_to_done_with_discovery(project_dir, runtime_dir, state_path,
                              state_path=state_path, journal_path=journal_path,
                              source=_stub_source(), now=now, resume=True,
                              report_sink=sink)
-    assert signal == "idle", signal
+    # POOL-based refire (§3.3.3): the canned TRIAGE accepted only #7 (opened ->
+    # recorded `done`), but the PULL pool also holds the open, classify-valid #9
+    # which was never made a work_order — it stays pool-workable, and the propose
+    # route can act, so EXIT refires. (REPORT still flushes at the terminal first.)
+    assert signal == "refire", signal
     return buf.getvalue()
 
 

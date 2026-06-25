@@ -1,5 +1,37 @@
 # scheduling — Changelog
 
+## feature 0.26.0 — 2026-06-21
+
+- **Refire on ANY workable issue in the pool + INTEGRATE/refire observability
+  (two dogfood fixes).** Consumes `work-intake`, `lifecycle-dispositions`,
+  `verify-integrate`, `durable-state`, and `observability` UNCHANGED; edits live
+  ONLY in scheduling (`run_tick.py` + tests/docs).
+  - **Pool-based refire.** `_work_remains` is redefined as
+    `_work_remains(work_items, triage_memory, backoff_ledger, threshold, now)`:
+    it computes `candidates = _filter_triage_work_items(work_items,
+    triage_memory)` (the SAME §3.5.3 skip-filter TRIAGE uses — drops
+    done/deferred-AND-unchanged, keeps new/changed/active) and returns True iff
+    ANY candidate is BOTH classify-acceptable (`wi.Triage(now).classify ==
+    'accepted'`) AND not blocked-and-unchanged (`blocked_count < threshold` OR
+    `updated_at` strictly after the `deferred_at_updated_at` pin). Reusing the
+    skip-filter guarantees no busy-loop. `make_exit` now keys on this pool
+    predicate: when `tick_outcome == 'empty'` AND `has_acting_agent` (gate KEPT so
+    the read-and-idle DEFAULT route + dry-run inert IMPLEMENT still IDLE) AND
+    `_work_remains(...)`, it rewrites `tick_outcome` to `work-remains`. The OLD
+    committed-work (un-acted / un-handled `work_order`) gating is REMOVED — the
+    owner's no-PRIORITIZE route could essentially never trigger it, so
+    immediate-refire never fired. `make_exit` loads `triage_memory` +
+    `backoff_ledger` from `state_path = ctx.read('state_path')`; EXIT's manifest
+    stays `reads=[tick_outcome, work_items, state_path]`, `writes=[tick_outcome]`.
+  - **INTEGRATE + refire observability.** The `tick_end` event detail gains
+    `merged` (count), `integrate_skipped` (count), `integrate_errored` (count),
+    and `merged_refs` (the list of merged `pr_ref`s, from the
+    `integration_result` read product), plus a `refire` boolean disambiguating
+    idle-because-no-work (`false`) from refire-because-work-remains (`true`). The
+    one-line trace gains a compact `merged=<n>` token (and `integrate_errored=<n>`
+    only when `> 0`). All existing detail keys + trace fields are preserved; a
+    route with no INTEGRATE shows `merged=0` / `merged_refs=[]`.
+
 ## feature 0.25.0 — 2026-06-24
 
 - **Immediate-refire when actionable work remains (owner-requested, §3.3.3).**
