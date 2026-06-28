@@ -215,8 +215,11 @@ def test_first_pause_dispatch_output_path_is_absolute():
     assert paused["state"] == "TRIAGE", paused
     for d in paused["dispatches"]:
         assert os.path.isabs(d["output_path"]), d["output_path"]
-        # The rendered prompt names the same absolute output_path.
-        assert d["output_path"] in d["prompt"], d["prompt"]
+        # The rendered envelope (delivered by FILE REFERENCE at prompt_path)
+        # names the same absolute output_path.
+        with open(d["prompt_path"]) as _f:
+            rendered = _f.read()
+        assert d["output_path"] in rendered, rendered
 
 
 def test_per_item_pause_every_dispatch_output_path_is_absolute():
