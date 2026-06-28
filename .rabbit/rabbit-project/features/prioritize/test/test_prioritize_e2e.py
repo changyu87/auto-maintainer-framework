@@ -494,3 +494,84 @@ def test_title_prefix_detection_is_case_insensitive():
                title="title for wo-2"),
     ])
     assert plan["ordered"] == ["wo-1"]
+
+
+# ==========================================================================
+# Authoritative target_feature field (issue #258). TRIAGE stamps each order's
+# blast-radius target feature(s) onto a `target_feature` field; PRIORITIZE reads
+# THAT authoritative field instead of re-scraping labels/body/title. When the
+# field is present it is the single source of truth (even an explicit empty list,
+# a proven no-feature order); only a MISSING field triggers the fallback
+# re-derivation (back-compat for older slots / orders built outside TRIAGE).
+# ==========================================================================
+
+def _tf(oid, target_feature, **kw):
+    # An order carrying an explicit authoritative target_feature field.
+    order = _order(oid, **kw)
+    order["target_feature"] = list(target_feature)
+    return order
+
+
+def test_target_feature_field_serializes_same_feature():
+    plan = _plan([
+        _tf("wo-1", ["scheduling"]),
+        _tf("wo-2", ["scheduling"]),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+    assert plan["status"] == {"wo-1": "pending"}
+
+
+def test_target_feature_field_cross_feature_stays_parallel():
+    plan = _plan([
+        _tf("wo-1", ["scheduling"]),
+        _tf("wo-2", ["packaging-config"]),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_target_feature_field_takes_precedence_over_labels_body_title():
+    # The authoritative field, NOT the stale labels/body/title, decides the
+    # feature: two orders whose fields disagree (different features) stay
+    # parallel even though their labels would have collided.
+    plan = _plan([
+        _tf("wo-1", ["scheduling"], labels=["feature:packaging-config"]),
+        _tf("wo-2", ["prioritize"], labels=["feature:packaging-config"]),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_explicit_empty_target_feature_means_no_feature():
+    # An explicit empty list is a PROVEN no-feature order — it must stay parallel
+    # and NOT fall back to re-scraping the labels (which would serialize these).
+    plan = _plan([
+        _tf("wo-1", [], labels=["feature:scheduling"]),
+        _tf("wo-2", [], labels=["feature:scheduling"]),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_multi_feature_target_field_claims_each_feature():
+    plan = _plan([
+        _tf("wo-1", ["prioritize", "scheduling"]),
+        _tf("wo-2", ["scheduling"]),       # deferred (scheduling claimed)
+        _tf("wo-3", ["packaging-config"]),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-3"]
+
+
+def test_missing_target_feature_field_falls_back_to_rescraping():
+    # No field at all -> fall back to re-deriving from labels (back-compat): two
+    # feature:scheduling-labelled orders WITHOUT the field still serialize.
+    plan = _plan([
+        _order("wo-1", labels=["feature:scheduling"]),
+        _order("wo-2", labels=["feature:scheduling"]),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+
+
+def test_target_feature_field_is_case_normalized():
+    plan = _plan([
+        _tf("wo-1", ["Scheduling"]),
+        _tf("wo-2", ["scheduling"]),
+    ])
+    assert plan["ordered"] == ["wo-1"]

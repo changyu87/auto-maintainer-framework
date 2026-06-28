@@ -17,9 +17,12 @@ out one implementer per planned order in parallel, each branching off the same
 shared metadata (feature.json/CHANGELOG/contract + the built plugin tree) off
 the same base and collide on merge. To prevent that, PRIORITIZE keeps at most
 one order per target feature per tick (FIFO-first wins the slot) and defers the
-rest to a later tick. A feature is detected from AUTHORITATIVE signals only —
-`feature:`/`component:`-prefixed labels, a `Component:` body line, and a
-conventional title prefix (`name:` / `type(scope):`, for label-less issues) —
+rest to a later tick. The target feature(s) are read from the order's
+AUTHORITATIVE `target_feature` field, which TRIAGE stamps from the blast-radius
+signals (issue #258); for orders lacking that field (older slots / direct
+construction) PRIORITIZE FALLS BACK to re-deriving it from the same authoritative
+signals — `feature:`/`component:`-prefixed labels, a `Component:` body line, and
+a conventional title prefix (`name:` / `type(scope):`, for label-less issues) —
 never generic labels nor a bare conventional-commit type; orders with no
 provable feature stay parallel.
 
@@ -33,7 +36,7 @@ Public surface:
   - factory(runtime) -> (StateManifest, run_callable) — the adapter-wiring
     factory convention; scheduling.run_tick maps PRIORITIZE through it.
 
-Version: 0.3.0
+Version: 0.4.0
 Owner: changyu87
 Deprecation criterion: Superseded when ordering ceases to be deterministic
   (e.g. a model-backed prioritizer adapter replaces the default), or when the
@@ -143,8 +146,13 @@ def _title_feature(title):
 
 
 def _features_for(order):
-    """The set of target features an accepted order's blast radius touches, from
-    AUTHORITATIVE signals only:
+    """The set of target features an accepted order's blast radius touches.
+
+    Prefers the order's AUTHORITATIVE `target_feature` field, which TRIAGE stamps
+    from the blast-radius signals (issue #258) — a single authoritative field, no
+    re-scraping. When that field is absent (an older slot, or an order built
+    without going through TRIAGE) PRIORITIZE FALLS BACK to re-deriving the feature
+    from the same authoritative signals:
 
     1. `feature:<name>` / `component:<name>` prefixed labels (the filing
        convention) — generic labels are ignored.
@@ -158,6 +166,18 @@ def _features_for(order):
     feature is never serialized against any other order (it stays parallel),
     because serialization must rest on a *proven* shared feature, never a guess.
     """
+    # Authoritative field (issue #258): TRIAGE-stamped target_feature. When the
+    # key is present (even as an explicit empty list — a proven no-feature order)
+    # it is the single source of truth; only a MISSING key triggers fallback.
+    if "target_feature" in order:
+        return {
+            f for f in (
+                _normalize_feature(t)
+                for t in (order.get("target_feature") or [])
+                if isinstance(t, str)
+            ) if f
+        }
+
     features = set()
 
     for label in order.get("labels") or []:
