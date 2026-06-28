@@ -1189,17 +1189,33 @@ def _pause_result(name, agentstate, slot_values, tick_id, mode, output_dir,
     dispatch_entry = entry["dispatch"][0]
     isolation = dispatch_entry.get("isolation")
     for env in envelopes:
+        output_path = env["output_contract"]["output_path"]
+        # Deliver the rendered invocation envelope by FILE REFERENCE (symmetric
+        # with the file-based OUTPUT): WRITE ad.render(env) to a deterministic
+        # ABSOLUTE file under output_dir, named parallel to output_path
+        # ('<state>-<di>-<ii>.json' -> '<state>-<di>-<ii>.prompt.md'), set
+        # prompt_path, and DROP the inline prompt. The orchestrator then never
+        # receives/holds the multi-KB rendered envelope inline (which truncated
+        # --step stdout and forced a re-read); it receives only the path. The
+        # file is written here at the PAUSE, the same place stale OUTPUT files are
+        # cleared, and OVERWRITTEN each emit — so a crash-safety re-emit (rendered
+        # from the durable checkpoint round-trip, like output_path) reproduces the
+        # SAME prompt_path with byte-identical content.
+        prompt_path = _prompt_path_for(output_path)
+        with open(prompt_path, "w") as f:
+            f.write(ad.render(env))
         rec = {
             "subagent_type": dispatch_entry["subagent_type"],
-            "prompt": ad.render(env),
+            "prompt_path": prompt_path,
             "writes": dispatch_entry["writes"],
-            "output_path": env["output_contract"]["output_path"],
+            "output_path": output_path,
             "signal_rule": signal_rule,
             "cardinality": dispatch_entry["cardinality"],
-            # isolation + description let the executor call
-            # Agent(subagent_type, description=..., prompt=..., isolation=...).
-            # isolation is the dispatch entry's value (e.g. "worktree") or null
-            # when absent; description is the entry's value, else a default.
+            # isolation + description + prompt_path let the executor call
+            # Agent(subagent_type, description=..., prompt=<a short reference to
+            # prompt_path>, isolation=...). isolation is the dispatch entry's
+            # value (e.g. "worktree") or null when absent; description is the
+            # entry's value, else a default.
             "isolation": isolation,
             "description": _dispatch_description(dispatch_entry, name, env),
         }
@@ -1207,6 +1223,14 @@ def _pause_result(name, agentstate, slot_values, tick_id, mode, output_dir,
             rec["item"] = env["item"]
         dispatches.append(rec)
     return {"status": "paused", "state": name, "dispatches": dispatches}
+
+
+def _prompt_path_for(output_path):
+    """The deterministic prompt-file path parallel to a dispatch's output_path:
+    `<state>-<di>-<ii>.json` -> `<state>-<di>-<ii>.prompt.md` in the same
+    dispatch-out/ directory. output_path is absolute (#143), so prompt_path is
+    too."""
+    return output_path[: -len(".json")] + ".prompt.md"
 
 
 def _ref_of(value):

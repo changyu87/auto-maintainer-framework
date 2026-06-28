@@ -540,16 +540,16 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.7.8, work_own_filings default-on opt-out release): version bumped
-# to 0.7.8 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.7.8 is the release that DEPLOYS the §3.11.5 work_own_filings opt-out into
-# the installed plugin: safety-governance's default-true knob (#297), work-intake
-# PULL honoring it (#298), and scheduling's make_pull threading it (#299), and it
-# surfaces the knob in the shipped default-config config.json so users can find
-# the opt-out. It regenerates the committed plugin tree from CURRENT src.
-# (Supersedes the v0.7.7 merge-sink-url + pool-based-refire release.)
+# Release (v0.7.9, file-referenced dispatch prompts release): version bumped
+# to 0.7.9 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.7.9 is the release that DEPLOYS #304 (file-referenced dispatch prompts) into
+# the installed plugin: scheduling's run_tick now writes each dispatch's rendered
+# invocation envelope to a `prompt_path` file and hands the executor only the
+# path, and the shipped tick skill (v0.6.0) documents the file-referenced
+# dispatch protocol (no inline prompt). It regenerates the committed plugin tree
+# from CURRENT src. (Supersedes the v0.7.8 work_own_filings opt-out release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_8_and_consistent():
+def test_version_bumped_to_0_7_9_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -561,10 +561,10 @@ def test_version_bumped_to_0_7_8_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.8", \
-            f"plugin.json version must be 0.7.8, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.8", \
-            "marketplace.json plugin entry version must be 0.7.8"
+        assert pdata.get("version") == "0.7.9", \
+            f"plugin.json version must be 0.7.9, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.9", \
+            "marketplace.json plugin entry version must be 0.7.9"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1701,16 +1701,18 @@ def test_shipped_start_skill_is_v0_3_0_clear_only_executor_config_interval():
 
 
 # ---------------------------------------------------------------------------
-# Re-ship (v0.2.26, hardened tick executor skill): the tick executor skill
-# (scheduling v0.4.0, collected via ship/) ships at skills/tick/SKILL.md with the
-# --step/--resume protocol clarification (the REPORT live-demo finding). The
-# dispatched subagent writes its OWN output file (the prompt's ## Handoff names
-# the path); the executor never marshals the dispatch result. So the skill
-# references `run_tick.py --resume` (the runner reads the subagent-written files
-# from its checkpoint), and it does NOT reference the old dispatch-result.json
+# Re-ship (v0.7.9, file-referenced dispatch prompts, #304): the tick executor
+# skill (scheduling v0.6.0, collected via ship/) ships at skills/tick/SKILL.md
+# with the file-referenced dispatch protocol. The runner writes each dispatch's
+# rendered invocation envelope to a `prompt_path` FILE and hands the executor
+# only the path; the executor points each subagent at its prompt_path file rather
+# than passing an inline prompt body. The dispatched subagent still writes its
+# OWN output file (the prompt's ## Handoff names the path); the executor never
+# marshals the dispatch result. So the skill references `run_tick.py --resume`
+# and `prompt_path`, and it does NOT reference the old dispatch-result.json
 # marshalling path.
 # ---------------------------------------------------------------------------
-def test_shipped_tick_skill_is_v0_5_0_resume_no_file_arg():
+def test_shipped_tick_skill_is_v0_6_0_file_referenced_dispatch():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1720,11 +1722,14 @@ def test_shipped_tick_skill_is_v0_5_0_resume_no_file_arg():
         assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.5.0\n" in body, \
-            "shipped tick skill frontmatter version must be 0.5.0 " \
-            "(#292 immediate-refire loop documented)"
+        assert "\nversion: 0.6.0\n" in body, \
+            "shipped tick skill frontmatter version must be 0.6.0 " \
+            "(#304 file-referenced dispatch prompts documented)"
         assert "run_tick.py --resume" in body, \
             "shipped tick skill must reference run_tick.py --resume"
+        assert "prompt_path" in body, \
+            "shipped tick skill must document the #304 file-referenced dispatch " \
+            "(point each subagent at the runner-named prompt_path file)"
         assert "dispatch-result.json" not in body, \
             "shipped tick skill must NOT reference the old dispatch-result.json " \
             "marshalling path (the subagent writes its own output file)"
@@ -2921,3 +2926,74 @@ def test_shipped_libs_carry_work_own_filings_opt_out():
         assert proc.stdout.strip() == "OK"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.9 (#304), file-referenced dispatch prompts deploy confirmation:
+# the whole point of this release is that the committed (shipped) run_tick carries
+# the #304 file-referenced dispatch — scheduling's run_tick now writes each
+# dispatch's rendered invocation envelope to a `prompt_path` FILE and hands the
+# executor only the path (instead of an inline prompt body) — AND that the
+# shipped tick skill (v0.6.0) documents the file-referenced dispatch protocol.
+# Assert the SHIPPED bytes (both the freshly built tree and the committed tree)
+# carry prompt_path in run_tick and document the file-referenced dispatch in the
+# tick skill, with NO inline prompt in run_tick's dispatch entry.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_carries_304_file_referenced_dispatch():
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            shipped = fh.read()
+        assert "prompt_path" in shipped, \
+            "shipped run_tick must carry the #304 file-referenced dispatch " \
+            "(writes the rendered envelope to a prompt_path file)"
+
+        # The shipped tick skill documents the file-referenced dispatch (#304):
+        # it points each subagent at the runner-named prompt_path file and does
+        # NOT pass an inline prompt body / marshal a dispatch-result file.
+        skill = os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "tick", "SKILL.md",
+        )
+        with open(skill, encoding="utf-8") as fh:
+            skill_body = fh.read()
+        assert "prompt_path" in skill_body, \
+            "shipped tick SKILL.md must document the #304 file-referenced " \
+            "dispatch (point each subagent at the runner-named prompt_path file)"
+        assert "dispatch-result.json" not in skill_body, \
+            "shipped tick SKILL.md must NOT reference the old dispatch-result.json " \
+            "marshalling path"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.9 (#304), COMMITTED-tree deploy confirmation: the committed
+# (shipped) run_tick — the bytes an installed plugin runs — carries the #304
+# file-referenced dispatch prompt_path, and the committed tick skill documents
+# it. This guards against shipping a tree that drifted from the merged #304 src.
+# ---------------------------------------------------------------------------
+def test_committed_run_tick_carries_304_file_referenced_dispatch():
+    committed_rt = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib", "run_tick.py",
+    )
+    assert os.path.isfile(committed_rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(committed_rt, encoding="utf-8") as fh:
+        committed = fh.read()
+    assert "prompt_path" in committed, \
+        "committed run_tick must carry the #304 file-referenced dispatch " \
+        "(writes the rendered envelope to a prompt_path file)"
+
+    committed_skill = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "skills", "tick", "SKILL.md",
+    )
+    assert os.path.isfile(committed_skill), \
+        "committed skills/tick/SKILL.md must ship in the plugin tree"
+    with open(committed_skill, encoding="utf-8") as fh:
+        skill = fh.read()
+    assert "prompt_path" in skill, \
+        "committed tick SKILL.md must document the #304 file-referenced dispatch"
