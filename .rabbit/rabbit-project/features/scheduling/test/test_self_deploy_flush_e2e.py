@@ -300,6 +300,37 @@ def test_flush_package_deploys_when_any_merged_pr_touches_shipped_src():
     assert len(sync.calls) == 1, sync.calls
 
 
+# ==========================================================================
+# Behaviour 8 — the PRODUCTION git_commit_sink PUBLISHES the self-deploy commit:
+# it stages the given paths, commits, and PUSHES to the checkout's upstream (#312)
+# so remote main (where CI runs the build-drift guards) actually advances. Without
+# the push the bump+commit would land only in the loop's local checkout while
+# INTEGRATE merges PRs server-side, leaving remote main drifted/RED.
+# ==========================================================================
+
+def test_git_commit_sink_pushes_the_self_deploy_commit():
+    class _RecordingRunner:
+        def __init__(self):
+            self.cmds = []
+
+        def __call__(self, cmd, check=None, capture_output=False, text=False):
+            self.cmds.append(list(cmd))
+
+            class _Result:
+                stdout = "deadbee\n"
+            return _Result()
+
+    runner = _RecordingRunner()
+    sha = rt.git_commit_sink("/repo", ["a", "b"], "msg", runner=runner)
+    assert sha == "deadbee", sha
+    # cmd[0:3] is always `git -C /repo`; cmd[3] is the git verb.
+    git_verbs = [c[3] for c in runner.cmds]
+    # The sink stages, commits, PUSHES, then reads the sha — the push between the
+    # commit and the rev-parse is the #312 fix that publishes to remote main.
+    assert git_verbs == ["add", "commit", "push", "rev-parse"], git_verbs
+    assert runner.cmds[2] == ["git", "-C", "/repo", "push"], runner.cmds[2]
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items())
