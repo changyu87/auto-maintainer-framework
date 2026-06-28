@@ -91,6 +91,67 @@ def test_bump_version_rewrites_constant_and_returns_next_patch():
     assert f'_PLUGIN_VERSION = "{bp.PLUGIN_VERSION}"' not in body
 
 
+# ==========================================================================
+# build() reads the version from the (rewritten) source on disk, NOT the
+# in-memory constant frozen at import (#311). The self-deploy flush calls
+# bump_version(repo_root) then build(repo_root) in the SAME process, so build
+# must stamp plugin.json + marketplace.json with the BUMPED version, otherwise
+# the committed tree mismatches its source and the build-drift guard goes RED.
+# ==========================================================================
+
+def test_read_version_returns_bumped_value_in_same_process():
+    bp = _load_build()
+    root = _staged_repo_with_build_source()
+    # Before the bump, _read_version reflects the current source-of-truth.
+    assert bp._read_version(root) == bp.PLUGIN_VERSION
+    new_version = bp.bump_version(root)
+    # After the bump rewrites the disk source, _read_version sees the NEW
+    # version even though the in-memory _PLUGIN_VERSION constant is unchanged.
+    assert bp._read_version(root) == new_version
+    assert new_version != bp.PLUGIN_VERSION
+
+
+def test_read_version_falls_back_to_constant_when_source_absent():
+    bp = _load_build()
+    empty = tempfile.mkdtemp(prefix="pkg-readver-empty-")
+    try:
+        assert bp._read_version(empty) == bp.PLUGIN_VERSION
+    finally:
+        shutil.rmtree(empty, ignore_errors=True)
+
+
+def test_build_stamps_bumped_version_after_bump_in_same_process():
+    """The real bump(disk) -> build(reads disk) interaction the e2e _FakeBuild
+    cannot exercise (#311): a bump followed by a build in the same process must
+    produce plugin.json + marketplace.json carrying the BUMPED version."""
+    import json
+    bp = _load_build()
+    bumped = bp._bump_patch(bp.PLUGIN_VERSION)
+    # Rewrite the version constant in the REAL repo's source on disk, then
+    # restore it so the working tree is left untouched.
+    src = os.path.join(
+        _REPO_ROOT, _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
+    original = open(src, encoding="utf-8").read()
+    out_root = tempfile.mkdtemp(prefix="pkg-build-bumped-")
+    try:
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(original.replace(
+                f'_PLUGIN_VERSION = "{bp.PLUGIN_VERSION}"',
+                f'_PLUGIN_VERSION = "{bumped}"', 1))
+        bp.build(repo_root=_REPO_ROOT, out_root=out_root)
+        pdata = json.load(open(os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            ".claude-plugin", "plugin.json")))
+        mdata = json.load(open(os.path.join(
+            out_root, ".claude-plugin", "marketplace.json")))
+        assert pdata["version"] == bumped, pdata["version"]
+        assert mdata["plugins"][0]["version"] == bumped
+    finally:
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(original)
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
 def test_bump_version_missing_source_raises():
     bp = _load_build()
     empty = tempfile.mkdtemp(prefix="pkg-bump-empty-")

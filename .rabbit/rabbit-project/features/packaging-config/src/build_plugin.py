@@ -96,6 +96,7 @@ Deprecation criterion: Superseded when the framework adopts a different
 
 import json
 import os
+import re
 import shutil
 
 _FEATURE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -516,6 +517,11 @@ def build(repo_root, out_root=None):
     plugin_root = os.path.join(out_root, "plugins", _PLUGIN_NAME)
     features_dir = os.path.join(repo_root, _FEATURES_REL)
 
+    # The version is read from repo_root's build source (not the in-memory
+    # constant frozen at import) so a same-process bump_version(repo_root) is
+    # reflected in this build's stamps — keeping the tree consistent (#311).
+    plugin_version = _read_version(repo_root)
+
     # Rebuild from scratch so stale files never linger (idempotency).
     if os.path.isdir(plugin_root):
         shutil.rmtree(plugin_root)
@@ -536,7 +542,7 @@ def build(repo_root, out_root=None):
         os.path.join(plugin_root, ".claude-plugin", "plugin.json"),
         {
             "name": _PLUGIN_NAME,
-            "version": _PLUGIN_VERSION,
+            "version": plugin_version,
             "description": _DESCRIPTION,
             "author": {"name": _AUTHOR_NAME},
         },
@@ -579,7 +585,7 @@ def build(repo_root, out_root=None):
                     "name": _PLUGIN_NAME,
                     "source": "./plugins/auto-maintainer",
                     "description": _DESCRIPTION,
-                    "version": _PLUGIN_VERSION,
+                    "version": plugin_version,
                 }
             ],
         },
@@ -614,6 +620,32 @@ _VERSION_ASSIGN = f'_PLUGIN_VERSION = "{_PLUGIN_VERSION}"'
 # it may reference .rabbit freely.
 SELF_DEPLOY_MARKER = os.path.join(
     _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
+
+# Pattern that extracts the _PLUGIN_VERSION value from the build source on disk,
+# so build() can read the bumped version straight from the (rewritten) source of
+# truth rather than the stale module-level constant frozen at import (#311).
+_VERSION_RE = re.compile(r'^_PLUGIN_VERSION\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _read_version(repo_root):
+    """Return the _PLUGIN_VERSION value as written in repo_root's build source.
+
+    build() reads the version from disk (not the in-memory _PLUGIN_VERSION
+    constant, which is frozen at import) so that when the self-deploy flush calls
+    bump_version(repo_root) — which rewrites the constant ON DISK — the very next
+    build() in the SAME process stamps plugin.json + marketplace.json with the
+    BUMPED version, keeping the committed tree consistent with its source (#311).
+    Falls back to the in-memory constant only when the source cannot be read.
+    """
+    src_path = os.path.join(
+        repo_root, _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
+    try:
+        with open(src_path, "r", encoding="utf-8") as fh:
+            body = fh.read()
+    except OSError:
+        return _PLUGIN_VERSION
+    match = _VERSION_RE.search(body)
+    return match.group(1) if match else _PLUGIN_VERSION
 
 
 def package_commit_paths():
