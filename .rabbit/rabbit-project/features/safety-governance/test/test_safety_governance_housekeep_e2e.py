@@ -147,7 +147,7 @@ _LOAD_BEARING_DOCS = (
     "work_own_filings",
     "config.json",
     "2.1.0",
-    "2.2.0",
+    "2.4.0",
     # Dispositions (budget auto-resume vs fault latch).
     "ABORTED",
     "IDLE",

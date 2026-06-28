@@ -32,7 +32,7 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 
 ```json
 {
-  "schema_version": "2.2.0",
+  "schema_version": "2.4.0",
   "mode": "propose",
   "work_own_filings": true,
   "budget": {

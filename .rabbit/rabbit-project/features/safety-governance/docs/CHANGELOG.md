@@ -5,6 +5,19 @@ All notable changes to this feature are recorded here. Versions follow the
 `version` field, and the central-config `schema_version`
 (`GOVERNANCE_SCHEMA_VERSION`).
 
+## schema 2.4.0 — 2026-06-28
+
+- **Removed the dead `self_deploy` knob.** The `self_deploy` ACTION was removed
+  in #324 (the auto-maintainer is NOT self-deployable), so the knob no longer
+  gates anything.
+  - `DEFAULT_GOVERNANCE` no longer carries `self_deploy`; `_overlay` no longer
+    backfills it; the `self_deploy(config)` accessor is removed.
+  - A `config.json` still carrying a stale `self_deploy` key is TOLERATED — the
+    key is dropped (ignored), never surfaced on the loaded config.
+- **Schema bump `2.3.0` -> `2.4.0`** (`GOVERNANCE_SCHEMA_VERSION`): additive and
+  backward compatible — an existing `config.json` (with or without the stale
+  `self_deploy` key) loads unchanged.
+
 ## schema 2.2.0 — 2026-06-21
 
 - **Additive `work_own_filings` knob (default `true`).** The loop works its OWN
