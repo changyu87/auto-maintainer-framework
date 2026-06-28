@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.3.0).
+"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.4.0).
 
 Every behaviour in docs/spec.md has a test here. The feature provides
 deterministic decision surfaces over a machine-first, versioned CENTRAL config
 (config.json) — DESIGN §3.8:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.3.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.4.0),
      DEFAULT_GOVERNANCE, load_config(project_dir): reads project-local
      ${project_dir}/.auto-maintainer/config.json (absent => defaults),
      backfilling missing keys from defaults. null/absent ceiling => NO LIMIT.
@@ -83,20 +83,21 @@ def _write_json(path, payload):
 
 
 # ==========================================================================
-# Behaviour: the central config schema is versioned (2.3.0) and machine-first.
+# Behaviour: the central config schema is versioned (2.4.0) and machine-first.
 # DEFAULT_GOVERNANCE matches the spec's documented defaults: mode=propose,
 # budget.per_day_tokens=null, budget.window_tz=local, heartbeat.interval_minutes=3,
-# backoff.threshold=5, work_own_filings=True. The per_tick_tokens and
-# maintainer_repo fields are REMOVED.
+# backoff.threshold=5, work_own_filings=True. The per_tick_tokens, maintainer_repo,
+# and self_deploy fields are REMOVED.
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.3.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.4.0"
     d = sg.DEFAULT_GOVERNANCE
-    assert d["schema_version"] == "2.3.0"
+    assert d["schema_version"] == "2.4.0"
     assert d["mode"] == "propose"
-    # self_deploy (#309) defaults OFF (the self-modification gate, §3.8/§3.11.5).
-    assert d["self_deploy"] is False
+    # self_deploy (#309) is REMOVED from the schema (the self_deploy ACTION was
+    # removed in #324, so the knob is dead; schema 2.3.0 -> 2.4.0).
+    assert "self_deploy" not in d
     # Default per_day is NO LIMIT (null) per explicit user decision; a finite
     # ceiling is opt-in via config.json.
     assert d["budget"]["per_day_tokens"] is None
@@ -125,9 +126,9 @@ def test_maintainer_repo_is_fixed_constant():
 def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["schema_version"] == "2.3.0"
+        assert config["schema_version"] == "2.4.0"
         assert config["mode"] == "propose"
-        assert config["self_deploy"] is False
+        assert "self_deploy" not in config
         assert config["budget"]["per_day_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
         assert config["heartbeat"]["interval_minutes"] == 3
@@ -264,45 +265,35 @@ def test_work_own_filings_accessor_false_when_set():
 
 
 # ==========================================================================
-# E2E Behaviour: self_deploy (#309) defaults FALSE (the self-modification gate,
-# §3.8/§3.11.5). DEFAULT_GOVERNANCE carries it False; load_config backfills False
-# when absent and preserves an explicit true; the pure accessor self_deploy(config)
-# returns False by default, True when set.
+# E2E Behaviour: self_deploy is REMOVED (#324 removed the self_deploy ACTION, so
+# the knob is dead). DEFAULT_GOVERNANCE carries NO self_deploy; there is NO
+# self_deploy accessor; load_config does not surface it; and a config.json still
+# carrying a stale self_deploy key is TOLERATED — the key is dropped, never
+# surfaced on the loaded config.
 # ==========================================================================
 
-def test_default_self_deploy_is_false():
-    """self_deploy (#309) defaults False — the loop does NOT regenerate/commit its
-    own plugin tree unless explicitly opted in (a §3.8/§3.11.5 self-modification
-    effect)."""
-    assert sg.DEFAULT_GOVERNANCE["self_deploy"] is False
+def test_self_deploy_removed_from_defaults():
+    """The dead self_deploy knob is gone from DEFAULT_GOVERNANCE (#324)."""
+    assert "self_deploy" not in sg.DEFAULT_GOVERNANCE
+
+
+def test_self_deploy_accessor_removed():
+    """The self_deploy(config) accessor is removed (the knob is dead, #324)."""
+    assert not hasattr(sg, "self_deploy")
+
+
+def test_load_config_tolerates_and_drops_stale_self_deploy():
+    """A config.json still carrying a stale self_deploy key is TOLERATED — the
+    key is dropped, never surfaced on the loaded config (back-compat for an
+    existing config written before #324)."""
     with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"mode": "propose", "self_deploy": True})
         config = sg.load_config(project_dir)
-        assert config["self_deploy"] is False
-
-
-def test_load_config_backfills_self_deploy_false_when_absent():
-    """A config.json that omits self_deploy loads with the default False (the bump
-    to schema 2.3.0 is backward compatible)."""
-    with tempfile.TemporaryDirectory() as project_dir:
-        _write_json(_config_path(project_dir), {"mode": "auto-merge"})
-        config = sg.load_config(project_dir)
-        assert config["self_deploy"] is False
-
-
-def test_load_config_preserves_explicit_self_deploy_true():
-    """An explicit self_deploy=true (the human opt-IN) is surfaced unchanged."""
-    with tempfile.TemporaryDirectory() as project_dir:
-        _write_json(_config_path(project_dir), {"self_deploy": True})
-        config = sg.load_config(project_dir)
-        assert config["self_deploy"] is True
-
-
-def test_self_deploy_accessor_default_false_and_true_when_set():
-    """The pure accessor returns False by default and True when the config sets
-    self_deploy true."""
-    assert sg.self_deploy({}) is False
-    assert sg.self_deploy(sg.DEFAULT_GOVERNANCE) is False
-    assert sg.self_deploy({"self_deploy": True}) is True
+        assert "self_deploy" not in config
+        # the surviving fields still load.
+        assert config["mode"] == "propose"
+        assert config["backoff"]["threshold"] == 5
 
 
 # ==========================================================================
