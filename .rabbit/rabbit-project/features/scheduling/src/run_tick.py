@@ -181,17 +181,24 @@ def gh_pr_files_source(pr_ref, repo=None, runner=subprocess.run):
 DEFAULT_PR_FILES_SOURCE = gh_pr_files_source
 
 
-def git_commit_sink(repo_root, paths, message, runner=subprocess.run):
+def git_commit_sink(repo_root, paths, message, default_branch,
+                    runner=subprocess.run):
     """Production git commit sink for the self-deploy PACKAGE flush (#309): stage
     the given `paths` (repo-root-relative) under `repo_root`, create ONE commit
-    with `message`, and PUSH it to the checkout's current upstream. Returns the
-    new commit's short sha.
+    with `message`, and PUSH it to remote `default_branch`. Returns the new
+    commit's short sha.
 
     The push (#312) PUBLISHES the regenerated tree to remote main — without it the
     bump+commit lands ONLY in the loop's local checkout while INTEGRATE merges PRs
     server-side, so remote main (where CI runs the build-drift guards) would stay
-    drifted/RED until a human pushed. `git push` (no refspec) publishes the current
-    branch to its configured upstream, the same checkout INTEGRATE advances against.
+    drifted/RED until a human pushed. The push uses an EXPLICIT
+    `origin HEAD:<default_branch>` refspec (#320), NOT a bare `git push`: the
+    immediately-preceding git_sync_sink hard-resets the checkout onto
+    `origin/<default_branch>`, which leaves a common CI checkout in detached-HEAD
+    state or without upstream tracking — a bare push there raises and aborts the
+    flush, leaving remote main drifted (the exact outcome #312 set out to
+    prevent). Naming the remote and dest branch makes the push robust regardless
+    of the checkout's branch/upstream state.
 
     The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so the
     commit+push is unit-testable with a fake — no real git in the unit suite. Only
@@ -200,7 +207,8 @@ def git_commit_sink(repo_root, paths, message, runner=subprocess.run):
     carry their own auth/identity."""
     runner(["git", "-C", repo_root, "add", "--"] + list(paths), check=True)
     runner(["git", "-C", repo_root, "commit", "-m", message], check=True)
-    runner(["git", "-C", repo_root, "push"], check=True)
+    runner(["git", "-C", repo_root, "push", "origin",
+            f"HEAD:{default_branch}"], check=True)
     out = runner(["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
                  capture_output=True, text=True, check=True)
     return out.stdout.strip()
@@ -2088,18 +2096,22 @@ def _flush_package(integration_result, mode, gov, project_dir, repo,
     repo_root = _self_deploy_repo_root(project_dir)
     if repo_root is None:
         return False, None, "not-self-repo"
+    default_branch = vi.gh_default_branch_source(repo)
     # All gates pass. INTEGRATE merged server-side, so the local checkout is stale
     # (#313): SYNC it to the merged remote default branch FIRST, so the build
     # regenerates the tree + version from the merged source, not a stale base.
-    sync_sink(repo_root, vi.gh_default_branch_source(repo))
+    sync_sink(repo_root, default_branch)
     # Then bump the PATCH version IN source (the new constant is the verbatim
     # source of truth the build reads), regenerate the tree from it, and commit
-    # the regenerated artifacts + the bumped source atomically.
+    # the regenerated artifacts + the bumped source atomically, then PUSH to
+    # remote `default_branch` with an explicit refspec (#320) — the sync above
+    # leaves the checkout detached/upstream-less, so a bare push would fail.
     version = bp.bump_version(repo_root)
     bp.build(repo_root)
     commit_sink(repo_root, bp.package_commit_paths(),
                 f"release(packaging-config): v{version} — self-deploy merged "
-                f"shipped-src change (#309)")
+                f"shipped-src change (#309)",
+                default_branch)
     return True, version, None
 
 
