@@ -1,5 +1,26 @@
 # Changelog — packaging-config
 
+## 0.7.11 — version-integrity restore release: deploy #310
+
+- Bump `_PLUGIN_VERSION` 0.7.10 -> 0.7.11 (`plugin.json` + `marketplace.json`).
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so the loop's #310 (dormant
+  self-deploy capability, default-OFF) reaches the marketplace under a PROPER
+  version. #310 regenerated the committed lib mirrors in-PR but did NOT bump the
+  plugin version, so main's committed tree carried new bytes under the SAME
+  0.7.10 as the released v0.7.10 — a version-integrity break, and a
+  `/plugin marketplace update` keyed on the version would not even fetch it. No
+  build LOGIC change beyond the version bump. self_deploy stays OFF by default
+  (dormant); this release does NOT enable it.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_11_and_consistent` (assert 0.7.11 in
+  `plugin.json` + `marketplace.json`); add
+  `test_shipped_default_keeps_self_deploy_off` +
+  `test_committed_default_keeps_self_deploy_off` asserting the shipped/committed
+  `lib/safety_governance.py` defaults `self_deploy` to False and the
+  `default-config/config.json` does not enable it; advance the housekeep doc
+  baseline (486 -> 503) for the appended per-release section.
+
 ## 0.7.10 — empty-skip + build-drift-fix release: deploy #307
 
 - Bump `_PLUGIN_VERSION` 0.7.9 -> 0.7.10 (`plugin.json` + `marketplace.json`).
