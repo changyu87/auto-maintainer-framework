@@ -183,16 +183,24 @@ DEFAULT_PR_FILES_SOURCE = gh_pr_files_source
 
 def git_commit_sink(repo_root, paths, message, runner=subprocess.run):
     """Production git commit sink for the self-deploy PACKAGE flush (#309): stage
-    the given `paths` (repo-root-relative) under `repo_root` and create ONE commit
-    with `message`. Returns the new commit's short sha.
+    the given `paths` (repo-root-relative) under `repo_root`, create ONE commit
+    with `message`, and PUSH it to the checkout's current upstream. Returns the
+    new commit's short sha.
+
+    The push (#312) PUBLISHES the regenerated tree to remote main — without it the
+    bump+commit lands ONLY in the loop's local checkout while INTEGRATE merges PRs
+    server-side, so remote main (where CI runs the build-drift guards) would stay
+    drifted/RED until a human pushed. `git push` (no refspec) publishes the current
+    branch to its configured upstream, the same checkout INTEGRATE advances against.
 
     The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so the
-    commit is unit-testable with a fake — no real git in the unit suite. Only the
-    explicitly-listed paths are staged (never `git add -A`), so the commit is
+    commit+push is unit-testable with a fake — no real git in the unit suite. Only
+    the explicitly-listed paths are staged (never `git add -A`), so the commit is
     bounded to the regenerated plugin tree + the bumped version source. `gh`/git
     carry their own auth/identity."""
     runner(["git", "-C", repo_root, "add", "--"] + list(paths), check=True)
     runner(["git", "-C", repo_root, "commit", "-m", message], check=True)
+    runner(["git", "-C", repo_root, "push"], check=True)
     out = runner(["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
                  capture_output=True, text=True, check=True)
     return out.stdout.strip()

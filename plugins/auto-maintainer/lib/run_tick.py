@@ -187,16 +187,24 @@ DEFAULT_PR_FILES_SOURCE = gh_pr_files_source
 
 def git_commit_sink(repo_root, paths, message, runner=subprocess.run):
     """Production git commit sink for the self-deploy PACKAGE flush (#309): stage
-    the given `paths` (repo-root-relative) under `repo_root` and create ONE commit
-    with `message`. Returns the new commit's short sha.
+    the given `paths` (repo-root-relative) under `repo_root`, create ONE commit
+    with `message`, and PUSH it to the checkout's current upstream. Returns the
+    new commit's short sha.
+
+    The push (#312) PUBLISHES the regenerated tree to remote main — without it the
+    bump+commit lands ONLY in the loop's local checkout while INTEGRATE merges PRs
+    server-side, so remote main (where CI runs the build-drift guards) would stay
+    drifted/RED until a human pushed. `git push` (no refspec) publishes the current
+    branch to its configured upstream, the same checkout INTEGRATE advances against.
 
     The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so the
-    commit is unit-testable with a fake — no real git in the unit suite. Only the
-    explicitly-listed paths are staged (never `git add -A`), so the commit is
+    commit+push is unit-testable with a fake — no real git in the unit suite. Only
+    the explicitly-listed paths are staged (never `git add -A`), so the commit is
     bounded to the regenerated plugin tree + the bumped version source. `gh`/git
     carry their own auth/identity."""
     runner(["git", "-C", repo_root, "add", "--"] + list(paths), check=True)
     runner(["git", "-C", repo_root, "commit", "-m", message], check=True)
+    runner(["git", "-C", repo_root, "push"], check=True)
     out = runner(["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
                  capture_output=True, text=True, check=True)
     return out.stdout.strip()
@@ -206,6 +214,37 @@ def git_commit_sink(repo_root, paths, message, runner=subprocess.run):
 # inject a deterministic stub instead so the suite runs no real git; the shipped
 # run_tick (no injected sink) commits the regenerated tree via git.
 DEFAULT_PACKAGE_COMMIT_SINK = git_commit_sink
+
+
+def git_sync_sink(repo_root, default_branch, runner=subprocess.run):
+    """Production git sync sink for the self-deploy PACKAGE flush (#313): before
+    the build regenerates the tree, bring the LOCAL checkout in line with the
+    just-merged remote default branch.
+
+    INTEGRATE merges PRs SERVER-SIDE (`gh pr merge`), so remote main advances on
+    GitHub while the loop's local checkout stays stale; building over that stale
+    tree (#313) would regenerate artifacts that do not reflect the merged change.
+    This fetches `origin` and hard-resets `repo_root` onto
+    `origin/<default_branch>` so `bp.build` reads the merged source. Returns the
+    short sha the checkout now points at.
+
+    The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so the
+    sync is unit-testable with a fake — no real git in the unit suite. `git`
+    carries its own auth/identity."""
+    runner(["git", "-C", repo_root, "fetch", "origin", default_branch],
+           check=True)
+    runner(["git", "-C", repo_root, "reset", "--hard",
+            f"origin/{default_branch}"], check=True)
+    out = runner(["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
+                 capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+# The production default git sync sink for the self-deploy PACKAGE flush. Tests
+# inject a deterministic stub instead so the suite runs no real git; the shipped
+# run_tick (no injected sink) syncs the checkout to the merged remote base via
+# git before building.
+DEFAULT_PACKAGE_SYNC_SINK = git_sync_sink
 
 # The durable-state document keys under which the last tick's pulled work_items
 # (and triaged work_orders, when the active route produced them) are persisted,
@@ -1997,7 +2036,7 @@ def _self_deploy_repo_root(project_dir):
 
 
 def _flush_package(integration_result, mode, gov, project_dir, repo,
-                   files_source, commit_sink):
+                   files_source, commit_sink, sync_sink):
     """Regenerate + commit the committed plugin tree after a shipped-src merge
     (out-of-band, #309). Returns (deployed, version, reason):
       - deployed: True when a regenerate+commit happened.
@@ -2020,12 +2059,15 @@ def _flush_package(integration_result, mode, gov, project_dir, repo,
       4. _self_deploy_repo_root(project_dir) resolves — the maintained project is
          the framework repo. Not the framework repo -> reason "not-self-repo".
 
-    When all gates pass it bumps the PATCH version (bp.bump_version), regenerates
-    the tree (bp.build — a verbatim product of build()), and commits the tree +
-    version source in ONE commit via the injectable `commit_sink`. `files_source`
-    is the injectable per-PR changed-files source. Both default to the live gh/git
-    seams; tests inject stubs so the suite touches no network and runs no real
-    git."""
+    When all gates pass it first SYNCS the local checkout to the just-merged
+    remote default branch (`sync_sink`, #313) — INTEGRATE merges PRs server-side,
+    so the local tree is stale and a build over it would regenerate artifacts that
+    do not reflect the merged change — then bumps the PATCH version
+    (bp.bump_version), regenerates the tree (bp.build — a verbatim product of
+    build()), and commits the tree + version source in ONE commit via the
+    injectable `commit_sink`. `files_source` is the injectable per-PR
+    changed-files source. All seams default to the live gh/git seams; tests inject
+    stubs so the suite touches no network and runs no real git."""
     if not sg.self_deploy(gov):
         return False, None, "gated"
     if bp is None:
@@ -2050,9 +2092,13 @@ def _flush_package(integration_result, mode, gov, project_dir, repo,
     repo_root = _self_deploy_repo_root(project_dir)
     if repo_root is None:
         return False, None, "not-self-repo"
-    # All gates pass: bump the PATCH version IN source (the new constant is the
-    # verbatim source of truth the build reads), regenerate the tree from it, and
-    # commit the regenerated artifacts + the bumped source atomically.
+    # All gates pass. INTEGRATE merged server-side, so the local checkout is stale
+    # (#313): SYNC it to the merged remote default branch FIRST, so the build
+    # regenerates the tree + version from the merged source, not a stale base.
+    sync_sink(repo_root, vi.gh_default_branch_source(repo))
+    # Then bump the PATCH version IN source (the new constant is the verbatim
+    # source of truth the build reads), regenerate the tree from it, and commit
+    # the regenerated artifacts + the bumped source atomically.
     version = bp.bump_version(repo_root)
     bp.build(repo_root)
     commit_sink(repo_root, bp.package_commit_paths(),
@@ -2657,7 +2703,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              return_run_result=False, resume=False, spent=0,
              report_sink=None, discoveries=None, escalate_sink=None,
              pr_state_source=None, pr_files_source=None,
-             package_commit_sink=None):
+             package_commit_sink=None, package_sync_sink=None):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -3040,7 +3086,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         package_deployed, package_version, package_reason = _flush_package(
             integration_result, mode, gov, project_dir, runtime.get("repo"),
             pr_files_source or DEFAULT_PR_FILES_SOURCE,
-            package_commit_sink or DEFAULT_PACKAGE_COMMIT_SINK)
+            package_commit_sink or DEFAULT_PACKAGE_COMMIT_SINK,
+            package_sync_sink or DEFAULT_PACKAGE_SYNC_SINK)
     else:
         package_deployed, package_version, package_reason = False, None, "halt"
     if package_deployed:
