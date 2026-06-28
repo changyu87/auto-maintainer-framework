@@ -24,6 +24,11 @@ Public surface (slice 2 — TRIAGE validity gate):
   - CROSS_CUTTING_RISK_SLOT — the fsm-contracts slot registration descriptor.
   - normalize_cross_cutting_risk() — pure normalizer/validator for the batch
     annotation (DESIGN §3.5.9; risk only on >=2 distinct features + a reason).
+  - target_features_for() — pure detection of a WorkItem's blast-radius target
+    feature(s) from authoritative signals (prefixed labels, a Component: body
+    line, a conventional title prefix); TRIAGE stamps the result onto the
+    WorkOrder's `target_feature` field so PRIORITIZE reads an authoritative
+    field instead of re-scraping (issue #258).
 
 The only non-deterministic edge — the live `gh` call — sits behind an
 INJECTABLE source (Pull(source=...)), so tests drive PULL with a stub over
@@ -41,6 +46,7 @@ Deprecation criterion: Superseded when the tracker-read model changes
 """
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -307,7 +313,133 @@ class Pull:
 # the field set). Distinct from both the feature version and WorkItem's version.
 # 1.1.0: additive `comments` field, carried from the source WorkItem so the
 # implementer (which reads work_orders, not work_items) sees the human thread.
-WORK_ORDER_SCHEMA_VERSION = "1.1.0"
+# 1.2.0: additive `target_feature` field (issue #258) — the order's blast-radius
+# target feature(s), computed by TRIAGE from authoritative signals so PRIORITIZE
+# reads an authoritative field instead of re-scraping labels/body/title.
+WORK_ORDER_SCHEMA_VERSION = "1.2.0"
+
+
+# --------------------------------------------------------------------------
+# Target-feature (blast-radius) detection (issue #258). TRIAGE — the WorkOrder
+# producer — owns this computation and stamps the result onto each order's
+# `target_feature` field, so PRIORITIZE reads a single authoritative field
+# instead of re-deriving the feature from labels/body/title at PRIORITIZE time.
+# The signals are AUTHORITATIVE only (the same set #214/#257 proved correct for
+# same-feature serialization): prefixed labels, a Component:/Feature: body line,
+# and a conventional title prefix — never generic labels nor a bare
+# conventional-commit type. An order with no provable feature gets an EMPTY list.
+# --------------------------------------------------------------------------
+
+# The label-prefix convention that authoritatively declares a target feature:
+# `feature:<name>` (the maintainer's own filing convention, e.g.
+# `feature:scheduling`) or `component:<name>`. ONLY prefixed labels name a
+# feature — generic labels (`bug`, `enhancement`, `filed-by:...`, `priority:*`)
+# are NOT feature keys.
+_FEATURE_LABEL_PREFIXES = ("feature:", "component:")
+
+# The `Component:`/`Feature:` line convention in a free-form issue body, e.g.
+# "Component: scheduling" or "Scope: ... Component: scheduling, prioritize".
+# Captures the remainder of the line for splitting into one or more features.
+_COMPONENT_LINE_RE = re.compile(
+    r"^\s*(?:component|feature)s?\s*:\s*(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Connectors that separate multiple features in a multi-feature blast radius.
+# Deliberately EXCLUDES the word "and" — an "and" split can mis-cut a feature
+# name (e.g. "command-and-control") and is unsafe to infer a shared radius from
+# (issue #214 guidance item 3); a real multi-feature radius uses punctuation.
+_FEATURE_SPLIT_RE = re.compile(r"[+,&/]")
+
+# The conventional title-prefix convention that names a target feature for
+# LABEL-LESS issues (issue #257), matching `name: ...` (the bare prefix, e.g.
+# `scheduling: ...`) and `type(scope): ...` (a conventional-commit header, e.g.
+# `feat(scheduling): ...` / `fix(work-intake): ...`). The optional `(scope)` is
+# captured separately so a scoped header yields the scope as the feature; a bare
+# prefix yields the name.
+_TITLE_PREFIX_RE = re.compile(r"^\s*([^\s():]+)\s*(?:\(([^)]+)\))?\s*:")
+
+# Bare conventional-commit TYPES used without a scope (e.g. `fix: x`,
+# `docs: y`). These are NOT feature names — grouping on a bare type would
+# over-serialize unrelated work orders (the #216 regression), so a `name:`
+# prefix whose name is a bare type claims NO feature. A `type(scope):` header is
+# unaffected: the scope (not the type) is the feature key.
+_CONVENTIONAL_COMMIT_TYPES = frozenset({
+    "feat", "fix", "docs", "chore", "refactor",
+    "test", "perf", "build", "ci", "style",
+})
+
+
+def _normalize_feature(token):
+    """Normalize a raw feature token to a comparison key: trimmed, lower-cased.
+    Returns None for an empty/whitespace token so it never claims a feature."""
+    key = token.strip().lower()
+    return key or None
+
+
+def _title_feature(title):
+    """Derive the target feature from a conventional title prefix, or None.
+
+    Recognizes `name: ...` (take `name`, e.g. `scheduling: ...`) and
+    `type(scope): ...` (take `scope`, e.g. `feat(scheduling): ...`). A bare
+    conventional-commit type used WITHOUT a scope (`fix: x`, `docs: y`) names NO
+    feature, so unrelated `fix:`/`docs:` orders are not falsely grouped (the
+    #216 over-serialization regression); a scoped header is unaffected because
+    the scope, not the type, is the key.
+    """
+    match = _TITLE_PREFIX_RE.match(title or "")
+    if not match:
+        return None
+    name, scope = match.group(1), match.group(2)
+    if scope is not None:
+        # `type(scope):` — the scope is the feature, whatever the type.
+        return _normalize_feature(scope)
+    # `name:` — a bare conventional-commit type names no feature.
+    if name.strip().lower() in _CONVENTIONAL_COMMIT_TYPES:
+        return None
+    return _normalize_feature(name)
+
+
+def target_features_for(labels=None, body="", title=""):
+    """The SORTED list of target features a WorkOrder's blast radius touches,
+    derived from AUTHORITATIVE signals only (issue #258):
+
+    1. `feature:<name>` / `component:<name>` prefixed labels (the filing
+       convention) — generic labels are ignored.
+    2. a `Component:`/`Feature:` line in the body, split on +,&/, into one or
+       more feature names (never on the word "and").
+    3. a conventional title prefix — `name:` or `type(scope):` — which covers
+       LABEL-LESS issues (issue #257); a bare conventional-commit type
+       (`fix:`, `docs:`) names no feature.
+
+    Returns an EMPTY list when no feature is provable. The result is SORTED so
+    the stamped `target_feature` field is deterministic (byte-identical for the
+    same inputs). Pure and deterministic.
+    """
+    features = set()
+
+    for label in labels or []:
+        if not isinstance(label, str):
+            continue
+        low = label.lower()
+        for prefix in _FEATURE_LABEL_PREFIXES:
+            if low.startswith(prefix):
+                name = _normalize_feature(label[len(prefix):])
+                if name:
+                    features.add(name)
+                break
+
+    for match in _COMPONENT_LINE_RE.finditer(body or ""):
+        for token in _FEATURE_SPLIT_RE.split(match.group(1)):
+            name = _normalize_feature(token)
+            if name:
+                features.add(name)
+
+    title_feature = _title_feature(title)
+    if title_feature:
+        features.add(title_feature)
+
+    return sorted(features)
 
 
 @dataclass(eq=True)
@@ -316,7 +448,10 @@ class WorkOrder:
 
     `decision` is "accepted" or "rejected"; `reason` records why a rejected item
     was gated out (empty for accepted). `work_item_id` links back to the source
-    WorkItem.id. `to_dict`/`from_dict` give a machine-first, versioned
+    WorkItem.id. `target_feature` is the order's blast-radius target feature(s),
+    a list of normalized feature keys TRIAGE computes from authoritative signals
+    (issue #258), so PRIORITIZE reads an authoritative field instead of
+    re-scraping. `to_dict`/`from_dict` give a machine-first, versioned
     representation suitable for the `work_orders` blackboard slot.
     """
 
@@ -332,6 +467,12 @@ class WorkOrder:
     # The source issue's human follow-up discussion, carried from the WorkItem
     # so the implementer (which reads work_orders) sees the full thread.
     comments: List[dict] = field(default_factory=list)
+    # The order's blast-radius target feature(s) (issue #258), a SORTED list of
+    # normalized feature keys TRIAGE computes from authoritative signals
+    # (prefixed labels, a Component: body line, a conventional title prefix).
+    # Empty when no feature is provable. PRIORITIZE reads this authoritative
+    # field for same-feature serialization instead of re-scraping.
+    target_feature: List[str] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -346,6 +487,7 @@ class WorkOrder:
             "reason": self.reason,
             "created_at": self.created_at,
             "comments": [dict(c) for c in self.comments],
+            "target_feature": list(self.target_feature),
         }
 
     @classmethod
@@ -361,6 +503,7 @@ class WorkOrder:
             reason=d.get("reason", ""),
             created_at=d.get("created_at", ""),
             comments=[dict(c) for c in d.get("comments", [])],
+            target_feature=list(d.get("target_feature", [])),
         )
 
 
@@ -559,6 +702,11 @@ class Triage:
                 reason="",
                 created_at=item.created_at,
                 comments=[dict(c) for c in item.comments],
+                # Stamp the blast-radius target feature(s) from authoritative
+                # signals (issue #258) so PRIORITIZE reads this field instead of
+                # re-scraping labels/body/title at PRIORITIZE time.
+                target_feature=target_features_for(
+                    labels=item.labels, body=item.body, title=item.title),
             ))
         # ALWAYS write the cross_cutting_risk slot (DESIGN §3.5.9) — a default
         # no-risk verdict when no annotation — so VERIFY (§3.7.6) can always

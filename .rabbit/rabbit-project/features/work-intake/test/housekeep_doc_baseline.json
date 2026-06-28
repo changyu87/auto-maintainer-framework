@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0.0",
   "owner": "changyu87",
-  "deprecation_criterion": "Superseded by the next work-intake housekeep wave's baseline; a re-bloat regression guard for the post-FT-B doc surfaces.",
-  "description": "Re-baselined for FT-B (TRIAGE cross_cutting_risk slot, DESIGN §3.5.9). The original measured doc-slim wave is complete; FT-B ADDITIVELY documents a new public surface (the CrossCuttingRisk slot + normalize_cross_cutting_risk), which legitimately grows spec.md/contract.md past the slim-wave baseline. This baseline now records the post-FT-B doc line counts plus a one-line margin, so the housekeep gate continues as a re-bloat regression guard (current docs must stay STRICTLY smaller than this) while the load-bearing-token + cleanup gates remain intact.",
-  "baseline_commit": "6137941",
+  "deprecation_criterion": "Superseded by the next work-intake housekeep wave's baseline; a re-bloat regression guard for the post-#258 doc surfaces.",
+  "description": "Re-baselined for issue #258 (the authoritative target_feature blast-radius field on WorkOrder, set by TRIAGE). #258 ADDITIVELY documents a new public surface (the WorkOrder.target_feature field + the pure target_features_for detection), which legitimately grows spec.md/contract.md past the prior post-FT-B baseline. This baseline now records the post-#258 doc line counts plus a one-line margin, so the housekeep gate continues as a re-bloat regression guard (current docs must stay STRICTLY smaller than this) while the load-bearing-token + cleanup gates remain intact.",
+  "baseline_commit": "post-#258",
   "docs": {
-    "docs/spec.md": 240,
-    "docs/contract.md": 47
+    "docs/spec.md": 247,
+    "docs/contract.md": 48
   }
 }

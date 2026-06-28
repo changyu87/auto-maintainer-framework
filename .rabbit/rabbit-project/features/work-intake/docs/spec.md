@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.7.0
+version: 0.8.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -72,18 +72,25 @@ Turn raw `work_items` into validated `work_orders`. Slice 2 implements a
 
 1. **`WorkOrder` slot schema** — a validated, decision-carrying item:
    `{ id, work_item_id, title, body, url, labels, decision: accepted|rejected,
-   reason, created_at, comments: [{author, created_at, body}] }`. Machine-first,
-   versioned. Written to the `work_orders` slot, consumed downstream
-   (PRIORITIZE/IMPLEMENT, future). `comments` is carried verbatim from the
-   source `WorkItem` so the implementer — which reads `work_orders`, not
-   `work_items` — also sees the human discussion thread.
+   reason, created_at, comments: [{author, created_at, body}], target_feature:
+   [str] }`. Machine-first, versioned. Written to the `work_orders` slot,
+   consumed downstream (PRIORITIZE/IMPLEMENT, future). `comments` is carried
+   verbatim from the source `WorkItem` so the implementer — which reads
+   `work_orders`, not `work_items` — also sees the human discussion thread.
+   `target_feature` is the order's blast-radius target feature(s) (issue #258),
+   the SORTED list of normalized feature keys TRIAGE computes via the pure
+   `target_features_for` (prefixed labels, a `Component:`/`Feature:` body line, a
+   conventional title prefix; empty when none provable) so PRIORITIZE reads an
+   authoritative field instead of re-scraping.
 2. **`TRIAGE` state** — `run(TickContext) -> StateResult`: reads `work_items`,
    applies a deterministic validity gate (well-formed = has a title; not stale =
    updated within a hardcoded window; in-scope = open, non-draft), maps each
-   accepted item to a `WorkOrder` (1:1, no decompose), writes the `work_orders`
-   slot, emits `OK` if any accepted else `EMPTY`. Rejected items may be recorded
-   with a reason but are not forwarded. Manifest `{reads: ["work_items"],
-   writes: ["work_orders"], emits: ["OK","EMPTY"]}`. Script-tier, no AI.
+   accepted item to a `WorkOrder` (1:1, no decompose) and stamps its
+   `target_feature` from the authoritative signals (#258), writes the
+   `work_orders` slot, emits `OK` if any accepted else `EMPTY`. Rejected items
+   may be recorded with a reason but are not forwarded. Manifest `{reads:
+   ["work_items"], writes: ["work_orders"], emits: ["OK","EMPTY"]}`. Script-tier,
+   no AI.
 3. **Determinism** — pure rules over the in-memory `work_items`; no network, no
    AI. The stale window is hardcoded (config deferred, #17-style).
 

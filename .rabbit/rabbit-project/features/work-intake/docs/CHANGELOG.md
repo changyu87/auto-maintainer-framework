@@ -4,6 +4,35 @@ All notable changes to this feature are recorded here. Versions follow the
 `version:` frontmatter in `spec.md` / `contract.md` and the `feature.json`
 `version` field.
 
+## feature 0.8.0 / spec 0.8.0 / contract 0.8.0 — 2026-06-27
+
+- **Authoritative `target_feature` blast-radius field on WorkOrder** (#258, the
+  durable Machine-First fix deferred from #214). The same-feature serialization
+  fix re-derived an order's target feature in PRIORITIZE by re-scraping
+  labels/body/title at PRIORITIZE time. TRIAGE — the WorkOrder producer — now
+  computes the blast-radius target feature(s) once and stamps them onto a new
+  `target_feature` field, so PRIORITIZE reads a single authoritative field.
+- New pure `target_features_for(labels, body, title) -> [str]`: detects the
+  target feature(s) from the SAME authoritative signals #214/#257 proved correct
+  (`feature:`/`component:` prefixed labels, a `Component:`/`Feature:` body line,
+  a conventional title prefix `name:` / `type(scope):`), unioned, deduped, and
+  SORTED for determinism; generic labels and a bare conventional-commit type name
+  no feature; an order with no provable feature gets an empty list.
+- `WorkOrder` gains the additive `target_feature: [str]` field (default empty),
+  bumping `WORK_ORDER_SCHEMA_VERSION` to `1.2.0`; `to_dict`/`from_dict` carry it
+  and `from_dict` tolerates its absence (older slots → empty list). `Triage.run`
+  stamps each accepted order's `target_feature` via `target_features_for`.
+- prioritize consumes the field: `_features_for` returns the order's
+  `target_feature` when the key is present (even an explicit empty list — a
+  proven no-feature order), falling back to its own re-derivation only when the
+  field is MISSING (back-compat for older slots / orders built outside TRIAGE).
+- New tests: `target_features_for` detection (each signal, sorting, "and" not a
+  connector, bare-type exclusion, case-insensitivity, union); WorkOrder field
+  roundtrip + version bump + absent-field tolerance; TRIAGE stamping from each
+  signal and the empty case; prioritize reading the field (precedence over
+  stale labels, explicit-empty = no feature, multi-feature claim, missing-field
+  fallback). The housekeep doc baseline is re-captured to the post-#258 surface.
+
 ## feature 0.7.0 / spec 0.7.0 / contract 0.7.0 — 2026-06-25
 
 - **PULL honors the `work_own_filings` policy knob (§3.11.5 default-ON).** The

@@ -139,8 +139,10 @@ def test_workorder_comments_roundtrip_and_version():
     d = order.to_dict()
     assert d["comments"] == order.comments
     assert wi.WorkOrder.from_dict(d) == order
-    assert wi.WORK_ORDER_SCHEMA_VERSION == "1.1.0"
-    assert wi.WORK_ORDERS_SLOT["version"] == "1.1.0"
+    # The additive target_feature field (issue #258) bumped the WorkOrder schema
+    # to 1.2.0; comments are still carried unchanged.
+    assert wi.WORK_ORDER_SCHEMA_VERSION == "1.2.0"
+    assert wi.WORK_ORDERS_SLOT["version"] == "1.2.0"
 
 
 # ==========================================================================

@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.7.0
+version: 0.8.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version). See spec.md / feature.json.
 ---
@@ -13,8 +13,9 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
     "files": [
       "WorkItem slot schema (versioned, machine-first)",
       "PULL state: run(TickContext) -> StateResult, writes work_items, emits OK|EMPTY",
-      "WorkOrder slot schema (versioned, machine-first; decision-carrying)",
-      "TRIAGE state: run(TickContext) -> StateResult, reads work_items, writes work_orders + cross_cutting_risk, emits OK|EMPTY (deterministic validity gate)",
+      "WorkOrder slot schema (versioned, machine-first; decision-carrying; carries target_feature: the TRIAGE-stamped blast-radius feature key(s), #258)",
+      "target_features_for(labels, body, title) -> [str]: pure detection of a WorkOrder's blast-radius target feature(s) from authoritative signals (prefixed labels, a Component:/Feature: body line, a conventional title prefix; sorted, empty when none provable) — TRIAGE stamps the result so PRIORITIZE reads an authoritative field (#258)",
+      "TRIAGE state: run(TickContext) -> StateResult, reads work_items, writes work_orders + cross_cutting_risk, emits OK|EMPTY (deterministic validity gate; stamps each order's target_feature)",
       "CrossCuttingRisk slot schema (versioned, machine-first; {risk, features, reason}) + CROSS_CUTTING_RISK_SLOT descriptor; TRIAGE ALWAYS writes cross_cutting_risk (default no-risk) for VERIFY (DESIGN §3.5.9)",
       "normalize_cross_cutting_risk(annotation) -> CrossCuttingRisk: pure normalizer/validator (risk=true only on >=2 distinct features + non-empty reason; rejects malformed input)",
       "DiscoveredIssue slot schema (versioned, machine-first; the outbound discovery shape)",
