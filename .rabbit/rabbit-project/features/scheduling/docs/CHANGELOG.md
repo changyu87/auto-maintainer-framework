@@ -1,5 +1,44 @@
 # scheduling — Changelog
 
+## feature 0.28.0 — 2026-06-28
+
+- **File-referenced dispatch prompt (`prompt_path`).** Each agent-state
+  dispatch's rendered invocation envelope is now delivered by FILE REFERENCE
+  instead of inline in the `--step`/`--resume` stdout JSON, symmetric with the
+  already-file-based subagent OUTPUT. The pause previously emitted
+  `dispatches[].prompt` (`ad.render(env)`) INLINE; for a large envelope the Bash
+  stdout was truncated, forcing the orchestrator to re-read the whole output to
+  relay the prompt — pulling the entire envelope into its context.
+  - **`_pause_result` writes the envelope to a file.** For each dispatch it
+    WRITES `ad.render(env)` to a deterministic ABSOLUTE file under `output_dir`,
+    named parallel to `output_path` (`<state>-<di>-<ii>.json` →
+    `<state>-<di>-<ii>.prompt.md`), sets `rec['prompt_path']`, and DROPS the
+    inline `prompt` from the rec. Written at the PAUSE (where stale OUTPUT files
+    are cleared) and overwritten each emit, so a crash-safety re-emit reproduces
+    the SAME `prompt_path` with byte-identical content (rendered from the durable
+    checkpoint round-trip, like `output_path`).
+  - **The `--step`/`--resume` JSON CLI dispatch entries carry `prompt_path`** (a
+    small absolute path) and NOT the multi-KB inline prompt, so stdout stays small
+    (no truncation). All other fields (`subagent_type`, `description`,
+    `isolation`, `output_path`, `writes`, `cardinality`, `item`) are unchanged.
+  - **The tick executor skill (`ship/skills/tick/SKILL.md`, v0.6.0)** dispatches
+    each entry as `Agent(subagent_type=…, description=…, prompt=<a SHORT reference
+    to entry.prompt_path telling the subagent to read its envelope file IN FULL
+    and follow it literally>, isolation=…)`. The orchestrator does NOT open/read
+    `prompt_path` itself — the SUBAGENT reads it (keeping the envelope out of the
+    orchestrator's context). The one-step/resume rules, refire loop, and spend
+    metering are unchanged.
+  - **Envelope CONTENT unchanged** — only its delivery (file vs inline) changes.
+    `agent_dispatch.render` and the subagent agent `.md` files are untouched.
+  - **Tests:** `test_dispatch_prompt_path_e2e.py` proves the prompt file is
+    written at a deterministic absolute `prompt_path` under `output_dir`, its
+    content equals `ad.render(env)`, the `--step` JSON carries `prompt_path` and
+    not the inline prompt, and a re-emit reproduces byte-identical content; the
+    `test_ship_tick_skill_e2e.py` structural tests assert the SKILL.md documents
+    `prompt_path` + the read-the-file dispatch + the "orchestrator does not read
+    the prompt" rule. Consumes `agent-dispatch`/`adapter-wiring` UNCHANGED; edits
+    live ONLY in `run_tick.py` + the tick skill + docs/tests.
+
 ## feature 0.27.0 — 2026-06-21
 
 - **Loopback opt-out wiring — PULL honors `work_own_filings` (§3.11.5).**

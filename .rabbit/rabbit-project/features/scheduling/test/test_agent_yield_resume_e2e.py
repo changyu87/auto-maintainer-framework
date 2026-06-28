@@ -734,4 +734,12 @@ def test_paused_dispatch_crash_safety_still_works_via_checkpoint():
                         state_path=state_path, journal_path=journal_path,
                         source=_stub_source())
     assert again["status"] == "paused" and again["state"] == "TRIAGE", again
-    assert again["dispatches"][0]["prompt"] == first["dispatches"][0]["prompt"]
+    # The re-emit reproduces the same file-referenced prompt_path with
+    # byte-identical envelope content (rendered from the durable checkpoint).
+    assert (again["dispatches"][0]["prompt_path"]
+            == first["dispatches"][0]["prompt_path"]), (first, again)
+    with open(again["dispatches"][0]["prompt_path"]) as _f:
+        again_rendered = _f.read()
+    with open(first["dispatches"][0]["prompt_path"]) as _f:
+        first_rendered = _f.read()
+    assert again_rendered == first_rendered, (first_rendered, again_rendered)
