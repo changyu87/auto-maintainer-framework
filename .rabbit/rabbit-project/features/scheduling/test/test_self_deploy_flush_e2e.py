@@ -331,6 +331,71 @@ def test_git_commit_sink_pushes_the_self_deploy_commit():
     assert runner.cmds[2] == ["git", "-C", "/repo", "push"], runner.cmds[2]
 
 
+# ==========================================================================
+# Behaviour 9 — _release_needed surfaces that a HUMAN release is owed (#319):
+# a tick that merged a shipped-src change but did NOT self-deploy (the default
+# self_deploy-off production state) needs a release to keep the plugin version
+# 1:1 with the shipped bytes. The flag is False when the flush already deployed,
+# when no merged PR touched shipped src, and when nothing merged.
+# ==========================================================================
+
+def test_release_needed_true_when_shipped_src_merged_but_not_deployed():
+    files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
+    # package_deployed False (the gated production state) + a shipped-src merge,
+    # in the framework's own checkout.
+    assert rt._release_needed(
+        _merged_result("acme/widget#42"), False, _FEATURES_repo_root(),
+        files, None) is True
+    assert files.calls == ["acme/widget#42"], files.calls
+
+
+def test_release_needed_false_when_already_deployed():
+    files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
+    # When the flush deployed, the version is already bumped — no release owed,
+    # and the files source is not even queried.
+    assert rt._release_needed(
+        _merged_result("acme/widget#42"), True, _FEATURES_repo_root(),
+        files, None) is False
+    assert files.calls == []
+
+
+def test_release_needed_false_for_docs_only_merge():
+    files = _FilesSource({"acme/widget#42": [_DOCS_FILE]})
+    assert rt._release_needed(
+        _merged_result("acme/widget#42"), False, _FEATURES_repo_root(),
+        files, None) is False
+
+
+def test_release_needed_false_when_nothing_merged():
+    files = _FilesSource({})
+    assert rt._release_needed(
+        {"merged": [], "skipped": [], "errors": []}, False,
+        _FEATURES_repo_root(), files, None) is False
+    assert files.calls == []
+
+
+def test_release_needed_false_when_not_framework_checkout():
+    import tempfile
+    not_framework = tempfile.mkdtemp(prefix="sched-rel-not-fw-")
+    files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
+    # Not the framework checkout -> no self-release is meaningful, and the files
+    # source is never queried (no extra network on maintained projects).
+    assert rt._release_needed(
+        _merged_result("acme/widget#42"), False, not_framework,
+        files, None) is False
+    assert files.calls == []
+
+
+def test_release_needed_true_when_any_merged_pr_touches_shipped_src():
+    files = _FilesSource({
+        "acme/widget#1": [_DOCS_FILE],
+        "acme/widget#2": [_SHIPPED_FILE],
+    })
+    assert rt._release_needed(
+        _merged_result("acme/widget#1", "acme/widget#2"), False,
+        _FEATURES_repo_root(), files, None) is True
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items())
