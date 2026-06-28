@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.8
+version: 0.7.9
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -453,3 +453,19 @@ Invariant: version 0.7.8 is consistent across `plugin.json` +
 `work_own_filings: true` at schema 2.2.0; the committed/shipped
 `lib/{safety_governance,work_intake,run_tick}.py` carry the opt-out; the
 committed tree matches a fresh build with no source-tree leak; still idempotent.
+
+## Plugin patch v0.7.9 — file-referenced dispatch prompts release: deploy #304
+
+Re-ship the committed plugin tree so #304 (file-referenced dispatch prompts)
+reaches the installed plugin: scheduling's `run_tick` now writes each
+agent-state dispatch's rendered invocation envelope to a `prompt_path` file and
+hands the executor only the path (dropping the inline prompt body), and the
+shipped tick skill (v0.6.0) documents the file-referenced dispatch protocol
+(point each subagent at the runner-named `prompt_path` file, no inline prompt).
+No build LOGIC change beyond `_PLUGIN_VERSION → 0.7.9`; the committed tree is
+regenerated from current src so the shipped bytes match the merged change.
+Invariant: version 0.7.9 is consistent across `plugin.json` +
+`marketplace.json`; the shipped `lib/run_tick.py` carries the `prompt_path`
+file-referenced dispatch and the shipped `skills/tick/SKILL.md` (v0.6.0)
+documents it (no inline prompt); the committed tree matches a fresh build with
+no source-tree leak; still idempotent.

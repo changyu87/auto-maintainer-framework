@@ -1,5 +1,27 @@
 # Changelog — packaging-config
 
+## 0.7.9 — file-referenced dispatch prompts release: deploy #304
+
+- Bump `_PLUGIN_VERSION` 0.7.8 -> 0.7.9 (`plugin.json` + `marketplace.json`).
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so #304 (file-referenced
+  dispatch prompts) reaches the installed plugin: scheduling's `run_tick` now
+  writes each agent-state dispatch's rendered invocation envelope to a
+  `prompt_path` file and hands the executor only the path (dropping the inline
+  prompt body), and the shipped tick skill (v0.6.0) documents the
+  file-referenced dispatch protocol (point each subagent at the runner-named
+  `prompt_path` file, no inline prompt). No build LOGIC change beyond the
+  version bump.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_9_and_consistent`; update the shipped tick-skill
+  test to `test_shipped_tick_skill_is_v0_6_0_file_referenced_dispatch` (was the
+  v0.5.0 form) asserting frontmatter `version: 0.6.0` + `prompt_path`; add
+  `test_shipped_run_tick_carries_304_file_referenced_dispatch` +
+  `test_committed_run_tick_carries_304_file_referenced_dispatch` asserting the
+  shipped/committed `run_tick` carries `prompt_path` and the tick skill
+  documents the file-referenced dispatch; advance the housekeep doc baseline
+  (455 -> 471) for the appended per-release spec section.
+
 ## 0.7.8 — work_own_filings default-on opt-out release: deploy #297/#298/#299
 
 - Bump `_PLUGIN_VERSION` 0.7.7 -> 0.7.8 (`plugin.json` + `marketplace.json`).
