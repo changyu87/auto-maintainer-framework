@@ -68,14 +68,15 @@ class _FilesSource:
 
 
 class _CommitSink:
-    """An injectable git commit sink: records (repo_root, paths, message)."""
+    """An injectable git commit sink: records
+    (repo_root, paths, message, default_branch)."""
 
     def __init__(self, order=None):
         self.calls = []
         self.order = order if order is not None else []
 
-    def __call__(self, repo_root, paths, message):
-        self.calls.append((repo_root, list(paths), message))
+    def __call__(self, repo_root, paths, message, default_branch):
+        self.calls.append((repo_root, list(paths), message, default_branch))
         self.order.append("commit")
         return "abc1234"
 
@@ -180,9 +181,12 @@ def test_flush_package_deploys_on_shipped_src_merge():
     # Exactly ONE commit, staging the build_plugin-owned commit paths, with a
     # message naming the bumped version + #309.
     assert len(sink.calls) == 1, sink.calls
-    repo_root, paths, message = sink.calls[0]
+    repo_root, paths, message, default_branch = sink.calls[0]
     assert paths == bp.package_commit_paths(), paths
     assert "v9.9.9" in message and "#309" in message, message
+    # The flush threads the resolved default branch to the commit sink so the
+    # publish push (#320) names the remote dest branch explicitly.
+    assert default_branch == "main", default_branch
 
 
 def _FEATURES_repo_root():
@@ -302,10 +306,13 @@ def test_flush_package_deploys_when_any_merged_pr_touches_shipped_src():
 
 # ==========================================================================
 # Behaviour 8 — the PRODUCTION git_commit_sink PUBLISHES the self-deploy commit:
-# it stages the given paths, commits, and PUSHES to the checkout's upstream (#312)
+# it stages the given paths, commits, and PUSHES to remote `default_branch` (#312)
 # so remote main (where CI runs the build-drift guards) actually advances. Without
 # the push the bump+commit would land only in the loop's local checkout while
-# INTEGRATE merges PRs server-side, leaving remote main drifted/RED.
+# INTEGRATE merges PRs server-side, leaving remote main drifted/RED. The push uses
+# an EXPLICIT `origin HEAD:<default_branch>` refspec (#320) — the preceding sync
+# hard-resets the checkout onto origin/<default_branch>, leaving it
+# detached/upstream-less, where a bare `git push` would raise and abort the flush.
 # ==========================================================================
 
 def test_git_commit_sink_pushes_the_self_deploy_commit():
@@ -321,14 +328,17 @@ def test_git_commit_sink_pushes_the_self_deploy_commit():
             return _Result()
 
     runner = _RecordingRunner()
-    sha = rt.git_commit_sink("/repo", ["a", "b"], "msg", runner=runner)
+    sha = rt.git_commit_sink("/repo", ["a", "b"], "msg", "main", runner=runner)
     assert sha == "deadbee", sha
     # cmd[0:3] is always `git -C /repo`; cmd[3] is the git verb.
     git_verbs = [c[3] for c in runner.cmds]
     # The sink stages, commits, PUSHES, then reads the sha — the push between the
-    # commit and the rev-parse is the #312 fix that publishes to remote main.
+    # commit and the rev-parse is the #312/#320 fix that publishes to remote main.
     assert git_verbs == ["add", "commit", "push", "rev-parse"], git_verbs
-    assert runner.cmds[2] == ["git", "-C", "/repo", "push"], runner.cmds[2]
+    # The push names the remote AND an explicit HEAD:<default_branch> refspec
+    # (#320) so it does not depend on the checkout's branch/upstream state.
+    assert runner.cmds[2] == [
+        "git", "-C", "/repo", "push", "origin", "HEAD:main"], runner.cmds[2]
 
 
 # ==========================================================================
