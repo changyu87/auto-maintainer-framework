@@ -1,5 +1,36 @@
 # Changelog — packaging-config
 
+## 0.7.12 — full self-deploy removal release: deploy #324/#325
+
+- Bump `_PLUGIN_VERSION` 0.7.11 -> 0.7.12 (`plugin.json` + `marketplace.json`).
+- Remove the dead self-deploy build helpers from `build_plugin.py`:
+  `bump_version`, `package_commit_paths`, `_read_version`, `_bump_patch`,
+  `_VERSION_RE`, and `_VERSION_ASSIGN` (now-orphaned `import re` removed too).
+  With the self-deploy ACTION removed (scheduling #324) and the `self_deploy`
+  knob removed (safety-governance #325), these had zero callers; the disk
+  version-read served only the removed same-process `bump_version` rewrite.
+- Revert `build()` to stamp `plugin.json` + `marketplace.json` from the
+  in-memory `_PLUGIN_VERSION` constant directly (the #311/#314 disk-read is
+  gone). The plugin is NOT self-deployable; releases are operator-cut by editing
+  `_PLUGIN_VERSION`.
+- KEEP `touches_shipped_src` + `SELF_DEPLOY_MARKER` unchanged — scheduling's
+  `release_needed` operator signal still uses them.
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src (the post-removal
+  scheduling + safety-governance libs), so the shipped `lib/run_tick.py` carries
+  no `_flush_package` / `git_commit_sink` and `lib/safety_governance.py` carries
+  no `self_deploy` knob, while `release_needed` + `touches_shipped_src` remain.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_12_and_consistent` (assert 0.7.12 in
+  `plugin.json` + `marketplace.json`); replace the dormant-self-deploy unit
+  tests with `test_dead_self_deploy_build_helpers_removed`,
+  `test_release_detection_helpers_kept`, and
+  `test_build_stamps_version_from_in_memory_constant`; replace the
+  shipped/committed `*_keeps_self_deploy_off` e2e tests with
+  `test_{shipped,committed}_tree_has_no_self_deploy_action_or_knob` (the action
+  and knob are GONE; `release_needed` + `touches_shipped_src` remain); advance
+  the housekeep doc baseline for the appended per-release section.
+
 ## 0.7.11 — version-integrity restore release: deploy #310
 
 - Bump `_PLUGIN_VERSION` 0.7.10 -> 0.7.11 (`plugin.json` + `marketplace.json`).

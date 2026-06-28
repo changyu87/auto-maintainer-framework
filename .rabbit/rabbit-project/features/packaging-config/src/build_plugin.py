@@ -96,7 +96,6 @@ Deprecation criterion: Superseded when the framework adopts a different
 
 import json
 import os
-import re
 import shutil
 
 _FEATURE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,7 +106,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.7.11"
+_PLUGIN_VERSION = "0.7.12"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -517,10 +516,11 @@ def build(repo_root, out_root=None):
     plugin_root = os.path.join(out_root, "plugins", _PLUGIN_NAME)
     features_dir = os.path.join(repo_root, _FEATURES_REL)
 
-    # The version is read from repo_root's build source (not the in-memory
-    # constant frozen at import) so a same-process bump_version(repo_root) is
-    # reflected in this build's stamps — keeping the tree consistent (#311).
-    plugin_version = _read_version(repo_root)
+    # The version is the in-memory _PLUGIN_VERSION constant — the single source
+    # of truth, bumped by an operator edit to this file (releases are
+    # operator-cut; the self-deploy build rewrite was removed with the
+    # self-deploy action #324 + knob #325).
+    plugin_version = _PLUGIN_VERSION
 
     # Rebuild from scratch so stale files never linger (idempotency).
     if os.path.isdir(plugin_root):
@@ -595,24 +595,21 @@ def build(repo_root, out_root=None):
 
 
 # --------------------------------------------------------------------------
-# Self-deploy support (#309): the deterministic version-bump policy + the set of
-# shipped source paths whose change requires a rebuild.
-#
-# The auto-maintainer loop self-deploys by regenerating the committed plugin tree
-# after it merges a PR that touched shipped source (scheduling's out-of-band
-# PACKAGE flush). The version-bump policy lives HERE — packaging-config OWNS the
-# plugin version — so the policy stays deterministic and in one place.
+# Release-detection support: the dev-tree marker + the shipped-source change
+# detector that scheduling's `release_needed` operator signal uses to surface
+# when a merged PR's diff changed shipped bytes (so an operator knows a release
+# is due). The plugin is NOT self-deployable: the self-deploy ACTION was removed
+# (scheduling #324) and the self_deploy knob was removed (safety-governance
+# #325), so the dead build helpers (bump_version, package_commit_paths, the
+# same-process disk version-read) that only served that action are gone too —
+# releases are operator-cut by editing _PLUGIN_VERSION above.
 # --------------------------------------------------------------------------
 
 # The current shipped plugin version (the single source of truth, mirrored into
 # plugin.json + marketplace.json by build()).
 PLUGIN_VERSION = _PLUGIN_VERSION
 
-# The line in THIS source file that holds the version constant, so a bump rewrites
-# exactly that assignment and nothing else.
-_VERSION_ASSIGN = f'_PLUGIN_VERSION = "{_PLUGIN_VERSION}"'
-
-# The repo-root-relative path of THIS build source (#309): the self-deploy marker
+# The repo-root-relative path of THIS build source: the dev-tree marker
 # scheduling walks up from project_dir to find — its presence identifies the
 # framework's OWN checkout (the only tree carrying the dev .rabbit/ build tree).
 # Defined HERE (not in scheduling) so the shipped run_tick carries NO .rabbit
@@ -620,81 +617,6 @@ _VERSION_ASSIGN = f'_PLUGIN_VERSION = "{_PLUGIN_VERSION}"'
 # it may reference .rabbit freely.
 SELF_DEPLOY_MARKER = os.path.join(
     _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
-
-# Pattern that extracts the _PLUGIN_VERSION value from the build source on disk,
-# so build() can read the bumped version straight from the (rewritten) source of
-# truth rather than the stale module-level constant frozen at import (#311).
-_VERSION_RE = re.compile(r'^_PLUGIN_VERSION\s*=\s*"([^"]+)"', re.MULTILINE)
-
-
-def _read_version(repo_root):
-    """Return the _PLUGIN_VERSION value as written in repo_root's build source.
-
-    build() reads the version from disk (not the in-memory _PLUGIN_VERSION
-    constant, which is frozen at import) so that when the self-deploy flush calls
-    bump_version(repo_root) — which rewrites the constant ON DISK — the very next
-    build() in the SAME process stamps plugin.json + marketplace.json with the
-    BUMPED version, keeping the committed tree consistent with its source (#311).
-    Falls back to the in-memory constant only when the source cannot be read.
-    """
-    src_path = os.path.join(
-        repo_root, _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
-    try:
-        with open(src_path, "r", encoding="utf-8") as fh:
-            body = fh.read()
-    except OSError:
-        return _PLUGIN_VERSION
-    match = _VERSION_RE.search(body)
-    return match.group(1) if match else _PLUGIN_VERSION
-
-
-def package_commit_paths():
-    """The repo-root-relative artifacts the self-deploy PACKAGE flush stages into
-    its commit (#309): the regenerated plugin tree, the marketplace catalog, and
-    the bumped version source. Returned from HERE (build_plugin owns the .rabbit
-    path) so the shipped run_tick carries no .rabbit/rabbit-project literal."""
-    return [
-        "plugins",
-        os.path.join(".claude-plugin", "marketplace.json"),
-        SELF_DEPLOY_MARKER,
-    ]
-
-
-def _bump_patch(version):
-    """Deterministically increment the PATCH component of a `MAJOR.MINOR.PATCH`
-    version string (the self-deploy bump policy, #309): the loop's autonomous
-    self-deployments are always patch-level. Raises ValueError on a malformed
-    version so a bad version never silently produces a wrong bump."""
-    parts = version.split(".")
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
-        raise ValueError(
-            f"version {version!r} is not MAJOR.MINOR.PATCH (cannot bump)")
-    major, minor, patch = (int(p) for p in parts)
-    return f"{major}.{minor}.{patch + 1}"
-
-
-def bump_version(repo_root):
-    """Rewrite this build_plugin.py's _PLUGIN_VERSION constant to the next PATCH
-    version IN the given repo_root's copy of the file, and return the new version
-    string (the self-deploy bump, #309).
-
-    The rewrite is a single exact-line replacement of the version assignment, so
-    the committed source diff is minimal and the new constant becomes the verbatim
-    source of truth the very next build() reads (plugin.json + marketplace.json).
-    Deterministic: the same input version always yields the same bumped output.
-    """
-    src_path = os.path.join(
-        repo_root, _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
-    with open(src_path, "r", encoding="utf-8") as fh:
-        body = fh.read()
-    if _VERSION_ASSIGN not in body:
-        raise RuntimeError(
-            f"version assignment {_VERSION_ASSIGN!r} not found in {src_path}")
-    new_version = _bump_patch(_PLUGIN_VERSION)
-    new_assign = f'_PLUGIN_VERSION = "{new_version}"'
-    with open(src_path, "w", encoding="utf-8") as fh:
-        fh.write(body.replace(_VERSION_ASSIGN, new_assign, 1))
-    return new_version
 
 
 def touches_shipped_src(changed_paths):

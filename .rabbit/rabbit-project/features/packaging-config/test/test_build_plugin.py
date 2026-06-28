@@ -540,18 +540,15 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.7.11, version-integrity restore release): version bumped
-# to 0.7.11 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.7.11 gives the loop's #310 (dormant self-deploy capability, default-OFF) a
-# proper version: #310 regenerated the committed lib mirrors in-PR but did NOT
-# bump the plugin version, so main's committed tree carried new bytes under the
-# SAME 0.7.10 as the released v0.7.10 — a version-integrity break (and a
-# /plugin marketplace update keyed on the version would not fetch it). This
-# release bumps the version and regenerates the committed tree so the marketplace
-# serves #310's content. self_deploy stays OFF by default (dormant).
-# (Supersedes the v0.7.10 empty-skip + build-drift-fix release.)
+# Release (v0.7.12, full self-deploy removal release): version bumped to 0.7.12
+# in BOTH plugin.json and marketplace.json, and the two are consistent. v0.7.12
+# deploys the full self-deploy removal — the self-deploy ACTION (scheduling #324)
+# and the self_deploy knob (safety-governance #325) are gone, and this feature
+# removed its dead build helpers (bump_version, package_commit_paths, the
+# disk version-read). The plugin is NOT self-deployable; releases are operator-cut.
+# (Supersedes the v0.7.11 version-integrity restore release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_11_and_consistent():
+def test_version_bumped_to_0_7_12_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -563,10 +560,10 @@ def test_version_bumped_to_0_7_11_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.11", \
-            f"plugin.json version must be 0.7.11, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.11", \
-            "marketplace.json plugin entry version must be 0.7.11"
+        assert pdata.get("version") == "0.7.12", \
+            f"plugin.json version must be 0.7.12, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.12", \
+            "marketplace.json plugin entry version must be 0.7.12"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -3044,50 +3041,79 @@ def test_committed_run_tick_carries_307_empty_skip():
 
 
 # ---------------------------------------------------------------------------
-# Release v0.7.11 (#310), DORMANT self-deploy confirmation: this release gives
-# #310's self-deploy capability a proper version, but ships it OFF by default.
-# The shipped governance config-loader (lib/safety_governance.py) MUST default
-# `self_deploy` to False, and the shipped default-config (config.json the
-# install seeds) MUST NOT enable it — so a fresh install stays dormant and does
-# NOT self-deploy until a user explicitly opts in.
+# Release v0.7.12, full self-deploy REMOVAL deploy-confirmation: this release
+# deploys the full removal of the self-deploy capability. The self-deploy ACTION
+# (scheduling #324) and the self_deploy knob (safety-governance #325) are gone.
+# Prove the SHIPPED tree carries NO self-deploy action and NO self_deploy knob:
+#   - shipped lib/run_tick.py has NO _flush_package / git_commit_sink (the
+#     out-of-band PACKAGE flush sink — the self-deploy action);
+#   - shipped lib/safety_governance.py has NO self_deploy knob (no accessor, no
+#     default-true/false config key);
+#   - release_needed + touches_shipped_src REMAIN (the operator release signal
+#     that survives the removal) in the shipped libs.
 # ---------------------------------------------------------------------------
-def test_shipped_default_keeps_self_deploy_off():
+def test_shipped_tree_has_no_self_deploy_action_or_knob():
     out_root = _build_into_temp()
     try:
         plugin = os.path.join(out_root, "plugins", "auto-maintainer")
-        # 1. The shipped governance reader defaults self_deploy to False.
+        # 1. Shipped run_tick has NO self-deploy ACTION (the PACKAGE flush sink).
+        rt = os.path.join(plugin, "lib", "run_tick.py")
+        with open(rt, encoding="utf-8") as fh:
+            rt_body = fh.read()
+        assert "_flush_package" not in rt_body, \
+            "shipped run_tick must NOT carry the self-deploy PACKAGE flush " \
+            "(_flush_package) — the action was removed (#324)"
+        assert "git_commit_sink" not in rt_body, \
+            "shipped run_tick must NOT carry the self-deploy git_commit_sink " \
+            "(the action was removed, #324)"
+        # 2. Shipped safety_governance has NO self_deploy KNOB.
         sg = os.path.join(plugin, "lib", "safety_governance.py")
         with open(sg, encoding="utf-8") as fh:
             sg_body = fh.read()
-        assert '"self_deploy": False' in sg_body, \
-            "shipped safety_governance must default self_deploy to False " \
-            "(the dormant default)"
-        # 2. The shipped default-config does NOT enable self_deploy.
-        dc = os.path.join(plugin, "default-config", "config.json")
-        with open(dc, encoding="utf-8") as fh:
-            dc_data = json.load(fh)
-        assert dc_data.get("self_deploy", False) is False, \
-            "shipped default-config config.json must not enable self_deploy " \
-            "(dormant default; this release does not enable it)"
+        assert "def self_deploy(" not in sg_body, \
+            "shipped safety_governance must NOT carry a self_deploy accessor " \
+            "(the knob was removed, #325)"
+        assert '"self_deploy": False' not in sg_body, \
+            "shipped safety_governance must NOT carry a self_deploy default key " \
+            "(the knob was removed, #325)"
+        assert '"self_deploy": True' not in sg_body, \
+            "shipped safety_governance must NOT carry a self_deploy default key " \
+            "(the knob was removed, #325)"
+        # 3. release_needed + touches_shipped_src REMAIN (operator release signal).
+        assert "release_needed" in rt_body, \
+            "shipped run_tick must keep release_needed (the operator signal)"
+        assert "touches_shipped_src" in rt_body, \
+            "shipped run_tick must keep touches_shipped_src (release detector)"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
 
-def test_committed_default_keeps_self_deploy_off():
+def test_committed_tree_has_no_self_deploy_action_or_knob():
     plugin = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer")
+    rt = os.path.join(plugin, "lib", "run_tick.py")
     sg = os.path.join(plugin, "lib", "safety_governance.py")
+    assert os.path.isfile(rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
     assert os.path.isfile(sg), \
         "committed lib/safety_governance.py must ship in the plugin tree"
+    with open(rt, encoding="utf-8") as fh:
+        rt_body = fh.read()
     with open(sg, encoding="utf-8") as fh:
         sg_body = fh.read()
-    assert '"self_deploy": False' in sg_body, \
-        "committed safety_governance must default self_deploy to False " \
-        "(the dormant default)"
-    dc = os.path.join(plugin, "default-config", "config.json")
-    assert os.path.isfile(dc), \
-        "committed default-config/config.json must ship in the plugin tree"
-    with open(dc, encoding="utf-8") as fh:
-        dc_data = json.load(fh)
-    assert dc_data.get("self_deploy", False) is False, \
-        "committed default-config config.json must not enable self_deploy " \
-        "(dormant default; this release does not enable it)"
+    assert "_flush_package" not in rt_body, \
+        "committed run_tick must NOT carry _flush_package (action removed #324)"
+    assert "git_commit_sink" not in rt_body, \
+        "committed run_tick must NOT carry git_commit_sink (action removed #324)"
+    assert "def self_deploy(" not in sg_body, \
+        "committed safety_governance must NOT carry a self_deploy accessor " \
+        "(knob removed #325)"
+    assert '"self_deploy": False' not in sg_body, \
+        "committed safety_governance must NOT carry a self_deploy default key " \
+        "(knob removed #325)"
+    assert '"self_deploy": True' not in sg_body, \
+        "committed safety_governance must NOT carry a self_deploy default key " \
+        "(knob removed #325)"
+    assert "release_needed" in rt_body, \
+        "committed run_tick must keep release_needed (the operator signal)"
+    assert "touches_shipped_src" in rt_body, \
+        "committed run_tick must keep touches_shipped_src (release detector)"
