@@ -1,5 +1,35 @@
 # scheduling — Changelog
 
+## feature 0.29.0 — 2026-06-21
+
+- **Remove the self-deploy ACTION; keep the `release_needed` DETECTION.** The
+  auto-maintainer is NOT self-deployable. `run_tick` no longer regenerates,
+  commits, or pushes the committed plugin tree.
+  - **Removed (the self-deploy action).** `_flush_package`; `git_commit_sink` +
+    `DEFAULT_PACKAGE_COMMIT_SINK`; `git_sync_sink` + `DEFAULT_PACKAGE_SYNC_SINK`
+    (the #312/#313/#320/#321 git/build seams); the terminal `_flush_package`
+    call + its `package_deployed/package_version/package_reason` results; the
+    `package_commit_sink` / `package_sync_sink` `run_tick` params; the
+    `sg.self_deploy` gate reference; the `self_deployed` / `deployed_version` /
+    `deploy_skip_reason` `tick_end` detail fields + the `deploy=` one-line trace
+    token; and the `bp.bump_version` / `bp.package_commit_paths` references.
+  - **Kept + simplified (the human-release-owed signal, #319).**
+    `_release_needed` now takes `(integration_result, project_dir, files_source,
+    repo)` — the `package_deployed` param is dropped (nothing self-deploys), so
+    `release_needed` is True iff `_self_deploy_repo_root(project_dir)` resolves
+    (the framework's own checkout, via `bp.SELF_DEPLOY_MARKER`) AND >=1 merged
+    PR's diff touches shipped src (`bp.touches_shipped_src`). It is INDEPENDENT
+    of any `self_deploy` knob. `gh_pr_files_source` / `DEFAULT_PR_FILES_SOURCE`,
+    `_self_deploy_repo_root`, and the `bp` import (used ONLY for
+    `bp.touches_shipped_src` + `bp.SELF_DEPLOY_MARKER`) are kept for the
+    detector. When True, a standalone `release_needed` token rides the trace and
+    the `tick_end` event detail carries `release_needed: true`.
+  - **Untouched.** `gh_pr_state_source` / `pr_state_source` (acted-ledger
+    re-entry), REPORT, and refire. safety-governance (the now-dead `self_deploy`
+    knob, removed in a follow-up) and packaging-config (still providing
+    `bp.touches_shipped_src` + `bp.SELF_DEPLOY_MARKER`;
+    `bump_version`/`package_commit_paths` removed in a follow-up) are NOT edited.
+
 ## feature 0.28.0 — 2026-06-28
 
 - **File-referenced dispatch prompt (`prompt_path`).** Each agent-state

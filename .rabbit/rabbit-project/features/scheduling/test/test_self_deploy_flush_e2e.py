@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""End-to-end conformance tests for the OUTBOUND PACKAGE flush in run_tick (the
-self-deployment step, #309): after the route completes, when THIS tick merged a
-PR whose diff touched SHIPPED feature source AND the self_deploy gate is on AND
-the mode permits merge, run_tick regenerates the committed plugin tree via
-packaging-config's build_plugin.build, deterministically PATCH-bumps the version,
-and commits the regenerated artifacts + the version source in ONE commit so main
-never drifts.
+"""End-to-end conformance tests for the release_needed DETECTION in run_tick.
 
-PACKAGE is out-of-band — NOT a routed state. The flush runs at the `done` path
-AFTER the route's INTEGRATE merge surface is known. It is GATED, in order, on:
-self_deploy (default off), build_plugin importable, permits(merge), a merged PR
-touching shipped src, and the project being the framework's own checkout.
+The auto-maintainer is NOT self-deployable: it does NOT regenerate / commit /
+push the plugin tree itself. It DOES keep the operator signal `release_needed`
+— the human-release-owed flag (#319). When THIS tick merged >=1 PR whose diff
+touched SHIPPED feature source AND the maintained project is the framework's own
+checkout, a human release is owed to keep the plugin version 1:1 with the shipped
+bytes. The loop merges PRs server-side but performs NO build/commit/push, so the
+committed plugin tree drifts from the bumped version a release would carry;
+`release_needed` surfaces that explicitly so the operator knows a release is owed.
 
-These tests exercise _flush_package directly with INJECTED files/commit seams
-(no network, no real git, no real build) over a synthetic integration_result, so
-the gate logic + commit invocation are deterministically verified. The real
-build()/git only run in the live framework checkout.
+`_release_needed` fires PURELY on the merged shipped-src change + the framework
+checkout — it is INDEPENDENT of any self_deploy knob (nothing self-deploys now).
+These tests exercise `_release_needed` directly with an INJECTED files source (no
+network) over a synthetic integration_result, plus an e2e tick proving a merged
+shipped-src change does NO commit / push / regenerate yet still sets
+release_needed=True on the trace + tick_end event.
 
 Owner: changyu87
 """
@@ -37,9 +37,10 @@ for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
     if _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
 
+import json  # noqa: E402
 import safety_governance as sg  # noqa: E402,F401
 import run_tick as rt  # noqa: E402
-import build_plugin as bp  # noqa: E402
+import build_plugin as bp  # noqa: E402,F401
 
 
 _SHIPPED_FILE = os.path.join(
@@ -67,128 +68,6 @@ class _FilesSource:
         return self.mapping.get(pr_ref, [])
 
 
-class _CommitSink:
-    """An injectable git commit sink: records
-    (repo_root, paths, message, default_branch)."""
-
-    def __init__(self, order=None):
-        self.calls = []
-        self.order = order if order is not None else []
-
-    def __call__(self, repo_root, paths, message, default_branch):
-        self.calls.append((repo_root, list(paths), message, default_branch))
-        self.order.append("commit")
-        return "abc1234"
-
-
-class _SyncSink:
-    """An injectable git sync sink (#313): records (repo_root, default_branch)
-    and, when given a shared `order` list, appends a "sync" marker so tests can
-    assert the checkout was synced BEFORE the build ran."""
-
-    def __init__(self, order=None):
-        self.calls = []
-        self.order = order if order is not None else []
-
-    def __call__(self, repo_root, default_branch):
-        self.calls.append((repo_root, default_branch))
-        self.order.append("sync")
-        return "def5678"
-
-
-# A monkeypatch context that swaps bp.bump_version + bp.build for no-network fakes
-# so the gate-pass path is exercised without rewriting source or assembling a tree.
-class _FakeBuild:
-    def __init__(self, order=None):
-        self.bump_calls = []
-        self.build_calls = []
-        self.order = order if order is not None else []
-
-    def __enter__(self):
-        self._real_bump = bp.bump_version
-        self._real_build = bp.build
-        self._real_branch = rt.vi.gh_default_branch_source
-
-        def _bump(repo_root):
-            self.bump_calls.append(repo_root)
-            self.order.append("bump")
-            return "9.9.9"
-
-        def _build(repo_root, out_root=None):
-            self.build_calls.append(repo_root)
-            self.order.append("build")
-            return os.path.join(repo_root, "plugins", "auto-maintainer")
-
-        bp.bump_version = _bump
-        bp.build = _build
-        # Stub the default-branch resolver so the (gate-pass) sync step touches
-        # no network in the unit suite.
-        rt.vi.gh_default_branch_source = lambda repo=None: "main"
-        return self
-
-    def __exit__(self, *exc):
-        bp.bump_version = self._real_bump
-        bp.build = self._real_build
-        rt.vi.gh_default_branch_source = self._real_branch
-        return False
-
-
-def _gov(self_deploy):
-    g = sg._copy_defaults()
-    g["self_deploy"] = self_deploy
-    return g
-
-
-# ==========================================================================
-# Behaviour 0 — the self-deploy seams + helpers exist.
-# ==========================================================================
-
-def test_self_deploy_seams_exist():
-    assert rt.DEFAULT_PR_FILES_SOURCE is rt.gh_pr_files_source
-    assert rt.DEFAULT_PACKAGE_COMMIT_SINK is rt.git_commit_sink
-    assert rt.DEFAULT_PACKAGE_SYNC_SINK is rt.git_sync_sink
-    assert callable(rt._flush_package)
-
-
-# ==========================================================================
-# Behaviour 1 — the happy path: self_deploy on + auto-merge + a merged PR
-# touching shipped src + the framework checkout -> bump + build + ONE commit.
-# ==========================================================================
-
-def test_flush_package_deploys_on_shipped_src_merge():
-    files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
-    order = []
-    sink = _CommitSink(order)
-    sync = _SyncSink(order)
-    # project_dir is the framework's own checkout root (carries the marker).
-    project_dir = _FEATURES_repo_root()
-    with _FakeBuild(order) as fb:
-        deployed, version, reason = rt._flush_package(
-            _merged_result("acme/widget#42"), "auto-merge",
-            _gov(True), project_dir, None, files, sink, sync)
-    assert deployed is True, (deployed, reason)
-    assert version == "9.9.9", version
-    assert reason is None, reason
-    # The bump + build ran against the resolved repo root.
-    assert len(fb.bump_calls) == 1 and len(fb.build_calls) == 1
-    # The checkout was SYNCED to the merged remote base (#313) BEFORE the build,
-    # against the resolved repo root + default branch.
-    assert len(sync.calls) == 1, sync.calls
-    sync_root, sync_branch = sync.calls[0]
-    assert sync_root == fb.build_calls[0], (sync_root, fb.build_calls)
-    assert sync_branch == "main", sync_branch
-    assert order == ["sync", "bump", "build", "commit"], order
-    # Exactly ONE commit, staging the build_plugin-owned commit paths, with a
-    # message naming the bumped version + #309.
-    assert len(sink.calls) == 1, sink.calls
-    repo_root, paths, message, default_branch = sink.calls[0]
-    assert paths == bp.package_commit_paths(), paths
-    assert "v9.9.9" in message and "#309" in message, message
-    # The flush threads the resolved default branch to the commit sink so the
-    # publish push (#320) names the remote dest branch explicitly.
-    assert default_branch == "main", default_branch
-
-
 def _FEATURES_repo_root():
     """The framework checkout root (parent of .rabbit/) — carries the marker, so
     _self_deploy_repo_root resolves it."""
@@ -197,204 +76,102 @@ def _FEATURES_repo_root():
 
 
 # ==========================================================================
-# Behaviour 2 — the self_deploy gate is DEFAULT OFF: a merged shipped-src change
-# does NOT deploy when self_deploy is false; reason "gated".
+# Behaviour 0 — the kept detection seams + helper exist; the self-deploy ACTION
+# seams (the flush + the git commit/sync sinks) are GONE.
 # ==========================================================================
 
-def test_flush_package_gated_off_by_default():
+def test_release_detection_seams_exist():
+    # The PR-files source seam (shared by the detector) is KEPT.
+    assert rt.DEFAULT_PR_FILES_SOURCE is rt.gh_pr_files_source
+    # The own-checkout detector is KEPT.
+    assert callable(rt._self_deploy_repo_root)
+    # The detector itself is KEPT.
+    assert callable(rt._release_needed)
+
+
+def test_self_deploy_action_seams_removed():
+    # The self-deploy ACTION (build/commit/push/sync) is removed wholesale —
+    # the auto-maintainer is not self-deployable.
+    for gone in ("_flush_package", "git_commit_sink", "git_sync_sink",
+                 "DEFAULT_PACKAGE_COMMIT_SINK", "DEFAULT_PACKAGE_SYNC_SINK"):
+        assert not hasattr(rt, gone), gone
+
+
+# ==========================================================================
+# Behaviour 1 — release_needed is TRUE when a merged PR touched shipped src in
+# the framework's own checkout (a human release is owed). It fires on the merged
+# shipped-src change alone — no package_deployed param, no self_deploy knob.
+# ==========================================================================
+
+def test_release_needed_true_when_shipped_src_merged():
     files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
-    sink = _CommitSink()
-    sync = _SyncSink()
-    deployed, version, reason = rt._flush_package(
-        _merged_result("acme/widget#42"), "auto-merge",
-        _gov(False), _FEATURES_repo_root(), None, files, sink, sync)
-    assert deployed is False and version is None
-    assert reason == "gated", reason
-    # No sync, no build, no commit, and the files source was never even queried.
-    assert sink.calls == [] and files.calls == [] and sync.calls == []
-
-
-# ==========================================================================
-# Behaviour 3 — propose mode (permits merge False) never deploys, even with
-# self_deploy on; reason "not-permitted".
-# ==========================================================================
-
-def test_flush_package_not_permitted_in_propose():
-    files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
-    sink = _CommitSink()
-    sync = _SyncSink()
-    deployed, version, reason = rt._flush_package(
-        _merged_result("acme/widget#42"), "propose",
-        _gov(True), _FEATURES_repo_root(), None, files, sink, sync)
-    assert deployed is False and reason == "not-permitted", reason
-    assert sink.calls == [] and sync.calls == []
-
-
-# ==========================================================================
-# Behaviour 4 — a docs/test-only merge does NOT trigger a rebuild (no version
-# churn); reason "no-shipped-change". The files source IS queried (to decide).
-# ==========================================================================
-
-def test_flush_package_skips_docs_only_merge():
-    files = _FilesSource({"acme/widget#42": [_DOCS_FILE]})
-    sink = _CommitSink()
-    sync = _SyncSink()
-    deployed, version, reason = rt._flush_package(
-        _merged_result("acme/widget#42"), "auto-merge",
-        _gov(True), _FEATURES_repo_root(), None, files, sink, sync)
-    assert deployed is False and reason == "no-shipped-change", reason
-    assert files.calls == ["acme/widget#42"], files.calls
-    assert sink.calls == [] and sync.calls == []
-
-
-# ==========================================================================
-# Behaviour 5 — a tick that merged NOTHING does not deploy; reason
-# "no-shipped-change" (no merged PR to rebuild for).
-# ==========================================================================
-
-def test_flush_package_skips_when_nothing_merged():
-    files = _FilesSource({})
-    sink = _CommitSink()
-    sync = _SyncSink()
-    deployed, version, reason = rt._flush_package(
-        {"merged": [], "skipped": [], "errors": []}, "auto-merge",
-        _gov(True), _FEATURES_repo_root(), None, files, sink, sync)
-    assert deployed is False and reason == "no-shipped-change", reason
-    assert files.calls == [] and sink.calls == [] and sync.calls == []
-
-
-# ==========================================================================
-# Behaviour 6 — a maintained project that is NOT the framework checkout (no
-# marker) does not deploy even when everything else passes; reason
-# "not-self-repo".
-# ==========================================================================
-
-def test_flush_package_skips_when_not_framework_checkout():
-    import tempfile
-    not_framework = tempfile.mkdtemp(prefix="sched-not-fw-")
-    files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
-    sink = _CommitSink()
-    sync = _SyncSink()
-    with _FakeBuild():
-        deployed, version, reason = rt._flush_package(
-            _merged_result("acme/widget#42"), "auto-merge",
-            _gov(True), not_framework, None, files, sink, sync)
-    assert deployed is False and reason == "not-self-repo", reason
-    assert sink.calls == [] and sync.calls == []
-
-
-# ==========================================================================
-# Behaviour 7 — multiple merged PRs: ANY one touching shipped src triggers the
-# deploy (the first docs-only PR does not block the second shipped-src PR).
-# ==========================================================================
-
-def test_flush_package_deploys_when_any_merged_pr_touches_shipped_src():
-    files = _FilesSource({
-        "acme/widget#1": [_DOCS_FILE],
-        "acme/widget#2": [_SHIPPED_FILE],
-    })
-    sink = _CommitSink()
-    sync = _SyncSink()
-    with _FakeBuild():
-        deployed, version, reason = rt._flush_package(
-            _merged_result("acme/widget#1", "acme/widget#2"), "auto-merge",
-            _gov(True), _FEATURES_repo_root(), None, files, sink, sync)
-    assert deployed is True, reason
-    assert len(sink.calls) == 1, sink.calls
-    assert len(sync.calls) == 1, sync.calls
-
-
-# ==========================================================================
-# Behaviour 8 — the PRODUCTION git_commit_sink PUBLISHES the self-deploy commit:
-# it stages the given paths, commits, and PUSHES to remote `default_branch` (#312)
-# so remote main (where CI runs the build-drift guards) actually advances. Without
-# the push the bump+commit would land only in the loop's local checkout while
-# INTEGRATE merges PRs server-side, leaving remote main drifted/RED. The push uses
-# an EXPLICIT `origin HEAD:<default_branch>` refspec (#320) — the preceding sync
-# hard-resets the checkout onto origin/<default_branch>, leaving it
-# detached/upstream-less, where a bare `git push` would raise and abort the flush.
-# ==========================================================================
-
-def test_git_commit_sink_pushes_the_self_deploy_commit():
-    class _RecordingRunner:
-        def __init__(self):
-            self.cmds = []
-
-        def __call__(self, cmd, check=None, capture_output=False, text=False):
-            self.cmds.append(list(cmd))
-
-            class _Result:
-                stdout = "deadbee\n"
-            return _Result()
-
-    runner = _RecordingRunner()
-    sha = rt.git_commit_sink("/repo", ["a", "b"], "msg", "main", runner=runner)
-    assert sha == "deadbee", sha
-    # cmd[0:3] is always `git -C /repo`; cmd[3] is the git verb.
-    git_verbs = [c[3] for c in runner.cmds]
-    # The sink stages, commits, PUSHES, then reads the sha — the push between the
-    # commit and the rev-parse is the #312/#320 fix that publishes to remote main.
-    assert git_verbs == ["add", "commit", "push", "rev-parse"], git_verbs
-    # The push names the remote AND an explicit HEAD:<default_branch> refspec
-    # (#320) so it does not depend on the checkout's branch/upstream state.
-    assert runner.cmds[2] == [
-        "git", "-C", "/repo", "push", "origin", "HEAD:main"], runner.cmds[2]
-
-
-# ==========================================================================
-# Behaviour 9 — _release_needed surfaces that a HUMAN release is owed (#319):
-# a tick that merged a shipped-src change but did NOT self-deploy (the default
-# self_deploy-off production state) needs a release to keep the plugin version
-# 1:1 with the shipped bytes. The flag is False when the flush already deployed,
-# when no merged PR touched shipped src, and when nothing merged.
-# ==========================================================================
-
-def test_release_needed_true_when_shipped_src_merged_but_not_deployed():
-    files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
-    # package_deployed False (the gated production state) + a shipped-src merge,
-    # in the framework's own checkout.
     assert rt._release_needed(
-        _merged_result("acme/widget#42"), False, _FEATURES_repo_root(),
+        _merged_result("acme/widget#42"), _FEATURES_repo_root(),
         files, None) is True
     assert files.calls == ["acme/widget#42"], files.calls
 
 
-def test_release_needed_false_when_already_deployed():
-    files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
-    # When the flush deployed, the version is already bumped — no release owed,
-    # and the files source is not even queried.
-    assert rt._release_needed(
-        _merged_result("acme/widget#42"), True, _FEATURES_repo_root(),
-        files, None) is False
-    assert files.calls == []
+# ==========================================================================
+# Behaviour 2 — release_needed is INDEPENDENT of any self_deploy governance knob:
+# whether self_deploy is on or off (the knob is dead now), the signal fires the
+# same on a merged shipped-src change. _release_needed takes no gov / no knob.
+# ==========================================================================
 
+def test_release_needed_independent_of_self_deploy_knob():
+    files_a = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
+    files_b = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
+    # Same args (no gov passed) -> same True result; the function signature has
+    # no governance/knob input at all.
+    assert rt._release_needed(
+        _merged_result("acme/widget#42"), _FEATURES_repo_root(),
+        files_a, None) is True
+    assert rt._release_needed(
+        _merged_result("acme/widget#42"), _FEATURES_repo_root(),
+        files_b, None) is True
+
+
+# ==========================================================================
+# Behaviour 3 — a docs/test-only merge owes NO release; False.
+# ==========================================================================
 
 def test_release_needed_false_for_docs_only_merge():
     files = _FilesSource({"acme/widget#42": [_DOCS_FILE]})
     assert rt._release_needed(
-        _merged_result("acme/widget#42"), False, _FEATURES_repo_root(),
+        _merged_result("acme/widget#42"), _FEATURES_repo_root(),
         files, None) is False
 
+
+# ==========================================================================
+# Behaviour 4 — a tick that merged NOTHING owes no release; False (files source
+# never queried).
+# ==========================================================================
 
 def test_release_needed_false_when_nothing_merged():
     files = _FilesSource({})
     assert rt._release_needed(
-        {"merged": [], "skipped": [], "errors": []}, False,
+        {"merged": [], "skipped": [], "errors": []},
         _FEATURES_repo_root(), files, None) is False
     assert files.calls == []
 
+
+# ==========================================================================
+# Behaviour 5 — a maintained project that is NOT the framework checkout owes no
+# self-release; False (files source never queried — no extra network).
+# ==========================================================================
 
 def test_release_needed_false_when_not_framework_checkout():
     import tempfile
     not_framework = tempfile.mkdtemp(prefix="sched-rel-not-fw-")
     files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
-    # Not the framework checkout -> no self-release is meaningful, and the files
-    # source is never queried (no extra network on maintained projects).
     assert rt._release_needed(
-        _merged_result("acme/widget#42"), False, not_framework,
+        _merged_result("acme/widget#42"), not_framework,
         files, None) is False
     assert files.calls == []
 
+
+# ==========================================================================
+# Behaviour 6 — multiple merged PRs: ANY one touching shipped src owes a release.
+# ==========================================================================
 
 def test_release_needed_true_when_any_merged_pr_touches_shipped_src():
     files = _FilesSource({
@@ -402,8 +179,167 @@ def test_release_needed_true_when_any_merged_pr_touches_shipped_src():
         "acme/widget#2": [_SHIPPED_FILE],
     })
     assert rt._release_needed(
-        _merged_result("acme/widget#1", "acme/widget#2"), False,
+        _merged_result("acme/widget#1", "acme/widget#2"),
         _FEATURES_repo_root(), files, None) is True
+
+
+# ==========================================================================
+# Behaviour 7 (E2E) — a full tick whose INTEGRATE merged a shipped-src change
+# does NO commit / push / regenerate (the loop is not self-deployable) yet sets
+# release_needed=True on the one-line trace AND the tick_end event. This proves
+# the detection survives while the action is gone: no git/build seam is ever
+# touched.
+# ==========================================================================
+
+import io  # noqa: E402
+import json as _json  # noqa: E402,F811
+import tempfile  # noqa: E402
+from contextlib import redirect_stdout  # noqa: E402
+
+import work_intake as wi  # noqa: E402
+import verify_integrate as vi  # noqa: E402
+import observability as ob  # noqa: E402
+
+
+_GH_JSON_FIXTURE = """[
+  {
+    "number": 7,
+    "title": "Crash on empty config",
+    "body": "Steps to reproduce ...",
+    "url": "https://github.com/acme/widget/issues/7",
+    "state": "OPEN",
+    "labels": [{"name": "bug"}],
+    "author": {"login": "octocat"},
+    "createdAt": "2026-05-01T10:00:00Z",
+    "updatedAt": "2026-05-02T11:30:00Z"
+  }
+]"""
+
+# A single OPEN, mergeable PR -> VERIFY derives an `ok` verdict; INTEGRATE merges
+# it at auto-merge.
+_OK_PR = {
+    "number": 42,
+    "url": "https://github.com/acme/widget/pull/42",
+    "headRefName": "auto-maintainer/fix-42",
+    "baseRefName": "main",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+}
+
+# The close-the-loop route (pure-script with the DEFAULT map): a real INTEGRATE
+# merges the ok PR, so the terminal sees a merged shipped-src change.
+_CLOSE_ROUTE = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "PULL", "TRIAGE", "PRIORITIZE", "IMPLEMENT",
+               "VERIFY", "REVIEW", "INTEGRATE", "CLEANUP", "PERSIST", "EXIT",
+               "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "TRIAGE"},
+        {"state": "PULL", "signal": "EMPTY", "next": "TRIAGE"},
+        {"state": "TRIAGE", "signal": "OK", "next": "PRIORITIZE"},
+        {"state": "TRIAGE", "signal": "EMPTY", "next": "PRIORITIZE"},
+        {"state": "PRIORITIZE", "signal": "OK", "next": "IMPLEMENT"},
+        {"state": "PRIORITIZE", "signal": "EMPTY", "next": "IMPLEMENT"},
+        {"state": "IMPLEMENT", "signal": "OK", "next": "VERIFY"},
+        {"state": "IMPLEMENT", "signal": "BLOCKED", "next": "VERIFY"},
+        {"state": "VERIFY", "signal": "OK", "next": "REVIEW"},
+        {"state": "VERIFY", "signal": "EMPTY", "next": "REVIEW"},
+        {"state": "REVIEW", "signal": "OK", "next": "INTEGRATE"},
+        {"state": "REVIEW", "signal": "EMPTY", "next": "INTEGRATE"},
+        {"state": "INTEGRATE", "signal": "OK", "next": "CLEANUP"},
+        {"state": "CLEANUP", "signal": "OK", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+
+def _stub_source(json_text=_GH_JSON_FIXTURE):
+    items = wi.parse_gh_issues(json_text)
+
+    def source(repo=None):
+        return list(items)
+    return source
+
+
+def _patch_vi_merge():
+    """Override verify-integrate's gh seams so VERIFY/INTEGRATE touch no network
+    and INTEGRATE merges the ok PR. Returns a restore callable."""
+    saved = {"open": vi.gh_open_pr_source,
+             "branch": vi.gh_default_branch_source,
+             "merge": vi.gh_pr_merge_sink}
+
+    vi.gh_open_pr_source = lambda repo=None, label=vi.LOOP_PR_LABEL: [dict(_OK_PR)]
+    vi.gh_default_branch_source = lambda repo=None: "main"
+    vi.gh_pr_merge_sink = (
+        lambda pr_ref, repo=None: {"pr_ref": pr_ref,
+                                   "url": vi._pr_url(pr_ref, repo)})
+
+    def restore():
+        vi.gh_open_pr_source = saved["open"]
+        vi.gh_default_branch_source = saved["branch"]
+        vi.gh_pr_merge_sink = saved["merge"]
+    return restore
+
+
+def test_e2e_merged_shipped_src_sets_release_needed_without_acting():
+    """A full auto-merge tick whose INTEGRATE merges a shipped-src PR does NO
+    commit / push / regenerate (the loop is not self-deployable — those seams no
+    longer exist) yet sets release_needed=True on the one-line trace AND the
+    tick_end event. The detector touches ONLY the injected files source; no
+    git/build seam is reachable."""
+    # A temp project dir made into a valid "framework checkout" by planting the
+    # SELF_DEPLOY_MARKER file, so _self_deploy_repo_root resolves it AND the tick
+    # loads THIS dir's route/governance (config resolves from project_dir).
+    project_dir = tempfile.mkdtemp(prefix="sched-rel-e2e-")
+    marker = os.path.join(project_dir, bp.SELF_DEPLOY_MARKER)
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w") as f:
+        f.write("")
+    cfg = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(cfg, exist_ok=True)
+    with open(os.path.join(cfg, "route.json"), "w") as f:
+        _json.dump(_CLOSE_ROUTE, f)
+    with open(os.path.join(cfg, "governance.json"), "w") as f:
+        _json.dump({"mode": "auto-merge"}, f)
+    state_path = os.path.join(cfg, "durable-state.json")
+    journal_path = os.path.join(cfg, "tick-journal.jsonl")
+
+    # The merged PR's diff touches shipped src -> a human release is owed.
+    files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
+
+    restore = _patch_vi_merge()
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rt.run_tick(runtime_dir=cfg, state_path=state_path,
+                        journal_path=journal_path, project_dir=project_dir,
+                        source=_stub_source(), pr_files_source=files)
+        trace = buf.getvalue()
+    finally:
+        restore()
+
+    # The one-line trace carries the standalone release_needed token (no deploy=).
+    assert "release_needed" in trace, trace
+    assert "deploy=" not in trace, trace
+    # The tick_end event carries release_needed=True; the removed self-deploy
+    # action keys are gone.
+    end = next(e for e in ob.EventLog(os.path.join(cfg, "events.jsonl")).read()
+               if e["kind"] == "tick_end")
+    assert end["detail"].get("release_needed") is True, end
+    assert "self_deployed" not in end["detail"], end
+    assert "deployed_version" not in end["detail"], end
+    assert "deploy_skip_reason" not in end["detail"], end
+    # The detector queried the merged PR's files (the only seam it touches).
+    assert files.calls == ["acme/widget#42"], files.calls
 
 
 if __name__ == "__main__":

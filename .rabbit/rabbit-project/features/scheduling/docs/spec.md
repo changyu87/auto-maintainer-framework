@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.28.0
+version: 0.29.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -1092,6 +1092,41 @@ skill).
   documents the refire-loop: when a completed tick's final signal is `refire`,
   run ANOTHER tick immediately, looping until a non-refire signal
   (`idle`/`halt`/`break`). The cron heartbeat remains the safety net.
+
+## Release-needed detection — the human-release-owed signal (#319)
+
+The auto-maintainer is **NOT self-deployable**: `run_tick` performs NO build,
+NO commit, NO push, and NO regeneration of the committed plugin tree. The loop
+merges PRs **server-side** (INTEGRATE), so when a merge touches SHIPPED feature
+source the committed plugin tree drifts from the bumped version a release would
+carry. A **human release is owed** to keep the plugin version 1:1 with the
+shipped bytes. scheduling surfaces that explicitly so the operator is not left
+guessing.
+
+- **`_release_needed(integration_result, project_dir, files_source, repo)` — a
+  pure detector, no action.** It returns True iff (a)
+  `_self_deploy_repo_root(project_dir)` resolves — the maintained project IS the
+  framework's own checkout (the only place a self-release is meaningful, detected
+  via `build_plugin.SELF_DEPLOY_MARKER`) — AND (b) >=1 PR in
+  `integration_result.merged` has a diff that touches SHIPPED source
+  (`build_plugin.touches_shipped_src` over the injectable `files_source`'s files
+  for each merged PR). It fires on the **merged shipped-src change alone** — it
+  takes NO governance / `self_deploy` knob (nothing self-deploys now, so there is
+  no `package_deployed` to gate on). A docs/test-only merge, a tick that merged
+  nothing, and a maintained project that is not the framework checkout all return
+  False (and, for the no-merge / not-framework cases, never query the files
+  source — keeping the `gh` calls off non-self-deploy projects).
+- **Surfaced, never acted on.** When True, the one-line trace carries a
+  `release_needed` token and the `tick_end` event `detail` carries
+  `release_needed: true`; otherwise the token is absent and the detail boolean is
+  False. No self-deploy / version-bump / commit / push fields ride the trace or
+  event — those belong to the removed self-deploy action.
+- **Seams kept for the detector only.** `gh_pr_files_source` /
+  `DEFAULT_PR_FILES_SOURCE` (the injectable per-PR changed-files source) and
+  `_self_deploy_repo_root` (the own-checkout detector) are KEPT solely to feed
+  `_release_needed`. `build_plugin` is imported ONLY for
+  `bp.touches_shipped_src` + `bp.SELF_DEPLOY_MARKER`; it is absent in a normal
+  install (not shipped), so the detector no-ops there.
 
 ## Known gaps / deferred
 
