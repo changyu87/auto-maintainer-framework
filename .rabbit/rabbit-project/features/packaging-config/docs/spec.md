@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.10
+version: 0.7.11
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -484,3 +484,20 @@ triager on an empty pool. No build LOGIC change beyond `_PLUGIN_VERSION →
 `marketplace.json`; the shipped `lib/run_tick.py` carries the `_empty_skip_result`
 empty-skip; the committed tree matches a fresh build with no source-tree leak;
 still idempotent.
+
+## Plugin patch v0.7.11 — version-integrity restore release: deploy #310
+
+Re-ship the committed plugin tree under a PROPER version so the loop's #310
+(dormant self-deploy capability, default-OFF) reaches the marketplace cleanly.
+#310 regenerated the committed lib mirrors in-PR but did NOT bump the plugin
+version, so main's committed tree carried new bytes under the SAME 0.7.10 as the
+released v0.7.10 — a version-integrity break, and a `/plugin marketplace update`
+keyed on the version would not even fetch it. This release bumps
+`_PLUGIN_VERSION → 0.7.11` and regenerates the committed tree from current src
+(including #310's self-deploy code) so the marketplace serves it. self_deploy
+stays OFF by default (dormant); this release does NOT enable it. No build LOGIC
+change beyond the version bump. Invariant: version 0.7.11 is consistent across
+`plugin.json` + `marketplace.json`; the shipped/committed `lib/safety_governance.py`
+defaults `self_deploy` to False and the shipped/committed
+`default-config/config.json` does not enable it (dormant default); the committed
+tree matches a fresh build with no source-tree leak; still idempotent.

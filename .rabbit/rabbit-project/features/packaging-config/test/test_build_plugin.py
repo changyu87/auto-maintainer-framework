@@ -540,15 +540,18 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.7.10, empty-skip + build-drift-fix release): version bumped
-# to 0.7.10 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.7.10 is the release that DEPLOYS #307 (deterministic empty-skip for idle
-# ticks, for #306) plus the loop's #302/#303 into the installed plugin, and
-# regenerates the committed plugin tree from CURRENT src so the 7 build-drift
-# guards (the loop merged these as src without a build step) go green again.
-# (Supersedes the v0.7.9 file-referenced dispatch prompts release.)
+# Release (v0.7.11, version-integrity restore release): version bumped
+# to 0.7.11 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.7.11 gives the loop's #310 (dormant self-deploy capability, default-OFF) a
+# proper version: #310 regenerated the committed lib mirrors in-PR but did NOT
+# bump the plugin version, so main's committed tree carried new bytes under the
+# SAME 0.7.10 as the released v0.7.10 — a version-integrity break (and a
+# /plugin marketplace update keyed on the version would not fetch it). This
+# release bumps the version and regenerates the committed tree so the marketplace
+# serves #310's content. self_deploy stays OFF by default (dormant).
+# (Supersedes the v0.7.10 empty-skip + build-drift-fix release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_10_and_consistent():
+def test_version_bumped_to_0_7_11_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -560,10 +563,10 @@ def test_version_bumped_to_0_7_10_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.10", \
-            f"plugin.json version must be 0.7.10, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.10", \
-            "marketplace.json plugin entry version must be 0.7.10"
+        assert pdata.get("version") == "0.7.11", \
+            f"plugin.json version must be 0.7.11, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.11", \
+            "marketplace.json plugin entry version must be 0.7.11"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -3038,3 +3041,53 @@ def test_committed_run_tick_carries_307_empty_skip():
     assert "_empty_skip_result" in committed, \
         "committed run_tick must carry the #307 deterministic empty-skip " \
         "(_empty_skip_result)"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.11 (#310), DORMANT self-deploy confirmation: this release gives
+# #310's self-deploy capability a proper version, but ships it OFF by default.
+# The shipped governance config-loader (lib/safety_governance.py) MUST default
+# `self_deploy` to False, and the shipped default-config (config.json the
+# install seeds) MUST NOT enable it — so a fresh install stays dormant and does
+# NOT self-deploy until a user explicitly opts in.
+# ---------------------------------------------------------------------------
+def test_shipped_default_keeps_self_deploy_off():
+    out_root = _build_into_temp()
+    try:
+        plugin = os.path.join(out_root, "plugins", "auto-maintainer")
+        # 1. The shipped governance reader defaults self_deploy to False.
+        sg = os.path.join(plugin, "lib", "safety_governance.py")
+        with open(sg, encoding="utf-8") as fh:
+            sg_body = fh.read()
+        assert '"self_deploy": False' in sg_body, \
+            "shipped safety_governance must default self_deploy to False " \
+            "(the dormant default)"
+        # 2. The shipped default-config does NOT enable self_deploy.
+        dc = os.path.join(plugin, "default-config", "config.json")
+        with open(dc, encoding="utf-8") as fh:
+            dc_data = json.load(fh)
+        assert dc_data.get("self_deploy", False) is False, \
+            "shipped default-config config.json must not enable self_deploy " \
+            "(dormant default; this release does not enable it)"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+def test_committed_default_keeps_self_deploy_off():
+    plugin = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer")
+    sg = os.path.join(plugin, "lib", "safety_governance.py")
+    assert os.path.isfile(sg), \
+        "committed lib/safety_governance.py must ship in the plugin tree"
+    with open(sg, encoding="utf-8") as fh:
+        sg_body = fh.read()
+    assert '"self_deploy": False' in sg_body, \
+        "committed safety_governance must default self_deploy to False " \
+        "(the dormant default)"
+    dc = os.path.join(plugin, "default-config", "config.json")
+    assert os.path.isfile(dc), \
+        "committed default-config/config.json must ship in the plugin tree"
+    with open(dc, encoding="utf-8") as fh:
+        dc_data = json.load(fh)
+    assert dc_data.get("self_deploy", False) is False, \
+        "committed default-config config.json must not enable self_deploy " \
+        "(dormant default; this release does not enable it)"
