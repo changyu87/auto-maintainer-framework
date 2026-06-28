@@ -2103,6 +2103,41 @@ def _flush_package(integration_result, mode, gov, project_dir, repo,
     return True, version, None
 
 
+def _release_needed(integration_result, package_deployed, project_dir,
+                    files_source, repo):
+    """True when THIS tick merged a shipped-src change that was NOT self-deployed
+    — i.e. a human release is needed to keep the plugin version 1:1 with the
+    shipped bytes (#319).
+
+    While self-deploy stays gated OFF in production, a loop merge that touches
+    shipped src leaves main's committed plugin tree drifted from the bumped
+    version a release would carry. That "release needed" condition is otherwise
+    INVISIBLE — `deploy=gated` in the trace is indistinguishable from a tick that
+    merged nothing. This surfaces it explicitly so the operator knows a release
+    is owed.
+
+    Returns False (no query) when the flush already deployed (no release owed),
+    when build_plugin is not importable (a normal install — nothing to release),
+    or when the maintained project is NOT the framework's own checkout (the only
+    place a self-release is meaningful). Those guards keep this OFF the network
+    exactly where the maintained project is not the self-deploy target. Otherwise
+    it queries the SHARED injectable `files_source` seam (the same the flush uses)
+    for each merged PR and returns True on the first shipped-src touch."""
+    if package_deployed:
+        return False
+    if bp is None:
+        return False
+    if _self_deploy_repo_root(project_dir) is None:
+        return False
+    for entry in (integration_result or {}).get("merged", []):
+        pr_ref = entry.get("pr_ref")
+        if not pr_ref:
+            continue
+        if bp.touches_shipped_src(files_source(pr_ref, repo=repo)):
+            return True
+    return False
+
+
 def _gate_acting_state(name, agentstate, slot_values, tick_id, mode,
                        output_dir):
     """Synthesize the INERT result for a trust-gated (not-permitted) acting
@@ -3090,6 +3125,16 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         package_field = f"deploy=v{package_version}"
     else:
         package_field = f"deploy={package_reason}"
+    # When a shipped-src change merged but was NOT self-deployed (the default-off
+    # production state), a human release is owed to keep the plugin version 1:1
+    # with the shipped bytes (#319). Surface it so `deploy=gated` is no longer
+    # indistinguishable from a no-op tick; the trailing `release_needed` token
+    # rides the trace + a tick_end detail boolean.
+    release_needed = _release_needed(
+        integration_result, package_deployed, project_dir,
+        pr_files_source or DEFAULT_PR_FILES_SOURCE, runtime.get("repo"))
+    if release_needed:
+        package_field += " release_needed"
     # The refire decision (legible idle-vs-refire): the EXIT signal already carries
     # it; surface a boolean in the tick_end detail disambiguating
     # idle-because-no-work (False) from refire-because-work-remains (True).
@@ -3130,6 +3175,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "self_deployed": package_deployed,
         "deployed_version": package_version,
         "deploy_skip_reason": package_reason,
+        "release_needed": release_needed,
         "refire": refire})
 
     if return_run_result:
