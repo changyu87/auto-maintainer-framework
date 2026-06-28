@@ -4,7 +4,7 @@
 A pure, deterministic decision library over a machine-first, versioned CENTRAL
 config (config.json). Decision surfaces plus one effectful halt helper:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.2.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.4.0),
      DEFAULT_GOVERNANCE, load_config(project_dir), work_own_filings(config). The
      config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
@@ -93,12 +93,12 @@ import lifecycle_dispositions as ld
 # on load and mapped forward, a non-breaking coexistence migration). 2.2.0:
 # additive `work_own_filings` knob (default true) — the loop works its own
 # filings by default with a manual opt-out (§3.11.5); an absent key backfills
-# True, so the bump is backward compatible. 2.3.0: additive `self_deploy` knob
-# (default FALSE) — gates the loop regenerating + committing its OWN plugin tree
-# after merging a shipped-src change (#309, the self-deployment gate); it is a
-# §3.8/§3.11.5 self-modification effect, so it is OFF by default and opt-in. An
-# absent key backfills False, so the bump is backward compatible.
-GOVERNANCE_SCHEMA_VERSION = "2.3.0"
+# True, so the bump is backward compatible. 2.4.0: the `self_deploy` knob is
+# REMOVED — the self_deploy ACTION was removed in #324 (the auto-maintainer is
+# NOT self-deployable), so the knob gates nothing. A config.json still carrying a
+# stale `self_deploy` key is TOLERATED (dropped, never surfaced), so the bump is
+# backward compatible.
+GOVERNANCE_SCHEMA_VERSION = "2.4.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
 # config field. The loop's OWN defects route here ALWAYS, never the project
@@ -125,7 +125,6 @@ DEFAULT_GOVERNANCE = {
     "mode": "propose",
     "features_root": None,
     "work_own_filings": True,
-    "self_deploy": False,
     "budget": {
         "per_day_tokens": None,
         "window_tz": "local",
@@ -179,10 +178,10 @@ def _overlay(raw):
     by VERIFY's cross-feature complement, §3.7.6) is surfaced; absent keeps the
     null default (UNCONFIGURED -> the complement conservatively gates). An
     explicit top-level `work_own_filings` (the loopback toggle, §3.11.5) is
-    surfaced; absent keeps the default True (the loop works its own filings). An
-    explicit top-level `self_deploy` (the self-deployment gate, #309) is surfaced;
-    absent keeps the default False (the loop does NOT regenerate/commit its own
-    plugin tree — a §3.8/§3.11.5 self-modification effect, opt-in).
+    surfaced; absent keeps the default True (the loop works its own filings). A
+    stale top-level `self_deploy` key (the removed self-deployment gate, #324) is
+    silently dropped (tolerated, ignored — the self_deploy ACTION was removed, so
+    the knob gates nothing).
     """
     config = _copy_defaults()
     if "mode" in raw:
@@ -191,8 +190,6 @@ def _overlay(raw):
         config["features_root"] = raw["features_root"]
     if "work_own_filings" in raw:
         config["work_own_filings"] = raw["work_own_filings"]
-    if "self_deploy" in raw:
-        config["self_deploy"] = raw["self_deploy"]
     budget = raw.get("budget", {})
     for key in ("per_day_tokens", "window_tz"):
         if key in budget:
@@ -261,19 +258,6 @@ def work_own_filings(config):
     apply the loopback exclusion; scheduling threads it from the loaded config.
     """
     return config.get("work_own_filings", True)
-
-
-def self_deploy(config):
-    """Whether the loop SELF-DEPLOYS — regenerates + commits its OWN plugin tree
-    after merging a shipped-src change (the self-deployment gate, #309).
-
-    A pure config read: returns the loaded config's `self_deploy`, defaulting to
-    False when the key is absent (the default-OFF opt-in — self-modification
-    touches §3.8 governance and §3.11.5 self-amplification, so it is bounded and
-    explicitly opt-in). scheduling's out-of-band PACKAGE flush consumes this to
-    gate the regenerate+version-bump+commit.
-    """
-    return config.get("self_deploy", False)
 
 
 # --------------------------------------------------------------------------

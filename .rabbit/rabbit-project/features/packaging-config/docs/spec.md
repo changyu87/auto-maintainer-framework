@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.11
+version: 0.7.12
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -501,3 +501,25 @@ change beyond the version bump. Invariant: version 0.7.11 is consistent across
 defaults `self_deploy` to False and the shipped/committed
 `default-config/config.json` does not enable it (dormant default); the committed
 tree matches a fresh build with no source-tree leak; still idempotent.
+
+## Plugin patch v0.7.12 — full self-deploy removal release: deploy #324/#325
+
+Cut the release that deploys the FULL removal of the self-deploy capability and
+removes this feature's now-dead self-deploy build helpers. The self-deploy ACTION
+(scheduling's out-of-band PACKAGE flush, #324) and the `self_deploy` knob
+(safety-governance #325) are gone; with both removed, packaging-config's
+`bump_version` + `package_commit_paths` had zero callers and the `_read_version`
+disk-read (with `_VERSION_RE` / `_VERSION_ASSIGN`) existed only so a same-process
+`bump_version` rewrite would be picked up by the next `build()`. This release
+removes those dead helpers and reverts `build()` to stamp `plugin.json` +
+`marketplace.json` from the in-memory `_PLUGIN_VERSION` constant directly. The
+plugin is NOT self-deployable; releases are operator-cut by editing
+`_PLUGIN_VERSION`. `touches_shipped_src` + `SELF_DEPLOY_MARKER` are KEPT
+(scheduling's `release_needed` operator signal still uses them). `_PLUGIN_VERSION
+→ 0.7.12`; the committed tree is regenerated from current src (the post-removal
+scheduling + safety-governance libs). Invariant: version 0.7.12 is consistent
+across `plugin.json` + `marketplace.json`; the shipped `lib/run_tick.py` carries
+no `_flush_package` / `git_commit_sink` and `lib/safety_governance.py` carries no
+`self_deploy` knob; `release_needed` + `touches_shipped_src` remain in the shipped
+libs; the committed tree matches a fresh build with no source-tree leak; still
+idempotent.
