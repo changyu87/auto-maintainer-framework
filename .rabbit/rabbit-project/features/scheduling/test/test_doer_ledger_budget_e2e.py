@@ -341,11 +341,13 @@ def test_already_acted_item_is_skipped_on_next_tick():
     ledger_after_t1 = rt.persisted_acted_ledger(state_path)
     assert set(ledger_after_t1) == {"wo-acme/widget#7", "wo-acme/widget#9"}
 
-    # Tick 2: SAME items re-pulled. TRIAGE pauses again (non-acting); resume past
-    # it. At IMPLEMENT both items are in the ledger -> NO pause, NO second
-    # dispatch; the tick completes.
-    result = _resume_triage(project_dir, runtime_dir, state_path, journal_path,
-                            now=_DAY1)
+    # Tick 2: SAME items re-pulled. They were recorded done-AND-unchanged in
+    # triage_memory at tick 1's resume, so TRIAGE empty-skips (#306): no subagent
+    # dispatch, no TRIAGE pause — the tick runs straight through to idle in ONE
+    # invocation, and the acting state never re-dispatches (no second PR).
+    result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source(), now=_DAY1)
     assert result == "idle", result
     # No second PR: the spend did not increase further (default spent 0 on the
     # tick-2 resume; and the acting state never dispatched).
@@ -381,10 +383,16 @@ def test_all_items_in_ledger_acting_state_does_not_pause():
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        result = _resume_triage(project_dir, runtime_dir, state_path,
-                                journal_path, now=_DAY1)
-    # The acting state did NOT pause (every item already acted) -> the resume
-    # drove straight to DONE; the pool is fully done-and-unchanged -> idle.
+        # The whole pool is done-AND-unchanged, so TRIAGE empty-skips (#306): no
+        # subagent dispatch, no TRIAGE pause — the tick runs straight through
+        # (TRIAGE EMPTY -> PRIORITIZE -> IMPLEMENT, all inert) to idle in ONE
+        # invocation. (Pre-#306 TRIAGE paused here even on the fully-filtered
+        # batch.)
+        result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                             state_path=state_path, journal_path=journal_path,
+                             source=_stub_source(), now=_DAY1)
+    # The acting state did NOT pause (every item already acted) -> the pool is
+    # fully done-and-unchanged -> idle.
     assert result == "idle", result
     # No checkpoint left at IMPLEMENT (it never paused).
     doc = ds.DurableState(state_path).load()
