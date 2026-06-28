@@ -1,7 +1,7 @@
 ---
 name: tick
-description: Run an auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute a tick or step the maintainer loop, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) — passing each one's description and (when present) isolation — and resumes, reporting the dispatched subagents' token usage, until the tick completes. When a completed tick's final signal is `refire` (actionable work remains), it runs another tick immediately, looping until a non-refire signal (idle/halt/break) so the loop drains its backlog without waiting for the heartbeat.
-version: 0.5.0
+description: Run an auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute a tick or step the maintainer loop, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) — pointing each one at the invocation-envelope file the runner names (prompt_path) and passing its description and (when present) isolation — and resumes, reporting the dispatched subagents' token usage, until the tick completes. When a completed tick's final signal is `refire` (actionable work remains), it runs another tick immediately, looping until a non-refire signal (idle/halt/break) so the loop drains its backlog without waiting for the heartbeat.
+version: 0.6.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when Claude Code can dispatch subagents from within a script (removing the need for a session-mediated executor), or when the tick CLI's --step/--resume protocol reaches a breaking major version.
 ---
@@ -12,15 +12,24 @@ Run one tick of the maintainer loop. The tick is **script-driven**: the
 deterministic tick-runner at `${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py` walks the
 route and does all control flow. Most states are pure script and need nothing
 from you. An **agent-state** is the exception: a script cannot call the `Agent`
-tool, so the runner **pauses** and hands you a fully-rendered prompt; your only
-job is to **dispatch** the subagent for it and then resume. You decide nothing
-about the route — the runner does.
+tool, so the runner **pauses** and hands you a `prompt_path` — the path to a file
+holding the subagent's full invocation envelope; your only job is to **dispatch**
+the subagent for it (telling it to read that file) and then resume. You decide
+nothing about the route — the runner does.
 
-Crucially, the **dispatched subagent writes its own output to a file** (the
-prompt's `## Handoff` section tells it the exact schema, the file path, and to
-reply with only a short ack). So you never handle the subagent's output content
-— the runner reads the file on resume. This keeps your context clean no matter
-how large the output is.
+Two things stay out of your context by design — both inputs and outputs flow
+through files, never through you:
+
+- **The invocation envelope is a FILE you don't read.** The runner writes each
+  dispatch's rendered envelope to `prompt_path` and hands you only the path. You
+  pass that path into a short reference prompt and let the SUBAGENT read the file
+  — you never open it yourself. A large envelope (e.g. an IMPLEMENT dispatch with
+  the full work-order body) therefore never lands in your context or truncates
+  your runner output.
+- **The output is a FILE the subagent writes.** The envelope's `## Handoff`
+  section tells the subagent the exact schema, the output file path, and to reply
+  with only a short ack. You never handle the output content — the runner reads
+  the file on resume.
 
 ## ⚠️ The one rule that keeps a tick correct: `--step` once, then only `--resume`
 
@@ -50,11 +59,13 @@ until `done`.**
 
 - `{"status":"done","signal":"<idle|halt|...>","trace":"<one-line trace>"}` —
   the tick finished. Print the `trace` and stop.
-- `{"status":"paused","state":"<name>","dispatches":[ {"subagent_type","prompt",
-  "description", ... }, ... ]}` — the runner is waiting at an agent-state.
-  Dispatch each entry, then **`--resume`**. Every entry carries a `subagent_type`,
-  a `prompt`, and a `description`; an **acting** entry (one that performs outward
-  effects) additionally carries an `isolation` value (e.g. `"worktree"`).
+- `{"status":"paused","state":"<name>","dispatches":[ {"subagent_type",
+  "prompt_path","description", ... }, ... ]}` — the runner is waiting at an
+  agent-state. Dispatch each entry, then **`--resume`**. Every entry carries a
+  `subagent_type`, a `prompt_path` (the file holding that subagent's full
+  invocation envelope — you pass the path, you do NOT read the file), and a
+  `description`; an **acting** entry (one that performs outward effects)
+  additionally carries an `isolation` value (e.g. `"worktree"`).
 - `{"status":"invalid_output","state":"<name>","reason":"<why>"}` — a dispatched
   subagent's output file was missing or didn't match the schema. Re-dispatch
   that state (see step 5); after 2 failed attempts, print the reason and stop.
@@ -83,22 +94,28 @@ until `done`.**
      immediate follow-on work, so stop here; the next heartbeat will tick again.
 
 3. If `status` is `"paused"`: for **each** entry in `dispatches` (in order),
-   dispatch the subagent with that entry's exact rendered prompt, passing the
-   entry's `description`, and its `isolation` **only when the entry includes
-   one**:
+   dispatch the subagent and point it at its `prompt_path`, passing the entry's
+   `description`, and its `isolation` **only when the entry includes one**. The
+   `prompt` you pass is a SHORT fixed reference — it tells the subagent that its
+   full invocation envelope is the file at `prompt_path`, to read it in full, and
+   to follow it literally:
 
    - entry has no `isolation`:
-     `Agent(subagent_type=<entry.subagent_type>, description=<entry.description>, prompt=<entry.prompt>)`
+     `Agent(subagent_type=<entry.subagent_type>, description=<entry.description>, prompt="Your invocation envelope is the file at <entry.prompt_path>. Read it IN FULL and follow it literally.")`
    - entry has an `isolation`:
-     `Agent(subagent_type=<entry.subagent_type>, description=<entry.description>, prompt=<entry.prompt>, isolation=<entry.isolation>)`
+     `Agent(subagent_type=<entry.subagent_type>, description=<entry.description>, prompt="Your invocation envelope is the file at <entry.prompt_path>. Read it IN FULL and follow it literally.", isolation=<entry.isolation>)`
 
-   The `prompt` is the complete, self-contained handoff contract — pass it
-   through **verbatim**, do not author or alter it. The `description` and
-   `isolation` come straight from the runner; pass them through unchanged too —
-   do not invent or omit them. Each subagent writes its own output file (as the
-   prompt instructs) and replies with a short ack; you do **not** write any file
-   yourself and you do **not** need to capture the subagent's output — just let
-   each dispatch finish.
+   **Do NOT open or read the `prompt_path` file yourself** — pass only the path
+   into the reference prompt and let the subagent read it. This is deliberate: the
+   rendered envelope can be large (an IMPLEMENT dispatch carries the whole
+   work-order body), and reading it would pull it into your context and risk
+   truncating your runner output. Substitute the real `entry.prompt_path` into the
+   reference string, but keep the rest of the prompt fixed. The `description` and
+   `isolation` come straight from the runner; pass them through unchanged — do not
+   invent or omit them. Each subagent reads its envelope file, writes its own
+   output file (as the envelope instructs), and replies with a short ack; you do
+   **not** read the envelope, **not** write any output file, and **not** capture
+   the subagent's output — just let each dispatch finish.
 
    As each dispatch finishes, note the `subagent_tokens` it reports in its
    result. Sum these across all entries in this pause — call it the spend. This
@@ -121,7 +138,7 @@ until `done`.**
 
 5. If `status` is `"invalid_output"`: re-dispatch the same state. This is the ONE
    case where you call `--step` again — to re-emit the same pause from the
-   checkpoint so you get the dispatch prompt back:
+   checkpoint so you get the dispatch entries (and their `prompt_path`s) back:
 
    ```
    python3 ${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py --step
@@ -143,11 +160,15 @@ until `done`.**
   until a tick reports a non-refire signal (`idle`/`halt`/`break`). The runner
   decides refire-vs-idle deterministically — you only relay the loop. The cron
   heartbeat is the safety net, not the primary driver.
-- Dispatch a subagent ONLY for the entries the runner hands you, with the
-  prompt, `description`, and (when present) `isolation` the runner provides,
-  verbatim — do not alter them or invoke any other subagent. The prompt is the
-  machine-first invocation envelope; it alone tells the subagent the schema, the
-  output file, and the ack — the subagent needs no other knowledge.
+- Dispatch a subagent ONLY for the entries the runner hands you, pointing it at
+  the `prompt_path` the runner provides and passing the `description` and (when
+  present) `isolation` unchanged — do not alter them or invoke any other subagent.
+  The file at `prompt_path` is the machine-first invocation envelope; it alone
+  tells the subagent the schema, the output file, and the ack — the subagent needs
+  no other knowledge, and reads the file itself.
+- Never open or read the `prompt_path` file yourself — pass only the path. The
+  rendered envelope stays out of your context (it can be large); the subagent
+  reads it.
 - Never marshal, copy, or write the subagent's output yourself — the subagent
   writes its file and the runner reads it. This is deliberate: it keeps the
   output out of your context.

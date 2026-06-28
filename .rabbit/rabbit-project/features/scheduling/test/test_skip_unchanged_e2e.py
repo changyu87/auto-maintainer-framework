@@ -259,6 +259,13 @@ def _write_outputs(paused, contents):
             f.write(content)
 
 
+def _prompt_text(dispatch):
+    """The rendered envelope a dispatch is delivered by file reference: read the
+    file at prompt_path (the inline prompt is no longer carried in the rec)."""
+    with open(dispatch["prompt_path"]) as f:
+        return f.read()
+
+
 def _resume_triage(project_dir, runtime_dir, state_path, journal_path,
                    now=None, source=None, work_orders=None):
     """Step TRIAGE (non-acting agent) past its pause; return the SECOND return
@@ -397,7 +404,7 @@ def test_done_unchanged_item_filtered_from_triage_dispatch():
                           state_path=state_path, journal_path=journal_path,
                           source=src, now=_DAY1)
     assert paused2["state"] == "TRIAGE", paused2
-    prompt = paused2["dispatches"][0]["prompt"]
+    prompt = _prompt_text(paused2["dispatches"][0])
     assert "acme/widget#8" in prompt, prompt
     assert "acme/widget#7" not in prompt, prompt
 
@@ -420,7 +427,7 @@ def test_changed_item_not_filtered():
                          state_path=state_path, journal_path=journal_path,
                          source=advanced_src, now=_DAY1)
     assert paused["state"] == "TRIAGE", paused
-    assert "acme/widget#7" in paused["dispatches"][0]["prompt"], paused
+    assert "acme/widget#7" in _prompt_text(paused["dispatches"][0]), paused
 
 
 # ==========================================================================
@@ -440,7 +447,7 @@ def test_active_item_not_filtered():
                          state_path=state_path, journal_path=journal_path,
                          source=_stub_source(), now=_DAY1)
     assert paused["state"] == "TRIAGE", paused
-    assert "acme/widget#7" in paused["dispatches"][0]["prompt"], paused
+    assert "acme/widget#7" in _prompt_text(paused["dispatches"][0]), paused
 
 
 # ==========================================================================
@@ -454,7 +461,7 @@ def test_empty_memory_filters_nothing():
                          state_path=state_path, journal_path=journal_path,
                          source=src, now=_DAY1)
     assert paused["state"] == "TRIAGE", paused
-    prompt = paused["dispatches"][0]["prompt"]
+    prompt = _prompt_text(paused["dispatches"][0])
     assert "acme/widget#7" in prompt, prompt
     assert "acme/widget#8" in prompt, prompt
 

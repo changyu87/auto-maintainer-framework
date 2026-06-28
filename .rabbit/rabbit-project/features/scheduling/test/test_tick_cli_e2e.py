@@ -16,8 +16,11 @@ stdout, nothing else on stdout):
   - done            -> {"status":"done", "signal":"<idle|halt|...>",
                         "trace":"<the one-line trace string>"}
   - paused          -> {"status":"paused", "state":"<name>",
-                        "dispatches":[{subagent_type, prompt, writes, output_path,
-                                       signal_rule, cardinality, item?}...]}
+                        "dispatches":[{subagent_type, prompt_path, writes,
+                                       output_path, signal_rule, cardinality,
+                                       item?}...]}
+                        (the dispatch envelope is delivered by FILE REFERENCE via
+                        prompt_path, NOT inline, so --step stdout stays small.)
   - invalid_output  -> {"status":"invalid_output", "state":..., "reason":...}
 
 The human trace line that bare `run_tick` prints to stdout MUST NOT pollute the
@@ -35,8 +38,8 @@ Behaviours exercised (every one has an e2e test, per the E2E TEST RULE):
   A. --step on a pure-SCRIPT default route -> stdout is valid JSON
      {"status":"done","signal":"idle",...}; no non-JSON noise on stdout.
   B. --step on an AGENT route -> {"status":"paused","state":"TRIAGE",
-     "dispatches":[...]} with a rendered prompt + writes + output_path; stdout
-     pure JSON.
+     "dispatches":[...]} with a prompt_path (file-referenced rendered envelope) +
+     writes + output_path; the inline prompt is NOT in stdout; stdout pure JSON.
   C. WRITE canned outputs to each paused dispatch's output_path, --resume (no
      file arg) -> applies + advances -> next JSON (paused again or done); a full
      step->resume->resume->done sequence reaches {"status":"done"} with the slot
@@ -338,8 +341,19 @@ def test_step_agent_route_emits_paused_json():
     # The dispatch carries an output_path under dispatch-out/ (file-based resume).
     assert "output_path" in d, d
     assert os.path.join(runtime_dir, "dispatch-out") in d["output_path"], d
-    # The prompt is RENDERED markdown surfaced through the CLI verbatim.
-    assert d["prompt"].startswith("# Dispatch: TRIAGE"), d["prompt"][:60]
+    # The dispatch is delivered by FILE REFERENCE: the CLI JSON carries
+    # prompt_path (a small absolute path) and NOT the multi-KB inline prompt, so
+    # --step stdout stays small (no truncation).
+    assert "prompt" not in d, d
+    assert "prompt_path" in d, d
+    assert os.path.isabs(d["prompt_path"]), d["prompt_path"]
+    assert os.path.join(runtime_dir, "dispatch-out") in d["prompt_path"], d
+    # The file at prompt_path holds the RENDERED markdown envelope.
+    with open(d["prompt_path"]) as _f:
+        rendered = _f.read()
+    assert rendered.startswith("# Dispatch: TRIAGE"), rendered[:60]
+    # The inline prompt does not appear anywhere in the --step stdout JSON.
+    assert "# Dispatch: TRIAGE" not in out, out
     assert code == 0, code
     # No trace noise on stdout for a pause.
     assert "[tick]" not in out, out

@@ -13,15 +13,19 @@ DESIGN §3.4.6 context-isolation):
 
   - A fresh run on a route with >=1 agent-state returns a PAUSED dict
         {"status": "paused", "state": <agent-state name>,
-         "dispatches": [ {"subagent_type", "prompt" (rendered markdown),
-                          "writes", "output_path", "signal_rule",
-                          "cardinality", "item"? } ... ]}
+         "dispatches": [ {"subagent_type", "prompt_path" (a FILE holding the
+                          rendered envelope), "writes", "output_path",
+                          "signal_rule", "cardinality", "item"? } ... ]}
     and persists a durable checkpoint under TICK_CHECKPOINT_KEY; the script does
-    NOT call the Agent tool (that is the executor's job, a later slice). Each
-    dispatch's rendered prompt names an `output_path` under
-    ${runtime_dir}/dispatch-out/ where the subagent WRITES its JSON output. Any
-    pre-existing file at that output_path is DELETED at pause (so a stale
-    prior-tick file can't be misread on resume).
+    NOT call the Agent tool (that is the executor's job, a later slice). The
+    rendered envelope is delivered by FILE REFERENCE: it is WRITTEN to
+    prompt_path (an absolute file under ${runtime_dir}/dispatch-out/, named
+    parallel to output_path: `<state>-<di>-<ii>.prompt.md`) and the inline
+    `prompt` is NOT in the rec — symmetric with the file-based OUTPUT contract, so
+    the orchestrator never holds the rendered envelope. Each dispatch's rendered
+    envelope names an `output_path` under ${runtime_dir}/dispatch-out/ where the
+    subagent WRITES its JSON output. Any pre-existing file at that output_path is
+    DELETED at pause (so a stale prior-tick file can't be misread on resume).
   - run_tick(resume=True) loads the checkpoint, READS each pending dispatch's
     output_path FILE, validates it against the writes-slot schema, applies the
     collected slot value, and continues the driver to the next pause or terminal.
@@ -299,11 +303,21 @@ def test_fresh_agent_route_pauses_at_triage():
     # the subagent writes its JSON; the rendered ## Handoff section names it too.
     assert "output_path" in d, d
     assert os.path.join(runtime_dir, "dispatch-out") in d["output_path"], d
-    # The prompt is RENDERED markdown (not raw JSON) — agent-dispatch.render.
-    assert d["prompt"].startswith("# Dispatch: TRIAGE"), d["prompt"][:60]
-    assert "## Inputs" in d["prompt"], d["prompt"]
-    assert "## Handoff" in d["prompt"], d["prompt"]
-    assert d["output_path"] in d["prompt"], d["prompt"]
+    # The dispatch is delivered by FILE REFERENCE: prompt_path names a file
+    # holding the rendered envelope; the inline `prompt` is NOT in the rec (the
+    # orchestrator never receives the rendered envelope inline).
+    assert "prompt" not in d, d
+    assert "prompt_path" in d, d
+    assert os.path.isabs(d["prompt_path"]), d["prompt_path"]
+    assert os.path.join(runtime_dir, "dispatch-out") in d["prompt_path"], d
+    assert d["prompt_path"].endswith(".prompt.md"), d["prompt_path"]
+    # The file at prompt_path holds the RENDERED markdown (agent-dispatch.render).
+    with open(d["prompt_path"]) as _f:
+        rendered = _f.read()
+    assert rendered.startswith("# Dispatch: TRIAGE"), rendered[:60]
+    assert "## Inputs" in rendered, rendered
+    assert "## Handoff" in rendered, rendered
+    assert d["output_path"] in rendered, rendered
 
 
 def test_fresh_agent_route_persists_checkpoint_and_work_items():
@@ -443,7 +457,16 @@ def test_crash_safety_reemits_same_dispatch_from_checkpoint():
                         source=_stub_source())
     assert again["status"] == "paused", again
     assert again["state"] == "TRIAGE", again
-    assert again["dispatches"][0]["prompt"] == first["dispatches"][0]["prompt"]
+    # The re-emitted prompt_path is BYTE-IDENTICAL to the first PAUSE's, and the
+    # rendered envelope FILE it points at is byte-identical too (crash-safety:
+    # the prompt file is rewritten from the durable checkpoint round-trip).
+    assert (again["dispatches"][0]["prompt_path"]
+            == first["dispatches"][0]["prompt_path"]), (first, again)
+    with open(again["dispatches"][0]["prompt_path"]) as _f:
+        again_rendered = _f.read()
+    with open(first["dispatches"][0]["prompt_path"]) as _f:
+        first_rendered = _f.read()
+    assert again_rendered == first_rendered, (first_rendered, again_rendered)
     assert again["dispatches"][0]["writes"] == "work_orders"
     # The re-emitted output_path is BYTE-IDENTICAL to the first PAUSE's.
     assert (again["dispatches"][0]["output_path"]
@@ -711,4 +734,12 @@ def test_paused_dispatch_crash_safety_still_works_via_checkpoint():
                         state_path=state_path, journal_path=journal_path,
                         source=_stub_source())
     assert again["status"] == "paused" and again["state"] == "TRIAGE", again
-    assert again["dispatches"][0]["prompt"] == first["dispatches"][0]["prompt"]
+    # The re-emit reproduces the same file-referenced prompt_path with
+    # byte-identical envelope content (rendered from the durable checkpoint).
+    assert (again["dispatches"][0]["prompt_path"]
+            == first["dispatches"][0]["prompt_path"]), (first, again)
+    with open(again["dispatches"][0]["prompt_path"]) as _f:
+        again_rendered = _f.read()
+    with open(first["dispatches"][0]["prompt_path"]) as _f:
+        first_rendered = _f.read()
+    assert again_rendered == first_rendered, (first_rendered, again_rendered)

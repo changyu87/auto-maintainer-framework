@@ -199,9 +199,48 @@ def test_ship_start_skill_heartbeat_interval_is_config_driven():
 # file; the skill marshals NO content.)
 # --------------------------------------------------------------------------
 
-def test_ship_tick_skill_version_is_0_5_0():
+def test_ship_tick_skill_version_is_0_6_0():
     fields = _parse_frontmatter(_TICK_SKILL)
-    assert fields.get("version") == "0.5.0", fields
+    assert fields.get("version") == "0.6.0", fields
+
+
+def test_ship_tick_skill_dispatches_by_prompt_path_file_reference():
+    """v0.6.0: the runner's JSON protocol delivers each dispatch's invocation
+    envelope by FILE REFERENCE (a `prompt_path`), NOT an inline `prompt`. The
+    skill dispatches each entry as
+    Agent(subagent_type, description=, prompt=<a SHORT reference telling the
+    subagent its envelope is the file at entry.prompt_path, to read it IN FULL and
+    follow it literally>, isolation=). The skill must document prompt_path and
+    the reference-dispatch wording."""
+    body = _read_text(_TICK_SKILL)
+    # The protocol section names prompt_path (the file-referenced envelope).
+    assert "prompt_path" in body, \
+        "tick skill must document the prompt_path file-referenced envelope"
+    # The dispatch tells the subagent to READ the file IN FULL and follow it.
+    assert "read" in body.lower() and "in full" in body.lower(), \
+        "tick skill must tell the subagent to read its envelope file IN FULL"
+
+
+def test_ship_tick_skill_orchestrator_does_not_read_the_prompt_file():
+    """v0.6.0: the orchestrator does NOT open/read the prompt_path file itself —
+    it only passes the path into the reference prompt; the SUBAGENT reads it. This
+    keeps the rendered envelope out of the orchestrator's context (symmetric with
+    the file-based output contract). The skill body must state this rule."""
+    body = _read_text(_TICK_SKILL)
+    lower = body.lower()
+    assert "does not read" in lower or "do not read" in lower or \
+        "never read" in lower, \
+        "tick skill must state the orchestrator does not read the prompt file"
+
+
+def test_ship_tick_skill_does_not_pass_inline_prompt_verbatim():
+    """v0.6.0: the dispatch no longer carries an inline `prompt`; the skill must
+    NOT instruct passing an inline `prompt=<entry.prompt>` (the prior contract).
+    The prompt= argument is now a short reference to entry.prompt_path."""
+    body = _read_text(_TICK_SKILL)
+    assert "entry.prompt>" not in body and "<entry.prompt>" not in body, \
+        "tick skill must not pass the (removed) inline entry.prompt verbatim"
+    assert "prompt_path" in body, body[:0]
 
 
 def test_ship_tick_skill_step_resume_protocol_is_hardened():

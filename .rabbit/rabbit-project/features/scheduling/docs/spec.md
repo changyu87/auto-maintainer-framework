@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.27.0
+version: 0.28.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -364,11 +364,13 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   byte-identical `output_path`, and so resume knows which files to read. The
   checkpoint is the SOLE source of truth for the paused dispatch (crash-safety).
 - **PAUSED return contract** (a structured dict): `{"status": "paused",
-  "state": <agent-state name>, "dispatches": [ {"subagent_type", "prompt"
-  (rendered markdown), "writes", "output_path", "signal_rule", "cardinality",
-  "item"? } ... ]}`. A `once` dispatch yields one dispatch with no `item`; a
-  `{per_item: <path>}` dispatch yields one dispatch per resolved element, each
-  carrying its `item` and its own distinct `output_path`.
+  "state": <agent-state name>, "dispatches": [ {"subagent_type", "prompt_path"
+  (a FILE holding the rendered envelope), "writes", "output_path", "signal_rule",
+  "cardinality", "item"? } ... ]}`. A `once` dispatch yields one dispatch with no
+  `item`; a `{per_item: <path>}` dispatch yields one dispatch per resolved
+  element, each carrying its `item` and its own distinct `output_path`. The
+  rendered invocation envelope is delivered by **file reference** (`prompt_path`),
+  NOT inline — see "File-referenced dispatch prompt" below.
 - **Resume reads files, not a blob.** `run_tick(resume=True)` loads the
   checkpoint, restores the TickContext slots + position, then for each pending
   dispatch READS the file at its `output_path`. A MISSING output file returns
@@ -544,6 +546,36 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
   acting-only **budget pre-gate** above (which still gates only acting dispatches
   from STARTING when the window is already exhausted).
 
+## File-referenced dispatch prompt (slice: prompt-by-file-reference)
+
+The dispatch's rendered invocation envelope is delivered by **file reference**
+(`prompt_path`), symmetric with the already-file-based subagent OUTPUT. The PAUSE
+previously emitted each dispatch's rendered envelope INLINE as
+`dispatches[].prompt` (`ad.render(env)`) in the `--step` stdout JSON; for a large
+envelope (an IMPLEMENT dispatch with the work-order body + issue comments) stdout
+was truncated, forcing the orchestrator to RE-READ the whole output to relay the
+prompt — pulling the entire envelope into its context. The INPUT is now symmetric
+with outputs (which the subagent already writes to a file the runner reads).
+
+- **`_pause_result` writes the rendered envelope to a file.** For each dispatch it
+  WRITES `ad.render(env)` to a deterministic ABSOLUTE file under `output_dir`,
+  named parallel to `output_path` (`<state>-<di>-<ii>.json` →
+  `<state>-<di>-<ii>.prompt.md`), sets `prompt_path`, and DROPS the inline
+  `prompt` — the orchestrator receives only the path. It is written at the PAUSE
+  (where stale OUTPUT files are cleared) and OVERWRITTEN each emit, so a
+  crash-safety re-emit reproduces the SAME `prompt_path` with byte-identical
+  content (rendered from the durable checkpoint round-trip, like `output_path`).
+- **The `--step`/`--resume` JSON dispatch entries carry `prompt_path`** (a small
+  absolute path) and NOT the multi-KB inline prompt, so stdout stays small (no
+  truncation). All other fields (`subagent_type`, `description`, `isolation`,
+  `output_path`, `writes`, `cardinality`, `item`) are UNCHANGED.
+- **The envelope CONTENT is unchanged** — only its delivery (file vs inline)
+  changes; `ad.render` and the subagent agent `.md` files are untouched. The
+  executor dispatches each entry with a SHORT reference telling the subagent its
+  envelope is the file at `prompt_path`, to read it IN FULL and follow it
+  literally. The orchestrator does NOT open/read `prompt_path`; the SUBAGENT
+  reads it (symmetric with outputs).
+
 ## JSON tick CLI (slice: --step / --resume executor seam)
 
 `run_tick.py` exposes a **JSON tick CLI** (`run_tick.main(argv)`, also the
@@ -562,13 +594,16 @@ tick logic.
   - done → `{"status":"done","signal":"<idle|halt|...>","trace":"<the one-line
     trace string>"}`
   - paused → `{"status":"paused","state":"<name>","dispatches":[{subagent_type,
-    prompt,writes,output_path,signal_rule,cardinality,item?}...]}`
+    prompt_path,writes,output_path,signal_rule,cardinality,item?}...]}`
+    (the rendered envelope is delivered by FILE REFERENCE via `prompt_path`, NOT
+    inline — so `--step` stdout stays small and is never truncated)
   - invalid_output → `{"status":"invalid_output","state":...,"reason":...}`
 - **`--resume`** takes **NO file argument** — it calls `run_tick(resume=True)`,
   which reads each paused dispatch's subagent-WRITTEN output FILE at the
   checkpoint's `output_path`, and prints the SAME envelope shape (paused again,
-  done, or invalid_output). The executor relays the rendered prompt to the
-  subagent (which writes the JSON to `output_path`), then steps `--resume`.
+  done, or invalid_output). The executor dispatches the subagent with a SHORT
+  reference to the dispatch's `prompt_path` (the subagent reads the envelope file
+  itself and writes the JSON to `output_path`), then steps `--resume`.
 - **stdout is PURE JSON** in `--step`/`--resume` mode (the skill parses stdout):
   the human trace line that `run_tick` writes to stdout is captured into the JSON
   `trace` field (and NOT leaked raw onto stdout). A pause emits no trace, so the
