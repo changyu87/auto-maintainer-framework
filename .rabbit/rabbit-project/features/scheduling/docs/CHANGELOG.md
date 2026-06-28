@@ -1,5 +1,29 @@
 # scheduling — Changelog
 
+## feature 0.29.0 — 2026-06-28
+
+- **Removed the self-deploy PACKAGE flush — the auto-maintainer is NOT
+  self-deployable (design decision).** The loop files issues about itself but
+  never self-evolves its own deploy/release pipeline; releases are cut by humans.
+  This removes scheduling's self-deploy CONSUMER surface from `run_tick.py`:
+  - Deleted `_flush_package`, `_self_deploy_repo_root`, `git_commit_sink` +
+    `DEFAULT_PACKAGE_COMMIT_SINK`, `gh_pr_files_source` +
+    `DEFAULT_PR_FILES_SOURCE` (the PR-files source used only by the self-deploy
+    gate), the terminal `_flush_package` call site, the `package_commit_sink` and
+    `pr_files_source` `run_tick` parameters, and the `self_deployed` /
+    `deployed_version` / `deploy_skip_reason` trace + `tick_end` event fields.
+  - Removed the now-unused `build_plugin` (`bp`) import and the `sg.self_deploy`
+    reference.
+  - KEPT every non-self-deploy seam: the `gh_pr_state_source` /
+    `DEFAULT_PR_STATE_SOURCE` acted-ledger re-entry source (§3.8.5), the REPORT
+    flush, read-product persistence, disposition/signal selection, refire, and
+    the rest of the `tick_end` surface (`merged` / `merged_refs` / `reported_*` /
+    `refire`). A tick that merges a shipped-src-touching PR now performs NO
+    package regenerate / commit / push and still completes normally.
+  - `safety-governance`'s `self_deploy` knob and `packaging-config`'s build
+    helpers are stripped in their own follow-up feature touches; this touch only
+    stops referencing them.
+
 ## feature 0.28.0 — 2026-06-28
 
 - **File-referenced dispatch prompt (`prompt_path`).** Each agent-state

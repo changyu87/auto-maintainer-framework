@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.28.0
+version: 0.29.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -1092,6 +1092,27 @@ skill).
   documents the refire-loop: when a completed tick's final signal is `refire`,
   run ANOTHER tick immediately, looping until a non-refire signal
   (`idle`/`halt`/`break`). The cron heartbeat remains the safety net.
+
+## Not self-deployable (design decision)
+
+The auto-maintainer is **NOT self-deployable**. It files issues about itself
+(self-improvement work is tracked like any other), but it never self-evolves its
+own deploy/release pipeline: releases are cut by **humans**, not by the loop.
+
+The earlier out-of-band PACKAGE flush (which, after merging a shipped-src change,
+regenerated + committed + pushed its own plugin tree to remote main) has been
+**removed** from `run_tick`. There is no `_flush_package`, no
+`_self_deploy_repo_root`, no `git_commit_sink` / `DEFAULT_PACKAGE_COMMIT_SINK`,
+no `gh_pr_files_source` / `DEFAULT_PR_FILES_SOURCE`, no `package_commit_sink`
+run_tick parameter, and no `self_deployed` / `deployed_version` /
+`deploy_skip_reason` trace or `tick_end` event field. A tick that merges a
+shipped-src-touching PR therefore performs **no package regenerate / commit /
+push**; the tick completes normally and the merge is surfaced (`merged=<n>`) like
+any other merge.
+
+The `safety-governance` `self_deploy` knob and the `packaging-config` build
+helpers are stripped in their own follow-up feature touches; this feature touch
+only stops referencing them.
 
 ## Known gaps / deferred
 
