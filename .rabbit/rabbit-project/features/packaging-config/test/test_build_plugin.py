@@ -540,16 +540,15 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.7.9, file-referenced dispatch prompts release): version bumped
-# to 0.7.9 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.7.9 is the release that DEPLOYS #304 (file-referenced dispatch prompts) into
-# the installed plugin: scheduling's run_tick now writes each dispatch's rendered
-# invocation envelope to a `prompt_path` file and hands the executor only the
-# path, and the shipped tick skill (v0.6.0) documents the file-referenced
-# dispatch protocol (no inline prompt). It regenerates the committed plugin tree
-# from CURRENT src. (Supersedes the v0.7.8 work_own_filings opt-out release.)
+# Release (v0.7.10, empty-skip + build-drift-fix release): version bumped
+# to 0.7.10 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.7.10 is the release that DEPLOYS #307 (deterministic empty-skip for idle
+# ticks, for #306) plus the loop's #302/#303 into the installed plugin, and
+# regenerates the committed plugin tree from CURRENT src so the 7 build-drift
+# guards (the loop merged these as src without a build step) go green again.
+# (Supersedes the v0.7.9 file-referenced dispatch prompts release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_9_and_consistent():
+def test_version_bumped_to_0_7_10_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -561,10 +560,10 @@ def test_version_bumped_to_0_7_9_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.9", \
-            f"plugin.json version must be 0.7.9, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.9", \
-            "marketplace.json plugin entry version must be 0.7.9"
+        assert pdata.get("version") == "0.7.10", \
+            f"plugin.json version must be 0.7.10, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.10", \
+            "marketplace.json plugin entry version must be 0.7.10"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2997,3 +2996,45 @@ def test_committed_run_tick_carries_304_file_referenced_dispatch():
         skill = fh.read()
     assert "prompt_path" in skill, \
         "committed tick SKILL.md must document the #304 file-referenced dispatch"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.10 (#307), empty-skip deploy confirmation: the whole point of
+# this release is that the SHIPPED (freshly built) run_tick carries the #307
+# deterministic empty-skip for idle ticks (a NON-ACTING `once` agent-state whose
+# signal rule yields the empty-signal on empty input is skipped via
+# _empty_skip_result, so the loop stops dispatching the triager on an empty
+# pool, #306). Assert the freshly built run_tick carries the marker.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_carries_307_empty_skip():
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            shipped = fh.read()
+        assert "_empty_skip_result" in shipped, \
+            "shipped run_tick must carry the #307 deterministic empty-skip " \
+            "(_empty_skip_result)"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.10 (#307), COMMITTED-tree deploy confirmation: the committed
+# (shipped) run_tick — the bytes an installed plugin runs — carries the #307
+# deterministic empty-skip. This guards against shipping a tree that drifted
+# from the merged #307 src (the build-drift this release resolves).
+# ---------------------------------------------------------------------------
+def test_committed_run_tick_carries_307_empty_skip():
+    committed_rt = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib", "run_tick.py",
+    )
+    assert os.path.isfile(committed_rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(committed_rt, encoding="utf-8") as fh:
+        committed = fh.read()
+    assert "_empty_skip_result" in committed, \
+        "committed run_tick must carry the #307 deterministic empty-skip " \
+        "(_empty_skip_result)"
