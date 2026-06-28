@@ -191,56 +191,153 @@ def test_release_needed_true_when_any_merged_pr_touches_shipped_src():
 # touched.
 # ==========================================================================
 
-class _Boom:
-    """A sentinel that EXPLODES if called — proves no git/build/commit ran."""
+import io  # noqa: E402
+import json as _json  # noqa: E402,F811
+import tempfile  # noqa: E402
+from contextlib import redirect_stdout  # noqa: E402
 
-    def __init__(self, label):
-        self.label = label
-
-    def __call__(self, *a, **k):
-        raise AssertionError(f"self-deploy action ran: {self.label}")
+import work_intake as wi  # noqa: E402
+import verify_integrate as vi  # noqa: E402
+import observability as ob  # noqa: E402
 
 
-def test_e2e_merged_shipped_src_sets_release_needed_without_acting(tmp_path=None):
-    import tempfile
-    runtime_dir = tempfile.mkdtemp(prefix="sched-rel-e2e-")
-    state_path = os.path.join(runtime_dir, "durable-state.json")
-    journal_path = os.path.join(runtime_dir, "journal.jsonl")
+_GH_JSON_FIXTURE = """[
+  {
+    "number": 7,
+    "title": "Crash on empty config",
+    "body": "Steps to reproduce ...",
+    "url": "https://github.com/acme/widget/issues/7",
+    "state": "OPEN",
+    "labels": [{"name": "bug"}],
+    "author": {"login": "octocat"},
+    "createdAt": "2026-05-01T10:00:00Z",
+    "updatedAt": "2026-05-02T11:30:00Z"
+  }
+]"""
 
-    # Pre-seed the durable integration_result so the terminal sees a merged
-    # shipped-src PR WITHOUT routing a real INTEGRATE (the detector reads the
-    # persisted #64 integration_result product).
-    import durable_state as ds
-    doc = {}
-    doc[rt.INTEGRATION_RESULT_KEY] = _merged_result("acme/widget#42")
-    ds.DurableState(state_path).save(doc)
+# A single OPEN, mergeable PR -> VERIFY derives an `ok` verdict; INTEGRATE merges
+# it at auto-merge.
+_OK_PR = {
+    "number": 42,
+    "url": "https://github.com/acme/widget/pull/42",
+    "headRefName": "auto-maintainer/fix-42",
+    "baseRefName": "main",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+}
 
-    # Inject a files source that maps the merged PR to a shipped-src change, and
-    # point project_dir at the framework checkout so _self_deploy_repo_root
-    # resolves. Guard against ANY accidental build/commit: bp.build / bp.bump
-    # must NOT be invoked. We assert via the absence of the seams + an unchanged
-    # plugin tree; the detector queries ONLY the injected files source.
+# The close-the-loop route (pure-script with the DEFAULT map): a real INTEGRATE
+# merges the ok PR, so the terminal sees a merged shipped-src change.
+_CLOSE_ROUTE = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "PULL", "TRIAGE", "PRIORITIZE", "IMPLEMENT",
+               "VERIFY", "REVIEW", "INTEGRATE", "CLEANUP", "PERSIST", "EXIT",
+               "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "TRIAGE"},
+        {"state": "PULL", "signal": "EMPTY", "next": "TRIAGE"},
+        {"state": "TRIAGE", "signal": "OK", "next": "PRIORITIZE"},
+        {"state": "TRIAGE", "signal": "EMPTY", "next": "PRIORITIZE"},
+        {"state": "PRIORITIZE", "signal": "OK", "next": "IMPLEMENT"},
+        {"state": "PRIORITIZE", "signal": "EMPTY", "next": "IMPLEMENT"},
+        {"state": "IMPLEMENT", "signal": "OK", "next": "VERIFY"},
+        {"state": "IMPLEMENT", "signal": "BLOCKED", "next": "VERIFY"},
+        {"state": "VERIFY", "signal": "OK", "next": "REVIEW"},
+        {"state": "VERIFY", "signal": "EMPTY", "next": "REVIEW"},
+        {"state": "REVIEW", "signal": "OK", "next": "INTEGRATE"},
+        {"state": "REVIEW", "signal": "EMPTY", "next": "INTEGRATE"},
+        {"state": "INTEGRATE", "signal": "OK", "next": "CLEANUP"},
+        {"state": "CLEANUP", "signal": "OK", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+
+def _stub_source(json_text=_GH_JSON_FIXTURE):
+    items = wi.parse_gh_issues(json_text)
+
+    def source(repo=None):
+        return list(items)
+    return source
+
+
+def _patch_vi_merge():
+    """Override verify-integrate's gh seams so VERIFY/INTEGRATE touch no network
+    and INTEGRATE merges the ok PR. Returns a restore callable."""
+    saved = {"open": vi.gh_open_pr_source,
+             "branch": vi.gh_default_branch_source,
+             "merge": vi.gh_pr_merge_sink}
+
+    vi.gh_open_pr_source = lambda repo=None, label=vi.LOOP_PR_LABEL: [dict(_OK_PR)]
+    vi.gh_default_branch_source = lambda repo=None: "main"
+    vi.gh_pr_merge_sink = (
+        lambda pr_ref, repo=None: {"pr_ref": pr_ref,
+                                   "url": vi._pr_url(pr_ref, repo)})
+
+    def restore():
+        vi.gh_open_pr_source = saved["open"]
+        vi.gh_default_branch_source = saved["branch"]
+        vi.gh_pr_merge_sink = saved["merge"]
+    return restore
+
+
+def test_e2e_merged_shipped_src_sets_release_needed_without_acting():
+    """A full auto-merge tick whose INTEGRATE merges a shipped-src PR does NO
+    commit / push / regenerate (the loop is not self-deployable — those seams no
+    longer exist) yet sets release_needed=True on the one-line trace AND the
+    tick_end event. The detector touches ONLY the injected files source; no
+    git/build seam is reachable."""
+    # A temp project dir made into a valid "framework checkout" by planting the
+    # SELF_DEPLOY_MARKER file, so _self_deploy_repo_root resolves it AND the tick
+    # loads THIS dir's route/governance (config resolves from project_dir).
+    project_dir = tempfile.mkdtemp(prefix="sched-rel-e2e-")
+    marker = os.path.join(project_dir, bp.SELF_DEPLOY_MARKER)
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w") as f:
+        f.write("")
+    cfg = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(cfg, exist_ok=True)
+    with open(os.path.join(cfg, "route.json"), "w") as f:
+        _json.dump(_CLOSE_ROUTE, f)
+    with open(os.path.join(cfg, "governance.json"), "w") as f:
+        _json.dump({"mode": "auto-merge"}, f)
+    state_path = os.path.join(cfg, "durable-state.json")
+    journal_path = os.path.join(cfg, "tick-journal.jsonl")
+
+    # The merged PR's diff touches shipped src -> a human release is owed.
     files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
 
-    def _stub_source():
-        return []  # no open issues; PULL idles
+    restore = _patch_vi_merge()
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rt.run_tick(runtime_dir=cfg, state_path=state_path,
+                        journal_path=journal_path, project_dir=project_dir,
+                        source=_stub_source(), pr_files_source=files)
+        trace = buf.getvalue()
+    finally:
+        restore()
 
-    rt.run_tick(
-        runtime_dir=runtime_dir, state_path=state_path,
-        journal_path=journal_path, project_dir=_FEATURES_repo_root(),
-        source=_stub_source(), pr_files_source=files)
-
-    # The trace's tick_end event carries release_needed=True; no self_deployed /
-    # deployed_version keys remain (the action is gone).
-    events = []
-    log = os.path.join(runtime_dir, "events.jsonl")
-    if os.path.exists(log):
-        with open(log) as fh:
-            events = [json.loads(line) for line in fh if line.strip()]
-    end = next(e for e in events if e["kind"] == "tick_end")
+    # The one-line trace carries the standalone release_needed token (no deploy=).
+    assert "release_needed" in trace, trace
+    assert "deploy=" not in trace, trace
+    # The tick_end event carries release_needed=True; the removed self-deploy
+    # action keys are gone.
+    end = next(e for e in ob.EventLog(os.path.join(cfg, "events.jsonl")).read()
+               if e["kind"] == "tick_end")
     assert end["detail"].get("release_needed") is True, end
     assert "self_deployed" not in end["detail"], end
     assert "deployed_version" not in end["detail"], end
+    assert "deploy_skip_reason" not in end["detail"], end
     # The detector queried the merged PR's files (the only seam it touches).
     assert files.calls == ["acme/widget#42"], files.calls
 
