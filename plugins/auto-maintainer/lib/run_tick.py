@@ -81,7 +81,7 @@ _FEATURES = os.path.dirname(_FEATURE_DIR)
 for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
              "lifecycle-dispositions", "work-intake", "adapter-wiring",
              "prioritize", "implement", "safety-governance", "agent-dispatch",
-             "observability", "verify-integrate"):
+             "observability", "verify-integrate", "packaging-config"):
     _dep_src = os.path.join(_FEATURES, _dep, "src")
     if os.path.isdir(_dep_src) and _dep_src not in sys.path:
         sys.path.insert(0, _dep_src)
@@ -102,6 +102,18 @@ import safety_governance as sg  # noqa: E402
 import agent_dispatch as ad  # noqa: E402
 import observability as ob  # noqa: E402
 import verify_integrate as vi  # noqa: E402
+
+# build_plugin (packaging-config) is OPTIONAL: it is the clean-ship assembler the
+# self-deploy PACKAGE flush (#309) uses, but it is deliberately NOT shipped into
+# the installed plugin (it references the dev source tree the clean-ship leak
+# guard forbids in an install). It resolves ONLY inside the framework's OWN
+# checkout (the dev feature src is on _FEATURES above). Absent elsewhere -> bp is
+# None and _flush_package no-ops with reason "no-builder", so a normal install is
+# unaffected.
+try:
+    import build_plugin as bp  # noqa: E402
+except ImportError:  # pragma: no cover - exercised only in a shipped install
+    bp = None
 
 
 # The production PULL issue source: work-intake's live `gh` CLI adapter. Tests
@@ -145,6 +157,55 @@ def gh_pr_state_source(pr_ref, repo=None, runner=subprocess.run):
 # Tests inject a deterministic stub instead so the suite touches no network; the
 # shipped run_tick (no injected source) queries real PR state through `gh`.
 DEFAULT_PR_STATE_SOURCE = gh_pr_state_source
+
+
+def gh_pr_files_source(pr_ref, repo=None, runner=subprocess.run):
+    """Production PR-files source for the self-deploy rebuild trigger (#309): shell
+    the deterministic `gh` CLI for the list of files ONE merged PR changed and
+    return them as a list of repo-root-relative path strings. `pr_ref` is the PR
+    url or `owner/repo#N` ref recorded in integration_result.merged; when `repo` is
+    given it is passed via `--repo`, else gh resolves the project default. `gh`
+    carries its own auth.
+
+    The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so the
+    files query is deterministic and unit-testable with a fake — no network
+    (mirror of gh_pr_state_source). It is called ONLY for THIS tick's merged PRs,
+    so the `gh` calls are bounded to what the loop actually merged."""
+    cmd = ["gh", "pr", "view", pr_ref, "--json", "files"]
+    if repo:
+        cmd += ["--repo", repo]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    data = json.loads(out.stdout)
+    return [f.get("path", "") for f in data.get("files", []) if f.get("path")]
+
+
+# The production default PR-files source for the self-deploy rebuild trigger.
+# Tests inject a deterministic stub instead so the suite touches no network; the
+# shipped run_tick (no injected source) queries the merged PR's files via `gh`.
+DEFAULT_PR_FILES_SOURCE = gh_pr_files_source
+
+
+def git_commit_sink(repo_root, paths, message, runner=subprocess.run):
+    """Production git commit sink for the self-deploy PACKAGE flush (#309): stage
+    the given `paths` (repo-root-relative) under `repo_root` and create ONE commit
+    with `message`. Returns the new commit's short sha.
+
+    The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so the
+    commit is unit-testable with a fake — no real git in the unit suite. Only the
+    explicitly-listed paths are staged (never `git add -A`), so the commit is
+    bounded to the regenerated plugin tree + the bumped version source. `gh`/git
+    carry their own auth/identity."""
+    runner(["git", "-C", repo_root, "add", "--"] + list(paths), check=True)
+    runner(["git", "-C", repo_root, "commit", "-m", message], check=True)
+    out = runner(["git", "-C", repo_root, "rev-parse", "--short", "HEAD"],
+                 capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+# The production default git commit sink for the self-deploy PACKAGE flush. Tests
+# inject a deterministic stub instead so the suite runs no real git; the shipped
+# run_tick (no injected sink) commits the regenerated tree via git.
+DEFAULT_PACKAGE_COMMIT_SINK = git_commit_sink
 
 # The durable-state document keys under which the last tick's pulled work_items
 # (and triaged work_orders, when the active route produced them) are persisted,
@@ -1894,6 +1955,112 @@ def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink,
     return len(result.filed), skipped, len(result.errors)
 
 
+# --------------------------------------------------------------------------
+# Out-of-band PACKAGE flush (self-deployment, #309): regenerate + commit the
+# committed plugin tree after the loop merges a shipped-src change.
+#
+# Like REPORT, PACKAGE is OUT-OF-BAND — NOT a routed state. After the route
+# completes at the tick TERMINAL, when (a) the self_deploy gate is on, (b) the
+# trust ladder permits merge (auto-merge), and (c) THIS tick merged >=1 PR whose
+# diff touched SHIPPED feature source, run_tick regenerates the committed plugin
+# tree via packaging-config's build_plugin.build(repo_root) — a verbatim product
+# of build(), no hand-edits — deterministically bumps the PATCH plugin version,
+# and commits the regenerated artifacts + the version bump in ONE commit so main
+# never sits drifted. packaging-config is consumed UNCHANGED for the build; the
+# version-bump policy lives in build_plugin.bump_version (the build owner). This is
+# a §3.8/§3.11.5 self-modification effect, so it is GATED behind the default-off
+# self_deploy knob and bounded to a patch bump triggered only by a real
+# shipped-src merge.
+#
+# The dev-tree paths (the self-deploy marker + the commit paths) are owned by
+# build_plugin (bp.SELF_DEPLOY_MARKER / bp.package_commit_paths()), NOT hardcoded
+# here, so this shipped lib carries no dev-tree path literal (the clean-ship leak
+# guard forbids it; build_plugin is not shipped, so it may hold those paths).
+# --------------------------------------------------------------------------
+
+def _self_deploy_repo_root(project_dir):
+    """The loop's OWN framework checkout root to self-deploy into, or None.
+
+    Walks up from `project_dir` looking for bp.SELF_DEPLOY_MARKER (the build
+    source under the dev tree). Returns the first ancestor that carries it — that
+    root holds the dev build tree build_plugin.build needs — else None (the
+    maintained project is NOT the framework repo, so self-deploy no-ops). Only
+    called when bp is importable (the framework checkout)."""
+    candidate = os.path.abspath(project_dir)
+    while True:
+        if os.path.isfile(os.path.join(candidate, bp.SELF_DEPLOY_MARKER)):
+            return candidate
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            return None
+        candidate = parent
+
+
+def _flush_package(integration_result, mode, gov, project_dir, repo,
+                   files_source, commit_sink):
+    """Regenerate + commit the committed plugin tree after a shipped-src merge
+    (out-of-band, #309). Returns (deployed, version, reason):
+      - deployed: True when a regenerate+commit happened.
+      - version: the bumped plugin version when deployed, else None.
+      - reason: a short skip reason when NOT deployed (for the trace/event), else
+        None.
+
+    The flush is GATED, in order, on:
+      1. sg.self_deploy(gov) — the default-off self-deployment knob (§3.8/§3.11.5
+         self-modification gate). OFF -> reason "gated".
+      1b. the build_plugin assembler being importable — absent in a normal
+         install (it is not shipped), present only in the framework's own
+         checkout. Absent -> reason "no-builder" (self-deploy dormant).
+      2. sg.permits("merge", mode) — only at auto-merge does the loop merge (and
+         thus deploy). Not permitted -> reason "not-permitted".
+      3. integration_result.merged non-empty AND >=1 merged PR's diff touches
+         SHIPPED source (bp.touches_shipped_src over the PR files). No merged PR /
+         no shipped-src change -> reason "no-shipped-change" (a docs/test-only
+         merge needs no rebuild, avoiding version churn).
+      4. _self_deploy_repo_root(project_dir) resolves — the maintained project is
+         the framework repo. Not the framework repo -> reason "not-self-repo".
+
+    When all gates pass it bumps the PATCH version (bp.bump_version), regenerates
+    the tree (bp.build — a verbatim product of build()), and commits the tree +
+    version source in ONE commit via the injectable `commit_sink`. `files_source`
+    is the injectable per-PR changed-files source. Both default to the live gh/git
+    seams; tests inject stubs so the suite touches no network and runs no real
+    git."""
+    if not sg.self_deploy(gov):
+        return False, None, "gated"
+    if bp is None:
+        # The clean-ship assembler is not on the path (a normal install, not the
+        # framework's own checkout) -> nothing to build, self-deploy is dormant.
+        return False, None, "no-builder"
+    if not sg.permits("merge", mode):
+        return False, None, "not-permitted"
+    merged = (integration_result or {}).get("merged", [])
+    if not merged:
+        return False, None, "no-shipped-change"
+    touched = False
+    for entry in merged:
+        pr_ref = entry.get("pr_ref")
+        if not pr_ref:
+            continue
+        if bp.touches_shipped_src(files_source(pr_ref, repo=repo)):
+            touched = True
+            break
+    if not touched:
+        return False, None, "no-shipped-change"
+    repo_root = _self_deploy_repo_root(project_dir)
+    if repo_root is None:
+        return False, None, "not-self-repo"
+    # All gates pass: bump the PATCH version IN source (the new constant is the
+    # verbatim source of truth the build reads), regenerate the tree from it, and
+    # commit the regenerated artifacts + the bumped source atomically.
+    version = bp.bump_version(repo_root)
+    bp.build(repo_root)
+    commit_sink(repo_root, bp.package_commit_paths(),
+                f"release(packaging-config): v{version} — self-deploy merged "
+                f"shipped-src change (#309)")
+    return True, version, None
+
+
 def _gate_acting_state(name, agentstate, slot_values, tick_id, mode,
                        output_dir):
     """Synthesize the INERT result for a trust-gated (not-permitted) acting
@@ -2489,7 +2656,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              project_dir=None, source=None, now=None, tick_spend=0,
              return_run_result=False, resume=False, spent=0,
              report_sink=None, discoveries=None, escalate_sink=None,
-             pr_state_source=None):
+             pr_state_source=None, pr_files_source=None,
+             package_commit_sink=None):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -2861,6 +3029,24 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     merged_field = f"merged={merged_count}"
     if integrate_errored > 0:
         merged_field += f" integrate_errored={integrate_errored}"
+    # Out-of-band PACKAGE flush (self-deployment, #309): after the merge surface is
+    # known, when this tick merged a shipped-src change AND self_deploy is on AND
+    # the mode permits merge, regenerate + version-bump + commit the committed
+    # plugin tree so it never drifts from src. Gated/no-op otherwise (the gates
+    # live in _flush_package). Only runs on the clean `done` path — a GUARD halt
+    # produced no merge. The deploy=<version|reason> token is surfaced in the trace
+    # + tick_end detail so a self-deploy (or why it was skipped) is VISIBLE.
+    if signal != "halt":
+        package_deployed, package_version, package_reason = _flush_package(
+            integration_result, mode, gov, project_dir, runtime.get("repo"),
+            pr_files_source or DEFAULT_PR_FILES_SOURCE,
+            package_commit_sink or DEFAULT_PACKAGE_COMMIT_SINK)
+    else:
+        package_deployed, package_version, package_reason = False, None, "halt"
+    if package_deployed:
+        package_field = f"deploy=v{package_version}"
+    else:
+        package_field = f"deploy={package_reason}"
     # The refire decision (legible idle-vs-refire): the EXIT signal already carries
     # it; surface a boolean in the tick_end detail disambiguating
     # idle-because-no-work (False) from refire-because-work-remains (True).
@@ -2878,7 +3064,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         f"execution_plan={execution_plan_count} handoffs={handoffs_count} "
         f"disposition={disposition} "
         f"signal={signal} route={route_src} {gov_fields} {reported_field} "
-        f"{triaged_field} {merged_field}\n")
+        f"{triaged_field} {merged_field} {package_field}\n")
 
     # Terminal events (observability §3.9.1): the resulting disposition, then the
     # tick_end carrying the final signal + the four read-product counts, the REPORT
@@ -2898,6 +3084,9 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "integrate_skipped": integrate_skipped,
         "integrate_errored": integrate_errored,
         "merged_refs": merged_refs,
+        "self_deployed": package_deployed,
+        "deployed_version": package_version,
+        "deploy_skip_reason": package_reason,
         "refire": refire})
 
     if return_run_result:

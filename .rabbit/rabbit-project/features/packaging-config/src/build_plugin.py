@@ -192,6 +192,14 @@ _LIBS = {
     ),
 }
 
+# build_plugin (the clean-ship assembler itself) is deliberately NOT shipped into
+# the plugin lib/: it references the .rabbit/ dev tree it reads from, which the
+# clean-ship leak guard correctly forbids in the installed plugin (an install has
+# no .rabbit/ tree). Self-deploy (#309) therefore fires ONLY inside the framework's
+# OWN checkout — the only place that carries the .rabbit/ build tree build() needs
+# AND the dev feature src run_tick resolves build_plugin from. In any other install
+# run_tick's optional build_plugin import is absent and the PACKAGE flush is dormant.
+
 # The self-path bootstrap inserted before the anchor: it puts the file's own
 # (co-located) dir on sys.path so sibling imports resolve from lib/ alone.
 _SELF_PATH_BOOTSTRAP = (
@@ -578,6 +586,114 @@ def build(repo_root, out_root=None):
     )
 
     return plugin_root
+
+
+# --------------------------------------------------------------------------
+# Self-deploy support (#309): the deterministic version-bump policy + the set of
+# shipped source paths whose change requires a rebuild.
+#
+# The auto-maintainer loop self-deploys by regenerating the committed plugin tree
+# after it merges a PR that touched shipped source (scheduling's out-of-band
+# PACKAGE flush). The version-bump policy lives HERE — packaging-config OWNS the
+# plugin version — so the policy stays deterministic and in one place.
+# --------------------------------------------------------------------------
+
+# The current shipped plugin version (the single source of truth, mirrored into
+# plugin.json + marketplace.json by build()).
+PLUGIN_VERSION = _PLUGIN_VERSION
+
+# The line in THIS source file that holds the version constant, so a bump rewrites
+# exactly that assignment and nothing else.
+_VERSION_ASSIGN = f'_PLUGIN_VERSION = "{_PLUGIN_VERSION}"'
+
+# The repo-root-relative path of THIS build source (#309): the self-deploy marker
+# scheduling walks up from project_dir to find — its presence identifies the
+# framework's OWN checkout (the only tree carrying the dev .rabbit/ build tree).
+# Defined HERE (not in scheduling) so the shipped run_tick carries NO .rabbit
+# literal — the clean-ship leak guard forbids it; build_plugin is NOT shipped, so
+# it may reference .rabbit freely.
+SELF_DEPLOY_MARKER = os.path.join(
+    _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
+
+
+def package_commit_paths():
+    """The repo-root-relative artifacts the self-deploy PACKAGE flush stages into
+    its commit (#309): the regenerated plugin tree, the marketplace catalog, and
+    the bumped version source. Returned from HERE (build_plugin owns the .rabbit
+    path) so the shipped run_tick carries no .rabbit/rabbit-project literal."""
+    return [
+        "plugins",
+        os.path.join(".claude-plugin", "marketplace.json"),
+        SELF_DEPLOY_MARKER,
+    ]
+
+
+def _bump_patch(version):
+    """Deterministically increment the PATCH component of a `MAJOR.MINOR.PATCH`
+    version string (the self-deploy bump policy, #309): the loop's autonomous
+    self-deployments are always patch-level. Raises ValueError on a malformed
+    version so a bad version never silently produces a wrong bump."""
+    parts = version.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        raise ValueError(
+            f"version {version!r} is not MAJOR.MINOR.PATCH (cannot bump)")
+    major, minor, patch = (int(p) for p in parts)
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def bump_version(repo_root):
+    """Rewrite this build_plugin.py's _PLUGIN_VERSION constant to the next PATCH
+    version IN the given repo_root's copy of the file, and return the new version
+    string (the self-deploy bump, #309).
+
+    The rewrite is a single exact-line replacement of the version assignment, so
+    the committed source diff is minimal and the new constant becomes the verbatim
+    source of truth the very next build() reads (plugin.json + marketplace.json).
+    Deterministic: the same input version always yields the same bumped output.
+    """
+    src_path = os.path.join(
+        repo_root, _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
+    with open(src_path, "r", encoding="utf-8") as fh:
+        body = fh.read()
+    if _VERSION_ASSIGN not in body:
+        raise RuntimeError(
+            f"version assignment {_VERSION_ASSIGN!r} not found in {src_path}")
+    new_version = _bump_patch(_PLUGIN_VERSION)
+    new_assign = f'_PLUGIN_VERSION = "{new_version}"'
+    with open(src_path, "w", encoding="utf-8") as fh:
+        fh.write(body.replace(_VERSION_ASSIGN, new_assign, 1))
+    return new_version
+
+
+def touches_shipped_src(changed_paths):
+    """True when any path in `changed_paths` (repo-root-relative, POSIX-style) is
+    a shipped source path (the self-deploy rebuild trigger, #309).
+
+    A path triggers a rebuild when it is one of the exact copied/normalized lib
+    source files OR it lives under a shipped DIR — a feature `ship/` tree or
+    packaging-config's `plugin_assets/`. A path matching none of these (docs/,
+    test/, feature.json, etc.) does NOT trigger a rebuild, so a docs-only or
+    test-only merge never churns the plugin version.
+    """
+    features_rel = _FEATURES_REL.replace(os.sep, "/")
+    exact = set()
+    for src_rel in _LIBS.values():
+        exact.add(src_rel.replace(os.sep, "/"))
+    for src_rel, _anchor, _bootstrap in _NORMALIZED_LIBS.values():
+        exact.add(src_rel.replace(os.sep, "/"))
+    assets_prefix = f"{features_rel}/packaging-config/src/plugin_assets/"
+    for raw in changed_paths or []:
+        path = raw.replace(os.sep, "/")
+        if path.startswith("./"):
+            path = path[2:]
+        if path in exact:
+            return True
+        if path.startswith(assets_prefix):
+            return True
+        # A feature ship/ tree: <features_rel>/<feature>/ship/...
+        if path.startswith(features_rel + "/") and "/ship/" in path:
+            return True
+    return False
 
 
 def main():
