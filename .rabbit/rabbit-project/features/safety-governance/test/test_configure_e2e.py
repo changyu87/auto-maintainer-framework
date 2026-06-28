@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end tests for the central-config WRITER (src/configure.py) and the
-shipped /auto-maintainer:configure skill (schema 2.2.0).
+shipped /auto-maintainer:configure skill (schema 2.3.0).
 
 safety_governance.py is the READER/decider over config.json; configure.py is its
 writer half (spec: "Config writer + the configure skill"). It performs a
@@ -66,7 +66,7 @@ def _read_cfg(project_dir):
 
 # ==========================================================================
 # E2E Behaviour: --mode sets the trust mode and writes config.json with it,
-# at schema 2.2.0.
+# at schema 2.3.0.
 # ==========================================================================
 
 def test_cli_sets_mode_and_writes_file():
@@ -75,7 +75,7 @@ def test_cli_sets_mode_and_writes_file():
         assert rc == 0
         cfg = _read_cfg(project_dir)
         assert cfg["mode"] == "dry-run"
-        assert cfg["schema_version"] == "2.2.0"
+        assert cfg["schema_version"] == "2.3.0"
 
 
 # ==========================================================================

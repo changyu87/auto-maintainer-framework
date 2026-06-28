@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.2.0).
+"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.3.0).
 
 Every behaviour in docs/spec.md has a test here. The feature provides
 deterministic decision surfaces over a machine-first, versioned CENTRAL config
 (config.json) — DESIGN §3.8:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.2.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.3.0),
      DEFAULT_GOVERNANCE, load_config(project_dir): reads project-local
      ${project_dir}/.auto-maintainer/config.json (absent => defaults),
      backfilling missing keys from defaults. null/absent ceiling => NO LIMIT.
@@ -83,7 +83,7 @@ def _write_json(path, payload):
 
 
 # ==========================================================================
-# Behaviour: the central config schema is versioned (2.2.0) and machine-first.
+# Behaviour: the central config schema is versioned (2.3.0) and machine-first.
 # DEFAULT_GOVERNANCE matches the spec's documented defaults: mode=propose,
 # budget.per_day_tokens=null, budget.window_tz=local, heartbeat.interval_minutes=3,
 # backoff.threshold=5, work_own_filings=True. The per_tick_tokens and
@@ -91,10 +91,12 @@ def _write_json(path, payload):
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.2.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.3.0"
     d = sg.DEFAULT_GOVERNANCE
-    assert d["schema_version"] == "2.2.0"
+    assert d["schema_version"] == "2.3.0"
     assert d["mode"] == "propose"
+    # self_deploy (#309) defaults OFF (the self-modification gate, §3.8/§3.11.5).
+    assert d["self_deploy"] is False
     # Default per_day is NO LIMIT (null) per explicit user decision; a finite
     # ceiling is opt-in via config.json.
     assert d["budget"]["per_day_tokens"] is None
@@ -123,8 +125,9 @@ def test_maintainer_repo_is_fixed_constant():
 def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["schema_version"] == "2.2.0"
+        assert config["schema_version"] == "2.3.0"
         assert config["mode"] == "propose"
+        assert config["self_deploy"] is False
         assert config["budget"]["per_day_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
         assert config["heartbeat"]["interval_minutes"] == 3
@@ -258,6 +261,48 @@ def test_work_own_filings_accessor_false_when_set():
     """The pure accessor returns False when the config sets work_own_filings
     false (the opt-OUT)."""
     assert sg.work_own_filings({"work_own_filings": False}) is False
+
+
+# ==========================================================================
+# E2E Behaviour: self_deploy (#309) defaults FALSE (the self-modification gate,
+# §3.8/§3.11.5). DEFAULT_GOVERNANCE carries it False; load_config backfills False
+# when absent and preserves an explicit true; the pure accessor self_deploy(config)
+# returns False by default, True when set.
+# ==========================================================================
+
+def test_default_self_deploy_is_false():
+    """self_deploy (#309) defaults False — the loop does NOT regenerate/commit its
+    own plugin tree unless explicitly opted in (a §3.8/§3.11.5 self-modification
+    effect)."""
+    assert sg.DEFAULT_GOVERNANCE["self_deploy"] is False
+    with tempfile.TemporaryDirectory() as project_dir:
+        config = sg.load_config(project_dir)
+        assert config["self_deploy"] is False
+
+
+def test_load_config_backfills_self_deploy_false_when_absent():
+    """A config.json that omits self_deploy loads with the default False (the bump
+    to schema 2.3.0 is backward compatible)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"mode": "auto-merge"})
+        config = sg.load_config(project_dir)
+        assert config["self_deploy"] is False
+
+
+def test_load_config_preserves_explicit_self_deploy_true():
+    """An explicit self_deploy=true (the human opt-IN) is surfaced unchanged."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"self_deploy": True})
+        config = sg.load_config(project_dir)
+        assert config["self_deploy"] is True
+
+
+def test_self_deploy_accessor_default_false_and_true_when_set():
+    """The pure accessor returns False by default and True when the config sets
+    self_deploy true."""
+    assert sg.self_deploy({}) is False
+    assert sg.self_deploy(sg.DEFAULT_GOVERNANCE) is False
+    assert sg.self_deploy({"self_deploy": True}) is True
 
 
 # ==========================================================================
