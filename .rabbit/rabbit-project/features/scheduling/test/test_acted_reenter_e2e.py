@@ -393,12 +393,18 @@ def test_closed_unmerged_unchanged_stays_locked_and_not_queried():
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
     _open_pr_once(project_dir, runtime_dir, state_path, journal_path)
 
-    # The issue updated_at is UNCHANGED (same fixture value as act time).
+    # The issue updated_at is UNCHANGED (same fixture value as act time). #7 was
+    # recorded done-AND-unchanged in triage_memory at the act, so TRIAGE
+    # empty-skips (#306): no subagent dispatch, no TRIAGE pause — the tick runs
+    # straight through to idle in ONE invocation. IMPLEMENT (where the bounded PR
+    # query lives) is reached over an empty plan, so the PR is still never
+    # queried.
     same_src = _stub_source(_gh_fixture(updated_7=_UPDATED_T1))
     source, calls = _counting_pr_state("CLOSED", merged=False)
-    result = _resume_triage(
-        project_dir, runtime_dir, state_path, journal_path,
-        source=same_src, pr_state_source=source)
+    result = rt.run_tick(
+        project_dir=project_dir, runtime_dir=runtime_dir,
+        state_path=state_path, journal_path=journal_path,
+        source=same_src, now=_DAY1, pr_state_source=source)
     assert result in ("idle", "refire", "break"), result
     # Stays locked: the acted-ledger entry is preserved.
     assert "wo-acme/widget#7" in rt.persisted_acted_ledger(state_path), \
