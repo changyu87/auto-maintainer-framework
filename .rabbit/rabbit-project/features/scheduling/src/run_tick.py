@@ -1299,6 +1299,7 @@ def _inert_planned_handoff(work_order_id):
         "status": "planned",
         "artifact": {"kind": "none", "ref": None},
         "discovered_work": [],
+        "concerns": [],
         "blocked_reason": None,
     }
 
@@ -1314,6 +1315,7 @@ def _budget_blocked_handoff(work_order_id, reason):
         "status": "blocked",
         "artifact": {"kind": "none", "ref": None},
         "discovered_work": [],
+        "concerns": [],
         "blocked_reason": reason,
     }
 
