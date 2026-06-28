@@ -1,11 +1,11 @@
 {
   "name": "packaging-config",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "owner": "changyu87",
   "paths": [],
   "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-06-28",
-  "spec_change_reason": "v0.7.9 file-referenced dispatch prompts release: bump plugin v0.7.9 in plugin.json + marketplace.json and regenerate the committed plugin tree from current src so #304 (file-referenced dispatch prompts) reaches the installed plugin: scheduling's run_tick now writes each agent-state dispatch's rendered invocation envelope to a prompt_path file and hands the executor only the path (no inline prompt), and the shipped tick skill (v0.6.0) documents the file-referenced dispatch protocol; rename the version test to 0_7_9, update test_shipped_tick_skill_is_v0_6_0_file_referenced_dispatch (was v0_5_0), add test_shipped_run_tick_carries_304_file_referenced_dispatch + test_committed_run_tick_carries_304_file_referenced_dispatch asserting the shipped/committed run_tick carries prompt_path and the tick skill documents the file-referenced dispatch, and advance the housekeep doc baseline (455 -> 471) for the appended per-release section."
+  "spec_change_reason": "v0.7.10 empty-skip + build-drift-fix release: bump _PLUGIN_VERSION 0.7.9 -> 0.7.10 in plugin.json + marketplace.json and regenerate the committed plugin tree from current src so #307 (deterministic empty-skip for idle ticks, for #306) plus the loop's #302/#303 reach the installed plugin; the loop merged these as src without a build step, drifting the committed tree so 7 build-drift guards failed, and this release resolves the drift. The #307 fix makes a NON-ACTING once agent-state whose signal rule yields the empty-signal on empty input skip via _empty_skip_result so the loop stops dispatching the triager on an empty pool; rename the version test to test_version_bumped_to_0_7_10_and_consistent (assert 0.7.10 in plugin.json + marketplace.json), add test_shipped_run_tick_carries_307_empty_skip + test_committed_run_tick_carries_307_empty_skip asserting the shipped/committed run_tick carries _empty_skip_result, and advance the housekeep doc baseline (471 -> 486) for the appended per-release section."
 }

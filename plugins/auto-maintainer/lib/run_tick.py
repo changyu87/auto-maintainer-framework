@@ -1930,6 +1930,44 @@ def _synthesize_acting_result(agentstate, outputs):
     return dispatch_entry["writes"], slot_value, signal
 
 
+def _empty_skip_result(name, agentstate, slot_values, state_path):
+    """Deterministic empty-skip for a NON-ACTING `once` agent-state whose
+    signal rule yields the empty-signal on empty input (#306).
+
+    When such a state's dispatch would read an EMPTY input — every input slot is
+    falsy, AFTER the same §3.5.3 triage-memory filter `_pause_result` applies to a
+    work_items input — the subagent could only produce an empty output, which the
+    `nonempty_else_empty` rule maps to EMPTY anyway. The model dispatch is then
+    pure waste (the idle-tick triager call burned every heartbeat in the dogfood
+    run), so we SKIP it: write the writes slot's empty value and emit EMPTY
+    directly, no envelope, no subagent.
+
+    Returns (writes, slot_value, "EMPTY") when the skip is provably safe, else
+    None (the caller then pauses/dispatches normally). Guarded to the cases where
+    the empty-signal is deterministic: `cardinality == "once"` and
+    `signal.rule == "nonempty_else_empty"`. The empty value mirrors
+    ad.compute_signal's empty-side input (`[]`), matching the array-shaped writes
+    slots these agent-states (TRIAGE, REVIEW) declare and the schema-valid empty
+    default _seed_context seeds."""
+    entry = agentstate.entry
+    if entry["signal"]["rule"] != "nonempty_else_empty":
+        return None
+    dispatch_entry = entry["dispatch"][0]
+    if dispatch_entry["cardinality"] != "once":
+        return None
+    # Apply the §3.5.3 triage-memory filter to the dispatch input exactly as
+    # _pause_result does, so a work_items input that is fully filtered (all items
+    # done/deferred-AND-unchanged) is recognized as empty here too.
+    effective = dict(slot_values)
+    if wi.WORK_ITEMS_SLOT["name"] in effective:
+        effective[wi.WORK_ITEMS_SLOT["name"]] = _filter_triage_work_items(
+            effective[wi.WORK_ITEMS_SLOT["name"]],
+            persisted_triage_memory(state_path))
+    if any(effective.get(slot) for slot in dispatch_entry["inputs"]):
+        return None
+    return dispatch_entry["writes"], [], "EMPTY"
+
+
 def _resume_schema(writes, cardinality):
     """The schema each subagent-written output file is validated against.
 
@@ -2106,6 +2144,29 @@ def _drive_agent_tick(route, states, ctx, state_path,
                 judged = _filter_triage_work_items(
                     pulled, persisted_triage_memory(state_path))
                 _record_last_triaged(state_path, len(judged), len(pulled))
+            effect = agentstate.entry["dispatch"][0].get("effect")
+            # Deterministic empty-skip (#306): a NON-ACTING `once` agent-state
+            # whose signal rule yields the empty-signal on empty input would, on
+            # an EMPTY dispatch input, produce only an empty output mapping to
+            # EMPTY anyway — so SKIP the subagent dispatch and emit EMPTY
+            # directly (no model call). This kills the idle-tick triager burn
+            # (PULL EMPTY -> TRIAGE over 0 work_items) and generalizes to any such
+            # route (e.g. REVIEW over 0 verdicts) and to the §3.5.3 fully-filtered
+            # case (every pulled item already done/deferred-AND-unchanged).
+            if not effect:
+                skipped = _empty_skip_result(
+                    current, agentstate, slot_values, state_path)
+                if skipped is not None:
+                    writes, slot_value, signal = skipped
+                    ctx.write(writes, slot_value)
+                    signals.append(signal)
+                    if events is not None:
+                        events.emit("state_run", state=current,
+                                    detail={"empty_skip": True})
+                        events.emit("signal", state=current, signal=signal)
+                    current = to.resolve_next(route, current, signal)
+                    path.append(current)
+                    continue
             # Trust-gate an ACTING agent-state (DESIGN §2.3 / §3.8.2 trust
             # ladder): a dispatch entry with a truthy `effect` performs outward
             # effects, so it is dispatched ONLY when the trust mode permits that
@@ -2114,7 +2175,6 @@ def _drive_agent_tick(route, states, ctx, state_path,
             # is False for every effect) the state does NOT pause/dispatch — it
             # synthesizes one INERT `planned` handoff per dispatch item and
             # CONTINUES the driver (no checkpoint, no spend, no subagent).
-            effect = agentstate.entry["dispatch"][0].get("effect")
             if effect and not sg.permits(effect, mode):
                 writes, slot_value, signal = _gate_acting_state(
                     current, agentstate, slot_values, tick_id, mode,
@@ -2195,14 +2255,24 @@ def _drive_agent_tick(route, states, ctx, state_path,
                 # the re-dispatch can open + re-record a fresh PR.
                 _reset_backoff_entries(state_path, reenter)
                 _clear_acted_entries(state_path, reenter_wo_ids)
-                if dropped and not remaining:
+                # No items to act on -> do NOT pause/dispatch. `remaining` is a
+                # list for a per_item dispatch (None only for a `once` dispatch,
+                # which never falls here): it is EMPTY either because every item
+                # was filtered out (dropped: all already-acted / deferred) OR
+                # because the per_item collection was empty to begin with (e.g.
+                # the upstream TRIAGE empty-skipped, leaving an empty plan, #306).
+                # Both are pure waste to dispatch — synthesize the inert (empty)
+                # result, compute the signal, and CONTINUE (no checkpoint, no
+                # subagent), instead of pausing with zero dispatches.
+                if remaining is not None and not remaining:
                     writes, slot_value, signal = _synthesize_acting_result(
                         agentstate, [])
                     ctx.write(writes, slot_value)
                     signals.append(signal)
                     if events is not None:
                         events.emit("state_run", state=current,
-                                    detail={"all_acted": True})
+                                    detail={"all_acted": bool(dropped),
+                                            "empty_plan": not dropped})
                         events.emit("signal", state=current, signal=signal)
                     current = to.resolve_next(route, current, signal)
                     path.append(current)

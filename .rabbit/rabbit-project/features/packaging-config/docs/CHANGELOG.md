@@ -1,5 +1,25 @@
 # Changelog — packaging-config
 
+## 0.7.10 — empty-skip + build-drift-fix release: deploy #307
+
+- Bump `_PLUGIN_VERSION` 0.7.9 -> 0.7.10 (`plugin.json` + `marketplace.json`).
+- Regenerate the committed `plugins/auto-maintainer/` tree and
+  `.claude-plugin/marketplace.json` from current src so #307 (deterministic
+  empty-skip for idle ticks, for #306) plus the loop's #302/#303 reach the
+  installed plugin. The auto-maintainer loop merged these as src without a build
+  step, drifting the committed tree so 7 build-drift guards failed; this release
+  regenerates the committed tree and resolves the drift. The #307 fix makes a
+  NON-ACTING `once` agent-state whose signal rule yields the empty-signal on
+  empty input skip via `_empty_skip_result`, so the loop stops dispatching the
+  triager on an empty pool. No build LOGIC change beyond the version bump.
+- Tests: rename the version test to
+  `test_version_bumped_to_0_7_10_and_consistent` (assert 0.7.10 in
+  `plugin.json` + `marketplace.json`); add
+  `test_shipped_run_tick_carries_307_empty_skip` +
+  `test_committed_run_tick_carries_307_empty_skip` asserting the
+  shipped/committed `run_tick` carries `_empty_skip_result`; advance the
+  housekeep doc baseline (471 -> 486) for the appended per-release section.
+
 ## 0.7.9 — file-referenced dispatch prompts release: deploy #304
 
 - Bump `_PLUGIN_VERSION` 0.7.8 -> 0.7.9 (`plugin.json` + `marketplace.json`).
