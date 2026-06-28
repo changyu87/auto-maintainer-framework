@@ -70,40 +70,65 @@ class _FilesSource:
 class _CommitSink:
     """An injectable git commit sink: records (repo_root, paths, message)."""
 
-    def __init__(self):
+    def __init__(self, order=None):
         self.calls = []
+        self.order = order if order is not None else []
 
     def __call__(self, repo_root, paths, message):
         self.calls.append((repo_root, list(paths), message))
+        self.order.append("commit")
         return "abc1234"
+
+
+class _SyncSink:
+    """An injectable git sync sink (#313): records (repo_root, default_branch)
+    and, when given a shared `order` list, appends a "sync" marker so tests can
+    assert the checkout was synced BEFORE the build ran."""
+
+    def __init__(self, order=None):
+        self.calls = []
+        self.order = order if order is not None else []
+
+    def __call__(self, repo_root, default_branch):
+        self.calls.append((repo_root, default_branch))
+        self.order.append("sync")
+        return "def5678"
 
 
 # A monkeypatch context that swaps bp.bump_version + bp.build for no-network fakes
 # so the gate-pass path is exercised without rewriting source or assembling a tree.
 class _FakeBuild:
-    def __init__(self):
+    def __init__(self, order=None):
         self.bump_calls = []
         self.build_calls = []
+        self.order = order if order is not None else []
 
     def __enter__(self):
         self._real_bump = bp.bump_version
         self._real_build = bp.build
+        self._real_branch = rt.vi.gh_default_branch_source
 
         def _bump(repo_root):
             self.bump_calls.append(repo_root)
+            self.order.append("bump")
             return "9.9.9"
 
         def _build(repo_root, out_root=None):
             self.build_calls.append(repo_root)
+            self.order.append("build")
             return os.path.join(repo_root, "plugins", "auto-maintainer")
 
         bp.bump_version = _bump
         bp.build = _build
+        # Stub the default-branch resolver so the (gate-pass) sync step touches
+        # no network in the unit suite.
+        rt.vi.gh_default_branch_source = lambda repo=None: "main"
         return self
 
     def __exit__(self, *exc):
         bp.bump_version = self._real_bump
         bp.build = self._real_build
+        rt.vi.gh_default_branch_source = self._real_branch
         return False
 
 
@@ -120,6 +145,7 @@ def _gov(self_deploy):
 def test_self_deploy_seams_exist():
     assert rt.DEFAULT_PR_FILES_SOURCE is rt.gh_pr_files_source
     assert rt.DEFAULT_PACKAGE_COMMIT_SINK is rt.git_commit_sink
+    assert rt.DEFAULT_PACKAGE_SYNC_SINK is rt.git_sync_sink
     assert callable(rt._flush_package)
 
 
@@ -130,18 +156,27 @@ def test_self_deploy_seams_exist():
 
 def test_flush_package_deploys_on_shipped_src_merge():
     files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
-    sink = _CommitSink()
+    order = []
+    sink = _CommitSink(order)
+    sync = _SyncSink(order)
     # project_dir is the framework's own checkout root (carries the marker).
     project_dir = _FEATURES_repo_root()
-    with _FakeBuild() as fb:
+    with _FakeBuild(order) as fb:
         deployed, version, reason = rt._flush_package(
             _merged_result("acme/widget#42"), "auto-merge",
-            _gov(True), project_dir, None, files, sink)
+            _gov(True), project_dir, None, files, sink, sync)
     assert deployed is True, (deployed, reason)
     assert version == "9.9.9", version
     assert reason is None, reason
     # The bump + build ran against the resolved repo root.
     assert len(fb.bump_calls) == 1 and len(fb.build_calls) == 1
+    # The checkout was SYNCED to the merged remote base (#313) BEFORE the build,
+    # against the resolved repo root + default branch.
+    assert len(sync.calls) == 1, sync.calls
+    sync_root, sync_branch = sync.calls[0]
+    assert sync_root == fb.build_calls[0], (sync_root, fb.build_calls)
+    assert sync_branch == "main", sync_branch
+    assert order == ["sync", "bump", "build", "commit"], order
     # Exactly ONE commit, staging the build_plugin-owned commit paths, with a
     # message naming the bumped version + #309.
     assert len(sink.calls) == 1, sink.calls
@@ -165,13 +200,14 @@ def _FEATURES_repo_root():
 def test_flush_package_gated_off_by_default():
     files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
     sink = _CommitSink()
+    sync = _SyncSink()
     deployed, version, reason = rt._flush_package(
         _merged_result("acme/widget#42"), "auto-merge",
-        _gov(False), _FEATURES_repo_root(), None, files, sink)
+        _gov(False), _FEATURES_repo_root(), None, files, sink, sync)
     assert deployed is False and version is None
     assert reason == "gated", reason
-    # No build, no commit, and the files source was never even queried.
-    assert sink.calls == [] and files.calls == []
+    # No sync, no build, no commit, and the files source was never even queried.
+    assert sink.calls == [] and files.calls == [] and sync.calls == []
 
 
 # ==========================================================================
@@ -182,11 +218,12 @@ def test_flush_package_gated_off_by_default():
 def test_flush_package_not_permitted_in_propose():
     files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
     sink = _CommitSink()
+    sync = _SyncSink()
     deployed, version, reason = rt._flush_package(
         _merged_result("acme/widget#42"), "propose",
-        _gov(True), _FEATURES_repo_root(), None, files, sink)
+        _gov(True), _FEATURES_repo_root(), None, files, sink, sync)
     assert deployed is False and reason == "not-permitted", reason
-    assert sink.calls == []
+    assert sink.calls == [] and sync.calls == []
 
 
 # ==========================================================================
@@ -197,12 +234,13 @@ def test_flush_package_not_permitted_in_propose():
 def test_flush_package_skips_docs_only_merge():
     files = _FilesSource({"acme/widget#42": [_DOCS_FILE]})
     sink = _CommitSink()
+    sync = _SyncSink()
     deployed, version, reason = rt._flush_package(
         _merged_result("acme/widget#42"), "auto-merge",
-        _gov(True), _FEATURES_repo_root(), None, files, sink)
+        _gov(True), _FEATURES_repo_root(), None, files, sink, sync)
     assert deployed is False and reason == "no-shipped-change", reason
     assert files.calls == ["acme/widget#42"], files.calls
-    assert sink.calls == []
+    assert sink.calls == [] and sync.calls == []
 
 
 # ==========================================================================
@@ -213,11 +251,12 @@ def test_flush_package_skips_docs_only_merge():
 def test_flush_package_skips_when_nothing_merged():
     files = _FilesSource({})
     sink = _CommitSink()
+    sync = _SyncSink()
     deployed, version, reason = rt._flush_package(
         {"merged": [], "skipped": [], "errors": []}, "auto-merge",
-        _gov(True), _FEATURES_repo_root(), None, files, sink)
+        _gov(True), _FEATURES_repo_root(), None, files, sink, sync)
     assert deployed is False and reason == "no-shipped-change", reason
-    assert files.calls == [] and sink.calls == []
+    assert files.calls == [] and sink.calls == [] and sync.calls == []
 
 
 # ==========================================================================
@@ -231,12 +270,13 @@ def test_flush_package_skips_when_not_framework_checkout():
     not_framework = tempfile.mkdtemp(prefix="sched-not-fw-")
     files = _FilesSource({"acme/widget#42": [_SHIPPED_FILE]})
     sink = _CommitSink()
+    sync = _SyncSink()
     with _FakeBuild():
         deployed, version, reason = rt._flush_package(
             _merged_result("acme/widget#42"), "auto-merge",
-            _gov(True), not_framework, None, files, sink)
+            _gov(True), not_framework, None, files, sink, sync)
     assert deployed is False and reason == "not-self-repo", reason
-    assert sink.calls == []
+    assert sink.calls == [] and sync.calls == []
 
 
 # ==========================================================================
@@ -250,12 +290,14 @@ def test_flush_package_deploys_when_any_merged_pr_touches_shipped_src():
         "acme/widget#2": [_SHIPPED_FILE],
     })
     sink = _CommitSink()
+    sync = _SyncSink()
     with _FakeBuild():
         deployed, version, reason = rt._flush_package(
             _merged_result("acme/widget#1", "acme/widget#2"), "auto-merge",
-            _gov(True), _FEATURES_repo_root(), None, files, sink)
+            _gov(True), _FEATURES_repo_root(), None, files, sink, sync)
     assert deployed is True, reason
     assert len(sink.calls) == 1, sink.calls
+    assert len(sync.calls) == 1, sync.calls
 
 
 if __name__ == "__main__":
