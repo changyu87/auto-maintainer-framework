@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Unit tests for packaging-config's self-deploy helpers (#309): the deterministic
-PATCH version bump and the shipped-src change detector that gate the loop's
-self-deployment (scheduling's out-of-band PACKAGE flush).
+"""Unit tests for packaging-config's release-detection helpers: the shipped-src
+change detector (touches_shipped_src) and the dev-tree marker (SELF_DEPLOY_MARKER)
+that scheduling's `release_needed` operator signal uses to surface when a merged
+PR's diff changed shipped bytes.
 
-The version-bump policy lives in packaging-config (the build owner): a self-deploy
-always increments PATCH, deterministically, by rewriting the _PLUGIN_VERSION
-constant in build_plugin.py so the new constant is the verbatim source of truth the
-next build() reads. touches_shipped_src decides whether a merged PR's diff requires
-a rebuild at all (only a change to a shipped lib source or a ship/ / plugin_assets
+The dead self-deploy BUILD helpers — the deterministic PATCH version bump
+(bump_version / _bump_patch) and the same-process disk version-read (_read_version
+/ _VERSION_RE) — have been REMOVED: with the self-deploy ACTION gone (scheduling
+#324) and the self_deploy knob gone (safety-governance #325), those helpers had
+zero callers. build() now stamps the version from the in-memory _PLUGIN_VERSION
+constant directly. touches_shipped_src + SELF_DEPLOY_MARKER are KEPT (still used by
+release_needed): touches_shipped_src decides whether a merged PR's diff requires a
+rebuild at all (only a change to a shipped lib source or a ship/ / plugin_assets
 tree does; docs/test-only changes do not, so the version never churns needlessly).
 
 Owner: changyu87
@@ -15,8 +19,6 @@ Owner: changyu87
 
 import importlib.util
 import os
-import shutil
-import tempfile
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _FEATURE_DIR = os.path.dirname(_TEST_DIR)
@@ -36,130 +38,56 @@ def _load_build():
 
 
 # ==========================================================================
-# _bump_patch — deterministic PATCH increment, malformed input rejected.
+# Dead self-deploy BUILD helpers are REMOVED; release-detection helpers KEEP.
 # ==========================================================================
 
-def test_bump_patch_increments_only_patch():
+def test_dead_self_deploy_build_helpers_removed():
+    """bump_version, package_commit_paths, _read_version, _bump_patch, _VERSION_RE,
+    and _VERSION_ASSIGN are gone — they served the removed self-deploy build
+    rewrite (zero callers after #324/#325)."""
     bp = _load_build()
-    assert bp._bump_patch("0.7.10") == "0.7.11"
-    assert bp._bump_patch("1.0.0") == "1.0.1"
-    assert bp._bump_patch("2.9.99") == "2.9.100"
+    for name in (
+        "bump_version", "package_commit_paths", "_read_version",
+        "_bump_patch", "_VERSION_RE", "_VERSION_ASSIGN",
+    ):
+        assert not hasattr(bp, name), \
+            f"dead self-deploy build helper {name!r} must be removed"
 
 
-def test_bump_patch_is_deterministic():
+def test_release_detection_helpers_kept():
+    """touches_shipped_src + SELF_DEPLOY_MARKER stay — scheduling's release_needed
+    operator signal still uses them."""
     bp = _load_build()
-    assert bp._bump_patch("3.4.5") == bp._bump_patch("3.4.5")
+    assert hasattr(bp, "touches_shipped_src"), \
+        "touches_shipped_src must be kept (release_needed uses it)"
+    assert hasattr(bp, "SELF_DEPLOY_MARKER"), \
+        "SELF_DEPLOY_MARKER must be kept (release_needed walks up to find it)"
+    assert callable(bp.touches_shipped_src)
+    # SELF_DEPLOY_MARKER points at this build source's repo-root-relative path.
+    assert bp.SELF_DEPLOY_MARKER == os.path.join(
+        _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
 
 
-def test_bump_patch_rejects_malformed_version():
-    bp = _load_build()
-    for bad in ("1.2", "1.2.3.4", "1.2.x", "v1.2.3", ""):
-        try:
-            bp._bump_patch(bad)
-            assert False, f"expected ValueError for {bad!r}"
-        except ValueError:
-            pass
-
-
-# ==========================================================================
-# bump_version — rewrites the constant in a COPY of the repo, returns the new
-# version, and the new constant becomes what a fresh import reads.
-# ==========================================================================
-
-def _staged_repo_with_build_source():
-    """A temp repo root carrying ONLY the packaging-config build source at the
-    real relative path, so bump_version can rewrite it without touching the real
-    checkout."""
-    root = tempfile.mkdtemp(prefix="pkg-bump-")
-    dest_dir = os.path.join(root, _FEATURES_REL, "packaging-config", "src")
-    os.makedirs(dest_dir)
-    shutil.copyfile(_SRC, os.path.join(dest_dir, "build_plugin.py"))
-    return root
-
-
-def test_bump_version_rewrites_constant_and_returns_next_patch():
-    bp = _load_build()
-    root = _staged_repo_with_build_source()
-    expected = bp._bump_patch(bp.PLUGIN_VERSION)
-    new_version = bp.bump_version(root)
-    assert new_version == expected, (new_version, expected)
-    # The rewritten source now carries the bumped constant verbatim.
-    staged = os.path.join(
-        root, _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
-    body = open(staged).read()
-    assert f'_PLUGIN_VERSION = "{new_version}"' in body, body[:200]
-    assert f'_PLUGIN_VERSION = "{bp.PLUGIN_VERSION}"' not in body
-
-
-# ==========================================================================
-# build() reads the version from the (rewritten) source on disk, NOT the
-# in-memory constant frozen at import (#311). The self-deploy flush calls
-# bump_version(repo_root) then build(repo_root) in the SAME process, so build
-# must stamp plugin.json + marketplace.json with the BUMPED version, otherwise
-# the committed tree mismatches its source and the build-drift guard goes RED.
-# ==========================================================================
-
-def test_read_version_returns_bumped_value_in_same_process():
-    bp = _load_build()
-    root = _staged_repo_with_build_source()
-    # Before the bump, _read_version reflects the current source-of-truth.
-    assert bp._read_version(root) == bp.PLUGIN_VERSION
-    new_version = bp.bump_version(root)
-    # After the bump rewrites the disk source, _read_version sees the NEW
-    # version even though the in-memory _PLUGIN_VERSION constant is unchanged.
-    assert bp._read_version(root) == new_version
-    assert new_version != bp.PLUGIN_VERSION
-
-
-def test_read_version_falls_back_to_constant_when_source_absent():
-    bp = _load_build()
-    empty = tempfile.mkdtemp(prefix="pkg-readver-empty-")
-    try:
-        assert bp._read_version(empty) == bp.PLUGIN_VERSION
-    finally:
-        shutil.rmtree(empty, ignore_errors=True)
-
-
-def test_build_stamps_bumped_version_after_bump_in_same_process():
-    """The real bump(disk) -> build(reads disk) interaction the e2e _FakeBuild
-    cannot exercise (#311): a bump followed by a build in the same process must
-    produce plugin.json + marketplace.json carrying the BUMPED version."""
+def test_build_stamps_version_from_in_memory_constant():
+    """With the disk version-read removed, build() stamps plugin.json +
+    marketplace.json from the in-memory _PLUGIN_VERSION constant directly."""
     import json
+    import shutil
+    import tempfile
     bp = _load_build()
-    bumped = bp._bump_patch(bp.PLUGIN_VERSION)
-    # Rewrite the version constant in the REAL repo's source on disk, then
-    # restore it so the working tree is left untouched.
-    src = os.path.join(
-        _REPO_ROOT, _FEATURES_REL, "packaging-config", "src", "build_plugin.py")
-    original = open(src, encoding="utf-8").read()
-    out_root = tempfile.mkdtemp(prefix="pkg-build-bumped-")
+    out_root = tempfile.mkdtemp(prefix="pkg-build-const-")
     try:
-        with open(src, "w", encoding="utf-8") as fh:
-            fh.write(original.replace(
-                f'_PLUGIN_VERSION = "{bp.PLUGIN_VERSION}"',
-                f'_PLUGIN_VERSION = "{bumped}"', 1))
         bp.build(repo_root=_REPO_ROOT, out_root=out_root)
         pdata = json.load(open(os.path.join(
             out_root, "plugins", "auto-maintainer",
             ".claude-plugin", "plugin.json")))
         mdata = json.load(open(os.path.join(
             out_root, ".claude-plugin", "marketplace.json")))
-        assert pdata["version"] == bumped, pdata["version"]
-        assert mdata["plugins"][0]["version"] == bumped
+        assert pdata["version"] == bp.PLUGIN_VERSION, pdata["version"]
+        assert mdata["plugins"][0]["version"] == bp.PLUGIN_VERSION
+        assert bp.PLUGIN_VERSION == bp._PLUGIN_VERSION
     finally:
-        with open(src, "w", encoding="utf-8") as fh:
-            fh.write(original)
         shutil.rmtree(out_root, ignore_errors=True)
-
-
-def test_bump_version_missing_source_raises():
-    bp = _load_build()
-    empty = tempfile.mkdtemp(prefix="pkg-bump-empty-")
-    try:
-        bp.bump_version(empty)
-        assert False, "expected RuntimeError when build source is absent"
-    except (RuntimeError, FileNotFoundError):
-        pass
 
 
 # ==========================================================================
