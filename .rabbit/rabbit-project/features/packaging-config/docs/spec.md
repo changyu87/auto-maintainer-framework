@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.9
+version: 0.7.10
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -469,3 +469,18 @@ Invariant: version 0.7.9 is consistent across `plugin.json` +
 file-referenced dispatch and the shipped `skills/tick/SKILL.md` (v0.6.0)
 documents it (no inline prompt); the committed tree matches a fresh build with
 no source-tree leak; still idempotent.
+
+## Plugin patch v0.7.10 — empty-skip + build-drift-fix release: deploy #307
+
+Re-ship the committed plugin tree so #307 (deterministic empty-skip for idle
+ticks, for #306) plus the loop's #302/#303 reach the installed plugin. The
+auto-maintainer loop merged these as src without a build step, so the committed
+tree drifted and the 7 build-drift guards failed; this release regenerates the
+committed tree from current src and resolves the drift. The #307 fix makes a
+NON-ACTING `once` agent-state whose signal rule yields the empty-signal on
+empty input skip via `_empty_skip_result`, so the loop stops dispatching the
+triager on an empty pool. No build LOGIC change beyond `_PLUGIN_VERSION →
+0.7.10`. Invariant: version 0.7.10 is consistent across `plugin.json` +
+`marketplace.json`; the shipped `lib/run_tick.py` carries the `_empty_skip_result`
+empty-skip; the committed tree matches a fresh build with no source-tree leak;
+still idempotent.
