@@ -5,6 +5,7 @@
     "DRAIN",
     "PULL",
     "TRIAGE",
+    "PRIORITIZE",
     "IMPLEMENT",
     "VERIFY",
     "REVIEW",
@@ -49,10 +50,20 @@
     {
       "state": "TRIAGE",
       "signal": "OK",
-      "next": "IMPLEMENT"
+      "next": "PRIORITIZE"
     },
     {
       "state": "TRIAGE",
+      "signal": "EMPTY",
+      "next": "VERIFY"
+    },
+    {
+      "state": "PRIORITIZE",
+      "signal": "OK",
+      "next": "IMPLEMENT"
+    },
+    {
+      "state": "PRIORITIZE",
       "signal": "EMPTY",
       "next": "VERIFY"
     },

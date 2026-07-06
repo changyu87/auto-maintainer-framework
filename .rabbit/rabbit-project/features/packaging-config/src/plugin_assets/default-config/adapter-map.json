@@ -9,26 +9,25 @@
     "dispatch": [
       {
         "cardinality": {
-          "per_item": "work_orders"
+          "per_item": "execution_plan.ordered"
         },
-        "description": "auto-maintainer implement",
         "effect": "implement",
         "inputs": [
-          "work_orders"
+          "execution_plan"
         ],
+        "isolation": "worktree",
         "output_example": {
           "artifact": {
-            "kind": "pr",
-            "ref": "https://github.com/owner/repo/pull/NN"
+            "kind": "none",
+            "ref": null
           },
           "blocked_reason": null,
           "discovered_work": [],
-          "schema_version": "1.0.0",
-          "status": "opened",
-          "work_order_id": "wo-owner/repo#NN"
+          "schema_version": "1.1.0",
+          "status": "planned",
+          "work_order_id": "owner/repo#1-wo"
         },
         "subagent_type": "auto-maintainer:auto-maintainer-implementer",
-        "task": "Enact this ONE work order's triage decision. If decision is 'rejected', close the source issue (gh issue close) and post the reason as a justification comment; make no code change. If decision is 'accepted', implement the change in your worktree, run the project's checks, and open a PR against the default branch (gh pr create) \u2014 NEVER merge. If you cannot complete an accepted order, report status 'blocked' and leave no open PR.",
         "writes": "handoffs"
       }
     ],
@@ -39,7 +38,7 @@
         "BLOCKED"
       ],
       "reads": [
-        "work_orders"
+        "execution_plan"
       ],
       "writes": [
         "handoffs"
@@ -51,6 +50,7 @@
   },
   "INTEGRATE": "run_tick:make_integrate",
   "PERSIST": "run_tick:make_persist",
+  "PRIORITIZE": "run_tick:make_prioritize",
   "PULL": "run_tick:make_pull",
   "REVIEW": {
     "dispatch": [

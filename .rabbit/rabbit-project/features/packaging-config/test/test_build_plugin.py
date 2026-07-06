@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sys
 import tempfile
 
 # ---------------------------------------------------------------------------
@@ -540,15 +541,16 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.7.12, full self-deploy removal release): version bumped to 0.7.12
-# in BOTH plugin.json and marketplace.json, and the two are consistent. v0.7.12
-# deploys the full self-deploy removal — the self-deploy ACTION (scheduling #324)
-# and the self_deploy knob (safety-governance #325) are gone, and this feature
-# removed its dead build helpers (bump_version, package_commit_paths, the
-# disk version-read). The plugin is NOT self-deployable; releases are operator-cut.
-# (Supersedes the v0.7.11 version-integrity restore release.)
+# Release (v0.7.13, wire-PRIORITIZE-into-default-pipeline release): version
+# bumped to 0.7.13 in BOTH plugin.json and marketplace.json, and the two are
+# consistent. v0.7.13 wires the PRIORITIZE state into the shipped default
+# pipeline (route + adapter-map) so the same-feature serialization gate runs and
+# multiple implementers can no longer open conflicting same-feature PRs, and
+# replaces the IMPLEMENT adapter entry with the template-correct per_item
+# execution_plan.ordered form. (Supersedes the v0.7.12 full self-deploy removal
+# release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_12_and_consistent():
+def test_version_bumped_to_0_7_13_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -560,10 +562,10 @@ def test_version_bumped_to_0_7_12_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.12", \
-            f"plugin.json version must be 0.7.12, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.12", \
-            "marketplace.json plugin entry version must be 0.7.12"
+        assert pdata.get("version") == "0.7.13", \
+            f"plugin.json version must be 0.7.13, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.7.13", \
+            "marketplace.json plugin entry version must be 0.7.13"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -3117,3 +3119,112 @@ def test_committed_tree_has_no_self_deploy_action_or_knob():
         "committed run_tick must keep release_needed (the operator signal)"
     assert "touches_shipped_src" in rt_body, \
         "committed run_tick must keep touches_shipped_src (release detector)"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.7.13 (wire PRIORITIZE into the default pipeline), WIRING-INTEGRITY
+# GATE — the headline release test. The v1-audit finding: the shipped default
+# pipeline lacked PRIORITIZE, so prioritize's same-feature serialization (the V1
+# conflict-avoidance gate) never ran and multiple implementers could open
+# conflicting same-feature PRs. This test loads the SHIPPED default-config
+# route.json + adapter-map.json, resolves them through adapter_wiring.build_loop
+# (from the plugin's own lib/, self-contained), and asserts:
+#   - build_loop raises NO WiringError (the wired pipeline is valid);
+#   - PRIORITIZE resolves as a SCRIPT adapter (run_tick:make_prioritize);
+#   - IMPLEMENT is the template-correct agent entry: per_item over
+#     execution_plan.ordered, reads execution_plan, worktree isolation;
+#   - the acting route is PULL -> TRIAGE -> PRIORITIZE -> IMPLEMENT -> VERIFY ->
+#     REVIEW -> INTEGRATE.
+# ---------------------------------------------------------------------------
+def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
+    import subprocess
+
+    out_root = _build_into_temp()
+    try:
+        plugin = os.path.join(out_root, "plugins", "auto-maintainer")
+        lib = os.path.join(plugin, "lib")
+        dc = os.path.join(plugin, "default-config")
+
+        # Structural checks on the shipped default-config assets first.
+        with open(os.path.join(dc, "route.json"), encoding="utf-8") as fh:
+            route = json.load(fh)
+        with open(os.path.join(dc, "adapter-map.json"), encoding="utf-8") as fh:
+            amap = json.load(fh)
+
+        assert "PRIORITIZE" in route["states"], \
+            "default route must include the PRIORITIZE state"
+        # The acting chain, in order.
+        edge = {(e["state"], e["signal"]): e["next"] for e in route["edges"]}
+        assert edge[("PULL", "OK")] == "TRIAGE"
+        assert edge[("TRIAGE", "OK")] == "PRIORITIZE", \
+            "TRIAGE OK must route to PRIORITIZE"
+        assert edge[("PRIORITIZE", "OK")] == "IMPLEMENT", \
+            "PRIORITIZE OK must route to IMPLEMENT"
+        assert edge[("PRIORITIZE", "EMPTY")] == "VERIFY", \
+            "PRIORITIZE EMPTY must route to VERIFY"
+        assert edge[("IMPLEMENT", "OK")] == "VERIFY"
+        assert edge[("VERIFY", "OK")] == "REVIEW"
+        assert edge[("REVIEW", "OK")] == "INTEGRATE"
+
+        # PRIORITIZE resolves as a SCRIPT adapter (a "module:factory" string).
+        assert amap.get("PRIORITIZE") == "run_tick:make_prioritize", \
+            "default adapter-map must wire PRIORITIZE to run_tick:make_prioritize"
+
+        # IMPLEMENT is the template-correct agent entry.
+        impl = amap["IMPLEMENT"]
+        assert isinstance(impl, dict) and impl.get("kind") == "agent", \
+            "IMPLEMENT must be an agent entry"
+        d = impl["dispatch"][0]
+        assert d["cardinality"] == {"per_item": "execution_plan.ordered"}, \
+            "IMPLEMENT must fan out per_item over execution_plan.ordered"
+        assert d["inputs"] == ["execution_plan"], \
+            "IMPLEMENT must read the execution_plan slot"
+        assert d.get("isolation") == "worktree", \
+            "IMPLEMENT must run worktree-isolated"
+        assert d.get("effect") == "implement", "IMPLEMENT effect must be implement"
+        assert impl["signal"]["rule"] == "blocked_if_any"
+        assert impl["manifest"]["writes"] == ["handoffs"]
+
+        # E2E: resolve the SHIPPED route + adapter-map through the SHIPPED
+        # adapter_wiring.build_loop, from the plugin's own lib/ ALONE (the plugin
+        # is self-contained). Run in a subprocess so the plugin lib/ is the sole
+        # sys.path source for run_tick/prioritize/implement/adapter_wiring, and
+        # so a WiringError surfaces as a nonzero exit with a locatable message.
+        script = (
+            "import sys, os, json, tempfile, shutil\n"
+            f"sys.path.insert(0, {lib!r})\n"
+            "import adapter_wiring as aw, run_tick as rt\n"
+            f"proj = tempfile.mkdtemp(prefix='pkgcfg-wire-')\n"
+            "amdir = os.path.join(proj, '.auto-maintainer')\n"
+            "os.makedirs(amdir, exist_ok=True)\n"
+            # Seed the shipped default-config as the project-local override so
+            # build_loop loads exactly the shipped route + adapter-map.
+            f"shutil.copy({os.path.join(dc, 'route.json')!r}, "
+            "os.path.join(amdir, 'route.json'))\n"
+            f"shutil.copy({os.path.join(dc, 'adapter-map.json')!r}, "
+            "os.path.join(amdir, 'adapter-map.json'))\n"
+            "runtime = {'project_dir': proj, "
+            "'runtime_dir': amdir, 'source': None, 'now': None, "
+            "'governance': {'mode': 'dry-run'}}\n"
+            "try:\n"
+            "    route, states = aw.build_loop(rt.DEFAULT_ROUTE, "
+            "rt.DEFAULT_ADAPTER_MAP, runtime, 'GUARD', rt._INITIAL_SLOTS)\n"
+            "finally:\n"
+            "    shutil.rmtree(proj, ignore_errors=True)\n"
+            "assert 'PRIORITIZE' in states, 'PRIORITIZE must resolve'\n"
+            "assert 'IMPLEMENT' in states, 'IMPLEMENT must resolve'\n"
+            "print('BUILD_LOOP_OK')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, (
+            "shipped default-config route+adapter-map failed build_loop "
+            f"resolution (WiringError?):\nstdout={proc.stdout}\n"
+            f"stderr={proc.stderr}"
+        )
+        assert "BUILD_LOOP_OK" in proc.stdout, \
+            f"build_loop did not complete cleanly: {proc.stdout}"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
