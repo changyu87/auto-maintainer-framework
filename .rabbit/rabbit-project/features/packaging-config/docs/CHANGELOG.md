@@ -1,5 +1,31 @@
 # Changelog — packaging-config
 
+## 0.7.13 — wire PRIORITIZE into the default pipeline (V1 audit fix)
+
+- Bump `_PLUGIN_VERSION` 0.7.12 -> 0.7.13 (`plugin.json` + `marketplace.json`).
+- `src/plugin_assets/default-config/route.json`: add the `PRIORITIZE` state and
+  edges `TRIAGE OK -> PRIORITIZE`, `PRIORITIZE OK -> IMPLEMENT`, `PRIORITIZE EMPTY
+  -> VERIFY` (keeping `TRIAGE EMPTY -> VERIFY`, `IMPLEMENT OK/BLOCKED -> VERIFY`,
+  all else unchanged). The acting route is now `PULL -> TRIAGE -> PRIORITIZE ->
+  IMPLEMENT -> VERIFY -> REVIEW -> INTEGRATE`.
+- `src/plugin_assets/default-config/adapter-map.json`: wire `PRIORITIZE` to the
+  script adapter `run_tick:make_prioritize`, and REPLACE the IMPLEMENT agent entry
+  with the template-correct `_build_agent_entry('IMPLEMENT',
+  'auto-maintainer:auto-maintainer-implementer')` form — per_item
+  `execution_plan.ordered`, `inputs: [execution_plan]`, worktree isolation,
+  `effect: implement`, `signal.rule: blocked_if_any`, writes `handoffs`. Without
+  PRIORITIZE the same-feature serialization gate never ran; the prior IMPLEMENT
+  entry read `work_orders` and bypassed the prioritized ordering.
+- Regenerate the committed `plugins/auto-maintainer/` tree + `marketplace.json`
+  from current src so the shipped bytes carry the wired default-config.
+- New e2e test `test_default_pipeline_wires_prioritize_and_build_loop_resolves`:
+  the shipped default-config route + adapter-map resolve through
+  `adapter_wiring.build_loop` (from the plugin's own `lib/`) with NO WiringError;
+  PRIORITIZE resolves as a script, IMPLEMENT is per_item `execution_plan.ordered`
+  + worktree, and the acting route is `PULL->TRIAGE->PRIORITIZE->IMPLEMENT->
+  VERIFY->REVIEW->INTEGRATE`. The version test is renamed to
+  `test_version_bumped_to_0_7_13_and_consistent`.
+
 ## 0.7.12 — full self-deploy removal release: deploy #324/#325
 
 - Bump `_PLUGIN_VERSION` 0.7.11 -> 0.7.12 (`plugin.json` + `marketplace.json`).

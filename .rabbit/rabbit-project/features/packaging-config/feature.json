@@ -1,11 +1,11 @@
 {
   "name": "packaging-config",
-  "version": "0.7.12",
+  "version": "0.7.13",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "test-red",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-06-28",
+  "updated": "2026-07-06",
   "spec_change_reason": "v0.7.12 full self-deploy removal release: bump _PLUGIN_VERSION 0.7.11 -> 0.7.12 and deploy the full removal of the self-deploy capability. The self-deploy ACTION (scheduling #324) and the self_deploy knob (safety-governance #325) are gone; with both removed, packaging-config's bump_version + package_commit_paths had zero callers and the _read_version disk-read (with _VERSION_RE / _VERSION_ASSIGN, and the now-orphaned import re) served only the removed same-process bump_version rewrite, so all are removed. build() reverts to stamping plugin.json + marketplace.json from the in-memory _PLUGIN_VERSION constant directly. The plugin is NOT self-deployable; releases are operator-cut. touches_shipped_src + SELF_DEPLOY_MARKER are KEPT (scheduling's release_needed operator signal uses them). Regenerate the committed plugin tree from current src (the post-removal scheduling + safety-governance libs). Rename the version test to test_version_bumped_to_0_7_12_and_consistent; replace the dormant-self-deploy unit tests with test_dead_self_deploy_build_helpers_removed + test_release_detection_helpers_kept + test_build_stamps_version_from_in_memory_constant; replace the shipped/committed *_keeps_self_deploy_off e2e tests with test_{shipped,committed}_tree_has_no_self_deploy_action_or_knob (asserting no _flush_package/git_commit_sink in run_tick, no self_deploy knob in safety_governance, and release_needed + touches_shipped_src remain); advance the housekeep doc baseline (503 -> 525) for the appended per-release section."
 }

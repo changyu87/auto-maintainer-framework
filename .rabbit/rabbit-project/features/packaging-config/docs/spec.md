@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.12
+version: 0.7.13
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -522,4 +522,38 @@ across `plugin.json` + `marketplace.json`; the shipped `lib/run_tick.py` carries
 no `_flush_package` / `git_commit_sink` and `lib/safety_governance.py` carries no
 `self_deploy` knob; `release_needed` + `touches_shipped_src` remain in the shipped
 libs; the committed tree matches a fresh build with no source-tree leak; still
+idempotent.
+
+## Plugin patch v0.7.13 — wire PRIORITIZE into the default pipeline (V1 audit)
+
+A V1 audit found the shipped `default-config/` pipeline lacked the PRIORITIZE
+state, so prioritize's same-feature serialization gate (the V1 conflict-avoidance
+that serializes multiple work orders touching the same feature onto one
+implementer) never ran — multiple implementers could open conflicting
+same-feature PRs. This release wires PRIORITIZE into the shipped default pipeline
+so the serialization gate runs by default. Two seed assets change under
+`src/plugin_assets/default-config/`:
+
+- **`route.json`** — add the `PRIORITIZE` state and its edges: `TRIAGE OK ->
+  PRIORITIZE`, `PRIORITIZE OK -> IMPLEMENT`, `PRIORITIZE EMPTY -> VERIFY`
+  (mirroring the pre-existing `TRIAGE EMPTY -> VERIFY` short-circuit). All other
+  edges are unchanged; the acting route becomes `PULL -> TRIAGE -> PRIORITIZE ->
+  IMPLEMENT -> VERIFY -> REVIEW -> INTEGRATE`.
+- **`adapter-map.json`** — wire `PRIORITIZE` to the script adapter
+  `run_tick:make_prioritize`, and REPLACE the IMPLEMENT agent entry with the
+  template-correct one from `adapter_map_config._build_agent_entry('IMPLEMENT',
+  …)`: per_item execution_plan.ordered cardinality, `inputs: [execution_plan]`,
+  worktree isolation, `effect: implement`, `signal.rule: blocked_if_any`, writes
+  `handoffs`. The prior IMPLEMENT entry read `work_orders` with a bespoke
+  per_item over `work_orders`, which bypassed the prioritized ordering.
+
+`_PLUGIN_VERSION → 0.7.13`; the committed tree is regenerated from current src so
+the shipped bytes carry the wired default-config. Invariant: version 0.7.13 is
+consistent across `plugin.json` + `marketplace.json`; the shipped
+`default-config/route.json` includes PRIORITIZE with the acting chain above and
+`default-config/adapter-map.json` wires PRIORITIZE (script) + the template-correct
+IMPLEMENT; resolving the shipped route + adapter-map through
+`adapter_wiring.build_loop` (from the plugin's own `lib/`) raises NO WiringError
+(PRIORITIZE writes `execution_plan`, IMPLEMENT reads `execution_plan.ordered`);
+the committed tree matches a fresh build with no source-tree leak; still
 idempotent.
