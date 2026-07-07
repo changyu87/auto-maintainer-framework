@@ -16,9 +16,9 @@
   and, per decision 2.5, also a *producer* that files back what it discovers
   while working (section 1.3).
 - **Roadmap line:** **v1 = a robust single-stream autonomous maintainer**
-  (correct, crash-safe, conservative). **v2 = parallelism + smarter triage +
-  self-evolution.** Anything not serving "single-stream correct" is pushed to
-  v2 or later.
+  (correct, crash-safe, conservative). **v2 = parallelism + smarter triage.**
+  Anything not serving "single-stream correct" is pushed to v2 or later.
+  (Self-evolution / self-deploy is **excluded**, not a v2 goal — see section 4.)
 
 ---
 
@@ -385,8 +385,8 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 - **3.3.3** Immediate-refire decision (work-remains -> one-shot; queue-empty ->
   idle) with at-most-one-refire dedup. **[v1]**
 - **3.3.4** Restart-and-resume (RESTART_NEEDED marker -> SessionStart auto-resume).
-  **[v1]** *(forced by the platform: self-modifying code needs a restart; also
-  the hook for self-evolution)*
+  **[v1]** *(forced by the platform: a plugin upgrade needs a restart to reload
+  the new code)*
 
 ### 3.4 State Ports & Adapters
 - **3.4.1** Typed contracts for all adapter states (section 2.6): the
@@ -665,8 +665,12 @@ cross-feature integration gate** plus the thin merge-safety check.
 - **3.10.5** Dogfood: rabbit-workflow as adapter #1 (prove the loop runs rabbit's
   TDD / scope features through the ports). **[v1 validation goal]**
 - **3.10.6** Self-evolution (the plugin evolving its own code) + reload / restart.
-  **[v2]** *Rationale:* depends on 3.3.4 being solid first; high-risk, not needed
-  to "maintain a project".
+  **[excluded]** *Rationale:* the owner decided the auto-maintainer must NOT
+  self-evolve / self-deploy; the self-deploy capability was removed in v0.7.12
+  (#324/#325/#326). The loop dogfoods its own pool (3.10.5), but humans cut
+  releases — the plugin does not evolve or deploy its own code. See section 4.
+  (The `release_needed` operator signal is retained as an advisory hint, not a
+  self-deploy trigger.)
 
 ### 3.11 Outbound Discovery & Reporting
 
@@ -718,7 +722,10 @@ top-level feature is required.
 
 Multi-repo / one-loop-many-projects; non-Claude-Code platforms; parallel
 dispatch (-> v2); recursive decomposition (-> v2); learned scope inference
-(-> v2); self-evolution (-> v2); bidirectional cross-tracker sync (-> v2, 3.11.8).
+(-> v2); **self-evolution / self-deploy (the plugin evolving or deploying its
+own code, 3.10.6) — the owner decided the auto-maintainer must NOT self-evolve;
+the self-deploy capability was removed in v0.7.12 (#324/#325/#326)**;
+bidirectional cross-tracker sync (-> v2, 3.11.8).
 
 ---
 
@@ -741,7 +748,7 @@ dispatch (-> v2); recursive decomposition (-> v2); learned scope inference
 | Scope / conflict (parallelism) | 3.8.6, 2.2 | **v2** |
 | Trust ladder | 3.8.2 | v1 |
 | Fresh-vs-warm context | 3.1.4 | v1 |
-| Self-evolution + restart | 3.3.4 (mech), 3.10.6 (feature) | 3.3.4 v1 / 3.10.6 v2 |
+| Self-evolution + restart | 3.3.4 (mech), 3.10.6 (feature) | 3.3.4 v1 / 3.10.6 excluded |
 | Dogfood entanglement | 3.10.5 | v1 goal |
 | Config approachability | 3.10.1-3.10.2 | v1 |
 | Multi-repo / scale | — | excluded |
