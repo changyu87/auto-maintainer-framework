@@ -495,7 +495,12 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
   **[v1]**
 - **3.5.6** Recursive decompose + atomicity test. **[v2]** *Rationale:* one level
   covers the common case; recursion adds convergence complexity.
-- **3.5.7** Dependency / ordering via native issue dependencies. **[v1]**
+- **3.5.7** Dependency / ordering via native issue dependencies. **[v2]**
+  *Rationale:* nothing yet reads GitHub native issue dependencies
+  (`blockedBy`/`dependencies`) — PULL/TRIAGE do not consult them and PRIORITIZE
+  orders by FIFO + same-feature serialization (§3.8.6) only. FIFO plus
+  serialization covers the common case; dependency-aware ordering is a useful
+  enhancement, not a V1 correctness blocker.
 - **3.5.8** WHAT-generation / spec adapter (per decision 2.1; default off, rabbit
   wires it on). **[v1 seam, default off]**
 - **3.5.9** **Cross-cutting-risk annotation.** TRIAGE is the only state with the
