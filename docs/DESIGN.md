@@ -179,11 +179,32 @@ the spec/WHAT itself. *Rationale:* lowest prerequisite — a project needs no
 spec subsystem to start. A spec-first TRIAGE is a pluggable adapter, not the
 default. **[v1 default + seam]**
 
-### 2.2 Parallelism / scope-conflict model — deferred
+### 2.2 Parallelism — bounded-safe in v1; full scope-conflict model deferred
 
-v1 is **serial-only**. *Rationale:* safe parallel autonomy needs a per-project
-scope/conflict model (the deepest generality gap); serial is immediately useful
-and avoids it. **[v2]**
+v1 permits **bounded, worktree-isolated parallel dispatch**: a `per_item` acting
+state (e.g. IMPLEMENT) may dispatch its items concurrently, each subagent in its
+OWN git worktree, so concurrent work never shares a checkout. Safety rests on
+three layers: (1) per-dispatch worktree isolation — no shared-tree corruption;
+(2) INTEGRATE's mergeable-gate + the `check=True` merge sink — a PR that
+conflicts after another merges is rejected, recorded, and retried, never
+force-merged; (3) PRIORITIZE's same-`target_feature` serialization (§3.8.6, #214)
+— two PRs never touch one feature in a tick.
+
+**Invariant:** an ACTING `per_item` agent-state MUST declare `isolation:
+worktree`; un-isolated parallel acting is unsafe and is rejected at wiring
+validation.
+
+What stays **[v2]** is the full **scope/conflict model** — up-front blast-radius
+inference to serialize *any* overlapping work (not just same-feature): non-feature
+overlaps (docs / config / shared files that PRIORITIZE cannot classify) and
+*semantic* conflicts that merge cleanly at the text level but break behavior
+(caught today only partially by §3.7.6's conditional cross-feature complement
+run). Until then, overlapping work PRIORITIZE cannot serialize may **churn** (the
+losing PR is skipped and re-done next tick) — bounded and safe, never
+corrupting, but not conflict-free. *Rationale:* worktree isolation + the
+mergeable-gate make concurrency *safe* immediately; conflict-*freedom* is the
+deepest generality gap and waits for the scope model. **[v1 bounded / v2 scope
+model]**
 
 ### 2.3 Trust default — `auto-merge` (REVIEW-gated)
 
@@ -729,8 +750,9 @@ top-level feature is required.
 
 ## 4. Explicitly excluded
 
-Multi-repo / one-loop-many-projects; non-Claude-Code platforms; parallel
-dispatch (-> v2); recursive decomposition (-> v2); learned scope inference
+Multi-repo / one-loop-many-projects; non-Claude-Code platforms; the full
+scope/conflict model (-> v2; bounded worktree-isolated parallel dispatch is
+already v1, §2.2); recursive decomposition (-> v2); learned scope inference
 (-> v2); **self-evolution / self-deploy (the plugin evolving or deploying its
 own code, 3.10.6) — the owner decided the auto-maintainer must NOT self-evolve;
 the self-deploy capability was removed in v0.7.12 (#324/#325/#326)**;
@@ -754,7 +776,7 @@ bidirectional cross-tracker sync (-> v2, 3.11.8).
 | WHAT-intelligence location | 2.1, 3.5.8 | v1 (implement-heavy default) |
 | Outbound discovery / loop-as-producer | 2.5, 3.11.1-3.11.7 | v1 |
 | Loop-filing loopback safety | 3.11.5 | v1 |
-| Scope / conflict (parallelism) | 3.8.6, 2.2 | **v2** |
+| Scope / conflict (parallelism) | 3.8.6, 2.2 | bounded parallel **v1** / full scope model **v2** |
 | Trust ladder | 3.8.2 | v1 |
 | Fresh-vs-warm context | 3.1.4 | v1 |
 | Self-evolution + restart | 3.3.4 (mech), 3.10.6 (feature) | 3.3.4 v1 / 3.10.6 excluded |
