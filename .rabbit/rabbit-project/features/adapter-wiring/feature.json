@@ -7,6 +7,7 @@
   ],
   "created": "2026-06-11T12:56:11Z",
   "deprecation_criterion": "Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it.",
-  "tdd_state": "test-green",
-  "updated": "2026-06-24"
+  "tdd_state": "impl",
+  "updated": "2026-07-07",
+  "spec_no_change_reason": "Spec harness-isolation guard section already committed in 96b2d07 (spec(adapter-wiring): add harness-isolation wiring guard #335) at the start of this cycle; this cycle adds the code+tests to satisfy it."
 }
