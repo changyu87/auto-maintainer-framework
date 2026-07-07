@@ -84,6 +84,21 @@ Agent entries are **resolved and validated at LOAD here, but NOT executed** — 
 `Agent` dispatch happens in adapter-wiring; execution is a later slice. adapter-
 wiring does NOT import scheduling.
 
+### Harness-isolation guard (auto-maintainer-framework#335)
+
+An agent dispatch delivers its handoff as a FILE written to the shared
+main-workspace `dispatch-out/` (a `writes` slot; DESIGN §3.4.6). Harness
+`isolation: "worktree"` relocates the subagent's cwd OFF the main workspace, so
+such a file handoff never reaches `dispatch-out/` and the tick reads a MISSING
+file and re-dispatches the act (a second PR / a second issue-close). Therefore
+`resolve_states` REJECTS — as a locatable `WiringError` naming the port — any
+agent entry with a `dispatch[*]` that declares BOTH a file-based handoff (a
+`writes` slot) AND harness `isolation: "worktree"`. Acting agents that need an
+isolated checkout provide it themselves (their own git worktree), never via the
+harness. A normal agent entry (no `isolation`, or a non-`worktree` value) passes
+unchanged. This guard catches at wiring time the exact regression that occurred
+when `IMPLEMENT` briefly carried harness `isolation: "worktree"`.
+
 ### The resolved `AgentState`
 
 `AgentState` is the resolved form of an agent entry — a small record carrying
@@ -113,8 +128,9 @@ slice) consumes it to build + dispatch invocation envelopes. Because
    `(manifest, AgentState)`, where the manifest mirrors the entry's
    `manifest.{reads,writes,emits}`. Build the `states` map the orchestrator
    consumes: each value is uniformly `(manifest, second)`. An unknown port (no map
-   entry), unimportable module, missing factory, or malformed agent entry is a
-   **locatable error** naming the port (determinism, spec-rules §1).
+   entry), unimportable module, missing factory, malformed agent entry, or an
+   agent entry violating the harness-isolation guard above is a **locatable
+   error** naming the port (determinism, spec-rules §1).
 4. **`validate_wiring(route, manifests, start, initial) -> CheckResult`** — run, at
    LOAD time, `tick-orchestrator`'s `validate_signals` + `validate_data_readiness`
    over the resolved manifests, plus the anchor invariants (entry is GUARD;
