@@ -769,3 +769,124 @@ def test_build_loop_migrate_bad_map_surfaces_wiring_error():
         else:
             raise AssertionError(
                 "a malformed migrated map must raise WiringError")
+
+
+# ==========================================================================
+# Behaviour 8 — the DESIGN §2.2 bounded-parallel invariant (#335). An ACTING
+# (a dispatch declaring an `effect`) `per_item` dispatch MUST declare
+# `isolation == "worktree"`; un-isolated parallel acting is unsafe and is
+# rejected at wiring validation as a locatable WiringError naming the port. A
+# `once` dispatch, or a non-acting (no `effect`) dispatch, is unconstrained.
+# ==========================================================================
+
+def _acting_per_item_entry(isolation="worktree"):
+    """An acting (`effect`) `per_item` agent entry for the AGENT port. The
+    `isolation` argument is placed on the dispatch verbatim; pass isolation=None
+    to omit the key entirely (the un-isolated case)."""
+    dispatch = {
+        "subagent_type": "stub-worker",
+        "inputs": ["count"],
+        "cardinality": {"per_item": "count"},
+        "writes": "result",
+        "effect": "implement",
+        "task": "act on each item",
+    }
+    if isolation is not None:
+        dispatch["isolation"] = isolation
+    return {
+        "kind": "agent",
+        "manifest": {"reads": ["count"], "writes": ["result"], "emits": ["GO"]},
+        "dispatch": [dispatch],
+        "signal": {"rule": "nonempty_else_empty"},
+    }
+
+
+def _map_with_agent(agent_entry):
+    return {
+        "GUARD": "stub_guard:make",
+        "AGENT": agent_entry,
+        "PERSIST": "stub_persist:make",
+        "EXIT": "stub_exit:make",
+    }
+
+
+def test_resolve_states_accepts_acting_per_item_worktree_isolated():
+    """A conforming acting per_item dispatch (isolation == 'worktree') resolves
+    to an AgentState — the invariant does not reject safe wiring."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        amap = _map_with_agent(_acting_per_item_entry(isolation="worktree"))
+        states = aw.resolve_states(_AGENT_ROUTE, amap, _runtime(proj))
+        _m, second = states["AGENT"]
+        assert isinstance(second, aw.AgentState)
+
+
+def test_resolve_states_rejects_acting_per_item_without_isolation():
+    """An acting per_item dispatch that OMITS `isolation` violates DESIGN §2.2 —
+    a locatable WiringError naming the port."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        amap = _map_with_agent(_acting_per_item_entry(isolation=None))
+        try:
+            aw.resolve_states(_AGENT_ROUTE, amap, _runtime(proj))
+        except aw.WiringError as exc:
+            assert "AGENT" in str(exc)
+        else:
+            raise AssertionError(
+                "acting per_item without isolation must raise WiringError")
+
+
+def test_resolve_states_rejects_acting_per_item_non_worktree_isolation():
+    """An acting per_item dispatch whose `isolation` is anything other than
+    'worktree' (e.g. 'none') violates DESIGN §2.2."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        amap = _map_with_agent(_acting_per_item_entry(isolation="none"))
+        try:
+            aw.resolve_states(_AGENT_ROUTE, amap, _runtime(proj))
+        except aw.WiringError as exc:
+            assert "AGENT" in str(exc)
+        else:
+            raise AssertionError(
+                "acting per_item with non-worktree isolation must raise "
+                "WiringError")
+
+
+def test_resolve_states_allows_acting_once_without_isolation():
+    """A `once` acting dispatch is NOT parallel, so the §2.2 invariant does not
+    apply: it resolves even without an isolation key."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        entry = _acting_per_item_entry(isolation=None)
+        entry["dispatch"][0]["cardinality"] = "once"
+        amap = _map_with_agent(entry)
+        states = aw.resolve_states(_AGENT_ROUTE, amap, _runtime(proj))
+        assert isinstance(states["AGENT"][1], aw.AgentState)
+
+
+def test_resolve_states_allows_non_acting_per_item_without_isolation():
+    """A non-acting (no `effect`) per_item dispatch is not acting, so the §2.2
+    invariant does not apply: it resolves even without an isolation key."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        entry = _acting_per_item_entry(isolation=None)
+        del entry["dispatch"][0]["effect"]
+        amap = _map_with_agent(entry)
+        states = aw.resolve_states(_AGENT_ROUTE, amap, _runtime(proj))
+        assert isinstance(states["AGENT"][1], aw.AgentState)
+
+
+def test_build_loop_rejects_acting_per_item_without_isolation():
+    """The invariant fires through build_loop too: an un-isolated acting
+    per_item agent entry fails at LOAD, before any tick runs."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        amap = _map_with_agent(_acting_per_item_entry(isolation=None))
+        try:
+            aw.build_loop(_AGENT_ROUTE, amap, _runtime(proj),
+                          start="GUARD", initial=[])
+        except aw.WiringError as exc:
+            assert "AGENT" in str(exc)
+        else:
+            raise AssertionError(
+                "build_loop must reject un-isolated acting per_item at LOAD")

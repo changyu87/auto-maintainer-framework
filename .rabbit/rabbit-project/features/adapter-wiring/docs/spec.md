@@ -1,6 +1,6 @@
 ---
 feature: adapter-wiring
-version: 0.4.0
+version: 0.5.0
 owner: changyu87
 deprecation_criterion: Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it.
 ---
@@ -84,6 +84,16 @@ Agent entries are **resolved and validated at LOAD here, but NOT executed** — 
 `Agent` dispatch happens in adapter-wiring; execution is a later slice. adapter-
 wiring does NOT import scheduling.
 
+**The DESIGN §2.2 bounded-parallel invariant.** Beyond agent-dispatch's
+well-formedness check, agent resolution enforces the §2.2 safety invariant: an
+**acting** dispatch (one that declares an `effect`) with **`per_item`**
+cardinality MUST declare `isolation == "worktree"`. Un-isolated parallel acting
+shares a git checkout across concurrent subagents and is unsafe, so a violating
+entry is a **locatable `WiringError` naming the port** — rejected at wiring
+validation before any tick runs. This makes safe-bounded parallel dispatch
+safe-by-construction rather than merely documented. A `once` dispatch, or a
+non-acting (no `effect`) dispatch, is unconstrained by this rule.
+
 ### The resolved `AgentState`
 
 `AgentState` is the resolved form of an agent entry — a small record carrying
@@ -114,7 +124,10 @@ slice) consumes it to build + dispatch invocation envelopes. Because
    `manifest.{reads,writes,emits}`. Build the `states` map the orchestrator
    consumes: each value is uniformly `(manifest, second)`. An unknown port (no map
    entry), unimportable module, missing factory, or malformed agent entry is a
-   **locatable error** naming the port (determinism, spec-rules §1).
+   **locatable error** naming the port (determinism, spec-rules §1). Agent
+   resolution additionally enforces the DESIGN §2.2 invariant: an acting
+   (`effect`) `per_item` dispatch without `isolation == "worktree"` is a locatable
+   `WiringError`.
 4. **`validate_wiring(route, manifests, start, initial) -> CheckResult`** — run, at
    LOAD time, `tick-orchestrator`'s `validate_signals` + `validate_data_readiness`
    over the resolved manifests, plus the anchor invariants (entry is GUARD;

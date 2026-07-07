@@ -3,6 +3,20 @@
 All notable changes to this feature are recorded here. Versions follow the
 spec/contract `version:` frontmatter.
 
+## 0.5.0
+
+- Enforce the DESIGN §2.2 bounded-parallel safety invariant at wiring
+  validation (#335): an ACTING (a dispatch declaring an `effect`) `per_item`
+  dispatch MUST declare `isolation == "worktree"`. A violating agent entry is a
+  locatable `WiringError` naming the port, raised during `resolve_states` (via
+  the new `_validate_acting_isolation` guard in `_resolve_agent`) — so
+  un-isolated parallel acting is rejected at LOAD, before any tick runs. This
+  was previously only documented; it is now safe-by-construction and closes the
+  gap that allowed unprotected parallel dispatch in the dogfood.
+- Additive + backward compatible: a `once` dispatch, or a non-acting (no
+  `effect`) dispatch, is unconstrained; conforming acting-per_item entries (which
+  already default to `isolation: "worktree"`) resolve unchanged.
+
 ## 0.4.0
 
 - Public surface change (additive): `build_loop` gains an optional `migrate=None`

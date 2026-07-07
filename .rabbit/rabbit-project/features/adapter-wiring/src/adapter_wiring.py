@@ -57,7 +57,7 @@ tick-orchestrator (validate_signals, validate_data_readiness), and
 agent-dispatch (is_agent_entry, validate_agent_adapter); it does not
 re-implement them.
 
-Version: 0.4.0
+Version: 0.5.0
 Owner: changyu87
 Deprecation criterion: Superseded when the route/adapter wiring model changes
   incompatibly (e.g. the adapter factory convention or route.json schema
@@ -218,15 +218,40 @@ def _resolve_factory(port, address, runtime):
     return manifest, run
 
 
+def _validate_acting_isolation(port, entry):
+    """Enforce the DESIGN §2.2 bounded-parallel invariant: an ACTING (a dispatch
+    with an `effect`) `per_item` dispatch MUST declare `isolation == 'worktree'`.
+    Un-isolated parallel acting shares a checkout and is unsafe, so it is
+    REJECTED at wiring validation as a locatable WiringError naming the port —
+    making safe-bounded parallel (§2.2) safe-by-construction rather than merely
+    documented. A `once` dispatch, or a non-acting (no `effect`) dispatch, is
+    unconstrained here."""
+    for i, d in enumerate(entry["dispatch"]):
+        is_acting = bool(d.get("effect"))
+        is_per_item = isinstance(d.get("cardinality"), dict) \
+            and "per_item" in d["cardinality"]
+        if is_acting and is_per_item and d.get("isolation") != "worktree":
+            raise WiringError(
+                f"port '{port}' dispatch[{i}] is an acting per_item state but "
+                f"declares isolation={d.get('isolation')!r}; DESIGN §2.2 "
+                f"requires isolation='worktree' for acting per_item dispatch "
+                f"(un-isolated parallel acting is unsafe)")
+
+
 def _resolve_agent(port, entry):
     """Validate an agent-adapter object entry via agent-dispatch (UNCHANGED) and
     resolve it to (manifest, AgentState). agent-dispatch's ValueError is
-    re-raised as a locatable WiringError naming `port` (spec-rules §1)."""
+    re-raised as a locatable WiringError naming `port` (spec-rules §1).
+
+    Beyond agent-dispatch's well-formedness check, enforce the DESIGN §2.2
+    bounded-parallel invariant (`_validate_acting_isolation`): an acting
+    (`effect`) `per_item` dispatch MUST declare `isolation == 'worktree'`."""
     try:
         ad.validate_agent_adapter(entry)
     except ValueError as exc:
         raise WiringError(
             f"port '{port}' has a malformed agent-adapter entry: {exc}")
+    _validate_acting_isolation(port, entry)
     m = entry["manifest"]
     manifest = fc.StateManifest(
         reads=m["reads"], writes=m["writes"], emits=m["emits"])
@@ -249,7 +274,9 @@ def resolve_states(route, adapter_map, runtime):
 
     An unknown port (no map entry), an unimportable module, a missing factory, a
     malformed address, or a malformed agent entry is a locatable WiringError
-    naming the port."""
+    naming the port. An agent entry that violates the DESIGN §2.2 bounded-
+    parallel invariant (an acting `per_item` dispatch without
+    `isolation == 'worktree'`) is likewise a locatable WiringError."""
     states = {}
     for name in route["states"]:
         if name not in adapter_map:

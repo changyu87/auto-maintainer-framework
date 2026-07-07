@@ -1,6 +1,6 @@
 ---
 feature: adapter-wiring
-version: 0.4.0
+version: 0.5.0
 owner: changyu87
 deprecation_criterion: Superseded when the route/adapter wiring model changes incompatibly (e.g. the adapter factory convention or route.json schema reaches a breaking major version), or when a native rabbit/plugin config system subsumes it (see feature.json / docs/spec.md).
 ---
@@ -18,7 +18,10 @@ so it has no static coupling to any concrete adapter feature.
 An adapter-map entry is EITHER a `"module:factory"` script address OR an
 agent-adapter object; the latter is classified + validated via the
 `agent-dispatch` helper lib (consumed UNCHANGED) and resolved to an
-`AgentState`. Agent entries are resolved + validated here but NOT executed.
+`AgentState`. Agent entries are resolved + validated here but NOT executed. Agent
+resolution additionally enforces the DESIGN §2.2 bounded-parallel invariant: an
+acting (`effect`) `per_item` dispatch MUST declare `isolation == "worktree"`,
+else a locatable `WiringError` naming the port.
 
 ## The adapter factory convention (the bring-your-own contract)
 
@@ -40,7 +43,7 @@ contract a third-party adapter implements.
     "scripts": [
       "load_route(default_route, project_dir) -> route",
       "load_adapter_map(default_map, project_dir) -> map  # values: 'module:factory' string OR agent-adapter object",
-      "resolve_states(route, adapter_map, runtime) -> states  # {state: (manifest, run_callable | AgentState)}",
+      "resolve_states(route, adapter_map, runtime) -> states  # {state: (manifest, run_callable | AgentState)}; agent resolution enforces DESIGN §2.2: an acting per_item dispatch must declare isolation=='worktree'",
       "validate_wiring(route, manifests, start, initial) -> CheckResult",
       "build_loop(default_route, default_map, runtime, start, initial, migrate=None) -> (route, states)  # optional migrate: pure dict->dict run on the loaded adapter-map after load, before resolve/validate",
       "the adapter factory convention: 'module:factory', factory(runtime) -> (StateManifest, run_callable)",
