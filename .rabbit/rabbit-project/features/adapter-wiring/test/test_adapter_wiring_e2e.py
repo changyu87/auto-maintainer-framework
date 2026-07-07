@@ -681,6 +681,76 @@ def test_e2e_build_loop_rejects_invalid_wiring_before_running():
 
 
 # ==========================================================================
+# Behaviour 6b — Harness-isolation guard (auto-maintainer-framework#335). An
+# agent dispatch delivers its handoff as a FILE written to the shared
+# main-workspace dispatch-out/ (a `writes` slot). Harness isolation:"worktree"
+# relocates the subagent cwd OFF the main workspace, so the file handoff never
+# reaches dispatch-out/ and the tick re-dispatches. resolve_states therefore
+# REJECTS — as a locatable WiringError naming the port — any agent entry whose
+# dispatch declares BOTH a `writes` slot AND harness isolation:"worktree". A
+# normal agent entry (no isolation, or non-worktree) passes; a script entry is
+# unaffected.
+# ==========================================================================
+
+def test_resolve_states_rejects_worktree_isolation_with_file_handoff():
+    """An agent entry whose dispatch has BOTH a `writes` slot and harness
+    isolation:"worktree" is a locatable WiringError naming the port."""
+    isolated = _agent_entry()
+    isolated["dispatch"][0]["isolation"] = "worktree"
+    amap = {
+        "GUARD": "stub_guard:make",
+        "AGENT": isolated,
+        "PERSIST": "stub_persist:make",
+        "EXIT": "stub_exit:make",
+    }
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        try:
+            aw.resolve_states(_AGENT_ROUTE, amap, _runtime(proj))
+        except aw.WiringError as exc:
+            assert "AGENT" in str(exc), (
+                f"WiringError must name the offending port: {exc}")
+        else:
+            raise AssertionError(
+                "an agent entry with a file handoff + worktree isolation must "
+                "raise WiringError naming the port")
+
+
+def test_resolve_states_accepts_agent_without_isolation():
+    """The SAME agent entry with no isolation (or isolation None) resolves
+    cleanly — the guard only fires on isolation:"worktree"."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        # No isolation key at all.
+        states = aw.resolve_states(_AGENT_ROUTE, _agent_map(), _runtime(proj))
+        assert isinstance(states["AGENT"][1], aw.AgentState)
+
+        # Explicit isolation=None also passes.
+        with_none = _agent_map()
+        with_none["AGENT"]["dispatch"][0]["isolation"] = None
+        states2 = aw.resolve_states(_AGENT_ROUTE, with_none, _runtime(proj))
+        assert isinstance(states2["AGENT"][1], aw.AgentState)
+
+        # A non-worktree isolation value also passes.
+        with_other = _agent_map()
+        with_other["AGENT"]["dispatch"][0]["isolation"] = "process"
+        states3 = aw.resolve_states(_AGENT_ROUTE, with_other, _runtime(proj))
+        assert isinstance(states3["AGENT"][1], aw.AgentState)
+
+
+def test_resolve_states_script_entry_unaffected_by_isolation_guard():
+    """A script (module:factory) entry is unaffected by the guard: an all-script
+    spine resolves cleanly even though the guard exists for agent entries."""
+    with tempfile.TemporaryDirectory() as proj:
+        _write_stub_modules(proj)
+        states = aw.resolve_states(_SPINE_ROUTE, _SPINE_MAP, _runtime(proj))
+        assert set(states) == set(_SPINE_ROUTE["states"])
+        for name, (manifest, run) in states.items():
+            assert isinstance(manifest, fc.StateManifest)
+            assert callable(run)
+
+
+# ==========================================================================
 # Behaviour 7 — build_loop optional `migrate` hook. A project may supply an
 # optional pure dict -> dict callable that transforms the loaded adapter-map
 # AFTER load and BEFORE resolve/validate, so scheduling can self-heal stale

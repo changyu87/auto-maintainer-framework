@@ -47,6 +47,10 @@ preservation additionally have an e2e ``build_loop`` test, per the E2E TEST RULE
      are left UNCHANGED.
   D. a VALID-writes known-port entry with a customized read (IMPLEMENT writes
      handoffs, reads work_orders) is UNCHANGED — the custom inputs/task survive.
+  D2. IMPLEMENT declares NO harness isolation (#335): the live template omits
+     `isolation`, a freshly built IMPLEMENT entry has no `isolation` (effect +
+     execution_plan.ordered cardinality unchanged), and migrate re-derives a
+     stale (retired-slot) IMPLEMENT entry with the harness isolation DROPPED.
   E. e2e: run_tick --step over a VERIFY->REVIEW route whose project-local
      adapter-map.json has a STALE REVIEW agent entry reaches the REVIEW pause
      whose dispatch writes review_findings AND whose checkpoint per-dispatch
@@ -272,6 +276,85 @@ def test_migrate_leaves_valid_writes_custom_read_entry_unchanged():
     # them).
     assert dispatch["task"] == "Enact this ONE work order's triage decision."
     assert dispatch["description"] == "auto-maintainer implement"
+
+
+# ==========================================================================
+# Behaviour D2 — IMPLEMENT declares NO harness isolation
+# (auto-maintainer-framework#335). An acting file-handoff agent self-isolates
+# via its own git worktree and runs cwd=main so its handoff reaches the shared
+# dispatch-out/; declaring harness isolation:"worktree" relocates its cwd OFF
+# main and loses the handoff. So AGENT_PORT_TEMPLATES declares NO isolation and
+# the default agent-dispatch isolation resolves to None. IMPLEMENT keeps its
+# per_item: execution_plan.ordered cardinality and effect=implement.
+# ==========================================================================
+
+def test_implement_template_declares_no_isolation():
+    """The live IMPLEMENT template carries NO harness isolation key (#335)."""
+    assert "isolation" not in amc.AGENT_PORT_TEMPLATES["IMPLEMENT"], \
+        amc.AGENT_PORT_TEMPLATES["IMPLEMENT"]
+
+
+def test_build_agent_entry_implement_has_no_harness_isolation():
+    """A freshly built IMPLEMENT agent entry declares NO harness isolation
+    while keeping effect=implement and cardinality per_item:execution_plan.ordered.
+    """
+    entry = amc._build_agent_entry(
+        "IMPLEMENT", "auto-maintainer:auto-maintainer-implementer")
+    dispatch = entry["dispatch"][0]
+    # NO harness isolation (default resolves to None -> key absent).
+    assert "isolation" not in dispatch, dispatch
+    # Still an acting dispatch.
+    assert dispatch["effect"] == "implement", dispatch
+    # Cardinality unchanged — only the isolation was the regression.
+    assert dispatch["cardinality"] == {"per_item": "execution_plan.ordered"}, \
+        dispatch
+
+
+# A STALE IMPLEMENT agent entry wired under an OLDER template: it writes a
+# RETIRED slot (NOT among the live templates' writes) AND carries the regressed
+# harness isolation:"worktree". Everything but the subagent_type is re-derived.
+_STALE_IMPLEMENT = {
+    "kind": "agent",
+    "manifest": {"reads": ["execution_plan"], "writes": ["impl_results"],
+                 "emits": ["OK", "BLOCKED"]},
+    "dispatch": [
+        {
+            "subagent_type": "auto-maintainer:auto-maintainer-implementer",
+            "inputs": ["execution_plan"],
+            "writes": "impl_results",
+            "cardinality": {"per_item": "execution_plan.ordered"},
+            "effect": "implement",
+            "isolation": "worktree",
+            "output_example": {"legacy": True},
+        }
+    ],
+    "signal": {"rule": "blocked_if_any"},
+}
+
+
+def test_migrate_rederives_stale_implement_with_no_isolation():
+    """A stale IMPLEMENT entry (retired writes slot + harness isolation) is
+    re-derived from the live template: writes heals to `handoffs`, the harness
+    isolation is DROPPED, cardinality stays execution_plan.ordered, and the
+    subagent_type is preserved."""
+    amap = {"IMPLEMENT": copy.deepcopy(_STALE_IMPLEMENT)}
+    out = amc.migrate_known_port_entries(amap)
+    healed = out["IMPLEMENT"]
+    dispatch = healed["dispatch"][0]
+    # subagent_type preserved.
+    assert dispatch["subagent_type"] == \
+        "auto-maintainer:auto-maintainer-implementer", dispatch
+    # writes re-derived to the LIVE handoffs slot.
+    assert dispatch["writes"] == "handoffs", dispatch
+    # Harness isolation DROPPED — the #335 regression is healed away.
+    assert "isolation" not in dispatch, dispatch
+    # Still acting, cardinality preserved.
+    assert dispatch["effect"] == "implement", dispatch
+    assert dispatch["cardinality"] == {"per_item": "execution_plan.ordered"}, \
+        dispatch
+    # Byte-identical to a freshly built entry (only subagent_type carried over).
+    assert healed == amc._build_agent_entry(
+        "IMPLEMENT", "auto-maintainer:auto-maintainer-implementer"), healed
 
 
 def test_migrate_mixed_map_heals_retired_preserves_valid():

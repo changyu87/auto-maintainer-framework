@@ -182,17 +182,25 @@ default. **[v1 default + seam]**
 ### 2.2 Parallelism — bounded-safe in v1; full scope-conflict model deferred
 
 v1 permits **bounded, worktree-isolated parallel dispatch**: a `per_item` acting
-state (e.g. IMPLEMENT) may dispatch its items concurrently, each subagent in its
-OWN git worktree, so concurrent work never shares a checkout. Safety rests on
-three layers: (1) per-dispatch worktree isolation — no shared-tree corruption;
-(2) INTEGRATE's mergeable-gate + the `check=True` merge sink — a PR that
-conflicts after another merges is rejected, recorded, and retried, never
-force-merged; (3) PRIORITIZE's same-`target_feature` serialization (§3.8.6, #214)
-— two PRs never touch one feature in a tick.
+state (e.g. IMPLEMENT) may dispatch its items concurrently, each acting subagent
+isolating its code changes in its OWN git worktree that IT creates and removes
+(per its agent contract), so concurrent work never shares a checkout. Safety
+rests on three layers: (1) per-dispatch self-managed worktree isolation — no
+shared-tree corruption; (2) INTEGRATE's mergeable-gate + the `check=True` merge
+sink — a PR that conflicts after another merges is rejected, recorded, and
+retried, never force-merged; (3) PRIORITIZE's same-`target_feature`
+serialization (§3.8.6, #214) — two PRs never touch one feature in a tick.
 
-**Invariant:** an ACTING `per_item` agent-state MUST declare `isolation:
-worktree`; un-isolated parallel acting is unsafe and is rejected at wiring
-validation.
+**Invariant (auto-maintainer-framework#335):** an ACTING `per_item` agent MUST
+be worktree-isolated, and that isolation is the agent's OWN self-managed git
+worktree — NOT harness `isolation: "worktree"`. The file-based handoff
+(§3.4.6) requires the acting subagent to run with cwd = the main workspace so it
+can write its handoff into the shared `dispatch-out/`; declaring harness
+`isolation: "worktree"` relocates its cwd OFF the main workspace and the handoff
+is lost (the tick reads a MISSING file and re-dispatches the act). Therefore a
+file-handoff agent MUST NOT declare harness `isolation: "worktree"`, and the
+adapter-wiring layer REJECTS at wiring validation any agent dispatch declaring
+BOTH a file-based handoff and harness `isolation: "worktree"`.
 
 What stays **[v2]** is the full **scope/conflict model** — up-front blast-radius
 inference to serialize *any* overlapping work (not just same-feature): non-feature
