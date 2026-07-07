@@ -491,8 +491,12 @@ Decision tags: **[v1]** adopt now, **[v2]** next version, **[deferred]** later,
 - **3.5.4** Dedup vs open (merge overlapping open items into one). **[v2]**
   *Rationale:* useful but a known gap even in rabbit today; not a correctness
   blocker.
-- **3.5.5** Decompose (one level) + parent/child linkage via native sub-issues.
-  **[v1]**
+- **3.5.5** Decompose (one level). One-level *logical* decompose is **[v1]**:
+  TRIAGE splits one item into several accepted work orders, each linked back to
+  the source. **Native GitHub sub-issue (parent/child) linkage is [v2].**
+  *Rationale:* the logical split plus a back-link to the source already gives the
+  operator traceability; native sub-issue creation/linkage is polish, not a
+  correctness blocker, and the native sub-issue API is still preview-tier.
 - **3.5.6** Recursive decompose + atomicity test. **[v2]** *Rationale:* one level
   covers the common case; recursion adds convergence complexity.
 - **3.5.7** Dependency / ordering via native issue dependencies. **[v2]**
