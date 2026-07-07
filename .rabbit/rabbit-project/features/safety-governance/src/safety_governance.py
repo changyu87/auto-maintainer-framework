@@ -134,6 +134,23 @@ DEFAULT_GOVERNANCE = {
 _CONFIG_RELPATH = os.path.join(".auto-maintainer", "config.json")
 _LEGACY_RELPATH = os.path.join(".auto-maintainer", "governance.json")
 
+# The shipped read-only default config, resolved at RUNTIME under
+# ${CLAUDE_PLUGIN_ROOT}/config/default/config.json (#337). Resolving the shipped
+# default at runtime (rather than the old seed-once copy) means a release that
+# changes the default config reaches an unoverridden install with no manual
+# re-seed. When CLAUDE_PLUGIN_ROOT is unset (source tree / bare unit test) this
+# layer is absent and load_config falls through to the code DEFAULT_GOVERNANCE.
+_DEFAULT_CONFIG_SUBPATH = os.path.join("config", "default", "config.json")
+
+
+def _shipped_default_config_path():
+    """Absolute path of the shipped default config.json under
+    ${CLAUDE_PLUGIN_ROOT}/config/default/, or None when the var is unset."""
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if not root:
+        return None
+    return os.path.join(root, _DEFAULT_CONFIG_SUBPATH)
+
 
 def _copy_defaults():
     """A deep-enough copy of DEFAULT_GOVERNANCE (nested dicts copied) so callers
@@ -200,14 +217,19 @@ def _overlay(raw):
 def load_config(project_dir):
     """Load the project-local central config, backfilled from defaults.
 
-    Resolution order:
+    Resolution order (#337 override-else-default):
       1. ${project_dir}/.auto-maintainer/config.json present -> read + backfill.
       2. config.json absent but legacy governance.json present -> MIGRATE ONCE:
          map the surviving fields (mode, budget.per_day_tokens, budget.window_tz),
          DROP per_tick_tokens + maintainer_repo, backfill heartbeat/backoff,
          WRITE config.json, and rename the legacy file to
          governance.json.migrated (non-destructive). Returns the migrated config.
-      3. Neither present -> the documented defaults (no file written).
+      3. No override -> the shipped read-only default at
+         ${CLAUDE_PLUGIN_ROOT}/config/default/config.json, read + backfilled
+         (resolved at RUNTIME, so a release's default reaches an unoverridden
+         install with no manual re-seed).
+      4. Neither an override, a legacy file, nor a reachable shipped default
+         (source tree / bare unit test) -> the documented code defaults.
 
     The removed per_tick_tokens / maintainer_repo keys, if still present in a
     config.json, are TOLERATED and dropped (never surfaced on the loaded config).
@@ -231,6 +253,12 @@ def load_config(project_dir):
             f.write("\n")
         os.rename(legacy_path, legacy_path + ".migrated")
         return config
+
+    shipped = _shipped_default_config_path()
+    if shipped is not None and os.path.isfile(shipped):
+        with open(shipped, "r") as f:
+            raw = json.load(f)
+        return _overlay(raw)
 
     return _copy_defaults()
 

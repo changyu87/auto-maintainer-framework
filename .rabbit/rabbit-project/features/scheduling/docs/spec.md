@@ -1157,17 +1157,26 @@ guessing.
   `packaging-config` no longer ships a status stub. Host projects should gitignore
   the runtime dir `.auto-maintainer/`.
 
-## Fresh-install seeding (#211, aggressive plug-and-play default)
+## Config layout — runtime override-else-default (#337, supersedes #211 seeding)
 
-`start.py` seeds the shipped **aggressive default config** into a fresh install's
-runtime dir before the disposition decision: `seed_default_config(runtime_dir)`
-copies `config.json` / `route.json` / `adapter-map.json` from the shipped
-`default-config/` dir (sibling of `lib/` in the plugin) into
-`${CLAUDE_PROJECT_DIR}/.auto-maintainer/` ONLY for each file that is ABSENT —
-idempotent, and it NEVER clobbers a config the user has already written/edited.
-A no-op when the source dir is absent (the source tree / tests without an
-injected `source_dir`). This makes a fresh install plug-and-play aggressive
-(`mode: auto-merge` + the full acting route incl. the REVIEW gate) WITHOUT
-changing the conservative code `DEFAULT_ROUTE` / `DEFAULT_GOVERNANCE`, which stay
-the safe fallback if a user deletes their config. Both `/start` modes
-(`--clear-only` and full) seed.
+Config is resolved at RUNTIME (override-else-default) rather than seeded once. The
+old seed-once model (`seed_default_config`, #211) copied the shipped defaults into
+a fresh install's runtime dir when absent and never refreshed them, so a release
+that changed a default never reached existing installs. #337 fixes that: the
+config readers (`safety_governance.load_config`, `adapter_wiring.load_route` /
+`load_adapter_map`) resolve, per file, a project-local override in
+`${CLAUDE_PROJECT_DIR}/.auto-maintainer/<name>` if present, else the shipped
+read-only default at `${CLAUDE_PLUGIN_ROOT}/config/default/<name>`, else the
+conservative code `DEFAULT_ROUTE` / `DEFAULT_ADAPTER_MAP` / `DEFAULT_GOVERNANCE`
+(the safe fallback when neither file exists — the source tree, or a user who
+deleted their config). Unoverridden files therefore auto-update every release.
+
+Instead of seeding, `start.py` MIGRATES a previously-seeded install before the
+disposition decision: `migrate_seeded_config(runtime_dir)` inspects
+`config.json` / `route.json` / `adapter-map.json` in the runtime dir and, for
+each that is byte-identical to the shipped default at `config/default/` (sibling
+of `lib/` in the plugin), REMOVES it (a leftover seed, not a real override, so the
+shipped default now flows through on every release); a file that differs is a
+genuine user override and is kept untouched. A no-op when the shipped default dir
+is absent (the source tree / tests without an injected `source_dir`). Both
+`/start` modes (`--clear-only` and full) run the migration.

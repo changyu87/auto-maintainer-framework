@@ -557,3 +557,45 @@ IMPLEMENT; resolving the shipped route + adapter-map through
 (PRIORITIZE writes `execution_plan`, IMPLEMENT reads `execution_plan.ordered`);
 the committed tree matches a fresh build with no source-tree leak; still
 idempotent.
+
+## Config layout — runtime override-else-default resolution (#337)
+
+The runtime config (`config.json`, `route.json`, `adapter-map.json`) is resolved
+at RUNTIME (override-else-default) rather than copied once into a fresh install.
+The old seed-once model (`start.py:seed_default_config`, #211) copied each shipped
+default into `${project_dir}/.auto-maintainer/` when absent and never refreshed
+it, so a release that changed a default never reached existing installs. #337
+fixes that staleness (superseding #336's migration machinery) by shipping the
+defaults read-only and resolving them at runtime.
+
+**Shipped default location (renamed):** the default assets move from
+`plugin_assets/default-config/` to `plugin_assets/config/default/`, so the built
+plugin now carries them at `plugins/auto-maintainer/config/default/{config,route,
+adapter-map}.json`. `build()` needs no code change — `_copy_tree` of
+`plugin_assets/` copies the relocated dir verbatim, and `touches_shipped_src`
+still triggers a release rebuild on any edit under `plugin_assets/`. The
+`config/` dir is a sibling of `lib/` so the shipped path is
+`${CLAUDE_PLUGIN_ROOT}/config/default/`.
+
+**Resolution (per file), by the config readers:** a project-local override in
+`${project_dir}/.auto-maintainer/<name>` wins; else the shipped read-only default
+at `${CLAUDE_PLUGIN_ROOT}/config/default/<name>`; else the caller's conservative
+code fallback (`DEFAULT_ROUTE` / `DEFAULT_ADAPTER_MAP` / `DEFAULT_GOVERNANCE`),
+used when neither file exists (e.g. the source tree, or a user who deleted their
+config). Implemented in `adapter_wiring.load_route` / `load_adapter_map` (via
+`_resolve_config_source`) and `safety_governance.load_config`.
+
+**Migration of already-seeded installs:** `start.py:migrate_seeded_config`
+replaces the old seed copy. For each runtime `<name>`: if it is byte-identical to
+the shipped default it is a leftover seed (not a real override) and is REMOVED so
+the shipped default flows through on every release; if it differs it is a genuine
+user override and is kept untouched.
+
+Consequence + tradeoff: unoverridden files auto-update every release (staleness
+gone for the common case); overriding a file freezes that whole file (the user no
+longer receives future default changes to it — a field-level 3-way merge is the
+only alternative and is deferred). Invariant: the built tree contains
+`config/default/{config.json,route.json,adapter-map.json}` (no `default-config/`);
+with no override the readers resolve to the shipped default; with an override the
+readers resolve to the override; a seed byte-identical to the shipped default is
+retired on start so a changed release default reaches the install.

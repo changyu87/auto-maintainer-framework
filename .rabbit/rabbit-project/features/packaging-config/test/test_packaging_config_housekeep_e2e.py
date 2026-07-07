@@ -118,7 +118,7 @@ _LOAD_BEARING_DOCS = (
     "auto-maintainer",
     "_NORMALIZED_LIBS",
     "ship/",
-    "default-config",
+    "config/default",
     # shipped / normalized libs (proven live: present in plugins/.../lib/)
     "fsm_contracts",
     "tick_orchestrator",

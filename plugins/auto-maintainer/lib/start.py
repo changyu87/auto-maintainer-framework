@@ -21,15 +21,22 @@ disposition (lifecycle-dispositions API), and prepares a fresh start:
     never silently cleared.
   - otherwise (RUNNING / IDLE / absent) — proceed straight to tick #1.
 
-Before the disposition decision, start SEEDS the shipped aggressive default
-config into a FRESH install's runtime dir (#211): ``seed_default_config`` copies
-``config.json`` / ``route.json`` / ``adapter-map.json`` from the shipped
-``default-config/`` dir ONLY when each target is absent (idempotent; never
-clobbers a config the user already wrote/edited). This is how a fresh install
-becomes plug-and-play aggressive (``auto-merge`` mode + the full acting route
-with the REVIEW gate) WITHOUT changing the conservative code
-``DEFAULT_ROUTE`` / ``DEFAULT_GOVERNANCE`` fallback, which stays the safe default
-if a user deletes their config.
+The shipped aggressive default config is NO LONGER seeded (copied) into the
+runtime dir. Config is resolved at RUNTIME (override-else-default, #337): the
+config readers (``sg.load_config`` / ``aw.load_route`` / ``aw.load_adapter_map``)
+read a project-local override from ``${project_dir}/.auto-maintainer/`` if
+present, else the shipped read-only default at
+``${CLAUDE_PLUGIN_ROOT}/config/default/``. This means a release that changes a
+default reaches an unoverridden install with no manual re-seed (the staleness the
+old seed-once copy caused — #337 supersedes #336). Instead of seeding, start
+MIGRATES any install that was seeded by the OLD copy-once path
+(``migrate_seeded_config``): for each of ``config.json`` / ``route.json`` /
+``adapter-map.json`` present in the runtime dir, if the file is byte-identical to
+the shipped default it is a leftover seed (not a real override) and is REMOVED so
+the shipped default flows through on every release; if it differs it is a genuine
+user override and is kept untouched. The conservative code
+``DEFAULT_ROUTE`` / ``DEFAULT_GOVERNANCE`` fallback is unchanged and still applies
+when neither an override nor a reachable shipped default exists.
 
 Tick #1 itself is NOT re-implemented here: start calls ``run_tick.run_tick`` so
 the route lives in exactly one place. The recurring heartbeat keeps using
@@ -52,7 +59,6 @@ Deprecation criterion: Superseded when scheduling moves to a different clock
 """
 
 import os
-import shutil
 import sys
 
 # Resolve sibling modules via sys.path exactly as run_tick does. In the worktree
@@ -81,51 +87,64 @@ class StartRefused(Exception):
     """
 
 
-# The config files a fresh install is seeded with (#211). Order is cosmetic.
-_SEED_FILES = ("config.json", "route.json", "adapter-map.json")
+# The runtime config files subject to the override-else-default model (#337).
+# Order is cosmetic.
+_CONFIG_FILES = ("config.json", "route.json", "adapter-map.json")
 
 
 def _default_config_dir():
-    """The shipped aggressive-default config dir.
+    """The shipped read-only default config dir (#337).
 
     In the installed plugin this file is ``<plugin_root>/lib/start.py`` and the
-    seed assets ship at ``<plugin_root>/default-config/`` (a sibling of ``lib/``),
-    so the dir is ``dirname(dirname(__file__))/default-config``. In the source
-    tree that sibling does not exist (the assets are a packaging-config plugin
-    asset), so ``seed_default_config`` no-ops there unless a source dir is
-    injected by a test.
+    shipped defaults live at ``<plugin_root>/config/default/`` (``config/`` is a
+    sibling of ``lib/``), so the dir is
+    ``dirname(dirname(__file__))/config/default``. In the source tree that dir
+    does not exist (the assets are a packaging-config plugin asset), so
+    ``migrate_seeded_config`` no-ops there unless a source dir is injected by a
+    test.
     """
-    return os.path.join(os.path.dirname(_SRC), "default-config")
+    return os.path.join(os.path.dirname(_SRC), "config", "default")
 
 
-def seed_default_config(runtime_dir, source_dir=None):
-    """Seed the shipped aggressive default config into a fresh install (#211).
+def _same_bytes(path_a, path_b):
+    """True when both files exist and have byte-identical contents."""
+    try:
+        with open(path_a, "rb") as fa, open(path_b, "rb") as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
 
-    For each of ``config.json`` / ``route.json`` / ``adapter-map.json``, copy the
-    shipped default into ``runtime_dir`` ONLY when the target is ABSENT —
-    idempotent, and it NEVER clobbers a config the user has already written or
-    edited (a present file is left untouched). Returns the list of files actually
-    seeded. A no-op (returns ``[]``) when the source dir is absent — e.g. running
-    from the source tree, or a test that injects no ``source_dir`` — so it is
-    safe to call unconditionally at the top of every start.
 
-    `source_dir` overrides the shipped ``default-config/`` location (tests inject
-    a temp dir). This is the seed half of the plug-and-play aggressive default;
-    the conservative code ``DEFAULT_ROUTE`` / ``DEFAULT_GOVERNANCE`` remain the
-    fallback when a config is absent (e.g. a user deleted theirs).
+def migrate_seeded_config(runtime_dir, source_dir=None):
+    """Retire leftover seed files so the runtime override-else-default resolves (#337).
+
+    The old seed-once path (#211) copied the shipped default into the runtime dir
+    on a fresh install; those copies then never refreshed (the staleness #337
+    fixes). Now config is resolved at runtime against the shipped default, so a
+    runtime file is only meaningful as a genuine USER OVERRIDE. For each of
+    ``config.json`` / ``route.json`` / ``adapter-map.json`` present in
+    ``runtime_dir``: if it is byte-identical to the shipped default it is a
+    leftover seed (not a real override) and is REMOVED so the shipped default
+    flows through on every release; if it differs it is a genuine override and is
+    KEPT untouched. Returns the list of files removed. A no-op (returns ``[]``)
+    when the shipped default dir is absent — e.g. the source tree, or a test that
+    injects no ``source_dir`` — so it is safe to call unconditionally at the top
+    of every start.
+
+    `source_dir` overrides the shipped ``config/default/`` location (tests inject
+    a temp dir).
     """
     src = source_dir or _default_config_dir()
     if not os.path.isdir(src):
         return []
-    os.makedirs(runtime_dir, exist_ok=True)
-    seeded = []
-    for name in _SEED_FILES:
+    removed = []
+    for name in _CONFIG_FILES:
         s = os.path.join(src, name)
         d = os.path.join(runtime_dir, name)
-        if os.path.isfile(s) and not os.path.exists(d):
-            shutil.copyfile(s, d)
-            seeded.append(name)
-    return seeded
+        if os.path.isfile(s) and os.path.isfile(d) and _same_bytes(s, d):
+            os.remove(d)
+            removed.append(name)
+    return removed
 
 
 def _clear_or_refuse(runtime_dir, clear_only=False):
@@ -183,13 +202,13 @@ def start(runtime_dir=None, state_path=None, journal_path=None, source=None,
     """Prepare a fresh start, then run tick #1; return the EXIT disposition signal.
 
     Resolves the runtime dir the same way run_tick does when paths are not
-    injected (the installed case). It first SEEDS the shipped aggressive default
-    config for a fresh install (`seed_default_config`, idempotent), then performs
-    the FRESH-start disposition decision via `_clear_or_refuse` (clear STOPPED /
-    refuse ABORTED / no-op), then runs tick #1 via run_tick.
+    injected (the installed case). It first MIGRATES any leftover seed files so
+    the runtime override-else-default resolves (`migrate_seeded_config`, #337),
+    then performs the FRESH-start disposition decision via `_clear_or_refuse`
+    (clear STOPPED / refuse ABORTED / no-op), then runs tick #1 via run_tick.
 
-    With `clear_only=True` it performs the seed + the disposition decision and
-    does NOT run tick #1 — returning None. This separates the latch-clear from
+    With `clear_only=True` it performs the migration + the disposition decision
+    and does NOT run tick #1 — returning None. This separates the latch-clear from
     tick #1, which the in-session executor model (DESIGN §2.8) needs: tick #1 of
     an AGENT route must go through the executor skill (which presses the Agent
     button), not start.py's in-process run_tick (which would just pause).
@@ -203,16 +222,16 @@ def start(runtime_dir=None, state_path=None, journal_path=None, source=None,
         state_path = state_path if state_path is not None else _state
         journal_path = journal_path if journal_path is not None else _journal
 
-    # Fresh-install seeding (#211): copy the shipped aggressive default config
-    # (auto-merge + full acting route + REVIEW gate) into the runtime dir for any
-    # file that is absent. Idempotent; never clobbers an existing config. A no-op
-    # once the user has a config, and a no-op in the source tree (no shipped
-    # default-config sibling).
-    seeded = seed_default_config(runtime_dir)
-    if seeded:
+    # Runtime override-else-default migration (#337): retire any leftover seed
+    # files (byte-identical to the shipped default) so the shipped default now
+    # flows through at runtime on every release; a genuinely edited config is a
+    # real override and is kept untouched. A no-op once nothing byte-identical
+    # remains, and a no-op in the source tree (no shipped config/default sibling).
+    removed = migrate_seeded_config(runtime_dir)
+    if removed:
         sys.stdout.write(
-            "[start] seeded default config (fresh install): "
-            + ", ".join(seeded) + "\n")
+            "[start] retired leftover seed config (now resolved at runtime): "
+            + ", ".join(removed) + "\n")
 
     _clear_or_refuse(runtime_dir, clear_only=clear_only)
 
@@ -236,13 +255,13 @@ def start(runtime_dir=None, state_path=None, journal_path=None, source=None,
 if __name__ == "__main__":
     # Production entrypoint: the /auto-maintainer:start skill invokes this once
     # for tick #1 from the installed plugin with no path wiring and no injected
-    # source. It seeds a fresh install's default config, clears a latched STOPPED
-    # (or refuses on ABORTED) and then runs tick #1 via run_tick (which prints the
-    # tick trace). A latched fault exits non-zero so the skill surfaces it instead
-    # of silently clearing it.
+    # source. It retires any leftover seed config (now resolved at runtime),
+    # clears a latched STOPPED (or refuses on ABORTED) and then runs tick #1 via
+    # run_tick (which prints the tick trace). A latched fault exits non-zero so
+    # the skill surfaces it instead of silently clearing it.
     #
-    # With --clear-only it performs the seed + the latch-clear/refuse decision and
-    # defers tick #1 to the executor skill (DESIGN §2.8). Exit 0 on
+    # With --clear-only it performs the migration + the latch-clear/refuse
+    # decision and defers tick #1 to the executor skill (DESIGN §2.8). Exit 0 on
     # cleared/no-op, non-zero on the ABORTED refusal.
     import argparse
 
@@ -250,8 +269,9 @@ if __name__ == "__main__":
         description="Fresh-start control for /auto-maintainer:start.")
     parser.add_argument(
         "--clear-only", action="store_true",
-        help="Only seed + clear a latched STOPPED (or refuse on ABORTED); do "
-             "NOT run tick #1 (deferred to the executor skill).")
+        help="Only migrate leftover seed config + clear a latched STOPPED (or "
+             "refuse on ABORTED); do NOT run tick #1 (deferred to the executor "
+             "skill).")
     parser.add_argument(
         "--print-interval", action="store_true",
         help="Print the configured heartbeat interval in minutes "

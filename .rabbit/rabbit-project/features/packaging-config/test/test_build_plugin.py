@@ -2177,18 +2177,20 @@ def test_ship_collection_route_and_adapter_map_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Minor (v0.5.0, #211 aggressive default): the plugin ships a default-config/
-# dir with the aggressive seed assets (config.json mode=auto-merge, the full
-# acting route incl. REVIEW, the agent-wired adapter-map) that start.py seeds
-# into a fresh install's .auto-maintainer/ — the plug-and-play aggressive default.
+# Minor (v0.5.0, #211 aggressive default; relocated to config/default/ in #337):
+# the plugin ships a config/default/ dir with the aggressive default assets
+# (config.json mode=auto-merge, the full acting route incl. REVIEW, the
+# agent-wired adapter-map). Under #337 these are the shipped read-only defaults
+# the config readers resolve at runtime (override-else-default), not seed copies.
 # ---------------------------------------------------------------------------
 def test_default_config_seed_assets_shipped():
     out_root = _build_into_temp()
     try:
-        dc = os.path.join(out_root, "plugins", "auto-maintainer", "default-config")
+        dc = os.path.join(
+            out_root, "plugins", "auto-maintainer", "config", "default")
         for name in ("config.json", "route.json", "adapter-map.json"):
             assert os.path.isfile(os.path.join(dc, name)), \
-                f"default-config/{name} must ship for fresh-install seeding"
+                f"config/default/{name} must ship for runtime default resolution"
         with open(os.path.join(dc, "config.json"), encoding="utf-8") as fh:
             cfg = json.load(fh)
         assert cfg["mode"] == "auto-merge", "seed config.json mode must be auto-merge"
@@ -2770,7 +2772,7 @@ def test_default_config_surfaces_work_own_filings_at_schema_2_2_0():
     out_root = _build_into_temp()
     try:
         dc = os.path.join(
-            out_root, "plugins", "auto-maintainer", "default-config"
+            out_root, "plugins", "auto-maintainer", "config", "default"
         )
         with open(os.path.join(dc, "config.json"), encoding="utf-8") as fh:
             cfg = json.load(fh)
@@ -2799,11 +2801,11 @@ def test_default_config_surfaces_work_own_filings_at_schema_2_2_0():
 # ---------------------------------------------------------------------------
 def test_committed_default_config_surfaces_work_own_filings():
     committed = os.path.join(
-        _REPO_ROOT, "plugins", "auto-maintainer", "default-config",
+        _REPO_ROOT, "plugins", "auto-maintainer", "config", "default",
         "config.json",
     )
     assert os.path.isfile(committed), \
-        "committed default-config/config.json must ship in the plugin tree"
+        "committed config/default/config.json must ship in the plugin tree"
     with open(committed, encoding="utf-8") as fh:
         cfg = json.load(fh)
     assert cfg.get("schema_version") == "2.2.0", \
@@ -3143,9 +3145,9 @@ def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
     try:
         plugin = os.path.join(out_root, "plugins", "auto-maintainer")
         lib = os.path.join(plugin, "lib")
-        dc = os.path.join(plugin, "default-config")
+        dc = os.path.join(plugin, "config", "default")
 
-        # Structural checks on the shipped default-config assets first.
+        # Structural checks on the shipped config/default assets first.
         with open(os.path.join(dc, "route.json"), encoding="utf-8") as fh:
             route = json.load(fh)
         with open(os.path.join(dc, "adapter-map.json"), encoding="utf-8") as fh:
@@ -3197,7 +3199,7 @@ def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
             f"proj = tempfile.mkdtemp(prefix='pkgcfg-wire-')\n"
             "amdir = os.path.join(proj, '.auto-maintainer')\n"
             "os.makedirs(amdir, exist_ok=True)\n"
-            # Seed the shipped default-config as the project-local override so
+            # Seed the shipped config/default as the project-local override so
             # build_loop loads exactly the shipped route + adapter-map.
             f"shutil.copy({os.path.join(dc, 'route.json')!r}, "
             "os.path.join(amdir, 'route.json'))\n"
@@ -3220,7 +3222,7 @@ def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
             capture_output=True, text=True,
         )
         assert proc.returncode == 0, (
-            "shipped default-config route+adapter-map failed build_loop "
+            "shipped config/default route+adapter-map failed build_loop "
             f"resolution (WiringError?):\nstdout={proc.stdout}\n"
             f"stderr={proc.stderr}"
         )

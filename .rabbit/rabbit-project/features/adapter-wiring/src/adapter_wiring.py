@@ -119,6 +119,17 @@ _CONFIG_DIRNAME = ".auto-maintainer"
 _ROUTE_FILENAME = "route.json"
 _MAP_FILENAME = "adapter-map.json"
 
+# Shipped defaults live read-only under ${CLAUDE_PLUGIN_ROOT}/config/default/
+# (#337). The config resolution is override-else-default: a project-local
+# override (in .auto-maintainer/) wins; else the shipped default is read from
+# the installed plugin; else the caller-supplied code fallback (the conservative
+# DEFAULT_ROUTE / DEFAULT_ADAPTER_MAP) is used when neither file exists (e.g. the
+# source tree, or a user who deleted their config). Resolving the shipped default
+# at RUNTIME (instead of the old seed-once copy) means a release that changes a
+# default reaches an unoverridden install with no manual re-seed (#337 supersedes
+# the #336 migration machinery).
+_DEFAULT_CONFIG_SUBDIR = os.path.join("config", "default")
+
 # Anchor symbols. These are FIXED core states the validator enforces invariants
 # over; they are not project-overridable per DESIGN §1.1.
 _ENTRY_ANCHOR = "GUARD"
@@ -130,48 +141,95 @@ def _config_path(project_dir, filename):
     return os.path.join(project_dir, _CONFIG_DIRNAME, filename)
 
 
+def _plugin_root():
+    """The installed plugin's root, from ${CLAUDE_PLUGIN_ROOT}, or None.
+
+    Claude Code sets CLAUDE_PLUGIN_ROOT to the installed plugin's root; the
+    shipped read-only defaults live at <root>/config/default/. Returns None when
+    the var is unset (e.g. running from the source tree or a bare unit test), in
+    which case the shipped-default layer is simply absent and resolution falls
+    through to the caller-supplied code fallback."""
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    return root or None
+
+
+def _shipped_default_path(filename):
+    """Absolute path of a shipped default file (${CLAUDE_PLUGIN_ROOT}/config/
+    default/<filename>), or None when CLAUDE_PLUGIN_ROOT is unset."""
+    root = _plugin_root()
+    if root is None:
+        return None
+    return os.path.join(root, _DEFAULT_CONFIG_SUBDIR, filename)
+
+
+def _resolve_config_source(project_dir, filename):
+    """Resolve a runtime config file to (path, is_override), override-else-default.
+
+    Returns the readable source path plus whether it is a user override:
+      1. ${project_dir}/.auto-maintainer/<filename> exists -> (that, True).
+      2. else ${CLAUDE_PLUGIN_ROOT}/config/default/<filename> exists ->
+         (that, False)  — the shipped release-owned default (#337).
+      3. else (None, False)  — no file; the caller uses its code fallback.
+    """
+    override = _config_path(project_dir, filename)
+    if os.path.isfile(override):
+        return override, True
+    shipped = _shipped_default_path(filename)
+    if shipped is not None and os.path.isfile(shipped):
+        return shipped, False
+    return None, False
+
+
 def load_route(default_route, project_dir):
-    """Return the project-local ${project_dir}/.auto-maintainer/route.json if it
-    exists, else `default_route` (supplied by the caller). The returned object
-    is validated against the fsm-contracts route.json shape; a malformed route
-    is a locatable WiringError naming route.json."""
-    path = _config_path(project_dir, _ROUTE_FILENAME)
-    if os.path.isfile(path):
+    """Return the resolved route (#337 override-else-default), validated.
+
+    Resolution: the project-local ${project_dir}/.auto-maintainer/route.json
+    override if present, else the shipped read-only default at
+    ${CLAUDE_PLUGIN_ROOT}/config/default/route.json (resolved at RUNTIME so a
+    release's default reaches an unoverridden install), else `default_route`
+    (the caller's conservative code fallback). The returned object is validated
+    against the fsm-contracts route.json shape; a malformed route is a locatable
+    WiringError naming route.json."""
+    path, _is_override = _resolve_config_source(project_dir, _ROUTE_FILENAME)
+    if path is not None:
         try:
             with open(path, "r") as f:
                 route = json.load(f)
         except (OSError, ValueError) as exc:
             raise WiringError(
-                f"failed to read project-local route.json at {path}: {exc}")
+                f"failed to read route.json at {path}: {exc}")
     else:
         route = default_route
 
     verdict = fc.validate_route(route)
     if not verdict.passed:
-        where = path if os.path.isfile(path) else "default route"
+        where = path if path is not None else "default route"
         raise WiringError(
             f"malformed route.json ({where}): " + "; ".join(verdict.messages))
     return route
 
 
 def load_adapter_map(default_map, project_dir):
-    """Return the project-local
-    ${project_dir}/.auto-maintainer/adapter-map.json if it exists, else
-    `default_map`. Same override logic as load_route.
+    """Return the resolved adapter map (#337 override-else-default).
+
+    Resolution mirrors load_route: the project-local
+    ${project_dir}/.auto-maintainer/adapter-map.json override if present, else
+    the shipped read-only default at
+    ${CLAUDE_PLUGIN_ROOT}/config/default/adapter-map.json, else `default_map`
+    (the caller's code fallback).
 
     Each value is EITHER a `str` (script factory address, "module:factory") OR a
     `dict` (agent-adapter object). Any other type is a locatable WiringError
     naming the port. The agent dict is NOT deep-validated here — that is
     resolve_states' job via agent-dispatch."""
-    path = _config_path(project_dir, _MAP_FILENAME)
-    if os.path.isfile(path):
+    path, _is_override = _resolve_config_source(project_dir, _MAP_FILENAME)
+    if path is not None:
         try:
             with open(path, "r") as f:
                 amap = json.load(f)
         except (OSError, ValueError) as exc:
             raise WiringError(
-                f"failed to read project-local adapter-map.json at {path}: "
-                f"{exc}")
+                f"failed to read adapter-map.json at {path}: {exc}")
     else:
         amap = default_map
 
