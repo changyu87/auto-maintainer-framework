@@ -21,9 +21,8 @@ into a self-restarting ~1-minute loop you can watch in an installed session.
 
 ## The real loop (slice 3: route-as-data)
 
-The route is now **data**, loaded + validated + resolved by `adapter-wiring`
-(§3.4.3) — no longer hardcoded. The shipped **default route** is the read-and-idle
-spine:
+The route is **data**, loaded + validated + resolved by `adapter-wiring`
+(§3.4.3). The shipped **default route** is the read-and-idle spine:
 
 ```
 GUARD → DRAIN → PULL → PERSIST → EXIT
@@ -44,21 +43,16 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
   wires with NO code change (all ports pre-mapped) — a pure `route.json` edit.
 - **Override by config, not code:** a project-local
   `${CLAUDE_PROJECT_DIR}/.auto-maintainer/route.json` (and optional
-  `adapters.json`) overrides the defaults. Inserting `TRIAGE` between PULL and
-  PERSIST — or the full act-side chain
+  `adapters.json`) overrides the defaults. Inserting the act-side chain
   `TRIAGE → PRIORITIZE → IMPLEMENT` (PRIORITIZE reads `work_orders` and writes
   `execution_plan`; the dry-run IMPLEMENT reads `execution_plan` and writes
-  `handoffs`) — is a pure route.json edit. `adapter-wiring` resolves each port
-  from the map and `validate_wiring` checks it at load. This is the
-  ports-and-adapters promise made real at runtime: the
-  `TRIAGE → PRIORITIZE → IMPLEMENT` route wires with NO code change because all
-  three ports are pre-mapped in `DEFAULT_ADAPTER_MAP`. The dry-run IMPLEMENT is
-  INERT (no VCS / filesystem effect), so the act-path tick still idles
-  (read-and-idle): it produces `handoffs` but leaves no remaining work, so there
-  is no busy disposition to select.
-- **Read-and-idle:** with only read stages (no `IMPLEMENT` yet) `EXIT` goes
-  **IDLE** after the route runs; it becomes refire/work-driven once an act stage
-  lands. The slice-1 `DEMO_WORK` stub stays retired.
+  `handoffs`) is a pure route.json edit — `adapter-wiring` resolves each port
+  from the map and `validate_wiring` checks it at load, and all three ports are
+  pre-mapped in `DEFAULT_ADAPTER_MAP`. The dry-run IMPLEMENT is INERT (no VCS /
+  filesystem effect), so the act-path tick still idles: it produces `handoffs`
+  but leaves no remaining work.
+- **Read-and-idle:** with only read stages `EXIT` goes **IDLE** after the route
+  runs; it becomes refire/work-driven once an act stage lands.
 - **Per-tick read products (#64):** the four read products
   `work_items`/`work_orders`/`execution_plan`/`handoffs` are EPHEMERAL — each tick
   they reflect ONLY what THIS tick's route produced (PULL writes `work_items`;
@@ -66,24 +60,22 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
   `execution_plan`; IMPLEMENT, if routed, writes `handoffs`). They are NOT carried
   forward across ticks: a route without TRIAGE reports `work_orders=0`, and a
   route without PRIORITIZE/IMPLEMENT reports `execution_plan=0 handoffs=0`, never a
-  stale count from an earlier act-path tick. All four are surfaced in the tick
-  trace and in `status.py` (always shown, including 0, #69), in the order
-  `work_items work_orders execution_plan handoffs`. (Durable state keeps cross-tick
-  facts; the read-product snapshot is overwritten every tick.)
-- **Producible read-product slots are SEEDED EMPTY (skipped-state safety,
-  live-found).** `_seed_context` not only registers but WRITES a schema-valid
-  empty default for every producible read-product slot it registers
-  (`work_orders`, `execution_plan`, `handoffs`, `verdicts`, `integration_result`).
-  A route may SKIP a producing state via a signal branch — e.g. `VERIFY EMPTY →
-  PERSIST` skips INTEGRATE/CLEANUP, or `TRIAGE EMPTY → VERIFY` skips IMPLEMENT — so
-  that state never writes its slot. Without a seeded default, the terminal's
+  stale count. All four are surfaced in the tick trace and in `status.py` (always
+  shown, including 0, #69), in the order
+  `work_items work_orders execution_plan handoffs`. Durable state keeps cross-tick
+  facts; the read-product snapshot is overwritten every tick.
+- **Producible read-product slots are SEEDED EMPTY (skipped-state safety).**
+  `_seed_context` not only registers but WRITES a schema-valid empty default for
+  every producible read-product slot it registers (`work_orders`,
+  `execution_plan`, `handoffs`, `verdicts`, `integration_result`). A route may
+  SKIP a producing state via a signal branch — e.g. `VERIFY EMPTY → PERSIST`
+  skips INTEGRATE/CLEANUP, or `TRIAGE EMPTY → VERIFY` skips IMPLEMENT — so that
+  state never writes its slot. Without a seeded default, the terminal's
   `ctx.read(<slot>)` (run to persist the #64 snapshot) raised a `ContractError`
-  ("slot has not been written") and CRASHED the whole tick. Seeding empties makes
-  a skipped producer persist its product EMPTY (the #64-correct value) instead of
-  crashing. A state that DOES run overwrites its seeded empty as before; the
-  empties also flow through the agent checkpoint/restore so a multi-resume tick is
-  equally safe. Regression-tested on a `VERIFY EMPTY → PERSIST` route (no open
-  loop PRs) and a `TRIAGE EMPTY` route (no work orders).
+  and crashed the whole tick. Seeding empties makes a skipped producer persist
+  its product EMPTY (the #64-correct value) instead of crashing; a state that
+  DOES run overwrites its seeded empty. The empties also flow through the agent
+  checkpoint/restore so a multi-resume tick is equally safe.
 
 ## Redesigned-loop reconciliation (FT-E): cross-cutting risk, advisory REVIEW, thin INTEGRATE
 
@@ -101,27 +93,24 @@ live ONLY in `run_tick.py` + `adapter_map_config.py`.
   registered")`.
 - **REVIEW is ADVISORY — `review_verdicts` retired for `review_findings` (FT-C
   §3.7.7).** REVIEW reads `verdicts` and writes the advisory `review_findings`
-  slot (DiscoveredIssue-conforming records with stable `dedup_key`s).
-  REVIEW is NO LONGER a merge gate. `_seed_context` seeds `review_findings` only
-  when REVIEW is routed; `review_verdicts` is no longer seeded/mapped/persisted.
+  slot (DiscoveredIssue-conforming records with stable `dedup_key`s). REVIEW is
+  NO LONGER a merge gate. `_seed_context` seeds `review_findings` only when REVIEW
+  is routed; `review_verdicts` is no longer seeded/mapped/persisted.
   `persisted_review_findings` replaces `persisted_review_verdicts`;
   `REVIEW_VERDICTS_KEY` -> `REVIEW_FINDINGS_KEY`.
 - **Advisory REVIEW ALWAYS flows to INTEGRATE (`always_ok`).** Because REVIEW is
-  advisory, it must NEVER branch the loop's flow on how many findings it
-  produced. Its `AGENT_PORT_TEMPLATES['REVIEW']['signal_rule']` is `always_ok`
-  (the closed-vocabulary rule in `agent_dispatch.compute_signal` that returns
-  `OK` for any slot value), so a clean review (ZERO `review_findings`) emits `OK`
-  and continues to INTEGRATE rather than EMPTY-branching past it. The default
-  `make_review` no-op likewise emits `OK` (not `EMPTY`) while still writing an
-  EMPTY `review_findings` list. This fixes the dogfood bug where a zero-finding
-  review emitted `EMPTY`, took a `REVIEW--EMPTY-->PERSIST` edge, SKIPPED
-  INTEGRATE, and left mergeable PRs unmerged every tick. REVIEW's declared
-  `emits` stay `[OK, EMPTY]` (verify-integrate's `REVIEW_MANIFEST`, UNCHANGED) so
-  a seeded route that still carries a `REVIEW--EMPTY-->PERSIST` edge keeps
-  passing `validate_signals` — that EMPTY edge is now valid-but-dead (never
-  taken), and no `route.json` change is required. `migrate_known_port_entries`
-  re-derives a stale REVIEW entry from this template, so a healed entry carries
-  `signal_rule='always_ok'` automatically.
+  advisory, it must NEVER branch the loop's flow on how many findings it produced.
+  Its `AGENT_PORT_TEMPLATES['REVIEW']['signal_rule']` is `always_ok` (the
+  closed-vocabulary rule in `agent_dispatch.compute_signal` that returns `OK` for
+  any slot value), so a clean review (ZERO `review_findings`) emits `OK` and
+  continues to INTEGRATE rather than EMPTY-branching past it. The default
+  `make_review` no-op likewise emits `OK` while still writing an EMPTY
+  `review_findings` list. REVIEW's declared `emits` stay `[OK, EMPTY]`
+  (verify-integrate's `REVIEW_MANIFEST`, UNCHANGED) so a seeded route that still
+  carries a `REVIEW--EMPTY-->PERSIST` edge keeps passing `validate_signals` —
+  that EMPTY edge is now valid-but-dead, and no `route.json` change is required.
+  `migrate_known_port_entries` re-derives a stale REVIEW entry from this template,
+  so a healed entry carries `signal_rule='always_ok'` automatically.
 - **INTEGRATE is a THIN merge (FT-C/D).** Reads ONLY `verdicts`; merges each `ok`
   verdict's PR via `sg.permits('merge', mode)` + `merge_guardrails` with NO
   review-approval read (the merge rests on IMPLEMENT's gate + VERIFY + guardrails
@@ -150,25 +139,22 @@ enforcement of act-skip is **deferred** to the acting doer (next milestone).
   `backoff.threshold` (default 5) from this config for the backoff gate, and the
   `/start` heartbeat reads `heartbeat.interval_minutes` (default 3) for its
   cadence (both owned by safety-governance, consumed here via the contract).
-- **Durable, cross-tick budget window (#69-style surface, durable like the
-  counter).** A new durable key `budget` stores `{window_key, spent_tokens}`.
-  Each tick resolves a tz-aware `now` (the injected `now` when it is tz-aware,
-  else the host local-aware now `datetime.now().astimezone()`), loads the prior
-  budget state from durable state (default `{}`), calls
+- **Durable, cross-tick budget window.** A durable key `budget` stores
+  `{window_key, spent_tokens}`. Each tick resolves a tz-aware `now` (the injected
+  `now` when tz-aware, else the host local-aware `datetime.now().astimezone()`),
+  loads the prior budget state (default `{}`), calls
   `sg.evaluate_budget(gov, budget_state, now, tick_spend=<injected, default 0>)`,
-  and PERSISTS the returned `budget_state`. The lib performs the window rollover
-  / auto-resume: a `now` on a later local day advances `window_key` and resets
-  `spent_tokens`. `tick_spend` is `0` in production (no model spender yet); tests
-  inject it. The budget window is a durable CROSS-TICK fact, **not** a per-tick
-  ephemeral read product (#64): a tick within the same window carries the
-  accumulated spend forward — only a window rollover (inside `evaluate_budget`)
-  resets it.
+  and PERSISTS the returned `budget_state`. The lib performs the window rollover /
+  auto-resume: a `now` on a later local day advances `window_key` and resets
+  `spent_tokens`. `tick_spend` is `0` in production; tests inject it. The budget
+  window is a durable CROSS-TICK fact, **not** a per-tick ephemeral read product
+  (#64): a tick within the same window carries accumulated spend forward — only a
+  window rollover resets it.
 - **Surface in the trace AND status.py** (always shown, #69 style): `mode=<mode>`
   and a compact `budget=<spent>/<ceiling-or-"none"> win=<window_key>` field
-  (`none` = a null/unlimited per_day ceiling), placed after the existing fields
-  (all current fields/order preserved). When `evaluate_budget` returns
-  `allowed=False`, a `budget_paused=<reason>` indicator is appended (e.g.
-  `budget_paused=per_day_exhausted`).
+  (`none` = a null/unlimited per_day ceiling), placed after the existing fields.
+  When `evaluate_budget` returns `allowed=False`, a `budget_paused=<reason>`
+  indicator is appended (e.g. `budget_paused=per_day_exhausted`).
 - **No act-skip this slice.** A budget-blocked tick is NOT skipped or idled
   differently — there is no model spender yet, and the acting doer will consult
   `permits`/budget itself next milestone. This slice only SURFACES the paused
@@ -192,17 +178,15 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    → resolve → validate → `(route, states)`, runs `tick_orchestrator.run(...)`
    over a `TickContext` seeded from durable state, prints a tick trace (tick
    number, state path, `work_items`/`work_orders` counts, resulting disposition,
-   and the **route source** — `default` vs the project-local override path, so a
-   misplaced/absent `route.json` is visible, not silently ignored, #59),
+   and the **route source** — `default` vs the project-local override path, #59),
    and returns/persists the outcome. One invocation = one tick. `PULL`'s issue
    source is the live `gh` CLI in production but **injectable** so tests pass a
    stub (no network).
 2. **PULL integration (read-and-idle)** — the route uses work-intake's `PULL`
    state (writes `work_items`). After PULL + PERSIST, `EXIT` selects **IDLE** (no
    act stage yet), so the heartbeat re-pulls next interval rather than the loop
-   busy-firing. The slice-1 `DEMO_WORK` stub is removed.
-3. **Control scripts** (deterministic, script-tier — spec-rules §1; the fix for
-   #29/#30/#44 where prompt-tier skills drifted/broke):
+   busy-firing.
+3. **Control scripts** (deterministic, script-tier — spec-rules §1):
    - `src/start.py` — prepares a fresh start, then runs tick #1: if the
      disposition is `STOPPED` it clears the latch to a runnable state (start IS
      the §1.2 human resume); if `ABORTED` it REFUSES and tells the user to
@@ -216,12 +200,11 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      model** (DESIGN §2.8) needs: tick #1 of an AGENT route must go through the
      executor skill (which presses the `Agent` button), not start.py's
      in-process `run_tick` (which would just pause). The clear-or-refuse decision
-     lives in ONE place shared by both modes (clear-only and the default
-     clear+tick) — it is never duplicated or forked.
+     lives in ONE place shared by both modes.
    - `src/status.py` — reads the disposition marker + the persisted `work_items`
      count (via `run_tick`'s `resolve_runtime_paths`), the **route source**
-     (`default` vs the project-local `route.json` override path, #59), and the real loop
-     status.
+     (`default` vs the project-local `route.json` override path, #59), and the
+     real loop status.
    - `src/stop.py` — writes disposition `STOPPED` (via the lifecycle-dispositions
      API) using the same runtime-path resolution. Owns the state write.
    These own ALL state operations so the skills never hand-roll Python.
@@ -251,8 +234,7 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      durable loop-intent**, so the next session's `SessionStart` hook does not
      auto-resume) then cancels the heartbeat (CronDelete).
    - `/auto-maintainer:status` — invokes `status.py` and reports the real
-     disposition + last-pull `work_items` count (replaces packaging-config's
-     slice-1 stub).
+     disposition + last-pull `work_items` count.
    Only the heartbeat scheduling (CronCreate/CronDelete) is agent-mediated (no
    plugin-level cron API); every state operation is a script.
 5. **Scheduler detection (§3.3.1)** — slice 1 uses the in-session durable
@@ -292,8 +274,9 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 
 `/auto-maintainer:start` → tick #1 pulls the repo's open issues into `work_items`
 (trace shows the count), PERSISTs them, and EXITs **IDLE**. Every
-`heartbeat.interval_minutes` (default 3) the heartbeat re-pulls the current open issues. `/auto-maintainer:status` shows the
-disposition + last-pull count. `/stop` latches STOPPED + cancels the heartbeat.
+`heartbeat.interval_minutes` (default 3) the heartbeat re-pulls the current open
+issues. `/auto-maintainer:status` shows the disposition + last-pull count.
+`/stop` latches STOPPED + cancels the heartbeat.
 
 ## Current behaviour
 
@@ -324,15 +307,15 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   (`ad.build_envelopes(entry, slot_values, {"tick_id", "mode"}, state=<name>)`,
   each rendered with `ad.render`) and **checkpoint** to durable state, then
   return a PAUSED result. `run_tick` NEVER calls the Agent tool — that is the
-  executor's job (a later slice). The pause does NOT record any intent in the
-  durable-state tick journal: that journal is the counter-reconciliation ledger
-  (`drain_run` reads `target_counter` from every unconfirmed intent), and an
-  agent dispatch never touches the counter. The durable checkpoint alone carries
-  the paused dispatch (see below), so journaling it as well was redundant AND it
-  poisoned the counter journal — an agent-dispatch intent has no `target_counter`
-  and is never confirmed, so it survived into the NEXT tick's DRAIN and crashed
-  it with `KeyError: 'target_counter'` (auto-maintainer-framework#109). The agent
-  driver therefore writes ONLY the checkpoint, never a journal intent.
+  executor's job. The pause does NOT record any intent in the durable-state tick
+  journal: that journal is the counter-reconciliation ledger (`drain_run` reads
+  `target_counter` from every unconfirmed intent), and an agent dispatch never
+  touches the counter. The durable checkpoint alone carries the paused dispatch,
+  so journaling it as well would poison the counter journal — an agent-dispatch
+  intent has no `target_counter` and is never confirmed, so it would survive into
+  the NEXT tick's DRAIN and crash it with `KeyError: 'target_counter'`
+  (auto-maintainer-framework#109). The agent driver therefore writes ONLY the
+  checkpoint, never a journal intent.
 - **File-based context isolation (DESIGN §3.4.6).** The subagent's output is a
   WRITTEN FILE, never marshalled back through the orchestrator. `run_tick`
   resolves `output_dir = ${runtime_dir}/dispatch-out/` (created `mkdir -p`) and
@@ -356,13 +339,12 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   `isolation: "worktree"` on such an agent instead relocates its cwd OFF the
   main workspace, and the handoff then never reaches `dispatch-out/` — the
   orchestrator reads a MISSING file and re-dispatches, re-running the act (a
-  second PR / a second issue-close). This was observed as a regression when
-  `AGENT_PORT_TEMPLATES['IMPLEMENT']` briefly carried `isolation: "worktree"`.
-  Therefore `AGENT_PORT_TEMPLATES` entries declare NO `isolation` (the default
-  resolves to `None`), acting agents provide their own worktree isolation, and
-  the adapter-wiring layer REJECTS any agent dispatch that declares both a
-  file-based handoff and harness `isolation: "worktree"`. Non-isolated
-  dispatches (e.g. TRIAGE) likewise run with cwd = the main workspace.
+  second PR / a second issue-close). Therefore `AGENT_PORT_TEMPLATES` entries
+  declare NO `isolation` (the default resolves to `None`), acting agents provide
+  their own worktree isolation, and the adapter-wiring layer REJECTS any agent
+  dispatch that declares both a file-based handoff and harness
+  `isolation: "worktree"`. Non-isolated dispatches (e.g. TRIAGE) likewise run
+  with cwd = the main workspace.
 - **At pause: delete any stale output file.** Before returning the PAUSE,
   `run_tick` DELETES any pre-existing file at each dispatch's `output_path`. A
   stale file from a prior tick must never be misread on resume — a missing fresh
@@ -412,17 +394,15 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   on resume (auto-maintainer-framework#123).** An agent route PAUSES at the first
   agent-state and RETURNS EARLY (the PAUSE / invalid_output return) before the
   terminal budget-persist block. So the fresh tick's rolled budget window would
-  never be saved (durable `budget={}`, `/status` shows `win=` empty). To keep the
-  budget a durable cross-tick fact on EVERY route, run_tick persists the budget
-  window durably on the PAUSE / invalid_output early-return path too: it
-  load-modify-saves ONLY `BUDGET_KEY` (preserving the checkpoint, the read
-  products, and every other durable key), so the rolled window survives the
-  pause. On resume the budget is REUSED (never re-rolled, per the FRESH-only
-  gate): after `evaluate_budget` the resume branch carries the evaluated window
-  forward (`new_budget_state = budget["budget_state"]`) so even a `{}` persisted
-  value resolves to a real `{window_key, spent_tokens}` and the terminal persist
-  records the durable window. A pure-script route is UNCHANGED — it already
-  persists the window at the terminal.
+  never be saved. To keep the budget a durable cross-tick fact on EVERY route,
+  run_tick persists the budget window durably on the PAUSE / invalid_output
+  early-return path too: it load-modify-saves ONLY `BUDGET_KEY` (preserving the
+  checkpoint, the read products, and every other durable key), so the rolled
+  window survives the pause. On resume the budget is REUSED (never re-rolled, per
+  the FRESH-only gate): after `evaluate_budget` the resume branch carries the
+  evaluated window forward (`new_budget_state = budget["budget_state"]`) so even a
+  `{}` persisted value resolves to a real `{window_key, spent_tokens}` and the
+  terminal persist records the durable window. A pure-script route is UNCHANGED.
 
 ## Trust-gate for acting agent-states (slice: effect-based trust ladder)
 
@@ -472,9 +452,7 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
     (explicit base) / `IMPLEMENT #275` (name base). When the item yields NO
     derivable ref → the explicit description verbatim when present, else
     `f"{name} dispatch"`. The explicit description is a PREFIX, never the
-    verbatim whole, on the per_item path — the FT-4 gap (auto-maintainer-framework#280
-    follow-up) where the dogfood IMPLEMENT entry's explicit `auto-maintainer
-    implement` made every per-item subagent show the same numberless label.
+    verbatim whole, on the per_item path (auto-maintainer-framework#280).
   - **once** (no `item`) → (0) an explicit `dispatch_entry['description']` wins
     verbatim; else scan `env['inputs']` list-of-dicts for `pr_ref` (REVIEW
     verdicts) or `number` (TRIAGE work_items) → `REVIEW #276, #277` /
@@ -484,21 +462,19 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
   effect-based trust-gate (dry-run inert vs dispatch) + isolation/description in
   the PAUSED dispatches. Read products stay #64 per-tick ephemeral; the budget
   window persistence (#123) and the #109 journal-free checkpoint are unchanged.
-  (The budget pre-gate, acted-ledger, and spend metering land in the next slice
-  below.)
 
 ## Doer governance for acting agent-states (slice: acted-ledger + budget pre-gate + spend metering)
 
 This slice completes the doer's `run_tick` governance for **acting agent-states**
-(those whose dispatch entry carries a truthy `effect`, from the prior trust-gate
-slice). On the PERMITTED (dispatch) path — `sg.permits(effect, mode)` True, e.g.
-`propose` / `auto-merge` — it adds three things. ALL apply ONLY to acting
-agent-states; a **non-acting** agent-state (TRIAGE, no `effect`), the dry-run
-inert path, and pure-script routes are BYTE-IDENTICAL / unchanged. It consumes
-`safety-governance` + `durable-state` + `agent-dispatch` + every sibling
-UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
+(those whose dispatch entry carries a truthy `effect`). On the PERMITTED
+(dispatch) path — `sg.permits(effect, mode)` True, e.g. `propose` / `auto-merge`
+— it adds three things. ALL apply ONLY to acting agent-states; a **non-acting**
+agent-state (TRIAGE, no `effect`), the dry-run inert path, and pure-script routes
+are BYTE-IDENTICAL / unchanged. It consumes `safety-governance` + `durable-state`
++ `agent-dispatch` + every sibling UNCHANGED; edits live ONLY in scheduling
+(`run_tick.py`).
 
-- **Acted-ledger (idempotency, §3.2.4).** A new durable cross-tick key
+- **Acted-ledger (idempotency, §3.2.4).** A durable cross-tick key
   `ACTED_LEDGER_KEY = "acted_ledger"` (a durable cross-tick fact like `BUDGET_KEY`,
   NOT a #64 read product) stores `{work_order_id: {"outcome": <status>, "ref":
   <artifact ref or null>, "acted_at_updated_at": <issue updated_at at act time or
@@ -530,8 +506,7 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
   `updated_at` advanced (bounds the `gh` calls to changed issues); a
   raising/malformed source stays locked and never crashes the tick. Net: **close
   an auto-PR + update the issue -> the loop re-attempts with the new guidance;
-  close it + touch nothing -> the loop leaves it alone** — removing the manual
-  `durable-state.json` ledger surgery that was previously the only remedy.
+  close it + touch nothing -> the loop leaves it alone**.
 - **Budget pre-gate.** At an acting agent-state on the permitted path, BEFORE
   pausing for dispatch, run_tick evaluates the budget window
   (`sg.evaluate_budget(gov, persisted_budget_state(...), budget_clock)`). If
@@ -547,15 +522,13 @@ UNCHANGED; edits live ONLY in scheduling (`run_tick.py`).
   applying the subagent outputs, run_tick `record_spend(budget_state,
   budget_clock, spent)` into the budget window and persists it. The budget is a
   **token ceiling over ALL model spend in the loop** (DESIGN §3.8.4), so a
-  non-acting **TRIAGE** resume's spend is metered too, not only the acting doer's
-  — otherwise the budget would undercount the loop's real model usage. The
-  executor passes the per-pause summed `subagent_tokens` on each `--resume`, so
+  non-acting **TRIAGE** resume's spend is metered too, not only the acting doer's.
+  The executor passes the per-pause summed `subagent_tokens` on each `--resume`, so
   each resume records its own pause's spend with NO double-counting (a tick with a
   TRIAGE pause then an IMPLEMENT pause records both, cumulatively). Default
-  `spent` is 0 (back-compatible — the resume path is unchanged when no spend is
-  metered). NOTE: spend metering (counting model usage) is distinct from the
-  acting-only **budget pre-gate** above (which still gates only acting dispatches
-  from STARTING when the window is already exhausted).
+  `spent` is 0 (back-compatible). NOTE: spend metering (counting model usage) is
+  distinct from the acting-only **budget pre-gate** above (which gates only acting
+  dispatches from STARTING when the window is already exhausted).
 
 ## File-referenced dispatch prompt (slice: prompt-by-file-reference)
 
@@ -565,8 +538,7 @@ previously emitted each dispatch's rendered envelope INLINE as
 `dispatches[].prompt` (`ad.render(env)`) in the `--step` stdout JSON; for a large
 envelope (an IMPLEMENT dispatch with the work-order body + issue comments) stdout
 was truncated, forcing the orchestrator to RE-READ the whole output to relay the
-prompt — pulling the entire envelope into its context. The INPUT is now symmetric
-with outputs (which the subagent already writes to a file the runner reads).
+prompt. The INPUT is now symmetric with outputs.
 
 - **`_pause_result` writes the rendered envelope to a file.** For each dispatch it
   WRITES `ad.render(env)` to a deterministic ABSOLUTE file under `output_dir`,
@@ -590,10 +562,9 @@ with outputs (which the subagent already writes to a file the runner reads).
 ## JSON tick CLI (slice: --step / --resume executor seam)
 
 `run_tick.py` exposes a **JSON tick CLI** (`run_tick.main(argv)`, also the
-`__main__` entrypoint) so the (later) executor skill can drive the yield/resume
-loop deterministically. It is a THIN deterministic wrapper around the EXISTING
-`run_tick(...)` structured returns (the yield/resume seam above) — it adds NO new
-tick logic.
+`__main__` entrypoint) so the executor skill can drive the yield/resume loop
+deterministically. It is a THIN deterministic wrapper around the EXISTING
+`run_tick(...)` structured returns — it adds NO new tick logic.
 
 - **Bare invocation** (`python run_tick.py`, no `--step`/`--resume`) is
   UNCHANGED: it calls `run_tick()` and prints the one-line HUMAN trace to stdout,
@@ -631,8 +602,8 @@ tick logic.
 
 ## Shipped executor skill + echo proof subagent (slice: ship the tick executor)
 
-scheduling now ships the two plugin assets that turn the agent yield/resume seam
-into a usable, drop-in executor (DESIGN §3.4.6 / §2.8). The build's
+scheduling ships the two plugin assets that turn the agent yield/resume seam into
+a usable, drop-in executor (DESIGN §3.4.6 / §2.8). The build's
 `_copy_tree(ship_dir, plugin_root)` collects `ship/` verbatim, so these land in
 the plugin tree with NO build change.
 
@@ -644,22 +615,19 @@ the plugin tree with NO build change.
   route — all tick logic (route, validation, slot writes, signal selection, spend
   metering, crash-safe checkpointing) lives in `run_tick.py`; the skill only
   relays dispatch requests.
-  **Step/resume protocol hardening (v0.4.0).** The skill makes the advance rule
-  unambiguous: `--step` is called EXACTLY ONCE (the first runner command of the
-  tick), the advance after EVERY dispatch is `--resume`, and `--step` is used
-  again ONLY to re-emit a pause after an `invalid_output`. A live REPORT test
-  surfaced the footgun: the executor ran `--step` mid-tick (instead of `--resume`)
-  after a dispatch, which skips the resume that applies the subagent's output and
-  fires the terminal REPORT flush — so discoveries went unfiled (`reported=0/0`).
-  The runner's idempotency absorbed the rest (no duplicate PR), but the missed
-  resume is the hazard the v0.4.0 wording eliminates.
+  **Step/resume protocol (v0.4.0).** The advance rule is unambiguous: `--step` is
+  called EXACTLY ONCE (the first runner command of the tick), the advance after
+  EVERY dispatch is `--resume`, and `--step` is used again ONLY to re-emit a pause
+  after an `invalid_output`. Running `--step` mid-tick (instead of `--resume`)
+  after a dispatch skips the resume that applies the subagent's output and fires
+  the terminal REPORT flush — so discoveries go unfiled (`reported=0/0`); the
+  runner's idempotency absorbs the rest (no duplicate PR), but the missed resume
+  is the hazard the v0.4.0 wording eliminates.
   **Full dispatch parameters (#130 closed):** each PAUSED dispatch record carries
   a `description` (always) and, for an **acting** dispatch, an `isolation` value
   (e.g. `"worktree"`); the skill passes BOTH through to the `Agent` tool
   verbatim — `Agent(subagent_type, description=..., prompt=..., isolation=...)`,
-  omitting `isolation` only when the record has none. Passing `description` closes
-  auto-maintainer-framework#130 (the prior v0.2.0 dispatch omitted the required
-  `description` arg, triggering an "Invalid tool parameters" self-correction).
+  omitting `isolation` only when the record has none.
   **Spend metering:** after each pause's dispatches finish, the skill sums the
   `subagent_tokens` each dispatch reported (a value observable only from the
   dispatch results, computable by no script) and carries it to the resume as
@@ -680,8 +648,7 @@ the plugin tree with NO build change.
   ack. It is **interface-protocol-free** (DESIGN §3.4.6): its `.md` is role-only —
   it bakes in NO schema, NO output path, and NO output format; the rendered prompt
   is the complete handoff contract (embedded schema + `output_path` + ack). It
-  performs no real judgment — it exists to prove the agent-adapter executor
-  end-to-end.
+  exists to prove the agent-adapter executor end-to-end.
 - **The echo-TRIAGE wiring is valid drop-in config.** A project-local
   `adapter-map.json` mapping `TRIAGE` to an agent-adapter entry that dispatches
   `subagent_type=auto-maintainer-echo` (`reads work_items`, `writes work_orders`,
@@ -689,33 +656,32 @@ the plugin tree with NO build change.
   `GUARD→DRAIN→PULL→TRIAGE→PRIORITIZE→IMPLEMENT→PERSIST→EXIT` (TRIAGE agent;
   PRIORITIZE/IMPLEMENT script as today), is ACCEPTED by `adapter_wiring.build_loop`
   — TRIAGE resolves to an `AgentState` and data-readiness is satisfied — and runs
-  end-to-end through `run_tick`'s yield/resume seam (the canned echo output applied
-  on resume advances the tick past TRIAGE). No code change is required to wire it.
+  end-to-end through `run_tick`'s yield/resume seam. No code change is required.
 
 ## Structured event log (slice: observability event emission)
 
-`run_tick` now emits a **structured event log** (observability §3.9.1) to
+`run_tick` emits a **structured event log** (observability §3.9.1) to
 `${runtime_dir}/events.jsonl` each tick — the machine-first record of "what the
 loop did". It CONSUMES the `observability` lib UNCHANGED
 (`observability.EventLog` + the closed `EVENT_KINDS` vocabulary): the EventLog
 opens at `${runtime_dir}/events.jsonl` (the same `runtime_dir` the tick already
 resolves; injectable for tests) and `append`s one JSON object per line. The
-event `ts` reuses the tick's already-resolved tz-aware budget `now` (the injected
-`now`), so the log is DETERMINISTIC — never an implicit wall clock; `seq` is
-monotonic (observability assigns it via the file's line count, so a multi-
-invocation agent tick keeps a single monotonic sequence).
+event `ts` reuses the tick's already-resolved tz-aware budget `now`, so the log
+is DETERMINISTIC — never an implicit wall clock; `seq` is monotonic
+(observability assigns it via the file's line count, so a multi-invocation agent
+tick keeps a single monotonic sequence).
 
 Every event carries a **per-tick `tick_id`** that DISCRIMINATES ticks (#112). It
 is a durable monotonic counter (`tick_id_counter` in durable state, SEPARATE from
 the work `counter` — a read-only route never bumps the work counter, so it cannot
-distinguish read-only ticks and every such tick used to collapse to `tick_id=0`).
-The id is assigned ONCE, at FRESH tick start (incrementing the counter; the first
-tick is `1`, never `0`), and then carried through the tick via the durable
-checkpoint: it is stamped into `TICK_CHECKPOINT_KEY` at a PAUSE and READ BACK on a
-`--resume` / crash-safety re-emit. It is therefore (1) DISTINCT across ticks AND
-(2) STABLE across a single tick's `--step` → `--resume` — on ALL routes including
-the agent route, where `--step` and `--resume` are separate processes that inject
-no `now`, so the id is deliberately NOT derived from the wall clock/`now`.
+distinguish read-only ticks). The id is assigned ONCE, at FRESH tick start
+(incrementing the counter; the first tick is `1`, never `0`), and carried through
+the tick via the durable checkpoint: it is stamped into `TICK_CHECKPOINT_KEY` at a
+PAUSE and READ BACK on a `--resume` / crash-safety re-emit. It is therefore (1)
+DISTINCT across ticks AND (2) STABLE across a single tick's `--step` → `--resume`
+— on ALL routes including the agent route, where `--step` and `--resume` are
+separate processes that inject no `now`, so the id is deliberately NOT derived
+from the wall clock/`now`.
 
 Event emission is **purely additive**: it changes NO existing behaviour — the
 one-line trace, signals, disposition, slot persistence, #64 read-product
@@ -730,9 +696,8 @@ kind outside the closed vocabulary):
   `override:<path>`) + the trust `mode`.
 - **`state_run` + `signal`** — one pair per visited non-terminal state, in order.
   For the **pure-script path** (`to.run`) they are derived from the returned
-  `RunResult.path` + `RunResult.signals` after the run (one `state_run`/`signal`
-  per visited non-terminal state). For the **agent-driver path** they are emitted
-  inline as each SCRIPT state runs.
+  `RunResult.path` + `RunResult.signals` after the run. For the **agent-driver
+  path** they are emitted inline as each SCRIPT state runs.
 - **`pause` + `dispatch`** — when the tick pauses at an agent-state: one `pause`
   for the state, and a `dispatch` per dispatch entry (the `subagent_type` +
   `writes` in `detail`).
@@ -773,7 +738,7 @@ paths. It consumes `work_intake` (`DiscoveredIssue` / `file_discoveries` /
   `project`; `kind` defaults to `task`; missing `dedup_key` is DERIVED
   deterministically (a stable hash of `title`+`body`, optionally prefixed by the
   source `work_order_id`) so the same discovery always yields the same key.
-- **Durable idempotency ledger.** A new durable cross-tick key
+- **Durable idempotency ledger.** A durable cross-tick key
   `REPORT_LEDGER_KEY = "report_ledger"` (a durable fact like `ACTED_LEDGER_KEY` /
   `BUDGET_KEY`, NOT a #64 read product) maps `{dedup_key: {tracker_ref, url}}`.
   `persisted_report_ledger(state_path)` reads it (default `{}`). Discoveries whose
@@ -794,16 +759,14 @@ paths. It consumes `work_intake` (`DiscoveredIssue` / `file_discoveries` /
   `safety_governance.MAINTAINER_REPO` (the upstream maintainer repo) — **never**
   the project repo, with **no fallback** (§3.11.6). The former
   `governance.maintainer_repo` config field is gone.
-- **Surfacing — including ERRORS (never silent, live-found).** The trace and
-  `status.py` show `reported=<filed>/<skipped>` (always, #69 style), and when any
-  discovery FAILED to file the trace appends `report_errors=<n>`; the `tick_end`
-  event `detail` carries `reported_filed` / `reported_skipped` /
-  `reported_errored`. `_flush_report` returns the errored count too (from
-  `ReportResult.errors`). This is the fix for a real silent failure: a filing
-  error (e.g. a missing tracker label) was caught into `ReportResult.errors` but
-  the surface only showed `reported=0/0`, so a total filing failure looked like
-  "no discoveries". Filing errors are now visible. (NO new event kind — the
-  terminal `tick_end` carries the errored count.)
+- **Surfacing — including ERRORS (never silent).** The trace and `status.py` show
+  `reported=<filed>/<skipped>` (always, #69 style), and when any discovery FAILED
+  to file the trace appends `report_errors=<n>`; the `tick_end` event `detail`
+  carries `reported_filed` / `reported_skipped` / `reported_errored`.
+  `_flush_report` returns the errored count too (from `ReportResult.errors`). A
+  filing error (e.g. a missing tracker label) is caught into `ReportResult.errors`
+  but must not look like "no discoveries", so filing errors are now visible. (NO
+  new event kind — the terminal `tick_end` carries the errored count.)
 - **Unchanged.** A tick with NO discoveries flushes nothing (`reported=0/0`) and
   is otherwise byte-identical. Read products stay #64 per-tick ephemeral; the
   REPORT ledger + budget window + acted-ledger are the durable cross-tick facts.
@@ -828,7 +791,7 @@ silently leaked, and must never halt the loop** (DESIGN §3.8.5). This slice add
 that to `run_tick`'s acting-state governance. It consumes `observability`
 (`escalate`) UNCHANGED; edits live ONLY in scheduling.
 
-- **The leak fix.** `_record_acted_ledger` now records ONLY *completed* outcomes
+- **The leak fix.** `_record_acted_ledger` records ONLY *completed* outcomes
   (`opened` / `closed`) into the acted-ledger — **never `blocked`**. Previously a
   blocked work order was written to the acted-ledger and then filtered out as
   "already acted" forever (silent leak). A blocked item now stays retryable.
@@ -902,8 +865,7 @@ scheduling owns the maintainer's `DEFAULT_ROUTE` + `DEFAULT_ADAPTER_MAP` and eve
 port's runtime details, so it also ships the two guided **wiring CLIs** that let a
 user edit the project-local override files without hand-writing JSON. Both VALIDATE
 through `adapter-wiring` before writing — `adapter-wiring` stays the dependency-free
-validator; scheduling supplies the defaults + per-port knowledge those CLIs need
-(which is exactly why they live here, not in adapter-wiring).
+validator; scheduling supplies the defaults + per-port knowledge those CLIs need.
 
 ### route CLI — `src/route_config.py` + `/auto-maintainer:route`
 
@@ -966,12 +928,12 @@ entry writing the retired `review_verdicts` slot, which the redesigned loop
 `migrate_known_port_entries(adapter_map) -> adapter_map` (in
 `adapter_map_config.py`) that heals such RETIRED-slot entries against the LIVE
 template on load. It is a PURE dict → dict transform (NEW dict, no input
-mutation, idempotent), and **SURGICAL, not blanket** (#279): an earlier blanket
-re-derive rebuilt EVERY known-port agent entry, CLOBBERING valid customizations —
-the dogfood IMPLEMENT writes the still-valid `handoffs` slot but reads
-`work_orders` (NOT the template's `execution_plan`) in a NO-PRIORITIZE route, and
-the blanket re-derive rewrote its `inputs` to `execution_plan` (never produced),
-raising `adapter-wiring` `WiringError`. So: compute `valid_writes =
+mutation, idempotent), and **SURGICAL, not blanket** (#279): a blanket re-derive
+of EVERY known-port agent entry would CLOBBER valid customizations — the dogfood
+IMPLEMENT writes the still-valid `handoffs` slot but reads `work_orders` (NOT the
+template's `execution_plan`) in a NO-PRIORITIZE route, and a blanket re-derive
+would rewrite its `inputs` to `execution_plan` (never produced), raising
+`adapter-wiring` `WiringError`. So: compute `valid_writes =
 {tmpl['writes'] for tmpl in AGENT_PORT_TEMPLATES.values()}`. For each
 `(port, entry)`: REBUILD via
 `_build_agent_entry(port, <entry's existing dispatch[0].subagent_type>)` —
@@ -979,10 +941,10 @@ re-deriving every template field (writes / cardinality / output_example / inputs
 manifest / signal / effect / isolation) and preserving ONLY the `subagent_type` —
 ONLY when `ad.is_agent_entry(entry)` AND `port in AGENT_PORT_TEMPLATES` AND the
 entry's `dispatch[0]['writes']` is NOT in `valid_writes` (a RETIRED slot).
-Otherwise the entry is returned UNCHANGED (valid-writes
-customizations, script strings, custom-port agent entries, and non-agent entries
-are all preserved). It heals REVIEW (`review_verdicts` → `review_findings`) while
-PRESERVING IMPLEMENT (`handoffs` untouched, custom `work_orders` read kept).
+Otherwise the entry is returned UNCHANGED (valid-writes customizations, script
+strings, custom-port agent entries, and non-agent entries are all preserved). It
+heals REVIEW (`review_verdicts` → `review_findings`) while PRESERVING IMPLEMENT
+(`handoffs` untouched, custom `work_orders` read kept).
 
 It is wired into `run_tick` as the `migrate=` hook of the single
 `aw.build_loop(DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime, ...)` call (running on
@@ -1002,10 +964,10 @@ registers — e.g. a v0.7.0 checkpoint paused at REVIEW with
 in favour of `review_findings`. Before this slice the runner re-emitted the stale
 dispatch on `--step` and, on `--resume`, applied the subagent output to the
 unregistered slot — raising `fc.ContractError("slot 'review_verdicts' is not
-registered")` and CRASHING `run_tick` with a Python traceback, not a graceful
-status. `start.py --clear-only` clears the disposition latch, NOT the checkpoint,
-so `/auto-maintainer:start` could not recover. The runner now treats such a
-checkpoint as STALE: discard it and run a fresh tick.
+registered")` and CRASHING `run_tick`. `start.py --clear-only` clears the
+disposition latch, NOT the checkpoint, so `/auto-maintainer:start` could not
+recover. The runner now treats such a checkpoint as STALE: discard it and run a
+fresh tick.
 
 - **Pure predicate `_checkpoint_compatible(checkpoint, ctx) -> bool`.** True when
   the checkpoint is empty/absent OR its pending dispatch `writes` slot is in
@@ -1043,10 +1005,8 @@ skill).
 - **Pure POOL predicate
   `_work_remains(work_items, triage_memory, backoff_ledger, threshold, now)`.**
   The refire question is a POOL check: *"would next tick's TRIAGE have any
-  classify-valid, non-blocked issue to judge/act on?"* — NOT the old narrow
-  committed-work check (which keyed on a PRIORITIZE same-feature deferral that a
-  no-PRIORITIZE route can essentially never trigger, so the owner never saw
-  immediate-refire). The predicate first computes
+  classify-valid, non-blocked issue to judge/act on?"* — NOT a narrow
+  committed-work check. The predicate first computes
   `candidates = _filter_triage_work_items(work_items, triage_memory)` — the SAME
   §3.5.3 skip-filter TRIAGE applies, which drops done/deferred-AND-unchanged items
   and KEEPS new/changed/active ones. It returns True iff ANY candidate is BOTH:
@@ -1079,8 +1039,7 @@ skill).
   rewrites `tick_outcome` to `work-remains` so the inner EXIT selects
   `RUNNING`/`refire`; otherwise the inner EXIT runs unchanged. It overrides
   **ONLY** the `empty` outcome — a `restart`/`fault` (or already-`work-remains`)
-  outcome is delegated UNCHANGED. The old committed-work (un-acted / un-handled
-  `work_order`) gating is REMOVED; the refire keys on the POOL, not on this tick's
+  outcome is delegated UNCHANGED. The refire keys on the POOL, not on this tick's
   committed orders. `threshold` is `_backoff_threshold(runtime["governance"])`;
   `now` is `runtime.get("now")`. EXIT's manifest stays `reads=[tick_outcome,
   work_items, state_path]`, `writes=[tick_outcome]`, `emits` = the inner Exit's
@@ -1095,9 +1054,7 @@ skill).
 
 - **Back-compat.** The read-and-idle **DEFAULT_ROUTE** spine + any **empty-pool**
   tick still IDLE: with no acting agent-state present `has_acting_agent` is False
-  and the override never fires (the dry-run inert IMPLEMENT / pure-read routes
-  leave no real work, so they idle, per the read-and-idle design). All existing
-  scheduling tests stay green.
+  and the override never fires. All existing scheduling tests stay green.
 
 - **The tick executor skill loops on `refire`.** `ship/skills/tick/SKILL.md`
   documents the refire-loop: when a completed tick's final signal is `refire`,
@@ -1122,16 +1079,15 @@ guessing.
   `integration_result.merged` has a diff that touches SHIPPED source
   (`build_plugin.touches_shipped_src` over the injectable `files_source`'s files
   for each merged PR). It fires on the **merged shipped-src change alone** — it
-  takes NO governance / `self_deploy` knob (nothing self-deploys now, so there is
-  no `package_deployed` to gate on). A docs/test-only merge, a tick that merged
-  nothing, and a maintained project that is not the framework checkout all return
-  False (and, for the no-merge / not-framework cases, never query the files
+  takes NO governance / `self_deploy` knob. A docs/test-only merge, a tick that
+  merged nothing, and a maintained project that is not the framework checkout all
+  return False (and, for the no-merge / not-framework cases, never query the files
   source — keeping the `gh` calls off non-self-deploy projects).
 - **Surfaced, never acted on.** When True, the one-line trace carries a
   `release_needed` token and the `tick_end` event `detail` carries
   `release_needed: true`; otherwise the token is absent and the detail boolean is
   False. No self-deploy / version-bump / commit / push fields ride the trace or
-  event — those belong to the removed self-deploy action.
+  event.
 - **Seams kept for the detector only.** `gh_pr_files_source` /
   `DEFAULT_PR_FILES_SOURCE` (the injectable per-PR changed-files source) and
   `_self_deploy_repo_root` (the own-checkout detector) are KEPT solely to feed
@@ -1142,7 +1098,7 @@ guessing.
 ## Known gaps / deferred
 
 - The executor (the session-side actor that performs the Agent dispatch and
-  feeds `resume_dispatch` back to `run_tick`) now ships as the `tick` skill
+  feeds `resume_dispatch` back to `run_tick`) ships as the `tick` skill
   (`ship/skills/tick/SKILL.md`); `run_tick` itself still only emits the dispatch
   requests and applies provided results (it never calls the Agent tool).
 - Configurable **route** + **adapter-map** via the `/auto-maintainer:route` and
