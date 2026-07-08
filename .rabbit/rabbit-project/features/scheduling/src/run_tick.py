@@ -203,6 +203,24 @@ VERDICTS_KEY = "verdicts"
 REVIEW_FINDINGS_KEY = "review_findings"
 INTEGRATION_RESULT_KEY = "integration_result"
 
+# The per-tick EPHEMERAL read products (#64), mapped to the empty default the
+# terminal persist writes when the producing stage is NOT routed. A list-valued
+# product resets to [], the two object-valued products (execution_plan,
+# integration_result) reset to {}. This is the SAME reset the terminal `done`
+# path applies via the `... if <STAGE> in route["states"] else <empty>` guards;
+# naming it once lets a FRESH agent tick apply the identical reset up-front so a
+# tick paused mid-route (before its terminal) never leaves the PRIOR tick's read
+# products stale in top-level durable state (#356).
+EPHEMERAL_READ_PRODUCT_DEFAULTS = {
+    WORK_ITEMS_KEY: [],
+    WORK_ORDERS_KEY: [],
+    EXECUTION_PLAN_KEY: {},
+    HANDOFFS_KEY: [],
+    VERDICTS_KEY: [],
+    REVIEW_FINDINGS_KEY: [],
+    INTEGRATION_RESULT_KEY: {},
+}
+
 # The durable-state document key under which the safety-governance budget window
 # {window_key, spent_tokens} is persisted. Unlike the four read-product keys
 # above, BUDGET is a durable CROSS-TICK fact (like the counter), NOT a per-tick
@@ -2189,6 +2207,29 @@ def _clear_checkpoint(state_path):
         ds.DurableState(state_path).save(doc)
 
 
+def _reset_ephemeral_read_products(state_path):
+    """Reset the per-tick EPHEMERAL read products (#64) to their empty defaults
+    in top-level durable state at a FRESH tick start (#356).
+
+    The terminal `done` persist already overwrites these products with THIS
+    tick's values (empty when the producing stage is not routed), but that runs
+    only when the tick reaches its terminal. An agent route PAUSES at each
+    agent-state and returns early BEFORE the terminal, so a tick observed while
+    paused mid-route would otherwise still show the PRIOR tick's read products in
+    top-level durable state (the reported symptom: a fresh tick's PULL/TRIAGE had
+    refreshed `work_orders` but `execution_plan` still carried the previous
+    tick's plan). Resetting up-front at a FRESH start makes top-level durable
+    state reflect the CURRENT tick from the outset. The live per-tick values are
+    carried in the checkpoint `slots` snapshot, so this reset never loses
+    in-flight work; the durable CROSS-TICK facts (counter/journal/budget/
+    disposition/checkpoint) are left untouched — only the ephemeral read-product
+    snapshot resets."""
+    doc = ds.DurableState(state_path).load()
+    for key, default in EPHEMERAL_READ_PRODUCT_DEFAULTS.items():
+        doc[key] = type(default)()
+    ds.DurableState(state_path).save(doc)
+
+
 def _checkpoint_compatible(checkpoint, ctx):
     """Whether a durable PAUSED `checkpoint` is compatible with the CURRENT
     (freshly-seeded) wiring carried by `ctx` (upgrade-in-flight crash guard).
@@ -2541,6 +2582,9 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
     if checkpoint and not _checkpoint_compatible(checkpoint, ctx_seed()):
         stale_pending = checkpoint.get("pending", {})
         _clear_checkpoint(state_path)
+        # A discard-and-fresh re-walk is a FRESH tick start: reset the ephemeral
+        # read products up-front (#356), symmetric with the FRESH branch below.
+        _reset_ephemeral_read_products(state_path)
         if events is not None:
             events.emit("tick_start", detail={
                 "source": route_src, "mode": mode,
@@ -2617,7 +2661,10 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
             state_path, agentstates, tick_id, mode), None, None
 
     # FRESH: drive from GUARD. Log tick_start (route source + mode) before the
-    # walk.
+    # walk. Reset the ephemeral read products up-front (#356) so a tick that
+    # PAUSES mid-route (returns before its terminal) never leaves the PRIOR
+    # tick's read products stale in top-level durable state.
+    _reset_ephemeral_read_products(state_path)
     if events is not None:
         events.emit("tick_start", detail={"source": route_src, "mode": mode})
     ctx = ctx_seed()
