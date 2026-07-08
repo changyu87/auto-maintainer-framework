@@ -102,6 +102,18 @@ and rename the legacy file to `governance.json.migrated` (non-destructive). A
 thin `load_governance` alias delegates to `load_config` during the coexistence
 window (consumers migrate to `load_config`).
 
+**Default resolution (read shipped default FRESH, #337).** When no project-local
+`config.json` (and no legacy `governance.json`) exists, the default is read FRESH
+from the shipped `default-config/config.json` at `<plugin_root>/default-config/`
+(sibling of `lib/`) when present — the aggressive operational default
+(`mode: auto-merge`, …) built by packaging-config and refreshed every release —
+backfilled onto a fresh defaults copy and validated like any config. When that
+shipped file is absent (the source tree / no plugin), the conservative embedded
+`DEFAULT_GOVERNANCE` constant is the fallback. There is NO seed-once copy: a
+release that changes the shipped config reaches an existing install
+automatically, while a project-local `.auto-maintainer/config.json` override
+still wins.
+
 ## Trust-ladder gate (§3.8.2)
 
 A deterministic `permits(effect_kind, mode) -> bool` over the closed effect set:
