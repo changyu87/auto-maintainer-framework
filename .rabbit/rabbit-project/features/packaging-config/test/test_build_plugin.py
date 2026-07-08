@@ -541,14 +541,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.8.0, config-resolution + guard-compliant-adapter-map release):
-# version bumped to 0.8.0 in BOTH plugin.json and marketplace.json, and the two
-# are consistent. v0.8.0 drops the IMPLEMENT harness isolation from the shipped
-# default-config/adapter-map.json (the #335 load-time guard rejects it) and the
-# runtime reads default-config fresh (no seed-once copy, #337). (Supersedes the
-# v0.7.13 wire-PRIORITIZE-into-default-pipeline release.)
+# Release (v0.8.1, release-clean the post-0.8.0 committed-tree change):
+# version bumped to 0.8.1 in BOTH plugin.json and marketplace.json, and the two
+# are consistent. v0.8.1 ships the #342 default_src tick-trace observability
+# token in the plugin lib (already committed post-0.8.0 via #350), correcting
+# the same-version content drift from #350; no behavior change beyond that
+# shipped token. (Supersedes the v0.8.0 config-resolution release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_8_0_and_consistent():
+def test_version_bumped_to_0_8_1_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -560,12 +560,48 @@ def test_version_bumped_to_0_8_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.8.0", \
-            f"plugin.json version must be 0.8.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.8.0", \
-            "marketplace.json plugin entry version must be 0.8.0"
+        assert pdata.get("version") == "0.8.1", \
+            f"plugin.json version must be 0.8.1, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.8.1", \
+            "marketplace.json plugin entry version must be 0.8.1"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# v0.8.1 ships the #342 default_src tick-trace observability token: the whole
+# point of the release is that the installed plugin's run_tick emits the
+# `default_src=...` field on the tick trace line, distinguishing a
+# shipped-default route/adapter-map from a user override. This token landed in
+# the committed lib post-0.8.0 (via #350) but without a version bump, causing
+# same-version content drift; v0.8.1 makes it release-clean. Prove the SHIPPED
+# run_tick carries the token AND is byte-identical to the build's own
+# normalization of the CURRENT scheduling source.
+# ---------------------------------------------------------------------------
+def test_shipped_run_tick_carries_342_default_src_token():
+    mod = _load_build()
+    out_root = _build_into_temp()
+    try:
+        rt = os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "run_tick.py"
+        )
+        with open(rt, encoding="utf-8") as fh:
+            shipped = fh.read()
+        assert "default_src={default_src}" in shipped, \
+            "shipped run_tick must emit the #342 default_src tick-trace token"
+        assert "default_src = _default_source_label(" in shipped, \
+            "shipped run_tick must compute the default_src label (#342)"
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "scheduling", "src", "run_tick.py",
+        )
+        _dst_name, (_src_rel, anchor, bootstrap) = "run_tick.py", \
+            mod._NORMALIZED_LIBS["run_tick.py"]
+        expected = mod._normalize_lib(src, anchor, bootstrap)
+        assert shipped == expected, \
+            "shipped run_tick is not the normalized scheduling source bytes"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
