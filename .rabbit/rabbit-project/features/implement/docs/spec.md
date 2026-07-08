@@ -16,9 +16,9 @@ performing any work**. It is deterministic and inert — no model, no diff, no
 branch, no PR, no tracker write, no filesystem effect.
 
 This is the **`dry-run` rung of the trust ladder** (DESIGN §2.3, §3.8.2:
-`dry-run` / `propose` / `auto-merge`). Its job is to prove the act-side seam —
-the `Handoff` schema, the `execution_plan → handoffs` slot wiring, the signal,
-and the per-tick surfacing — with ZERO repo risk. The model-backed
+`dry-run` / `propose` / `auto-merge`). It proves the act-side seam — the
+`Handoff` schema, the `execution_plan → handoffs` slot wiring, the signal, and
+the per-tick surfacing — with ZERO repo risk. The model-backed
 implement-then-PR doer (the `propose` rung, DESIGN §3.6.3) is a separate,
 swappable adapter deferred to a later milestone (see Deferred).
 
@@ -30,11 +30,11 @@ IMPLEMENT  execution_plan  handoffs  OK | BLOCKED
 ```
 
 - **reads** `execution_plan` ONLY. DESIGN §2.6 also lists `workspace` for
-  IMPLEMENT, but `workspace` is the isolated worktree consumed by the
-  model-backed doer (DESIGN §3.6.2). The dry-run adapter does no isolated code
-  work, so it deliberately does NOT read `workspace` — keeping the route
-  validator's data-readiness check (DESIGN §1.1.1) satisfiable without any
-  predecessor writing `workspace`.
+  IMPLEMENT, but that is the isolated worktree consumed by the model-backed doer
+  (DESIGN §3.6.2). The dry-run adapter does no isolated code work, so it
+  deliberately does NOT read `workspace` — keeping the route validator's
+  data-readiness check (DESIGN §1.1.1) satisfiable without any predecessor
+  writing `workspace`.
 - **writes** `handoffs`.
 - **emits** `OK` (handoffs produced, or the plan was empty), `BLOCKED` only when
   a plan entry is malformed and cannot be turned into a handoff.
@@ -56,19 +56,18 @@ the loop and any implementer).
 }
 ```
 
-- `status` — `planned` for the dry-run rung (no work performed). The schema's
-  value space anticipates the doer's `opened` / `blocked` / `partial`, but the
-  dry-run adapter only ever emits `planned`.
+- `status` — `planned` for the dry-run rung. The schema's value space
+  anticipates the doer's `opened` / `blocked` / `partial`, but the dry-run
+  adapter only ever emits `planned`.
 - `artifact` — `{kind, ref}`. DESIGN §2.6 lists `branch|pr`; the dry-run rung
-  adds `none` (no artifact was created). `ref` is null for `none`.
+  adds `none`, with `ref` null.
 - `discovered_work` — follow-on items the implementer surfaces (DESIGN §1.3,
   §3.11.3). The dry-run adapter discovers nothing → always empty.
 - `concerns` — self-flagged doubts the implementer wants a reviewer/human to
   look harder at on an `opened` handoff (analogous to the superpowers
   `DONE_WITH_CONCERNS` signal; auto-maintainer-framework#212). Mirrors
-  `discovered_work`: always present, defaults to an empty list. The downstream
-  REVIEW gate and REPORT can surface it. The dry-run adapter self-flags nothing
-  → always empty.
+  `discovered_work`: always present, defaults to empty, surfaced downstream by
+  REVIEW and REPORT. The dry-run adapter self-flags nothing → always empty.
 - `blocked_reason` — null unless the handoff is blocked.
 
 ### Schema version history
@@ -193,19 +192,15 @@ the output path. Its rendered prompt is the complete handoff contract (the
   THIS change (an unsure design tradeoff, a thinly-tested edge case, a guessed
   intent, an unverified interaction). It is never a substitute for `status:
   blocked` (a genuine blocker is a block, not a concern); when there are no
-  doubts, `concerns[]` stays `[]`. This is the producer half of #212 — the
-  schema field and the downstream REVIEW gate's "look harder at concerns" lens
-  already exist; without this the field is always empty in practice.
+  doubts, `concerns[]` stays `[]`.
 - **`discovered_work` is for NEW problems only (v2.4.0,
   auto-maintainer-framework#224).** The subagent must NOT emit a discovery for
   anything it already knows is tracked or open — in particular the dependencies
   it is blocked on (items cited in its own `blocked_reason`) or any issue named
   in its prompt. REPORT files `discovered_work` verbatim as new issues, so
   re-surfacing a known/open item creates duplicate tracker noise. This is the
-  cheap, implementer-side complement to REPORT's dedup-vs-open guard
-  (auto-maintainer-framework#224 fix 1): it would have prevented the observed
-  #222/#223 duplicates of the already-open #209/#210 that a blocked handoff
-  emitted as discoveries of its own blocking dependencies.
+  implementer-side complement to REPORT's dedup-vs-open guard
+  (auto-maintainer-framework#224 fix 1).
 - **PR provenance label (v2.1.0).** An opened PR is stamped with the
   `auto-maintainer` label (`gh pr create --label auto-maintainer`, creating the
   label if absent). This is the §3.7 hand-off seam to `verify-integrate`: VERIFY
