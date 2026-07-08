@@ -142,7 +142,6 @@ _IMPLEMENT_ACTING_AGENT = {
             "cardinality": {"per_item": "execution_plan.ordered"},
             "task": "Implement one work_order.",
             "effect": "implement",
-            "isolation": "worktree",
             "description": "implement a work order in an isolated worktree",
             "output_example": _PLANNED_HANDOFF_EXAMPLE,
         }

@@ -363,7 +363,7 @@ _IMPLEMENT_ACTING_AGENT = {
          "writes": "handoffs",
          "cardinality": {"per_item": "execution_plan.ordered"},
          "task": "Implement one work_order.", "effect": "implement",
-         "isolation": "worktree", "description": "implement a work order",
+         "description": "implement a work order",
          "output_example": _PLANNED_HANDOFF_EXAMPLE}
     ],
     "signal": {"rule": "blocked_if_any"},

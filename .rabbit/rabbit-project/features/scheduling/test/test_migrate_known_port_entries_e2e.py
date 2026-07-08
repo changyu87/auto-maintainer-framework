@@ -245,7 +245,6 @@ _CUSTOM_IMPLEMENT = {
             "writes": "handoffs",
             "cardinality": {"per_item": "work_orders"},
             "effect": "implement",
-            "isolation": "worktree",
             "description": "auto-maintainer implement",
             "task": "Enact this ONE work order's triage decision.",
             "output_example": {
