@@ -127,7 +127,11 @@ AGENT_PORT_TEMPLATES = {
         "output_example": [_WORK_ORDER_EXAMPLE],
     },
     # IMPLEMENT: maps execution_plan -> handoffs, ACTING (effect=implement), one
-    # dispatch PER ordered work_order in the execution_plan.
+    # dispatch PER ordered work_order in the execution_plan. It declares NO
+    # harness isolation (#335): the acting implementer self-isolates via its own
+    # git worktree and runs cwd=main so its file handoff reaches the shared
+    # dispatch-out/; harness isolation:"worktree" would relocate cwd off main and
+    # lose the handoff.
     "IMPLEMENT": {
         "writes": im.HANDOFFS_SLOT["name"],
         "reads": im.IMPLEMENT_MANIFEST.reads,
@@ -135,7 +139,6 @@ AGENT_PORT_TEMPLATES = {
         "cardinality": {"per_item": "execution_plan.ordered"},
         "signal_rule": "blocked_if_any",
         "effect": "implement",
-        "isolation": "worktree",
         "output_example": _HANDOFF_EXAMPLE,
     },
     # REVIEW: the ADVISORY quality state (FT-C). Maps verdicts -> review_findings,
@@ -248,9 +251,13 @@ def _build_agent_entry(port, subagent_type, writes=None, effect=None,
     }
     if eff:
         dispatch["effect"] = eff
-        # An acting dispatch runs isolated by default (worktree), matching the
-        # acting-state contract; the template may override.
-        dispatch["isolation"] = (template or {}).get("isolation", "worktree")
+        # An acting dispatch declares harness isolation ONLY when a template
+        # explicitly sets it (none do — #335: acting agents self-isolate via
+        # their own git worktree, harness isolation loses the file handoff). The
+        # default resolves to None, so the `isolation` key is omitted.
+        isolation = (template or {}).get("isolation")
+        if isolation:
+            dispatch["isolation"] = isolation
     entry = {
         "kind": "agent",
         "manifest": {"reads": reads, "writes": [writes_slot], "emits": emits},

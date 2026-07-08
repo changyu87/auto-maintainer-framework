@@ -140,6 +140,38 @@ DEFAULT_GOVERNANCE = {
 _CONFIG_RELPATH = os.path.join(".auto-maintainer", "config.json")
 _LEGACY_RELPATH = os.path.join(".auto-maintainer", "governance.json")
 
+# The shipped default-config dir (#337): the aggressive operational default
+# (mode auto-merge, …) ships as the plugin's `default-config/config.json`,
+# refreshed every release by packaging-config. In the installed plugin this file
+# is `<plugin_root>/lib/safety_governance.py`, so the dir is the sibling of lib/,
+# i.e. `dirname(dirname(__file__))/default-config`, mirroring scheduling's
+# resolver. In the source tree that sibling is ABSENT, so _shipped_default
+# returns None and the embedded conservative DEFAULT_GOVERNANCE constant is used.
+# Tests point this at a temp fixture dir. There is NO seed-once copy: the shipped
+# default is read FRESH when no project-local config exists, so a release that
+# changes it reaches an existing install automatically (the #337 staleness fix);
+# a project-local .auto-maintainer/config.json override still WINS.
+DEFAULT_CONFIG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "default-config")
+
+
+def _shipped_default():
+    """Read + parse the shipped `<DEFAULT_CONFIG_DIR>/config.json` FRESH (#337).
+
+    Returns the parsed dict when the file is present and valid JSON, else None
+    (the dir/file is absent — the source-tree / no-plugin safety fallback — or
+    the file is unparsable). A None result tells load_config to fall back to the
+    embedded conservative DEFAULT_GOVERNANCE constant. It NEVER copies the file
+    (no seed-once copy).
+    """
+    path = os.path.join(DEFAULT_CONFIG_DIR, "config.json")
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
 
 def _copy_defaults():
     """A deep-enough copy of DEFAULT_GOVERNANCE (nested dicts copied) so callers
@@ -213,7 +245,15 @@ def load_config(project_dir):
          DROP per_tick_tokens + maintainer_repo, backfill heartbeat/backoff,
          WRITE config.json, and rename the legacy file to
          governance.json.migrated (non-destructive). Returns the migrated config.
-      3. Neither present -> the documented defaults (no file written).
+      3. Neither present -> the DEFAULT resolution (#337, no file written):
+         read the shipped default-config/config.json (sibling of lib/) FRESH via
+         _shipped_default() when present — backfilled + validated through _overlay
+         like any config (the aggressive operational default, mode auto-merge, …).
+         When that shipped file is absent/unparsable (the source tree / no plugin)
+         the conservative embedded DEFAULT_GOVERNANCE constant is the fallback.
+         There is NO seed-once copy: a release that changes the shipped config
+         reaches an existing install automatically, while a project-local
+         .auto-maintainer/config.json override still WINS (steps 1-2 above).
 
     The removed per_tick_tokens / maintainer_repo keys, if still present in a
     config.json, are TOLERATED and dropped (never surfaced on the loaded config).
@@ -238,6 +278,12 @@ def load_config(project_dir):
         os.rename(legacy_path, legacy_path + ".migrated")
         return config
 
+    # No project-local config and no legacy governance.json: read the shipped
+    # default-config/config.json FRESH (#337) when present, backfilled + validated
+    # like any config; else the conservative embedded DEFAULT_GOVERNANCE.
+    shipped = _shipped_default()
+    if shipped is not None:
+        return _overlay(shipped)
     return _copy_defaults()
 
 

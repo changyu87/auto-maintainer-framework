@@ -557,3 +557,32 @@ IMPLEMENT; resolving the shipped route + adapter-map through
 (PRIORITIZE writes `execution_plan`, IMPLEMENT reads `execution_plan.ordered`);
 the committed tree matches a fresh build with no source-tree leak; still
 idempotent.
+
+## Plugin minor v0.8.0 — config resolution (#337) + shipped adapter-map guard-compliant (#335)
+
+Two coupled changes:
+
+- **Shipped `default-config/adapter-map.json` drops IMPLEMENT harness isolation
+  (#335).** The v0.7.13 IMPLEMENT entry carried `isolation: "worktree"`, which the
+  adapter-wiring load-time guard now REJECTS (harness isolation moves the acting
+  subagent's cwd off the main workspace, losing its file-based handoff; the
+  implementer self-isolates via its own worktree). The shipped IMPLEMENT entry is
+  regenerated from `adapter_map_config._build_agent_entry('IMPLEMENT', …)`, which
+  now emits NO harness isolation. Invariant: resolving the shipped route +
+  adapter-map through `adapter_wiring.build_loop` (from the plugin's own `lib/`)
+  raises NO WiringError.
+- **The runtime READS `default-config/*.json` fresh; no more seed-once copy
+  (#337).** The shipped `default-config/{config,route,adapter-map}.json` remain
+  the aggressive operational default and are still built into the tree by
+  `_copy_tree` of `plugin_assets/`, but the runtime now reads them FRESH as the
+  default on every start (scheduling for route/adapter-map, safety-governance for
+  config), instead of `start.py` copying them ONCE into `.auto-maintainer/`. A
+  release that changes a shipped default therefore reaches existing installs
+  automatically; a user override in `.auto-maintainer/<file>` still wins.
+
+`_PLUGIN_VERSION → 0.8.0`; the committed tree is regenerated from current src.
+Invariant: the built tree still contains
+`default-config/{config,route,adapter-map}.json`, the shipped adapter-map
+resolves through `build_loop` with no WiringError, version 0.8.0 is consistent
+across `plugin.json` + `marketplace.json`, and the committed tree matches a fresh
+build with no source-tree leak.

@@ -183,9 +183,12 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 ## Public surface
 
 1. **Tick-runner script** (`src/run_tick.py`, deterministic, script-tier) —
-   defines the built-in adapter **factories** + the embedded `DEFAULT_ROUTE` and
-   `DEFAULT_ADAPTER_MAP`, then calls `adapter_wiring.build_loop(DEFAULT_ROUTE,
-   DEFAULT_ADAPTER_MAP, runtime, …)` to load (project-local override else default)
+   defines the built-in adapter **factories** + the embedded conservative
+   `DEFAULT_ROUTE` and `DEFAULT_ADAPTER_MAP` fallbacks, RESOLVES the active
+   default by reading the shipped `default-config/route.json` / `adapter-map.json`
+   FRESH when present (else the embedded constant; §"Default-config resolution"),
+   then calls `adapter_wiring.build_loop(<default_route>, <default_map>, runtime,
+   …)` to load (project-local override else that default)
    → resolve → validate → `(route, states)`, runs `tick_orchestrator.run(...)`
    over a `TickContext` seeded from durable state, prints a tick trace (tick
    number, state path, `work_items`/`work_orders` counts, resulting disposition,
@@ -1165,17 +1168,28 @@ guessing.
   `packaging-config` no longer ships a status stub. Host projects should gitignore
   the runtime dir `.auto-maintainer/`.
 
-## Fresh-install seeding (#211, aggressive plug-and-play default)
+## Default-config resolution (read shipped default FRESH, #337)
 
-`start.py` seeds the shipped **aggressive default config** into a fresh install's
-runtime dir before the disposition decision: `seed_default_config(runtime_dir)`
-copies `config.json` / `route.json` / `adapter-map.json` from the shipped
-`default-config/` dir (sibling of `lib/` in the plugin) into
-`${CLAUDE_PROJECT_DIR}/.auto-maintainer/` ONLY for each file that is ABSENT —
-idempotent, and it NEVER clobbers a config the user has already written/edited.
-A no-op when the source dir is absent (the source tree / tests without an
-injected `source_dir`). This makes a fresh install plug-and-play aggressive
-(`mode: auto-merge` + the full acting route incl. the REVIEW gate) WITHOUT
-changing the conservative code `DEFAULT_ROUTE` / `DEFAULT_GOVERNANCE`, which stay
-the safe fallback if a user deletes their config. Both `/start` modes
-(`--clear-only` and full) seed.
+The aggressive operational default (`mode: auto-merge` + the full acting route +
+the agent adapters) ships as the plugin's `default-config/{config,route,
+adapter-map}.json` (built by packaging-config, refreshed every release). The
+runtime READS those files FRESH on each start as the default handed to the
+resolver — it does NOT copy them into the runtime dir.
+
+`run_tick` resolves `default_route` / `default_map` by reading the shipped
+`default-config/route.json` / `adapter-map.json` when present, else the embedded
+conservative `DEFAULT_ROUTE` / `DEFAULT_ADAPTER_MAP` constant (the source-tree /
+no-plugin safety fallback). The shipped dir is `<plugin_root>/default-config/`
+(sibling of `lib/`); in the source tree that sibling is absent, so the
+conservative constant is used. safety-governance's `load_config` resolves the
+config default the same way (shipped `default-config/config.json` fresh, else
+`DEFAULT_GOVERNANCE`).
+
+There is **NO seed-once copy** — `start.py` does NOT copy `default-config` into
+`.auto-maintainer/` (the retired `seed_default_config`). Because the default is
+read fresh, a release that changes a shipped default reaches an existing install
+automatically (no frozen seeded copy — the #337 staleness fix). A user override
+at `${CLAUDE_PROJECT_DIR}/.auto-maintainer/<file>` still WINS over the shipped
+default (unchanged override-else-default in `load_route` / `load_adapter_map` /
+`load_config`). An existing install that seeded a copy under a prior version
+clears that file to adopt the fresh shipped default.

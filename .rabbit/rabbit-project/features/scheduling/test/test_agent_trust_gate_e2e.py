@@ -25,7 +25,8 @@ Behaviours exercised (every one has an e2e test, per the E2E TEST RULE):
      execution_plan item), NO dispatch requested, NO subagent output files, and
      the tick COMPLETES (signal idle). No checkpoint is written.
   2. The SAME route, mode=propose -> run_tick PAUSES at IMPLEMENT; the PAUSED
-     dispatches carry isolation:"worktree" and a description; resume (write canned
+     dispatches carry the entry's isolation (None — the guard-valid IMPLEMENT
+     declares no harness isolation, #335) and a description; resume (write canned
      handoff outputs) -> DONE.
   3. A NON-acting agent-state (TRIAGE, no `effect`) is UNCHANGED: it ALWAYS pauses
      to dispatch regardless of mode (even dry-run).
@@ -102,7 +103,7 @@ def _stub_source(json_text=GH_JSON_FIXTURE):
 #
 # TRIAGE is a NON-acting agent (no `effect`): reads work_items -> writes
 # work_orders, cardinality once. IMPLEMENT is an ACTING agent: it declares
-# effect="implement", isolation="worktree", a per_item dispatch over
+# effect="implement" (NO harness isolation, #335), a per_item dispatch over
 # execution_plan.ordered, and an output_example (a concrete planned handoff).
 # PRIORITIZE stays a SCRIPT between them.
 # --------------------------------------------------------------------------
@@ -146,7 +147,6 @@ _IMPLEMENT_ACTING_AGENT = {
             "cardinality": {"per_item": "execution_plan.ordered"},
             "task": "Implement one work_order.",
             "effect": "implement",
-            "isolation": "worktree",
             "description": "implement a work order in an isolated worktree",
             "output_example": _PLANNED_HANDOFF_EXAMPLE,
         }
@@ -359,8 +359,11 @@ def test_propose_paused_dispatches_carry_isolation_and_description():
     result = _resume_triage(project_dir, runtime_dir, state_path, journal_path)
     assert result["status"] == "paused", result
     for d in result["dispatches"]:
-        # isolation carried verbatim from the dispatch entry.
-        assert d["isolation"] == "worktree", d
+        # isolation carried verbatim from the dispatch entry. The guard-valid
+        # IMPLEMENT entry declares NO harness isolation (#335: an acting agent
+        # self-isolates via its own worktree, never via the harness), so the
+        # dispatch record's isolation field is None.
+        assert d["isolation"] is None, d
         # description present and non-empty (the executor passes it to Agent).
         assert d.get("description"), d
 

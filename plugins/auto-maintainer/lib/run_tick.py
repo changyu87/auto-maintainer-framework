@@ -827,6 +827,37 @@ _OVERRIDE_CONFIG_DIRNAME = ".auto-maintainer"
 _OVERRIDE_ROUTE_FILENAME = "route.json"
 
 
+# The shipped default-config dir (#337): the aggressive operational default
+# (auto-merge + full acting route + agent adapters) ships as the plugin's
+# `default-config/{route,adapter-map}.json`, refreshed every release. In the
+# installed plugin this file is `<plugin_root>/lib/run_tick.py`, so the dir is
+# `<plugin_root>/default-config/` — the sibling of `lib/`, i.e.
+# `dirname(dirname(__file__))/default-config`. In the source tree that sibling is
+# ABSENT, so `_shipped_default` returns None and the embedded conservative
+# DEFAULT_ROUTE / DEFAULT_ADAPTER_MAP constant is used. Tests point this at a
+# temp fixture dir. There is NO seed-once copy: the shipped default is read FRESH
+# each start, so a release that changes it reaches an existing install
+# automatically (the #337 staleness fix); a project-local .auto-maintainer/<file>
+# override still WINS (adapter-wiring's override-else-default, unchanged).
+DEFAULT_CONFIG_DIR = os.path.join(os.path.dirname(_SRC), "default-config")
+
+
+def _shipped_default(name):
+    """Read + parse the shipped `<DEFAULT_CONFIG_DIR>/<name>` FRESH (#337).
+
+    Returns the parsed dict when the file is present and valid JSON, else None
+    (the dir/file is absent — the source-tree / no-plugin safety fallback — or
+    the file is unparsable). A None result tells run_tick to use the embedded
+    conservative constant. It NEVER copies the file (no seed-once copy).
+    """
+    path = os.path.join(DEFAULT_CONFIG_DIR, name)
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def route_source(project_dir=None):
     """The SOURCE of the route this tick runs, so a misplaced/absent override is
     visible rather than silently ignored (#59).
@@ -2736,8 +2767,15 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # BEFORE resolve+validate. adapter_map_config imports run_tick, so it is
     # imported LAZILY here to avoid a module-level circular import.
     import adapter_map_config  # noqa: E402 - lazy: avoids circular import
+    # Resolve the active default handed to build_loop by reading the SHIPPED
+    # default-config/{route,adapter-map}.json FRESH when present, else the
+    # embedded conservative constant (#337). build_loop then applies the
+    # project-local .auto-maintainer/<file> override on top (override-else-shipped-
+    # else-constant); there is NO seed-once copy.
+    default_route = _shipped_default("route.json") or DEFAULT_ROUTE
+    default_map = _shipped_default("adapter-map.json") or DEFAULT_ADAPTER_MAP
     route, states = aw.build_loop(
-        DEFAULT_ROUTE, DEFAULT_ADAPTER_MAP, runtime,
+        default_route, default_map, runtime,
         start="GUARD", initial=_INITIAL_SLOTS,
         migrate=adapter_map_config.migrate_known_port_entries)
 

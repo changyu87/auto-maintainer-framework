@@ -368,6 +368,111 @@ def test_migration_prefers_config_json_when_both_present():
 
 
 # ==========================================================================
+# E2E Behaviour: DEFAULT RESOLUTION (read shipped default FRESH, #337). When no
+# project-local config.json (and no legacy governance.json) exists, load_config
+# reads the shipped default-config/config.json (sibling of lib/) FRESH when
+# present — backfilled + validated like any config — else the embedded
+# DEFAULT_GOVERNANCE constant. A project-local override still WINS. There is NO
+# seed-once copy (the shipped file is never copied into the project).
+#
+# Tests point the module-level shipped-default dir at a temp fixture (mirroring
+# scheduling's DEFAULT_CONFIG_DIR seam) so the source tree — which ships no
+# default-config/ — does not gate the behaviour under test.
+# ==========================================================================
+
+def test_default_config_dir_points_at_plugin_sibling_of_src():
+    """The shipped-default dir resolves to <plugin_root>/default-config, the
+    sibling of lib/ (i.e. dirname(dirname(safety_governance.__file__))
+    /default-config), mirroring scheduling's resolver."""
+    expected = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(sg.__file__))),
+        "default-config")
+    assert sg.DEFAULT_CONFIG_DIR == expected
+
+
+def test_load_config_reads_shipped_default_fresh_when_no_project_local():
+    """No project-local config.json/legacy governance.json + a shipped
+    default-config/config.json present => load_config returns the SHIPPED values
+    (e.g. the aggressive mode auto-merge), backfilled from defaults."""
+    original = sg.DEFAULT_CONFIG_DIR
+    with tempfile.TemporaryDirectory() as project_dir, \
+            tempfile.TemporaryDirectory() as shipped_dir:
+        _write_json(os.path.join(shipped_dir, "config.json"),
+                    {"mode": "auto-merge",
+                     "budget": {"per_day_tokens": 750000}})
+        sg.DEFAULT_CONFIG_DIR = shipped_dir
+        try:
+            config = sg.load_config(project_dir)
+        finally:
+            sg.DEFAULT_CONFIG_DIR = original
+        # Shipped values surfaced.
+        assert config["mode"] == "auto-merge"
+        assert config["budget"]["per_day_tokens"] == 750000
+        # Backfilled from defaults (shipped omitted these).
+        assert config["budget"]["window_tz"] == "local"
+        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["backoff"]["threshold"] == 5
+        assert config["work_own_filings"] is True
+        # No seed-once copy: the shipped file was NOT copied into the project.
+        assert not os.path.exists(_config_path(project_dir))
+
+
+def test_load_config_falls_back_to_default_governance_when_no_shipped_file():
+    """No project-local config AND no shipped default-config/config.json =>
+    the conservative embedded DEFAULT_GOVERNANCE (mode propose) is the fallback
+    (the source-tree / no-plugin case)."""
+    original = sg.DEFAULT_CONFIG_DIR
+    with tempfile.TemporaryDirectory() as project_dir, \
+            tempfile.TemporaryDirectory() as shipped_dir:
+        # shipped_dir exists but carries NO config.json -> absent shipped file.
+        sg.DEFAULT_CONFIG_DIR = shipped_dir
+        try:
+            config = sg.load_config(project_dir)
+        finally:
+            sg.DEFAULT_CONFIG_DIR = original
+        assert config["mode"] == "propose"
+        assert config["schema_version"] == "2.4.0"
+        assert config["budget"]["per_day_tokens"] is None
+        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["backoff"]["threshold"] == 5
+
+
+def test_load_config_project_local_overrides_shipped_default():
+    """A project-local .auto-maintainer/config.json still WINS over the shipped
+    default-config/config.json (override-else-default, #337)."""
+    original = sg.DEFAULT_CONFIG_DIR
+    with tempfile.TemporaryDirectory() as project_dir, \
+            tempfile.TemporaryDirectory() as shipped_dir:
+        _write_json(os.path.join(shipped_dir, "config.json"),
+                    {"mode": "auto-merge"})
+        _write_json(_config_path(project_dir), {"mode": "dry-run"})
+        sg.DEFAULT_CONFIG_DIR = shipped_dir
+        try:
+            config = sg.load_config(project_dir)
+        finally:
+            sg.DEFAULT_CONFIG_DIR = original
+        # project-local wins; shipped auto-merge is NOT consulted.
+        assert config["mode"] == "dry-run"
+
+
+def test_load_config_unparsable_shipped_file_falls_back_to_defaults():
+    """A present-but-unparsable shipped default-config/config.json falls back to
+    DEFAULT_GOVERNANCE (never raises), mirroring scheduling's safety fallback."""
+    original = sg.DEFAULT_CONFIG_DIR
+    with tempfile.TemporaryDirectory() as project_dir, \
+            tempfile.TemporaryDirectory() as shipped_dir:
+        with open(os.path.join(shipped_dir, "config.json"), "w") as f:
+            f.write("{ not valid json")
+        sg.DEFAULT_CONFIG_DIR = shipped_dir
+        try:
+            config = sg.load_config(project_dir)
+        finally:
+            sg.DEFAULT_CONFIG_DIR = original
+        assert config["mode"] == "propose"
+        assert config["schema_version"] == "2.4.0"
+
+
+# ==========================================================================
 # E2E Behaviour: load_governance is a thin alias delegating to load_config
 # (coexistence window for consumers still calling the old name).
 # ==========================================================================
