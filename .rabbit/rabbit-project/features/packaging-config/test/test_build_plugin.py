@@ -541,16 +541,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.7.13, wire-PRIORITIZE-into-default-pipeline release): version
-# bumped to 0.7.13 in BOTH plugin.json and marketplace.json, and the two are
-# consistent. v0.7.13 wires the PRIORITIZE state into the shipped default
-# pipeline (route + adapter-map) so the same-feature serialization gate runs and
-# multiple implementers can no longer open conflicting same-feature PRs, and
-# replaces the IMPLEMENT adapter entry with the template-correct per_item
-# execution_plan.ordered form. (Supersedes the v0.7.12 full self-deploy removal
-# release.)
+# Release (v0.8.0, config-resolution + guard-compliant-adapter-map release):
+# version bumped to 0.8.0 in BOTH plugin.json and marketplace.json, and the two
+# are consistent. v0.8.0 drops the IMPLEMENT harness isolation from the shipped
+# default-config/adapter-map.json (the #335 load-time guard rejects it) and the
+# runtime reads default-config fresh (no seed-once copy, #337). (Supersedes the
+# v0.7.13 wire-PRIORITIZE-into-default-pipeline release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_7_13_and_consistent():
+def test_version_bumped_to_0_8_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -562,10 +560,10 @@ def test_version_bumped_to_0_7_13_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.7.13", \
-            f"plugin.json version must be 0.7.13, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.7.13", \
-            "marketplace.json plugin entry version must be 0.7.13"
+        assert pdata.get("version") == "0.8.0", \
+            f"plugin.json version must be 0.8.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.8.0", \
+            "marketplace.json plugin entry version must be 0.8.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -3122,17 +3120,19 @@ def test_committed_tree_has_no_self_deploy_action_or_knob():
 
 
 # ---------------------------------------------------------------------------
-# Release v0.7.13 (wire PRIORITIZE into the default pipeline), WIRING-INTEGRITY
-# GATE — the headline release test. The v1-audit finding: the shipped default
-# pipeline lacked PRIORITIZE, so prioritize's same-feature serialization (the V1
-# conflict-avoidance gate) never ran and multiple implementers could open
-# conflicting same-feature PRs. This test loads the SHIPPED default-config
-# route.json + adapter-map.json, resolves them through adapter_wiring.build_loop
-# (from the plugin's own lib/, self-contained), and asserts:
+# Release v0.8.0 (config-resolution + guard-compliant adapter-map), WIRING-
+# INTEGRITY GATE — the headline release test. The v0.7.13 IMPLEMENT entry carried
+# harness isolation:"worktree", which the #335 adapter-wiring load-time guard now
+# REJECTS (harness isolation relocates the acting subagent's cwd off the main
+# workspace, losing its file-based handoff; the implementer self-isolates via its
+# own git worktree). This test loads the SHIPPED default-config route.json +
+# adapter-map.json, resolves them through adapter_wiring.build_loop (from the
+# plugin's own lib/, self-contained), and asserts:
 #   - build_loop raises NO WiringError (the wired pipeline is valid);
 #   - PRIORITIZE resolves as a SCRIPT adapter (run_tick:make_prioritize);
 #   - IMPLEMENT is the template-correct agent entry: per_item over
-#     execution_plan.ordered, reads execution_plan, worktree isolation;
+#     execution_plan.ordered, reads execution_plan, and declares NO harness
+#     isolation (#335);
 #   - the acting route is PULL -> TRIAGE -> PRIORITIZE -> IMPLEMENT -> VERIFY ->
 #     REVIEW -> INTEGRATE.
 # ---------------------------------------------------------------------------
@@ -3179,8 +3179,8 @@ def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
             "IMPLEMENT must fan out per_item over execution_plan.ordered"
         assert d["inputs"] == ["execution_plan"], \
             "IMPLEMENT must read the execution_plan slot"
-        assert d.get("isolation") == "worktree", \
-            "IMPLEMENT must run worktree-isolated"
+        assert "isolation" not in d, \
+            "IMPLEMENT must declare NO harness isolation (#335 guard rejects it)"
         assert d.get("effect") == "implement", "IMPLEMENT effect must be implement"
         assert impl["signal"]["rule"] == "blocked_if_any"
         assert impl["manifest"]["writes"] == ["handoffs"]
