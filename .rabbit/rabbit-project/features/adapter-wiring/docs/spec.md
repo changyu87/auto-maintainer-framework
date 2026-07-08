@@ -14,10 +14,8 @@ runtime: load a declarative **`route.json`** + a **`port → adapter` map** (pro
 config), resolve each routed port to its adapter, **validate the wiring at load**,
 and hand the orchestrator a ready `(route, states)` pair. This is what lets a
 project **insert / reorder / swap adapter states by editing data, not code** — the
-foundation for bring-your-own adapters.
-
-Today `scheduling/run_tick` hardcodes the route + states; this feature replaces
-that with data-driven loading, fulfilling DESIGN §0's ports-and-adapters promise.
+foundation for bring-your-own adapters, fulfilling DESIGN §0's ports-and-adapters
+promise.
 
 > Design references: §2.4 (ports-and-adapters via script contracts), §3.4.1
 > (route.json schema — owned by fsm-contracts), §3.4.3 (override + routing
@@ -28,9 +26,8 @@ that with data-driven loading, fulfilling DESIGN §0's ports-and-adapters promis
 ## Paths governed
 
 Greenfield. Code under `.../features/adapter-wiring/src/`. It is a pure mechanism:
-it does NOT define the maintainer's default route or the built-in adapters
-(scheduling supplies those); it loads/resolves/validates whatever paths it is
-given.
+it does NOT define the maintainer's default route or the built-in adapters; it
+loads/resolves/validates whatever paths it is given.
 
 ## Adapter-map entry kinds
 
@@ -96,18 +93,16 @@ agent entry with a `dispatch[*]` that declares BOTH a file-based handoff (a
 `writes` slot) AND harness `isolation: "worktree"`. Acting agents that need an
 isolated checkout provide it themselves (their own git worktree), never via the
 harness. A normal agent entry (no `isolation`, or a non-`worktree` value) passes
-unchanged. This guard catches at wiring time the exact regression that occurred
-when `IMPLEMENT` briefly carried harness `isolation: "worktree"`.
+unchanged.
 
 ### The resolved `AgentState`
 
-`AgentState` is the resolved form of an agent entry — a small record carrying
+`AgentState` is the resolved form of an agent entry — a record carrying
 `manifest`, `dispatch`, `signal`, and the raw `entry`. The executor (a later
 slice) consumes it to build + dispatch invocation envelopes. Because
-`resolve_states` returns `(manifest, second)` uniformly — `second` is a
-`run_callable` for a script state or an `AgentState` for an agent state —
-`validate_wiring` / `build_loop` are unchanged: they operate only on the
-`manifest` (the first element), which both kinds populate.
+`resolve_states` returns `(manifest, second)` uniformly, `validate_wiring` /
+`build_loop` are unchanged: they operate only on the `manifest` (the first
+element), which both kinds populate.
 
 ## Public surface
 
@@ -183,13 +178,13 @@ above and the fsm-contracts factory convention. Three functions:
 
 Pure file reads + `importlib` + validation; no network, no AI. Everything is
 injectable (default route/map dicts, project dir, runtime) so tests drive it with
-fixtures and stub factory modules — no plugin/filesystem assumptions. Failures are
-locatable to the port/module that is wrong.
+fixtures and stub factory modules. Failures are locatable to the port/module that
+is wrong.
 
 ## Current behaviour
 
-All five public-surface functions are implemented. Agent entries are resolved
-and validated at load but NOT executed (execution is a later slice).
+All five public-surface functions are implemented; agent entries are resolved
+and validated at load but NOT executed.
 
 ## Known gaps / deferred
 
