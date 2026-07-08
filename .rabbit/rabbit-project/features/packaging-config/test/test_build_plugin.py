@@ -541,14 +541,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.8.1, release-clean the post-0.8.0 committed-tree change):
-# version bumped to 0.8.1 in BOTH plugin.json and marketplace.json, and the two
-# are consistent. v0.8.1 ships the #342 default_src tick-trace observability
-# token in the plugin lib (already committed post-0.8.0 via #350), correcting
-# the same-version content drift from #350; no behavior change beyond that
-# shipped token. (Supersedes the v0.8.0 config-resolution release.)
+# Release (v0.8.2, regen release to green a red main): version bumped to 0.8.2
+# in BOTH plugin.json and marketplace.json, and the two are consistent. v0.8.2
+# regenerates the committed plugin tree that PR #368 left drifted (it changed
+# scheduling's run_tick.py src — the #356 fresh-tick ephemeral-read-product
+# reset — without regenerating the shipped lib), and bumps 0.8.1->0.8.2 so the
+# shipped-lib change reaches installs. (Supersedes the v0.8.1 release.)
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_8_1_and_consistent():
+def test_version_bumped_to_0_8_2_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -560,10 +560,10 @@ def test_version_bumped_to_0_8_1_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.8.1", \
-            f"plugin.json version must be 0.8.1, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.8.1", \
-            "marketplace.json plugin entry version must be 0.8.1"
+        assert pdata.get("version") == "0.8.2", \
+            f"plugin.json version must be 0.8.2, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.8.2", \
+            "marketplace.json plugin entry version must be 0.8.2"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
