@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace (the same criterion as build_plugin.py).",
+  "description": "The version-monotonicity-on-content-change anchor for the shipped plugin lib (#355). `version` is the last RELEASED _PLUGIN_VERSION and `lib_digest` is the deterministic sha256 over the committed plugins/auto-maintainer/lib/ tree AT that release (each *.py file's basename + NUL + bytes + NUL, in sorted-name order, .pyc excluded). The release-lib guard (test_shipped_lib_change_requires_version_bump) recomputes the CURRENT committed lib digest: if it equals `lib_digest` the shipped lib is unchanged and any version is fine; if it differs the shipped lib changed, so _PLUGIN_VERSION MUST have advanced past `version`. A same-version content change (the #350 marketplace-invisible drift) therefore fails the guard. An operator cutting a release bumps _PLUGIN_VERSION AND re-anchors both fields here (version -> new version, lib_digest -> the new committed-lib digest), exactly as the doc/e2e baselines are re-anchored.",
+  "version": "0.8.1",
+  "lib_digest": "7a0d588a31249931131bfb1e04ee0b31b54a84b58346de6bd3c4b19e7c81b0dc"
+}

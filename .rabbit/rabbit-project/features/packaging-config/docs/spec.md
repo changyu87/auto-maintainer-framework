@@ -286,6 +286,15 @@ is added via git. Updates: `/plugin marketplace update`.
   tree (no nondeterministic ordering/timestamps in shipped files).
 - **Self-contained:** the plugin references no files outside its own directory
   (Claude copies only the plugin dir into its cache).
+- **Version monotonicity on content change (#355):** a change to the committed
+  `plugins/auto-maintainer/lib` bytes relative to the last released version MUST
+  advance `_PLUGIN_VERSION` — a same-version content change is
+  marketplace-invisible (`/plugin marketplace update` serves by version).
+  Anchored by `test/release_lib_baseline.json` (`{version, lib_digest}`): if the
+  current committed-lib digest differs from the baseline digest, `_PLUGIN_VERSION`
+  must differ from the baseline `version`. Docs-only / test-only changes leave the
+  lib digest identical and are unaffected. Complements the build-drift guard
+  (committed == fresh build).
 
 ## Current behaviour
 
