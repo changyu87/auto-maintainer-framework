@@ -15,7 +15,6 @@
         "inputs": [
           "execution_plan"
         ],
-        "isolation": "worktree",
         "output_example": {
           "artifact": {
             "kind": "none",

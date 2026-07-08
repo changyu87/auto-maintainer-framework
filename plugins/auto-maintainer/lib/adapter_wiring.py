@@ -233,6 +233,27 @@ def _resolve_agent(port, entry):
     except ValueError as exc:
         raise WiringError(
             f"port '{port}' has a malformed agent-adapter entry: {exc}")
+
+    # Harness-isolation guard (auto-maintainer-framework#335). An agent dispatch
+    # delivers its handoff as a FILE written to the shared main-workspace
+    # dispatch-out/ (a `writes` slot; DESIGN §3.4.6). Harness
+    # isolation:"worktree" relocates the subagent cwd OFF the main workspace, so
+    # such a file handoff never reaches dispatch-out/ and the tick reads a
+    # MISSING file and re-dispatches the act (a second PR / a second
+    # issue-close). REJECT — as a locatable WiringError naming the port — any
+    # dispatch entry that declares BOTH a file-based handoff (a `writes` slot)
+    # AND harness isolation:"worktree". Acting agents that need an isolated
+    # checkout provide it themselves, never via the harness.
+    for i, d in enumerate(entry["dispatch"]):
+        if d.get("writes") and d.get("isolation") == "worktree":
+            raise WiringError(
+                f"port '{port}': dispatch[{i}] declares a file-based handoff "
+                f"(writes '{d['writes']}') together with harness "
+                f"isolation:'worktree'; harness isolation moves the subagent "
+                f"cwd off the main workspace so the file handoff never reaches "
+                f"dispatch-out/. An acting agent that needs an isolated "
+                f"checkout must provide its own worktree, never via the harness")
+
     m = entry["manifest"]
     manifest = fc.StateManifest(
         reads=m["reads"], writes=m["writes"], emits=m["emits"])
