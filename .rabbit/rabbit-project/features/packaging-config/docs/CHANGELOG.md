@@ -1,5 +1,30 @@
 # Changelog — packaging-config
 
+## 0.8.0 — config resolution (#337) + shipped adapter-map guard-compliant (#335)
+
+- Bump `_PLUGIN_VERSION` 0.7.13 -> 0.8.0 (`plugin.json` + `marketplace.json`).
+- Shipped `default-config/adapter-map.json` drops IMPLEMENT harness isolation
+  (#335): the v0.7.13 IMPLEMENT entry carried `isolation: "worktree"`, which the
+  adapter-wiring load-time guard now REJECTS (harness isolation moves the acting
+  subagent's cwd off the main workspace, losing its file-based handoff; the
+  implementer self-isolates via its own worktree). The shipped IMPLEMENT entry is
+  regenerated from `adapter_map_config._build_agent_entry('IMPLEMENT', …)`, which
+  now emits NO harness isolation.
+- The runtime READS `default-config/*.json` fresh; no more seed-once copy (#337):
+  the shipped `default-config/{config,route,adapter-map}.json` remain the
+  aggressive operational default and are still built into the tree by `_copy_tree`
+  of `plugin_assets/`, but the runtime now reads them FRESH as the default on
+  every start (scheduling for route/adapter-map, safety-governance for config),
+  instead of `start.py` copying them ONCE into `.auto-maintainer/`. A release that
+  changes a shipped default therefore reaches existing installs automatically; a
+  user override in `.auto-maintainer/<file>` still wins.
+- Regenerate the committed `plugins/auto-maintainer/` tree from current src.
+- Invariant: the built tree still contains
+  `default-config/{config,route,adapter-map}.json`, the shipped adapter-map
+  resolves through `build_loop` with no WiringError, version 0.8.0 is consistent
+  across `plugin.json` + `marketplace.json`, and the committed tree matches a
+  fresh build with no source-tree leak.
+
 ## 0.7.13 — wire PRIORITIZE into the default pipeline (V1 audit fix)
 
 - Bump `_PLUGIN_VERSION` 0.7.12 -> 0.7.13 (`plugin.json` + `marketplace.json`).
@@ -293,3 +318,28 @@
 - Tests: rename the version test to `test_version_bumped_to_0_7_0_and_consistent`
   and add e2e coverage that the fresh build ships `lib/test_gate.py`
   byte-identical to source with no source-tree leak.
+
+## 0.6.0 — release rebuild: deploy merged src fixes (#263/#264)
+
+- Bump `_PLUGIN_VERSION` 0.5.0 -> 0.6.0 (`plugin.json` + `marketplace.json`).
+- The committed `plugins/auto-maintainer/` tree had drifted from src: merged
+  fixes — #255 model-review evidence gate
+  (`verify_integrate.review_evidence_valid` / `batch_is_untrustworthy`), #252
+  prioritize serialization, #259/#260/#261 — never reached the installed plugin.
+  This release REBUILDS the committed tree from CURRENT src (no feature-src LOGIC
+  change) and regenerates `.claude-plugin/marketplace.json`.
+- Add a build-drift guard test asserting the committed tree == a fresh build.
+
+## 0.5.0 — aggressive plug-and-play default (#211)
+
+- Bump `_PLUGIN_VERSION` -> 0.5.0 (`plugin.json` + `marketplace.json`).
+- Ship the `default-config/` seed assets — `config.json` (`mode: auto-merge`,
+  unbounded budget, heartbeat 3, backoff 5), `route.json` (the full acting route
+  incl. the REVIEW gate), and `adapter-map.json` (TRIAGE/IMPLEMENT/REVIEW wired
+  to their agents) — authored under `src/plugin_assets/default-config/` and
+  copied verbatim into `plugins/auto-maintainer/default-config/` by the existing
+  `_copy_tree` of `plugin_assets/`. scheduling's `start.py` seeds these into a
+  fresh install's `.auto-maintainer/` (idempotent).
+- Invariant: the built tree contains
+  `default-config/{config.json,route.json,adapter-map.json}` with
+  `mode=auto-merge` + the REVIEW route; the version test asserts 0.5.0.
