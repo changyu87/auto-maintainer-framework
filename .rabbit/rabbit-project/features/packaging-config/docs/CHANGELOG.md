@@ -1,5 +1,23 @@
 # Changelog — packaging-config
 
+## 0.8.2 — regen release: green a red main (build-drift from #368)
+
+- Bump `_PLUGIN_VERSION` 0.8.1 -> 0.8.2 (`plugin.json` + `marketplace.json`).
+- Ships the #356 fresh-tick ephemeral-read-product reset in the plugin
+  `lib/run_tick.py`: PR #368 changed scheduling's `run_tick.py` source (the #356
+  fix) WITHOUT regenerating the committed plugin tree, so the committed shipped
+  bytes drifted from the current source and the build-drift guard
+  (committed == fresh build) failed on main.
+- Regenerate the committed `plugins/auto-maintainer/` tree from current src so
+  the shipped `lib/run_tick.py` carries the #356 change under the 0.8.2 version;
+  re-anchor `test/release_lib_baseline.json` (version + lib_digest) for the #355
+  monotonicity guard.
+- No behavior change beyond the shipped #356 fix.
+- Invariant: version 0.8.2 is consistent across `plugin.json` +
+  `marketplace.json`; the committed tree matches a fresh build with no
+  source-tree leak; the #355 guard is re-anchored to the new committed-lib
+  digest.
+
 ## 0.8.1 — release-clean the post-0.8.0 committed-tree change (#342 default_src)
 
 - Bump `_PLUGIN_VERSION` 0.8.0 -> 0.8.1 (`plugin.json` + `marketplace.json`).
