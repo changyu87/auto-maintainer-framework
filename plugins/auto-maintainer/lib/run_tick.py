@@ -858,6 +858,18 @@ def _shipped_default(name):
         return None
 
 
+def _default_source_label(shipped_route, shipped_map):
+    """The SOURCE of the default handed to build_loop, as a trace token (#342):
+    ``shipped-default-config`` when ``_shipped_default(...)`` returned a value for
+    route OR adapter-map (the fresh shipped default-config/ is in effect), else
+    ``embedded-constant`` (the conservative source-tree / no-plugin fallback). This
+    is observability-only — the resolution (`shipped or constant`, #337) is
+    unchanged; the token only makes a silent fallback to the constant visible."""
+    if shipped_route is not None or shipped_map is not None:
+        return "shipped-default-config"
+    return "embedded-constant"
+
+
 def route_source(project_dir=None):
     """The SOURCE of the route this tick runs, so a misplaced/absent override is
     visible rather than silently ignored (#59).
@@ -2772,8 +2784,16 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # embedded conservative constant (#337). build_loop then applies the
     # project-local .auto-maintainer/<file> override on top (override-else-shipped-
     # else-constant); there is NO seed-once copy.
-    default_route = _shipped_default("route.json") or DEFAULT_ROUTE
-    default_map = _shipped_default("adapter-map.json") or DEFAULT_ADAPTER_MAP
+    shipped_route = _shipped_default("route.json")
+    shipped_map = _shipped_default("adapter-map.json")
+    default_route = shipped_route or DEFAULT_ROUTE
+    default_map = shipped_map or DEFAULT_ADAPTER_MAP
+    # The DEFAULT source token (#342, observability-only): whether the active
+    # default came from the shipped default-config/ (a fresh read returned a
+    # value for route or adapter-map) or the embedded conservative constant. It
+    # makes a silent fallback to the constant (e.g. a broken/absent plugin
+    # default-config) visible in the trace; the resolution itself is unchanged.
+    default_src = _default_source_label(shipped_route, shipped_map)
     route, states = aw.build_loop(
         default_route, default_map, runtime,
         start="GUARD", initial=_INITIAL_SLOTS,
@@ -3031,7 +3051,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         f"work_orders={work_orders_count} "
         f"execution_plan={execution_plan_count} handoffs={handoffs_count} "
         f"disposition={disposition} "
-        f"signal={signal} route={route_src} {gov_fields} {reported_field} "
+        f"signal={signal} route={route_src} default_src={default_src} "
+        f"{gov_fields} {reported_field} "
         f"{triaged_field} {merged_field}{release_field}\n")
 
     # Terminal events (observability §3.9.1): the resulting disposition, then the
