@@ -154,11 +154,6 @@ otherwise `ok=False` and `violations` names each failed check (machine-first, so
 INTEGRATE can record the reason in its `skipped` list). Deterministic: pure
 function of the passed metadata, no I/O.
 
-**Backoff (§3.8.5) — DEFERRED (minimal/none in this slice).** Re-verifying a
-perpetually-red PR each tick is cheap and never merges (VERIFY reports red,
-INTEGRATE skips), so there is no thrash to break yet; a consecutive-failure
-defer/escalate counter is a later refinement.
-
 ## Budget readiness gate (§3.8.4) — auto-resuming, NOT a latch
 
 Budget exhaustion is a **readiness gate evaluated at tick entry**, mirroring
