@@ -1,5 +1,22 @@
 # Changelog — packaging-config
 
+## 0.8.1 — release-clean the post-0.8.0 committed-tree change (#342 default_src)
+
+- Bump `_PLUGIN_VERSION` 0.8.0 -> 0.8.1 (`plugin.json` + `marketplace.json`).
+- Ships the #342 `default_src` tick-trace observability token in the plugin
+  `lib/run_tick.py`: the tick trace line now emits `default_src=...`,
+  distinguishing a shipped-default route/adapter-map from a user override. This
+  token landed in the committed lib post-0.8.0 (via #350) but WITHOUT a version
+  bump, so the shipped bytes drifted from the 0.8.0 tag while still reading
+  version 0.8.0. v0.8.1 corrects that same-version content drift by cutting a
+  clean release for the already-committed change.
+- Regenerate the committed `plugins/auto-maintainer/` tree from current src so
+  the shipped bytes carry the #342 token under the 0.8.1 version.
+- No behavior change beyond the shipped `default_src` observability token.
+- Invariant: version 0.8.1 is consistent across `plugin.json` +
+  `marketplace.json`; the shipped `lib/run_tick.py` carries the `default_src`
+  token; the committed tree matches a fresh build with no source-tree leak.
+
 ## 0.8.0 — config resolution (#337) + shipped adapter-map guard-compliant (#335)
 
 - Bump `_PLUGIN_VERSION` 0.7.13 -> 0.8.0 (`plugin.json` + `marketplace.json`).
