@@ -35,8 +35,7 @@ durable PR-ledger to drift.
 - `VERIFY` each tick QUERIES `gh pr list --label auto-maintainer --state open` —
   the loop's currently-open PRs, regardless of which tick opened them.
 - A PR opened in tick N is therefore re-checked every tick until its CI goes
-  green, then merged in tick N+k. Cross-tick correctness falls out of querying
-  GitHub live; no slot carries PRs across ticks.
+  green, then merged in tick N+k — no slot carries PRs across ticks.
 
 ## Slot contract (DESIGN §2.6, refined)
 
@@ -113,7 +112,6 @@ backlog issues by the downstream REPORT port and fixed on a later tick.
   never hit a real sibling suite or the network), the run.py of EACH feature in
   `cross_cutting_risk.features`. Results land in the versioned `cross_check` slot.
   The `features_root` is a runtime-injected locator with NO source-tree default:
-  the shipped lib is self-contained and cannot assume its own on-disk layout, so
   the resolver REQUIRES a `features_root` and the caller (scheduling) injects it.
   If ANY complement FAILS, every verdict this tick is marked `ok=False` with a
   specific cross-feature-break reason (naming the failing feature + the triager's
@@ -122,11 +120,10 @@ backlog issues by the downstream REPORT port and fixed on a later tick.
   but the `features_root` is NOT configured, the complement CANNOT run, so VERIFY
   conservatively GATES — `cross_check` records `ran=False` with reason
   `complement run skipped: features_root not configured — cross-cutting risk
-  unverifiable`, and EVERY verdict is marked `ok=False` with that same reason. A
-  flagged cross-cutting batch that cannot be verified must NEVER auto-merge; the
-  gate is loud and recorded, never silent. When `risk` is False (or the slot is
-  absent), NO complement runs and `cross_check` records `ran=False` — VERIFY stays
-  thin; verdicts reflect only mergeable+base.
+  unverifiable`, and EVERY verdict is marked `ok=False` with that same reason — a
+  flagged batch that cannot be verified must NEVER auto-merge. When `risk` is
+  False (or the slot is absent), NO complement runs and `cross_check` records
+  `ran=False` — VERIFY stays thin; verdicts reflect only mergeable+base.
 - Writes the `verdicts` and `cross_check` slots; emits `OK` if any open PRs were
   found else `EMPTY`.
 - Read-only w.r.t. GitHub: VERIFY never merges, closes, or writes to GitHub.
@@ -190,11 +187,9 @@ CLEANUP → PERSIST → EXIT`.
 - **Backoff (§3.8.5)** — a consecutive-failure counter that defers/escalates a
   PR after K failing verdicts is NOT implemented in v1: re-checking a red PR is
   cheap and never merges, so VERIFY simply re-checks every tick until the PR
-  becomes mergeable (the cross-tick model above), which already bounds the risk.
-  The K
-  threshold exists today only as a `safety-governance` config knob
-  (`backoff.threshold`); wiring it into a durable cross-tick counter — plus any
-  aggressive backoff / circuit-breaker tuning — is deferred.
+  becomes mergeable (the cross-tick model above). The K threshold exists today
+  only as a `safety-governance` config knob (`backoff.threshold`); wiring it into
+  a durable cross-tick counter — plus any circuit-breaker tuning — is deferred.
 
 ## Interfaces (composition)
 
