@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0.0",
   "owner": "changyu87",
-  "deprecation_criterion": "Superseded by the next work-intake housekeep wave's baseline; a re-bloat regression guard for the post-#258 doc surfaces.",
-  "description": "Re-baselined for issue #258 (the authoritative target_feature blast-radius field on WorkOrder, set by TRIAGE). #258 ADDITIVELY documents a new public surface (the WorkOrder.target_feature field + the pure target_features_for detection), which legitimately grows spec.md/contract.md past the prior post-FT-B baseline. This baseline now records the post-#258 doc line counts plus a one-line margin, so the housekeep gate continues as a re-bloat regression guard (current docs must stay STRICTLY smaller than this) while the load-bearing-token + cleanup gates remain intact.",
-  "baseline_commit": "post-#258",
+  "deprecation_criterion": "Superseded by the next work-intake housekeep wave's baseline; a re-bloat regression guard for the post-#359 doc surfaces.",
+  "description": "Re-anchored for issue #359 (measured doc reduction of spec.md). This wave slimmed restated rationale from Purpose and Determinism & testability without dropping any load-bearing token, taking spec.md from 247 to 244 measured lines. This baseline now records the post-#359 doc line counts plus a one-line margin, so the housekeep gate continues as a re-bloat regression guard (current docs must stay STRICTLY smaller than this) while the load-bearing-token + cleanup gates remain intact.",
+  "baseline_commit": "post-#359",
   "docs": {
-    "docs/spec.md": 247,
+    "docs/spec.md": 245,
     "docs/contract.md": 48
   }
 }

@@ -11,8 +11,7 @@ deprecation_criterion: Superseded when the tracker I/O model changes incompatibl
 
 The read-side first adapter: fetch actionable work from the tracker into the
 blackboard. The GitHub-Issues `PULL` adapter fetches the repo's open issues into
-the `work_items` slot each tick — the first real maintainer work, replacing the
-`DEMO_WORK` stub.
+the `work_items` slot each tick, replacing the `DEMO_WORK` stub.
 
 > Design references: DESIGN.md §3.4.2 (GitHub-Issues PULL adapter), §2.6 (PULL
 > contract: reads —, writes `work_items`, signals `OK`|`EMPTY`; the `WorkItem`
@@ -61,9 +60,8 @@ Greenfield. Code under `.../features/work-intake/src/`.
 ## Determinism & testability
 
 The only non-deterministic edge (the live `gh` call) sits behind the injectable
-source. Tests drive `PULL` with a stub source over fixture issues and assert the
-`work_items` slot + `OK`/`EMPTY` signal; production wiring shells `gh`. No AI/prompt
-tier anywhere.
+source; tests drive `PULL` with a stub over fixture issues, asserting the
+`work_items` slot + `OK`/`EMPTY` signal. No AI/prompt tier anywhere.
 
 ## Slice 2 — TRIAGE (validity gate → work_orders)
 
