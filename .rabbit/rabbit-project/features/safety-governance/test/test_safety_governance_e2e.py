@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.4.0).
+"""End-to-end + unit conformance tests for safety-governance (slice 1, schema 2.5.0).
 
 Every behaviour in docs/spec.md has a test here. The feature provides
 deterministic decision surfaces over a machine-first, versioned CENTRAL config
 (config.json) — DESIGN §3.8:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.4.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.5.0),
      DEFAULT_GOVERNANCE, load_config(project_dir): reads project-local
      ${project_dir}/.auto-maintainer/config.json (absent => defaults),
      backfilling missing keys from defaults. null/absent ceiling => NO LIMIT.
@@ -83,17 +83,17 @@ def _write_json(path, payload):
 
 
 # ==========================================================================
-# Behaviour: the central config schema is versioned (2.4.0) and machine-first.
+# Behaviour: the central config schema is versioned (2.5.0) and machine-first.
 # DEFAULT_GOVERNANCE matches the spec's documented defaults: mode=propose,
 # budget.per_day_tokens=null, budget.window_tz=local, heartbeat.interval_minutes=3,
-# backoff.threshold=5, work_own_filings=True. The per_tick_tokens, maintainer_repo,
-# and self_deploy fields are REMOVED.
+# backoff.threshold=5, work_own_filings=True, regression_command=None. The
+# per_tick_tokens, maintainer_repo, and self_deploy fields are REMOVED.
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.4.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.5.0"
     d = sg.DEFAULT_GOVERNANCE
-    assert d["schema_version"] == "2.4.0"
+    assert d["schema_version"] == "2.5.0"
     assert d["mode"] == "propose"
     # self_deploy (#309) is REMOVED from the schema (the self_deploy ACTION was
     # removed in #324, so the knob is dead; schema 2.3.0 -> 2.4.0).
@@ -126,7 +126,7 @@ def test_maintainer_repo_is_fixed_constant():
 def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["schema_version"] == "2.4.0"
+        assert config["schema_version"] == "2.5.0"
         assert config["mode"] == "propose"
         assert "self_deploy" not in config
         assert config["budget"]["per_day_tokens"] is None
@@ -262,6 +262,72 @@ def test_work_own_filings_accessor_false_when_set():
     """The pure accessor returns False when the config sets work_own_filings
     false (the opt-OUT)."""
     assert sg.work_own_filings({"work_own_filings": False}) is False
+
+
+# ==========================================================================
+# E2E Behaviour: regression_command (the GATE full-regression shell command,
+# read by verify-integrate) defaults None (NO gate = GATE no-op PASS, non-breaking
+# opt-in). DEFAULT_GOVERNANCE carries it None; load_config surfaces an explicit
+# value and backfills None when absent (an existing config without the key loads);
+# the pure accessor regression_command(config) returns the command or None.
+# ==========================================================================
+
+def test_default_regression_command_is_none():
+    """regression_command defaults None — an unconfigured project has NO gate
+    (GATE is a no-op PASS), so it merges exactly as before (non-breaking)."""
+    assert sg.DEFAULT_GOVERNANCE["regression_command"] is None
+    with tempfile.TemporaryDirectory() as project_dir:
+        config = sg.load_config(project_dir)
+        assert config["regression_command"] is None
+
+
+def test_load_config_reads_regression_command_override():
+    """An explicit top-level regression_command in config.json is surfaced on the
+    loaded config so verify-integrate's GATE can run it against a REVIEW-passed PR."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"regression_command": "pytest -q"})
+        config = sg.load_config(project_dir)
+        assert config["regression_command"] == "pytest -q"
+        # other defaults still present
+        assert config["mode"] == "propose"
+        assert config["backoff"]["threshold"] == 5
+
+
+def test_load_config_backfills_regression_command_none_when_absent():
+    """A config.json that omits regression_command loads with the default None
+    (backward compatible: an existing config without the key has NO gate)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"mode": "propose"})
+        config = sg.load_config(project_dir)
+        assert config["regression_command"] is None
+        # other defaults still present
+        assert config["mode"] == "propose"
+        assert config["backoff"]["threshold"] == 5
+
+
+def test_load_config_preserves_explicit_null_regression_command():
+    """An explicit regression_command=null (NO gate) is surfaced unchanged."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"regression_command": None})
+        config = sg.load_config(project_dir)
+        assert config["regression_command"] is None
+        assert config["mode"] == "propose"
+
+
+def test_regression_command_accessor_default_none():
+    """The pure accessor returns None by default when the key is absent
+    (mirrors how work_own_filings reads its key)."""
+    assert sg.regression_command({}) is None
+    assert sg.regression_command(sg.DEFAULT_GOVERNANCE) is None
+
+
+def test_regression_command_accessor_value_when_set():
+    """The pure accessor returns the configured command when set (the value
+    verify-integrate's GATE runs)."""
+    assert sg.regression_command(
+        {"regression_command": "npm test"}) == "npm test"
 
 
 # ==========================================================================
@@ -431,7 +497,7 @@ def test_load_config_falls_back_to_default_governance_when_no_shipped_file():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.4.0"
+        assert config["schema_version"] == "2.5.0"
         assert config["budget"]["per_day_tokens"] is None
         assert config["heartbeat"]["interval_minutes"] == 3
         assert config["backoff"]["threshold"] == 5
@@ -469,7 +535,7 @@ def test_load_config_unparsable_shipped_file_falls_back_to_defaults():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.4.0"
+        assert config["schema_version"] == "2.5.0"
 
 
 # ==========================================================================
