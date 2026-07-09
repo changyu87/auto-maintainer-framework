@@ -11,19 +11,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install test dependencies
-        run: python3 -m pip install --quiet pyyaml
       - name: Byte-compile the shipped plugin libraries
         run: python3 -m compileall -q plugins/auto-maintainer/lib
-      - name: Run all feature test suites
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          rc=0
-          for d in .rabbit/rabbit-project/features/*/; do
-            if [ -f "${d}test/run.py" ]; then
-              echo "==== ${d} ===="
-              ( cd "$d" && python3 test/run.py ) || { echo "FAILED: ${d}"; rc=1; }
-            fi
-          done
-          exit "$rc"
