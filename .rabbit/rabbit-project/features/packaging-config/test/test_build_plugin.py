@@ -541,14 +541,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.8.2, regen release to green a red main): version bumped to 0.8.2
-# in BOTH plugin.json and marketplace.json, and the two are consistent. v0.8.2
-# regenerates the committed plugin tree that PR #368 left drifted (it changed
-# scheduling's run_tick.py src — the #356 fresh-tick ephemeral-read-product
-# reset — without regenerating the shipped lib), and bumps 0.8.1->0.8.2 so the
-# shipped-lib change reaches installs. (Supersedes the v0.8.1 release.)
+# Release (v0.9.0, V2 cumulative GATE): version bumped to 0.9.0 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. v0.9.0 inserts
+# the GATE state into the shipped default pipeline (REVIEW->GATE->INTEGRATE), a
+# self-contained cumulative regression gate replacing the reverted
+# GitHub-CI-runs-tests approach, and regenerates the committed plugin tree so
+# the shipped lib (verify_integrate GATE + run_tick make_gate) reaches installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_8_2_and_consistent():
+def test_version_bumped_to_0_9_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -560,10 +560,10 @@ def test_version_bumped_to_0_8_2_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.8.2", \
-            f"plugin.json version must be 0.8.2, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.8.2", \
-            "marketplace.json plugin entry version must be 0.8.2"
+        assert pdata.get("version") == "0.9.0", \
+            f"plugin.json version must be 0.9.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.9.0", \
+            "marketplace.json plugin entry version must be 0.9.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -3200,11 +3200,26 @@ def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
             "PRIORITIZE EMPTY must route to VERIFY"
         assert edge[("IMPLEMENT", "OK")] == "VERIFY"
         assert edge[("VERIFY", "OK")] == "REVIEW"
-        assert edge[("REVIEW", "OK")] == "INTEGRATE"
+        # V2 GATE: the acting chain now runs REVIEW -> GATE -> INTEGRATE, with
+        # the cumulative regression gate between the advisory review and the
+        # merge. REVIEW EMPTY -> PERSIST and INTEGRATE OK -> CLEANUP unchanged.
+        assert "GATE" in route["states"], \
+            "default route must include the V2 GATE state"
+        assert edge[("REVIEW", "OK")] == "GATE", \
+            "REVIEW OK must route to GATE (V2 cumulative gate)"
+        assert edge[("GATE", "OK")] == "INTEGRATE", \
+            "GATE OK must route to INTEGRATE"
+        assert edge[("REVIEW", "EMPTY")] == "PERSIST", \
+            "REVIEW EMPTY must route to PERSIST (unchanged)"
+        assert edge[("INTEGRATE", "OK")] == "CLEANUP", \
+            "INTEGRATE OK must route to CLEANUP (unchanged)"
 
         # PRIORITIZE resolves as a SCRIPT adapter (a "module:factory" string).
         assert amap.get("PRIORITIZE") == "run_tick:make_prioritize", \
             "default adapter-map must wire PRIORITIZE to run_tick:make_prioritize"
+        # GATE resolves as a SCRIPT adapter, mirroring VERIFY/INTEGRATE/CLEANUP.
+        assert amap.get("GATE") == "run_tick:make_gate", \
+            "default adapter-map must wire GATE to run_tick:make_gate"
 
         # IMPLEMENT is the template-correct agent entry.
         impl = amap["IMPLEMENT"]
@@ -3249,6 +3264,9 @@ def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
             "    shutil.rmtree(proj, ignore_errors=True)\n"
             "assert 'PRIORITIZE' in states, 'PRIORITIZE must resolve'\n"
             "assert 'IMPLEMENT' in states, 'IMPLEMENT must resolve'\n"
+            # V2 GATE resolves through build_loop with NO WiringError (GATE reads
+            # verdicts, writes gate_results; INTEGRATE reads gate_results).
+            "assert 'GATE' in states, 'GATE must resolve'\n"
             "print('BUILD_LOOP_OK')\n"
         )
         proc = subprocess.run(
