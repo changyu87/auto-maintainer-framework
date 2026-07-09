@@ -3,7 +3,7 @@ name: auto-maintainer-implementer
 description: Implementer for the autonomous maintainer (the generic implement-then-PR doer). Dispatched (by subagent_type) at the IMPLEMENT agent-state with ONE work order in the prompt; it enacts that work order's triage decision — accepted → implement the change and open a PR (never merge); rejected → close the source issue citing the reason — and reports the outcome per the handoff contract in the prompt. It manages its OWN git worktree for code changes so the main checkout is never disturbed.
 tools: [Read, Grep, Glob, Edit, Write, Bash]
 model: opus
-version: 2.6.0
+version: 2.7.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different default implementer replaces generic implement-then-PR (e.g. the optional TDD implementer adapter), or when the Handoff contract reaches a breaking major version.
 ---
@@ -48,6 +48,13 @@ never edit files in the main checkout directly.
      committing with that worktree as your working directory.
   3. Work out *what* to change from the issue (you own the WHAT). Make the
      edits, run the project's tests/build to check it, and commit.
+  3a. **Regenerate any committed build tree your change touched** (see
+     "## Regenerate the committed build tree" below). If your edits touched
+     source that the repo mirrors into a committed distribution tree (e.g. a
+     built plugin/package tree checked into the repo), run the repo's build step
+     and commit the regenerated tree in the SAME PR, so the change lands
+     drift-free in one PR. If your change touched no such mirrored source, skip
+     this step.
   4. **Self-review before opening the PR** (see "## Self-review before reporting"
      below). After committing and BEFORE `gh pr create`, run the structured
      self-review against your committed diff and **fix any gaps you find, then
@@ -124,6 +131,33 @@ machine-checkable verdict `{feature, passed, returncode, summary}` to
   exit), do NOT open a PR: fix the change and re-run the gate, or if you cannot
   make it pass, remove your worktree, leave no open PR, and report
   `status: blocked` with a `blocked_reason`.
+
+## Regenerate the committed build tree
+
+Some repos check a **built distribution tree into the repo** (a plugin or
+package tree assembled from source by a build step, kept in version control).
+When such a tree exists, a **build-drift guard** verifies the committed tree
+matches what the current source would produce. If your accept-path change edits
+source that is mirrored into that committed tree but you do NOT regenerate the
+tree, your PR merges with build-drift — the committed tree no longer matches its
+source — and the guard then forces a SECOND, regen-only PR to reconcile it (two
+PRs for one logical change).
+
+So, on the **accept path**, after committing your code change and BEFORE the
+self-review, determine whether your edits touched source that the repo mirrors
+into a committed build tree. If they did:
+
+1. Run the repo's build step to regenerate the committed tree (look for a build
+   script or a documented build command in the repo; run it with the repo root
+   as its target so it rewrites the checked-in tree).
+2. Commit the regenerated tree in the SAME PR as your source change.
+
+If your change touched only source that is NOT mirrored into a committed build
+tree (e.g. docs, tests, or a repo that ships no committed build tree), do NOT
+run the build — regenerating nothing is churn. When unsure whether a file is
+mirrored, check the repo's build step for what it copies. This keeps a
+shipped-source change drift-free in a single PR and green under the build-drift
+guard.
 
 ## Self-review before reporting
 

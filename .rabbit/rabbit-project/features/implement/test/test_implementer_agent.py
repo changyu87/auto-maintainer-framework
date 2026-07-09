@@ -126,6 +126,26 @@ def test_shipped_implementer_invokes_gate_at_deployed_plugin_lib_path():
         "${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py path")
 
 
+def test_shipped_implementer_body_regenerates_committed_build_tree():
+    """v2.7.0 (auto-maintainer-framework#354): when a change touches source that a
+    repo mirrors into a committed build/distribution tree, the accept path must
+    regenerate that committed tree and include it in the SAME PR, so a
+    shipped-source change lands drift-free in one PR (green under the build-drift
+    guard) instead of forcing a second regen-only PR. The body must instruct the
+    implementer to regenerate the committed build tree on the accept path, and
+    tie it to the build-drift concern and the same-PR requirement."""
+    body = _body().lower().replace("*", "")
+    assert "build-drift" in body or "build drift" in body, (
+        "body must reference the build-drift concern the regen step addresses")
+    assert "regenerate" in body, (
+        "body must instruct the implementer to regenerate the committed build "
+        "tree")
+    # the regenerated tree must land in the SAME PR as the source change
+    assert "same pr" in body, (
+        "body must require the regenerated tree in the SAME PR as the source "
+        "change")
+
+
 def test_shipped_implementer_body_has_no_source_tree_leak():
     """The shipped body runs from the installed plugin and must NOT reference the
     dev source tree: neither the `rabbit-project` source path nor the `.rabbit`
