@@ -4,8 +4,9 @@
 A pure, deterministic decision library over a machine-first, versioned CENTRAL
 config (config.json). Decision surfaces plus one effectful halt helper:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.4.0),
-     DEFAULT_GOVERNANCE, load_config(project_dir), work_own_filings(config). The
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.5.0),
+     DEFAULT_GOVERNANCE, load_config(project_dir), work_own_filings(config),
+     regression_command(config). The
      config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
      §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
@@ -97,8 +98,11 @@ import lifecycle_dispositions as ld
 # REMOVED — the self_deploy ACTION was removed in #324 (the auto-maintainer is
 # NOT self-deployable), so the knob gates nothing. A config.json still carrying a
 # stale `self_deploy` key is TOLERATED (dropped, never surfaced), so the bump is
-# backward compatible.
-GOVERNANCE_SCHEMA_VERSION = "2.4.0"
+# backward compatible. 2.5.0: additive `regression_command` knob (default null =
+# NO gate) — the GATE full-regression shell command read by verify-integrate; an
+# absent key backfills null (GATE is a no-op PASS), so the bump is backward
+# compatible.
+GOVERNANCE_SCHEMA_VERSION = "2.5.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
 # config field. The loop's OWN defects route here ALWAYS, never the project
@@ -120,11 +124,17 @@ MAINTAINER_REPO = "changyu87/auto-maintainer-framework"
 # previously-deferred "explicitly opted in" provision to default-on opt-out. Owned
 # here; work-intake PULL consumes it to apply the loopback exclusion and scheduling
 # threads it from the loaded config into PULL (separate cycles).
+# regression_command (§3.7, verify-integrate GATE) defaults null (NO gate): the
+# GATE state runs this full-regression shell command against each REVIEW-passed
+# PR (exit 0 = pass), but a null command makes GATE a no-op PASS, so an
+# unconfigured project merges exactly as before (non-breaking opt-in). Owned here;
+# read by verify-integrate through load_config.
 DEFAULT_GOVERNANCE = {
     "schema_version": GOVERNANCE_SCHEMA_VERSION,
     "mode": "propose",
     "features_root": None,
     "work_own_filings": True,
+    "regression_command": None,
     "budget": {
         "per_day_tokens": None,
         "window_tz": "local",
@@ -210,7 +220,10 @@ def _overlay(raw):
     by VERIFY's cross-feature complement, §3.7.6) is surfaced; absent keeps the
     null default (UNCONFIGURED -> the complement conservatively gates). An
     explicit top-level `work_own_filings` (the loopback toggle, §3.11.5) is
-    surfaced; absent keeps the default True (the loop works its own filings). A
+    surfaced; absent keeps the default True (the loop works its own filings). An
+    explicit top-level `regression_command` (the GATE full-regression shell
+    command read by verify-integrate, §3.7) is surfaced, including an explicit
+    null; absent keeps the default None (NO gate -> GATE is a no-op PASS). A
     stale top-level `self_deploy` key (the removed self-deployment gate, #324) is
     silently dropped (tolerated, ignored — the self_deploy ACTION was removed, so
     the knob gates nothing).
@@ -222,6 +235,8 @@ def _overlay(raw):
         config["features_root"] = raw["features_root"]
     if "work_own_filings" in raw:
         config["work_own_filings"] = raw["work_own_filings"]
+    if "regression_command" in raw:
+        config["regression_command"] = raw["regression_command"]
     budget = raw.get("budget", {})
     for key in ("per_day_tokens", "window_tz"):
         if key in budget:
@@ -304,6 +319,17 @@ def work_own_filings(config):
     apply the loopback exclusion; scheduling threads it from the loaded config.
     """
     return config.get("work_own_filings", True)
+
+
+def regression_command(config):
+    """The GATE full-regression shell command (§3.7), or None for NO gate.
+
+    A pure config read: returns the loaded config's `regression_command`,
+    defaulting to None when the key is absent (NO gate -> GATE is a no-op PASS,
+    non-breaking). verify-integrate's GATE consumes this to run the command
+    against each REVIEW-passed PR (exit 0 = pass); a None command skips the gate.
+    """
+    return config.get("regression_command")
 
 
 # --------------------------------------------------------------------------
