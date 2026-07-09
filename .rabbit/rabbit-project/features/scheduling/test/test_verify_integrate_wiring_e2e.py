@@ -546,6 +546,148 @@ def test_default_route_tick_unchanged():
         {}, None), doc
 
 
+# --------------------------------------------------------------------------
+# GATE wiring — the cumulative regression GATE (verify-integrate §2.2 [v2]).
+# scheduling wires GATE by (a) mapping GATE -> run_tick:make_gate in
+# DEFAULT_ADAPTER_MAP (pre-mapped, resolvable), (b) delegating make_gate to
+# verify_integrate.make_gate (reads verdicts, writes gate_results), and (c)
+# seeding the gate_results read-product slot EMPTY when GATE is routed. GATE
+# only appears in the shipped aggressive route (packaging); the conservative
+# code DEFAULT_ROUTE is unchanged.
+# --------------------------------------------------------------------------
+
+# The close-the-loop route WITH GATE between REVIEW and INTEGRATE (the cumulative
+# regression gate). REVIEW -> GATE -> INTEGRATE (GATE reads verdicts, writes
+# gate_results, emits OK).
+_GATE_ROUTE = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "PULL", "TRIAGE", "PRIORITIZE", "IMPLEMENT",
+               "VERIFY", "REVIEW", "GATE", "INTEGRATE", "CLEANUP", "PERSIST",
+               "EXIT", "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "TRIAGE"},
+        {"state": "PULL", "signal": "EMPTY", "next": "TRIAGE"},
+        {"state": "TRIAGE", "signal": "OK", "next": "PRIORITIZE"},
+        {"state": "TRIAGE", "signal": "EMPTY", "next": "PRIORITIZE"},
+        {"state": "PRIORITIZE", "signal": "OK", "next": "IMPLEMENT"},
+        {"state": "PRIORITIZE", "signal": "EMPTY", "next": "IMPLEMENT"},
+        {"state": "IMPLEMENT", "signal": "OK", "next": "VERIFY"},
+        {"state": "IMPLEMENT", "signal": "BLOCKED", "next": "VERIFY"},
+        {"state": "VERIFY", "signal": "OK", "next": "REVIEW"},
+        {"state": "VERIFY", "signal": "EMPTY", "next": "REVIEW"},
+        {"state": "REVIEW", "signal": "OK", "next": "GATE"},
+        {"state": "REVIEW", "signal": "EMPTY", "next": "GATE"},
+        {"state": "GATE", "signal": "OK", "next": "INTEGRATE"},
+        {"state": "INTEGRATE", "signal": "OK", "next": "CLEANUP"},
+        {"state": "CLEANUP", "signal": "OK", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+
+def test_default_adapter_map_includes_gate():
+    """GATE is pre-mapped to run_tick:make_gate (resolvable even though the
+    conservative DEFAULT_ROUTE omits it — the ports-and-adapters promise)."""
+    amap = rt.DEFAULT_ADAPTER_MAP
+    assert "GATE" in amap, amap
+    assert amap["GATE"] == "run_tick:make_gate", amap["GATE"]
+
+
+def test_gate_factory_delegates_to_verify_integrate():
+    """make_gate returns (vi.GATE_MANIFEST, callable) — it delegates to
+    verify-integrate's cumulative GATE factory (reads verdicts, writes
+    gate_results)."""
+    rti = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
+           "source": None, "now": None,
+           "governance": {"mode": "auto-merge"}}
+    restore = _patch_vi_seams(None)
+    try:
+        manifest, run = rt.make_gate(rti)
+    finally:
+        restore()
+    assert manifest is vi.GATE_MANIFEST, manifest
+    assert list(manifest.reads) == ["verdicts"], manifest.reads
+    assert list(manifest.writes) == ["gate_results"], manifest.writes
+    assert callable(run)
+
+
+def test_gate_route_resolves_and_validates_via_build_loop():
+    """A route REVIEW -> GATE -> INTEGRATE resolves + validates via build_loop
+    with NO WiringError; GATE resolves to a SCRIPT state (not AgentState)."""
+    runtime = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
+               "source": None, "now": None,
+               "governance": {"mode": "propose"}}
+    route, states = aw.build_loop(
+        _GATE_ROUTE, rt.DEFAULT_ADAPTER_MAP, runtime,
+        start="GUARD", initial=rt._INITIAL_SLOTS)
+    assert "GATE" in states, list(states)
+    assert not isinstance(states["GATE"][1], aw.AgentState), states["GATE"]
+
+
+def test_seed_context_seeds_gate_results_empty_when_gate_routed():
+    """gate_results is REGISTERED and seeded EMPTY ([]) when GATE is routed, so
+    INTEGRATE reading it and a GATE-skipped route both stay crash-free."""
+    project_dir = tempfile.mkdtemp(prefix="sched-gateseed-")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(runtime_dir, exist_ok=True)
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
+    ctx = rt._seed_context(state_path, "/tmp/j.jsonl", _GATE_ROUTE)
+    slots = ctx.registered_slots()
+    assert "gate_results" in slots, slots
+    assert ctx.read("gate_results") == [], ctx.read("gate_results")
+
+
+def test_seed_context_omits_gate_results_when_gate_not_routed():
+    """gate_results is NOT seeded when GATE is absent from the route (the
+    close-the-loop route without GATE, and the conservative default route)."""
+    project_dir = tempfile.mkdtemp(prefix="sched-gatenoseed-")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(runtime_dir, exist_ok=True)
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
+    for route in (_CLOSE_ROUTE, rt.DEFAULT_ROUTE):
+        ctx = rt._seed_context(state_path, "/tmp/j.jsonl", route)
+        assert "gate_results" not in ctx.registered_slots(), route["states"]
+
+
+def test_gate_route_runs_end_to_end_auto_merge():
+    """The REVIEW -> GATE -> INTEGRATE route runs end-to-end at auto-merge: GATE
+    runs between REVIEW and INTEGRATE, gate_results is persisted, and the ok PR
+    still merges (GATE reports the partition; it does not block the merge)."""
+    project_dir = tempfile.mkdtemp(prefix="sched-gaterun-")
+    _write_project_route(project_dir, _GATE_ROUTE)
+    _write_governance(project_dir, "auto-merge")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+
+    merge_calls = []
+    restore = _patch_vi_seams(None, merge_calls=merge_calls)
+    try:
+        result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                             state_path=state_path, journal_path=journal_path,
+                             source=_stub_source(), return_run_result=True)
+    finally:
+        restore()
+    assert "GATE" in result.path, result.path
+    gate_i = result.path.index("GATE")
+    assert result.path[gate_i - 1] == "REVIEW", result.path
+    assert result.path[gate_i + 1] == "INTEGRATE", result.path
+    assert result.final_state == "DONE", result.path
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
