@@ -143,6 +143,14 @@ _LOAD_BEARING_DOCS = (
     "merged",
     "skipped",
     "errors",
+    "gate_failed",
+    # GATE state + GateResult schema (DESIGN §2.2 [v2])
+    "GATE",
+    "GateResult",
+    "gate_results",
+    "regression",
+    "conflict",
+    "failure_summary",
     # signal vocabulary
     "OK",
     "EMPTY",

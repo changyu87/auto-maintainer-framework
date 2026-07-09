@@ -96,8 +96,10 @@ def _recording_sink():
 
 def _fresh_ctx():
     """A TickContext with the slots INTEGRATE/CLEANUP touch. After the loop
-    redesign INTEGRATE reads ONLY `verdicts` (the review-approval coupling is
-    gone), so review_verdicts is NOT registered here."""
+    redesign INTEGRATE reads `verdicts` + `gate_results` (the review-approval
+    coupling is gone), so review_verdicts is NOT registered here. The
+    gate_results slot carries one GateResult per gated PR (the cumulative GATE
+    output INTEGRATE now consults before merging)."""
     ctx = fc.TickContext()
     ctx.register_slot(
         vi.VERDICTS_SLOT["name"],
@@ -105,11 +107,29 @@ def _fresh_ctx():
         version=vi.VERDICTS_SLOT["version"],
     )
     ctx.register_slot(
+        vi.GATE_RESULTS_SLOT["name"],
+        vi.GATE_RESULTS_SLOT["schema"],
+        version=vi.GATE_RESULTS_SLOT["version"],
+    )
+    ctx.register_slot(
         vi.INTEGRATION_RESULT_SLOT["name"],
         vi.INTEGRATION_RESULT_SLOT["schema"],
         version=vi.INTEGRATION_RESULT_SLOT["version"],
     )
     return ctx
+
+
+def _write_verdicts(ctx, verdicts):
+    """Write the verdicts slot AND seed a PASSING GateResult for every ok verdict
+    (these INTEGRATE tests exercise the verdict/mode/guardrail gates, which are
+    ORTHOGONAL to the cumulative regression gate — a passing gate lets an ok PR
+    reach those gates exactly as before GATE existed). Non-ok verdicts get a
+    passing gate too; INTEGRATE skips them on the verdict gate first regardless."""
+    ctx.write("verdicts", verdicts)
+    ctx.write("gate_results", [
+        vi.GateResult(pr_ref=v["pr_ref"], issue_ref=None, passed=True).to_dict()
+        for v in verdicts
+    ])
 
 
 # ==========================================================================
@@ -156,8 +176,10 @@ def test_integration_result_slot_descriptor_is_versioned():
 
 
 # ==========================================================================
-# Behaviour (loop redesign §3.7.3): INTEGRATE is THIN — its manifest reads ONLY
-# `verdicts` (NOT review_verdicts), writes integration_result, emits OK.
+# Behaviour (loop redesign §3.7.3 + GATE §2.2 [v2] coexistence): INTEGRATE is
+# THIN — its manifest declares the guaranteed `verdicts` read (NOT
+# review_verdicts). It CONSULTS gate_results at runtime but reads it OPTIONALLY,
+# so gate_results is NOT a declared manifest read until scheduling wires GATE.
 # ==========================================================================
 
 def test_integrate_manifest_declares_reads_writes_emits():
@@ -165,6 +187,7 @@ def test_integrate_manifest_declares_reads_writes_emits():
     assert isinstance(m, fc.StateManifest)
     assert m.reads == ("verdicts",)
     assert "review_verdicts" not in m.reads
+    assert "gate_results" not in m.reads
     assert m.writes == ("integration_result",)
     assert set(m.emits) == {"OK"}
 
@@ -186,7 +209,7 @@ def test_integrate_e2e_auto_merge_merges_ok_verdict():
     integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=1, ok=True)])
+    _write_verdicts(ctx, [_verdict(number=1, ok=True)])
     # No review_verdicts written — the thin INTEGRATE does not need them.
 
     result = integrate.run(ctx)
@@ -216,7 +239,7 @@ def test_integrate_e2e_merges_ok_pr_without_any_review_approval():
     integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=99, ok=True)])
+    _write_verdicts(ctx, [_verdict(number=99, ok=True)])
 
     res = ctx_run(integrate, ctx)
     assert sink.calls == ["acme/widget#99"]
@@ -241,7 +264,7 @@ def test_integrate_e2e_non_ok_verdict_skipped_sink_not_called():
     integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=2, ok=False, ci_state="failing",
+    _write_verdicts(ctx, [_verdict(number=2, ok=False, ci_state="failing",
                                     reasons=["CI not passing (ci_state=failing)"])])
 
     result = integrate.run(ctx)
@@ -267,7 +290,7 @@ def test_integrate_e2e_propose_mode_not_permitted_skipped_sink_not_called():
     integrate = vi.Integrate(mode="propose", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=3, ok=True)])
+    _write_verdicts(ctx, [_verdict(number=3, ok=True)])
 
     result = integrate.run(ctx)
     assert result.signal == "OK"
@@ -291,7 +314,7 @@ def test_integrate_e2e_dry_run_mode_not_permitted_skipped():
     integrate = vi.Integrate(mode="dry-run", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=4, ok=True)])
+    _write_verdicts(ctx, [_verdict(number=4, ok=True)])
 
     result = integrate.run(ctx)
     vocab = fc.SignalVocabulary(vi.INTEGRATE_SIGNALS)
@@ -315,7 +338,7 @@ def test_integrate_e2e_guardrail_violation_skipped_sink_not_called():
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
     # ok flag is True but the base is wrong — the guardrail must still block it.
-    ctx.write("verdicts", [_verdict(number=5, ok=True, base="release-1.x")])
+    _write_verdicts(ctx, [_verdict(number=5, ok=True, base="release-1.x")])
 
     result = integrate.run(ctx)
     vocab = fc.SignalVocabulary(vi.INTEGRATE_SIGNALS)
@@ -341,7 +364,7 @@ def test_integrate_e2e_merge_sink_raises_records_error():
     integrate = vi.Integrate(mode="auto-merge", merge_sink=raising_sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=6, ok=True)])
+    _write_verdicts(ctx, [_verdict(number=6, ok=True)])
 
     result = integrate.run(ctx)
     assert result.signal == "OK"
@@ -366,7 +389,7 @@ def test_integrate_e2e_mixed_batch_partitions():
     integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
-    ctx.write("verdicts", [
+    _write_verdicts(ctx, [
         _verdict(number=1, ok=True),
         _verdict(number=2, ok=False, ci_state="pending",
                  reasons=["CI not passing (ci_state=pending)"]),
@@ -400,7 +423,7 @@ def test_integrate_e2e_uses_real_safety_governance():
     integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
                              default_branch=_DEFAULT_BRANCH)
     ctx = _fresh_ctx()
-    ctx.write("verdicts", [_verdict(number=8, ok=True)])
+    _write_verdicts(ctx, [_verdict(number=8, ok=True)])
     integrate.run(ctx)
     assert sink.calls == ["acme/widget#8"]
 

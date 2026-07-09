@@ -1,6 +1,6 @@
 {
   "name": "verify-integrate",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/verify-integrate/src/**"
@@ -8,6 +8,6 @@
   "created": "2026-06-14T16:35:52Z",
   "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict schemas reach a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-06-24",
-  "spec_no_change_reason": null
+  "updated": "2026-07-08",
+  "spec_no_change_reason": "spec change (cumulative GATE + INTEGRATE gate-handling) was committed by the dispatcher at 221af73 before this code+test cycle; git diff HEAD shows no further spec delta"
 }

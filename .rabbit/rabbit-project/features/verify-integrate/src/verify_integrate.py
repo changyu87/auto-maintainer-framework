@@ -67,9 +67,24 @@ Public surface (REVIEW — the ADVISORY quality state, DESIGN §3.7.7):
     RETAINED deterministic evidence validators (#255): the packaging-config
     release gate asserts the shipped lib carries them.
 
+Public surface (GATE — the cumulative regression gate, DESIGN §2.2 [v2]):
+  - GATE_RESULT_SCHEMA_VERSION + GateResult — the typed, versioned per-gated-PR
+    result ({pr_ref, issue_ref, passed, reason, failure_summary}).
+  - GATE_RESULTS_SLOT — the fsm-contracts slot registration descriptor.
+  - GATE_MANIFEST / GATE_SIGNALS — GATE's manifest (reads verdicts, writes
+    gate_results) + signal set (OK).
+  - gh_closing_issue_ref(pr_ref, repo) — the production closing-issue resolver.
+  - Gate — the GATE state; run(TickContext) -> StateResult. Cumulative: a
+    disposable integration worktree at current main, per-PR --no-ff merge +
+    regression, roll-back-on-fail, exclude, deterministic order. No-op PASS when
+    regression_command is null. Never merges main / never calls the merge sink.
+  - make_gate(runtime) — the adapter factory scheduling wires GATE with.
+
 Public surface (slice 2 — INTEGRATE + CLEANUP):
   - INTEGRATION_RESULT_SCHEMA_VERSION + IntegrationResult — the typed,
-    versioned {merged, skipped, errors} integration-result schema.
+    versioned {merged, skipped, errors, gate_failed} integration-result schema.
+  - gh_issue_comment_sink(issue_ref, body, repo) — the production gate-fail
+    comment sink; gate_fail_comment_body(...) builds the marker+JSON body.
   - INTEGRATION_RESULT_SLOT — the fsm-contracts slot registration descriptor.
   - INTEGRATE_MANIFEST / INTEGRATE_SIGNALS — INTEGRATE's manifest (reads ONLY
     verdicts — thin merge, no review coupling) + signal set.
@@ -79,12 +94,12 @@ Public surface (slice 2 — INTEGRATE + CLEANUP):
   - CLEANUP_MANIFEST / CLEANUP_SIGNALS — CLEANUP's manifest + signal set.
   - Cleanup — the CLEANUP state (v1-thin pass-through; run -> OK).
 
-Version: 0.6.0
+Version: 0.7.0
 Owner: changyu87
 Deprecation criterion: Superseded when the loop adopts a non-git VCS backend,
   or a model-backed verify/integrate policy replaces the deterministic gh-based
-  gates, or when the Verdict / IntegrationResult schemas reach a breaking major
-  version. See docs/spec.md.
+  gates, or when the Verdict / IntegrationResult / GateResult schemas reach a
+  breaking major version. See docs/spec.md.
 """
 
 import json
@@ -563,6 +578,12 @@ def _derive_pr_ref(url, number):
     return f"#{number}"
 
 
+def _pr_number(pr_ref):
+    """The integer PR number parsed off a `pr_ref` (`owner/repo#number` or bare
+    `#number`), used to order the GATE's cumulative merges deterministically."""
+    return int(pr_ref.split("#")[-1])
+
+
 def _pr_url(pr_ref, repo):
     """Pure derivation of a PR's web URL from its ref so a merged entry carries a
     real link instead of url:''. `owner/repo#number` ->
@@ -755,6 +776,265 @@ class Verify:
 
 
 # ==========================================================================
+# GATE — the cumulative regression gate (DESIGN §2.2 [v2]) between REVIEW and
+# INTEGRATE. Deterministic, SCRIPT-TIER: the self-contained regression gate that
+# replaces reliance on external CI. Reads `verdicts` (the open loop PRs) +
+# `regression_command` from the central config; writes `gate_results` (one
+# GateResult per gated PR); emits OK.
+#
+# No-op when `regression_command` is null (every PR passes — a project that has
+# not configured a gate merges exactly as before). Otherwise CUMULATIVE: create a
+# DISPOSABLE integration worktree at current `main`, merge each ok verdict PR in
+# a deterministic order (PR number) with the same --no-ff strategy INTEGRATE
+# uses, and run the regression after each clean merge, so PR k is validated on
+# top of `main` + the already-passed 1..k-1. A textual conflict or a nonzero
+# regression rolls the PR out, EXCLUDES it, and records the failure. The worktree
+# is ALWAYS removed. GATE never merges to `main` and never calls the merge sink.
+#
+# EVERYTHING external — git (worktree add/fetch/merge/reset/remove), the
+# regression subprocess, and gh issue-ref resolution — is behind an INJECTABLE
+# callable with a production default, so the cumulative logic is unit-tested with
+# a FAKE runner scripting outcomes (no real git, no PRs, no network).
+# ==========================================================================
+
+# The versioned GateResult schema (machine-first; bumped on a breaking field-set
+# change). Distinct from the feature version.
+GATE_RESULT_SCHEMA_VERSION = "1.0.0"
+
+# The bounded cap on a GateResult.failure_summary (a tail of the regression
+# output, not the whole multi-thousand-line log).
+_FAILURE_SUMMARY_MAX_BYTES = 4096
+
+
+@dataclass(eq=True)
+class GateResult:
+    """One GateResult per REVIEW-passed (ok) PR the GATE state gated (§2.2 [v2]).
+
+    `passed` is whether the PR merged cleanly AND its cumulative regression run
+    exit-0'd. `reason` is None on pass, else `"regression"` (clean merge, nonzero
+    regression) or `"conflict"` (textual merge conflict — regression not run).
+    `issue_ref` is the PR's closing-issue reference (resolved via the injectable
+    gh resolver; None when unresolvable) so INTEGRATE can comment the failure on
+    the issue. `failure_summary` is a BOUNDED tail of the regression output
+    (empty on pass). `to_dict`/`from_dict` give the machine-first, versioned
+    representation for the `gate_results` slot.
+    """
+
+    pr_ref: str
+    issue_ref: object
+    passed: bool
+    reason: object = None
+    failure_summary: str = ""
+
+    def to_dict(self):
+        return {
+            "schema_version": GATE_RESULT_SCHEMA_VERSION,
+            "pr_ref": self.pr_ref,
+            "issue_ref": self.issue_ref,
+            "passed": self.passed,
+            "reason": self.reason,
+            "failure_summary": self.failure_summary,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            pr_ref=d["pr_ref"],
+            issue_ref=d.get("issue_ref"),
+            passed=d["passed"],
+            reason=d.get("reason"),
+            failure_summary=d.get("failure_summary", ""),
+        )
+
+
+# The fsm-contracts slot descriptor. `gate_results` is an array slot (a list of
+# GateResult dicts); the slot version tracks the schema version.
+GATE_RESULTS_SLOT = {
+    "name": "gate_results",
+    "schema": {"type": "array"},
+    "version": GATE_RESULT_SCHEMA_VERSION,
+}
+
+# Closed signal set GATE emits: always OK (it reports the gate_results partition;
+# a gate failure is recorded per-PR, never signalled).
+GATE_SIGNALS = ["OK"]
+
+# Per-state manifest (bounded-scope): reads the verdicts slot (the open loop PRs),
+# writes the gate_results slot, emits OK.
+GATE_MANIFEST = fc.StateManifest(reads=["verdicts"],
+                                 writes=["gate_results"],
+                                 emits=GATE_SIGNALS)
+
+
+def gh_closing_issue_ref(pr_ref, repo=None, runner=subprocess.run):
+    """Production issue-ref resolver: shell `gh pr view <n> --json
+    closingIssuesReferences` and return the first closing issue's ref
+    (`owner/repo#number` when `repo` is given, else `#number`), or None when the
+    PR closes no issue. Injectable `runner` for deterministic tests (no network).
+    """
+    number = pr_ref.split("#")[-1]
+    cmd = ["gh", "pr", "view", number, "--json", "closingIssuesReferences",
+           "-q", ".closingIssuesReferences"]
+    if repo:
+        cmd += ["--repo", repo]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    refs = json.loads(out.stdout or "[]")
+    if not refs:
+        return None
+    issue_number = refs[0].get("number")
+    if issue_number is None:
+        return None
+    return f"{repo}#{issue_number}" if repo else f"#{issue_number}"
+
+
+def _bounded_tail(text, max_bytes=_FAILURE_SUMMARY_MAX_BYTES):
+    """The last `max_bytes` bytes of `text` (a bounded tail of a regression log).
+    Pure; empty text -> ''."""
+    text = text or ""
+    if len(text) <= max_bytes:
+        return text
+    return text[-max_bytes:]
+
+
+class Gate:
+    """The GATE state (cumulative regression gate, DESIGN §2.2 [v2]).
+
+    Reads the `verdicts` slot and, when `regression_command` is configured, runs
+    the command CUMULATIVELY against each ok verdict PR in a disposable
+    integration worktree at current `main`: merge PR k with --no-ff, run the
+    regression, keep the merge on pass / roll it back + exclude on a nonzero
+    regression, and record a `GateResult` per PR. A textual conflict excludes the
+    PR with reason `"conflict"`. When `regression_command` is null GATE is a no-op
+    PASS (every passed=True). Writes `gate_results`, emits OK.
+
+    Every external edge — git (via `runner`), the regression subprocess (via the
+    same `runner`), and the closing-issue resolver (`issue_resolver`) — is
+    injectable so the cumulative logic is unit-tested with a fake. GATE never
+    merges to `main` and never calls the INTEGRATE merge sink.
+    """
+
+    def __init__(self, regression_command, runner=subprocess.run, repo=None,
+                 default_branch=None, issue_resolver=gh_closing_issue_ref,
+                 worktree_dir=None):
+        self._regression_command = regression_command
+        self._runner = runner
+        self._repo = repo
+        self._default_branch = default_branch
+        self._issue_resolver = issue_resolver
+        self._worktree_dir = worktree_dir
+
+    def _ok_verdicts_ordered(self, verdicts):
+        """The ok verdicts in deterministic PR-number order (a non-ok verdict
+        won't merge, so GATE does not gate it)."""
+        ok = [v for v in verdicts if v.get("ok")]
+        return sorted(ok, key=lambda v: _pr_number(v["pr_ref"]))
+
+    def _resolve_issue_ref(self, pr_ref):
+        try:
+            return self._issue_resolver(pr_ref, repo=self._repo)
+        except Exception:  # noqa: BLE001 — a resolver fault must not wedge GATE
+            return None
+
+    def run(self, ctx):
+        verdicts = ctx.read("verdicts")
+        ordered = self._ok_verdicts_ordered(verdicts)
+
+        if self._regression_command is None:
+            # No-op PASS: every ok PR passes; no worktree is created.
+            results = [
+                GateResult(pr_ref=v["pr_ref"],
+                           issue_ref=self._resolve_issue_ref(v["pr_ref"]),
+                           passed=True).to_dict()
+                for v in ordered
+            ]
+            return fc.StateResult(signal="OK",
+                                  writes={"gate_results": results})
+
+        worktree = self._worktree_dir or os.path.join(
+            "/tmp", "am-gate-integration")
+        results = []
+        try:
+            self._runner(["git", "worktree", "add", "--detach", worktree,
+                          self._default_branch],
+                         capture_output=True, text=True)
+            for v in ordered:
+                results.append(self._gate_one(v, worktree))
+        finally:
+            self._runner(["git", "worktree", "remove", "--force", worktree],
+                         capture_output=True, text=True)
+
+        return fc.StateResult(signal="OK",
+                              writes={"gate_results": [r.to_dict()
+                                                      for r in results]})
+
+    def _gate_one(self, verdict, worktree):
+        """Merge one PR into the integration worktree and run the cumulative
+        regression, returning its GateResult. Rolls back on a nonzero regression;
+        aborts + excludes on a textual conflict."""
+        pr_ref = verdict["pr_ref"]
+        issue_ref = self._resolve_issue_ref(pr_ref)
+        number = _pr_number(pr_ref)
+
+        # Record the pre-merge HEAD so a regression failure can roll back to it.
+        pre = self._runner(["git", "-C", worktree, "rev-parse", "HEAD"],
+                           capture_output=True, text=True)
+        pre_sha = (pre.stdout or "").strip()
+
+        # Fetch the PR head then merge it with the same --no-ff strategy
+        # INTEGRATE uses (the validated tree equals the merged tree).
+        self._runner(["git", "-C", worktree, "fetch", "origin",
+                      f"pull/{number}/head"],
+                     capture_output=True, text=True)
+        merge = self._runner(
+            ["git", "-C", worktree, "merge", "--no-ff", "--no-edit",
+             "-m", f"gate-integrate {pr_ref}", "FETCH_HEAD"],
+            capture_output=True, text=True)
+        if merge.returncode != 0:
+            # textual conflict — abort + exclude (not carried forward).
+            self._runner(["git", "-C", worktree, "merge", "--abort"],
+                         capture_output=True, text=True)
+            return GateResult(pr_ref=pr_ref, issue_ref=issue_ref,
+                              passed=False, reason="conflict",
+                              failure_summary=_bounded_tail(merge.stdout))
+
+        reg = self._runner(self._regression_command, shell=True, cwd=worktree,
+                           capture_output=True, text=True)
+        if reg.returncode != 0:
+            # roll back the merge; exclude the PR from the growing tree.
+            self._runner(["git", "-C", worktree, "reset", "--hard", pre_sha],
+                         capture_output=True, text=True)
+            return GateResult(
+                pr_ref=pr_ref, issue_ref=issue_ref, passed=False,
+                reason="regression",
+                failure_summary=_bounded_tail(reg.stdout or reg.stderr))
+
+        # clean merge + passing regression — KEEP as base for the next PR.
+        return GateResult(pr_ref=pr_ref, issue_ref=issue_ref, passed=True)
+
+
+def make_gate(runtime):
+    """GATE adapter factory (verify-integrate): the cumulative regression gate
+    (DESIGN §2.2 [v2]) between REVIEW and INTEGRATE. Resolves `regression_command`
+    from the loaded central config (sg.load_config(project_dir) via the
+    regression_command accessor) — null => GATE is a no-op PASS. Binds the
+    injectable git+regression runner, the closing-issue resolver, the repo, and
+    the resolved default branch. Returns (GATE_MANIFEST, Gate.run) per the
+    factory(runtime) -> (StateManifest, run_callable) convention scheduling wires.
+    """
+    project_dir = runtime.get("project_dir") or "."
+    cfg = sg.load_config(project_dir)
+    regression = sg.regression_command(cfg)
+    repo = runtime.get("repo")
+    default_branch = runtime.get("default_branch")
+    if default_branch is None:
+        default_branch = gh_default_branch_source(repo)
+    gate = Gate(regression_command=regression, runner=subprocess.run,
+                repo=repo, default_branch=default_branch,
+                issue_resolver=gh_closing_issue_ref)
+    return GATE_MANIFEST, gate.run
+
+
+# ==========================================================================
 # INTEGRATE (slice 2) — the single highest-stakes act-side state.
 # ==========================================================================
 
@@ -767,11 +1047,15 @@ INTEGRATION_RESULT_SCHEMA_VERSION = "1.0.0"
 class IntegrationResult:
     """The outcome of an INTEGRATE run (DESIGN §3.7).
 
-    Partitions each considered PR into exactly one of three lists:
+    Partitions each considered PR into exactly one of four lists:
       - `merged`  — [{pr_ref, url}] the PRs the merge sink merged.
       - `skipped` — [{pr_ref, reason}] non-ok verdicts, not-permitted modes
-        (the dry-run/propose NO-OP), and guardrail violations.
+        (the dry-run/propose NO-OP), guardrail violations, and ok verdicts with
+        no matching GateResult (defensive: never merge an un-gated PR).
       - `errors`  — [{pr_ref, reason}] PRs whose merge sink raised.
+      - `gate_failed` — [{pr_ref, issue_ref, reason}] PRs INTEGRATE did NOT merge
+        because their GATE result failed; a machine-readable marker comment was
+        posted on their linked issue instead (the Phase-2 retry/threshold model).
 
     Idempotent at the loop level: a merged PR leaves the open set, so a re-run
     never double-merges. `to_dict`/`from_dict` give the machine-first, versioned
@@ -781,6 +1065,7 @@ class IntegrationResult:
     merged: List[dict] = field(default_factory=list)
     skipped: List[dict] = field(default_factory=list)
     errors: List[dict] = field(default_factory=list)
+    gate_failed: List[dict] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -788,6 +1073,7 @@ class IntegrationResult:
             "merged": [dict(e) for e in self.merged],
             "skipped": [dict(e) for e in self.skipped],
             "errors": [dict(e) for e in self.errors],
+            "gate_failed": [dict(e) for e in self.gate_failed],
         }
 
     @classmethod
@@ -796,6 +1082,7 @@ class IntegrationResult:
             merged=[dict(e) for e in d.get("merged", [])],
             skipped=[dict(e) for e in d.get("skipped", [])],
             errors=[dict(e) for e in d.get("errors", [])],
+            gate_failed=[dict(e) for e in d.get("gate_failed", [])],
         )
 
 
@@ -811,12 +1098,53 @@ INTEGRATION_RESULT_SLOT = {
 # never fails the tick — a merge fault is recorded under `errors`, not signalled).
 INTEGRATE_SIGNALS = ["OK"]
 
-# Per-state manifest (bounded-scope): THIN merge — reads ONLY the verdicts slot
-# (the review-approval coupling is gone; REVIEW is advisory), writes the
-# integration_result slot, emits OK.
+# Per-state manifest (bounded-scope): THIN merge — reads the verdicts slot (a PR
+# merges only when ok AND its GateResult passed; the review-approval coupling is
+# gone, REVIEW is advisory), writes the integration_result slot, emits OK.
+#
+# COEXISTENCE WINDOW (spec-rules §3, additive-by-default): INTEGRATE CONSULTS the
+# `gate_results` slot the cumulative GATE writes, but reads it OPTIONALLY (via
+# _read_optional_slot, mirroring how VERIFY reads cross_cutting_risk) and so does
+# NOT DECLARE it a hard manifest read yet. GATE is wired into the route by
+# scheduling in a LATER cycle (make_gate + GATE_MANIFEST are exported for exactly
+# that); until scheduling routes GATE AND seeds gate_results into the initial
+# TickContext, the un-wired route must still validate — a hard manifest read of a
+# slot no routed state writes would fail data-readiness and break the loop. When
+# scheduling wires GATE it will seed gate_results and promote it to a declared
+# read. Until then INTEGRATE with an absent gate_results falls back to the
+# pre-GATE behaviour (an ok verdict merges on the verdict + guardrail gates).
 INTEGRATE_MANIFEST = fc.StateManifest(reads=["verdicts"],
                                       writes=["integration_result"],
                                       emits=INTEGRATE_SIGNALS)
+
+# The FIXED machine-readable marker a gate-fail comment carries so a later tick's
+# TRIAGE reads it deterministically (the Phase-2 retry/threshold model).
+GATE_FAIL_MARKER = "<!-- auto-maintainer:gate-fail -->"
+
+
+def gh_issue_comment_sink(issue_ref, body, repo=None, runner=subprocess.run):
+    """Production comment sink: shell `gh issue comment <n> --body <body>` (and
+    `--repo` when given) to post a comment on the PR's linked issue. Injectable
+    `runner` for deterministic tests (no network). Returns None."""
+    number = issue_ref.split("#")[-1]
+    cmd = ["gh", "issue", "comment", number, "--body", body]
+    if repo:
+        cmd += ["--repo", repo]
+    runner(cmd, capture_output=True, text=True, check=True)
+
+
+def gate_fail_comment_body(pr_ref, reason, failure_summary):
+    """Build the machine-readable gate-fail comment body: the FIXED marker plus a
+    JSON block carrying {pr_ref, reason, failure_summary} a later tick's TRIAGE
+    parses deterministically. Pure."""
+    payload = json.dumps({
+        "pr_ref": pr_ref,
+        "reason": reason,
+        "failure_summary": failure_summary,
+    }, sort_keys=True)
+    return (f"{GATE_FAIL_MARKER}\n"
+            f"Automated regression GATE did not pass for {pr_ref}; "
+            f"this PR was NOT merged.\n\n{payload}\n")
 
 
 def gh_pr_merge_sink(pr_ref, repo=None, runner=subprocess.run):
@@ -865,16 +1193,25 @@ class Integrate:
 
     def __init__(self, mode, merge_sink=gh_pr_merge_sink, repo=None,
                  default_branch=None, permits_fn=sg.permits,
-                 guardrails_fn=sg.merge_guardrails):
+                 guardrails_fn=sg.merge_guardrails,
+                 comment_sink=gh_issue_comment_sink):
         self._mode = mode
         self._merge_sink = merge_sink
         self._repo = repo
         self._default_branch = default_branch
         self._permits_fn = permits_fn
         self._guardrails_fn = guardrails_fn
+        self._comment_sink = comment_sink
 
     def run(self, ctx):
         verdicts = ctx.read("verdicts")
+        # gate_results is read OPTIONALLY (the coexistence window): when the
+        # cumulative GATE is wired by scheduling the slot is present and INTEGRATE
+        # merges only gate-passed PRs; until then (slot absent) INTEGRATE falls
+        # back to the pre-GATE behaviour and gates only on verdict + guardrails.
+        gate_results = _read_optional_slot(ctx, "gate_results")
+        gated = gate_results is not None
+        gate_by_ref = {g["pr_ref"]: g for g in (gate_results or [])}
         permitted = self._permits_fn("merge", self._mode)
         result = IntegrationResult()
 
@@ -884,6 +1221,19 @@ class Integrate:
                 reason = "; ".join(vd.get("reasons") or []) or "verdict not ok"
                 result.skipped.append({"pr_ref": pr_ref, "reason": reason})
                 continue
+            if gated:
+                gate = gate_by_ref.get(pr_ref)
+                if gate is None:
+                    # defensive: an ok verdict with no GateResult is never merged
+                    # un-gated once the gate is active.
+                    result.skipped.append({
+                        "pr_ref": pr_ref,
+                        "reason": "no gate result for ok verdict (not merged)",
+                    })
+                    continue
+                if not gate.get("passed"):
+                    self._record_gate_failed(result, pr_ref, gate)
+                    continue
             if not permitted:
                 result.skipped.append({
                     "pr_ref": pr_ref,
@@ -910,6 +1260,26 @@ class Integrate:
         return fc.StateResult(
             signal="OK",
             writes={"integration_result": result.to_dict()})
+
+    def _record_gate_failed(self, result, pr_ref, gate):
+        """Record a GATE-failed PR under `gate_failed` and post a machine-readable
+        marker+JSON comment on its linked issue (when the issue_ref resolved).
+        The PR is NEVER merged. A comment-sink fault does not wedge the tick — the
+        gate_failed record still lands."""
+        issue_ref = gate.get("issue_ref")
+        reason = gate.get("reason")
+        result.gate_failed.append({
+            "pr_ref": pr_ref,
+            "issue_ref": issue_ref,
+            "reason": reason,
+        })
+        if issue_ref:
+            body = gate_fail_comment_body(
+                pr_ref, reason, gate.get("failure_summary", ""))
+            try:
+                self._comment_sink(issue_ref, body, repo=self._repo)
+            except Exception:  # noqa: BLE001 — a comment fault must not wedge tick
+                pass
 
 
 # ==========================================================================

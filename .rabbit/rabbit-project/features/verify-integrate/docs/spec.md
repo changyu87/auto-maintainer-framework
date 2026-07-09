@@ -43,9 +43,14 @@ durable PR-ledger to drift.
 state      reads                            writes              signals
 VERIFY     cross_cutting_risk (gh: open PRs) verdicts, cross_check  OK | EMPTY
 REVIEW     verdicts                         review_findings     OK | EMPTY
-INTEGRATE  verdicts                         integration_result  OK
+GATE       verdicts (+ config)              gate_results        OK
+INTEGRATE  verdicts, gate_results           integration_result  OK
 CLEANUP    integration_result              —                    OK
 ```
+
+The acting pipeline runs `… VERIFY → REVIEW → GATE → INTEGRATE → CLEANUP …`
+(GATE inserted between REVIEW and INTEGRATE; the route edge is wired by
+`scheduling`).
 
 ## Schemas (owned here, machine-first, versioned)
 
@@ -61,11 +66,24 @@ CLEANUP    integration_result              —                    OK
   `cross_cutting_risk`; `results` is one entry per at-risk feature whose run.py
   was run.
 - **`IntegrationResult`** — `{ schema_version, merged: [{pr_ref, url}],
-  skipped: [{pr_ref, reason}], errors: [{pr_ref, reason}] }`. Idempotent: an
+  skipped: [{pr_ref, reason}], errors: [{pr_ref, reason}], gate_failed: [{pr_ref,
+  issue_ref, reason}] }`. Idempotent: an
   already-merged PR leaves the open set, so a re-run never double-merges. Each
   `merged` entry's `url` is derived from its `pr_ref` (`owner/repo#number` →
   `.../owner/repo/pull/number`; bare `#number` uses the configured repo; neither
-  → `''`) so a successful merge is observable, not an empty link.
+  → `''`) so a successful merge is observable, not an empty link. `gate_failed`
+  records PRs INTEGRATE did not merge because their GATE result failed (a comment
+  was posted on their issue instead).
+- **`GateResult`** — one per REVIEW-passed PR the GATE state gated:
+  `{ schema_version, pr_ref, issue_ref, passed: bool, reason: null | "regression"
+  | "conflict", failure_summary }`. GATE runs the configured `regression_command`
+  CUMULATIVELY (DESIGN §2.2 [v2]): in a disposable integration worktree from
+  current `main`, PRs are merged in deterministic order and the regression is run
+  after each merge, so PR *k* is validated on top of `main` + the already-passed
+  *1..k-1*; a failing/conflicting PR is rolled out, EXCLUDED, and recorded.
+  `regression_command` null ⇒ GATE is a no-op PASS (every `passed=True`,
+  `reason=null`). `failure_summary` is a BOUNDED tail of the command output
+  (empty on pass).
 - **`review_findings` record** — one MATERIAL finding the advisory reviewer
   emits, conforming EXACTLY to work-intake's `DiscoveredIssue.to_dict`:
   `{ schema_version, title, body, kind, severity, target, dedup_key, filed_by }`.
@@ -129,14 +147,52 @@ backlog issues by the downstream REPORT port and fixed on a later tick.
 - Read-only w.r.t. GitHub: VERIFY never merges, closes, or writes to GitHub.
   Always runs at every trust mode (it only reports).
 
+## GATE (cumulative regression gate, DESIGN §2.2 [v2])
+
+Between REVIEW and INTEGRATE. Deterministic, **script-tier**; the self-contained
+regression gate that replaces reliance on external CI. Reads `verdicts` (the open
+loop PRs) + `regression_command` from the central config
+(`safety_governance.load_config` / the `regression_command` accessor). Writes
+`gate_results` (one `GateResult` per gated PR). Emits `OK`.
+
+- **No-op when unconfigured.** `regression_command` is `null` ⇒ every PR passes
+  (`passed=True, reason=null`); a project that has not configured a gate merges
+  exactly as before. GATE never blocks by absence.
+- **Cumulative integration.** Otherwise create a **DISPOSABLE integration git
+  worktree at current `main`** (via `git worktree add`; the loop's real checkout
+  is never touched, `main` is never merged to). For each `ok` verdict PR in a
+  **deterministic order** (execution-plan / PR-number): merge the PR head into the
+  integration worktree with the **same strategy INTEGRATE uses** (`--no-ff` merge
+  commit) so the validated tree equals the merged tree.
+  - **textual conflict** → `GateResult{passed:False, reason:"conflict"}`; abort
+    the merge; **EXCLUDE** the PR (not carried forward); continue.
+  - **clean merge** → run `regression_command` (**injectable runner**; cwd = the
+    integration worktree; capture output). exit 0 → `passed:True`, KEEP the merge
+    as the base for the next PR; nonzero → `passed:False, reason:"regression"`,
+    `failure_summary` = bounded output tail, and **ROLL BACK** the merge
+    (`git reset --hard` to the pre-merge commit); continue.
+  - Remove the worktree when done (always, even on error).
+- Each PR is thus validated on top of the prior GATE-passed PRs, catching
+  **semantic conflicts** (clean merges that break together). Residual: intra-tick
+  order-dependence (deterministic). GATE writes only the disposable worktree — no
+  merge to `main`, no GitHub writes.
+
 ## INTEGRATE (slice 2)
 
-- THIN merge (DESIGN §3.7.3). Reads ONLY `verdicts` (no review-approval
-  coupling — REVIEW is advisory). For each `ok` verdict, consults the
-  **guardrails** (`safety_governance.merge_guardrails`, §3.8.1) and, if clean,
-  merges via an injectable merge sink (production: `gh pr merge <pr> --merge
-  --delete-branch`). Records `IntegrationResult`. Non-ok verdicts and guardrail
-  violations go to `skipped`.
+- THIN merge (DESIGN §3.7.3). Reads `verdicts` AND `gate_results` (no
+  review-approval coupling — REVIEW is advisory). A verdict is merged only when it
+  is `ok` AND its `GateResult.passed` is True; it then consults the **guardrails**
+  (`safety_governance.merge_guardrails`, §3.8.1) and, if clean, merges via an
+  injectable merge sink (production: `gh pr merge <pr> --merge --delete-branch`).
+  Records `IntegrationResult`. Non-ok verdicts and guardrail violations go to
+  `skipped`.
+- **GATE-failed PRs are NOT merged.** For each `GateResult.passed=False`,
+  INTEGRATE posts a **machine-readable failure comment** on the PR's linked issue
+  (an **injectable comment sink**; production: `gh issue comment <issue> --body
+  <structured>`), resolving the issue from the PR's closing-issue reference. The
+  comment carries a FIXED marker + `{pr_ref, reason, failure_summary}` so a later
+  tick's TRIAGE reads it deterministically (the Phase-2 retry/threshold model).
+  These PRs are recorded in `IntegrationResult.gate_failed`.
 - **Trust-gated by `permits("merge", mode)`** (§3.8.2): merge is permitted ONLY
   at `auto-merge`. At `dry-run` and the default `propose`, INTEGRATE is a NO-OP
   that logs the would-merge intent — a human merges. Arming autonomous merge is
