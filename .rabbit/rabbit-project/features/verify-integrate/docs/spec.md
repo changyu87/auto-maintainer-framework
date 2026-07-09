@@ -76,7 +76,8 @@ The acting pipeline runs `… VERIFY → REVIEW → GATE → INTEGRATE → CLEAN
   was posted on their issue instead).
 - **`GateResult`** — one per REVIEW-passed PR the GATE state gated:
   `{ schema_version, pr_ref, issue_ref, passed: bool, reason: null | "regression"
-  | "conflict", failure_summary }`. GATE runs the configured `regression_command`
+  | "conflict" | "load-bearing", failure_summary }`. GATE runs the configured
+  `regression_command`
   CUMULATIVELY (DESIGN §2.2 [v2]): in a disposable integration worktree from
   current `main`, PRs are merged in deterministic order and the regression is run
   after each merge, so PR *k* is validated on top of `main` + the already-passed
@@ -166,12 +167,28 @@ loop PRs) + `regression_command` from the central config
   commit) so the validated tree equals the merged tree.
   - **textual conflict** → `GateResult{passed:False, reason:"conflict"}`; abort
     the merge; **EXCLUDE** the PR (not carried forward); continue.
-  - **clean merge** → run `regression_command` (**injectable runner**; cwd = the
-    integration worktree; capture output). exit 0 → `passed:True`, KEEP the merge
-    as the base for the next PR; nonzero → `passed:False, reason:"regression"`,
+  - **clean merge** → **doc-surface load-bearing-token survival** check (below),
+    then run `regression_command` (**injectable runner**; cwd = the integration
+    worktree; capture output). exit 0 → `passed:True`, KEEP the merge as the base
+    for the next PR; nonzero → `passed:False, reason:"regression"`,
     `failure_summary` = bounded output tail, and **ROLL BACK** the merge
     (`git reset --hard` to the pre-merge commit); continue.
   - Remove the worktree when done (always, even on error).
+- **Doc-surface load-bearing-token survival (issue #353).** Feature test suites
+  do NOT assert doc prose, so a doc-reduction PR that over-deletes a load-bearing
+  token (a schema field, a symbol/script name, an invariant, a cross-reference)
+  can pass the line-count baseline and auto-merge. On each clean merge, BEFORE the
+  regression, GATE asserts every token a doc-touched feature DECLARES load-bearing
+  still appears in its post-change doc surfaces (`docs/spec.md`,
+  `docs/contract.md`, `skills/*/SKILL.md`). A feature declares its must-survive
+  tokens in `test/load_bearing_tokens.json` (`{"tokens": [...]}`); GATE reads the
+  PR's changed doc surfaces (`git diff --name-only`), maps them to features, and
+  checks each declared set against the merged worktree. A dropped declared token
+  ⇒ `GateResult{passed:False, reason:"load-bearing"}` (dropped tokens named in
+  `failure_summary`); the merge is ROLLED BACK and the PR EXCLUDED (mirrors the
+  rabbit-housekeep load-bearing-survival test on the loop's own auto-merge path).
+  Opt-in + doc-scoped: a feature that declares no tokens, and a PR touching no doc
+  surface, are unaffected.
 - Each PR is thus validated on top of the prior GATE-passed PRs, catching
   **semantic conflicts** (clean merges that break together). Residual: intra-tick
   order-dependence (deterministic). GATE writes only the disposable worktree — no
