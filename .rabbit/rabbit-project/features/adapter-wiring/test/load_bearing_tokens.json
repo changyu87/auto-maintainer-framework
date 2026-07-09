@@ -17,9 +17,9 @@
     "DRAIN",
     "PERSIST",
     "EXIT",
-    "provides",
-    "reads",
-    "invokes",
-    "never"
+    "\"provides\":",
+    "\"reads\":",
+    "\"invokes\":",
+    "\"never\":"
   ]
 }
