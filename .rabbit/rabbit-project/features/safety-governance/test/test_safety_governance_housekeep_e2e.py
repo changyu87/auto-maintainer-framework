@@ -111,59 +111,18 @@ def _baseline_snapshot_for_diff(feature_dir):
     return snap
 
 
-# Load-bearing tokens that MUST survive the slim. Asserted against the COMBINED
-# doc surface (spec.md + contract.md): the public API, trust-ladder modes,
-# merge-guardrail never-clauses, schema fields, dispositions, and cross-feature
-# references live in the spec; the provides/reads/invokes/never keys live in the
-# contract block. Membership in the union is what "survived the slim" means.
-_LOAD_BEARING_DOCS = (
-    # Public API surface (named in the spec / contract prose).
-    "load_config",
-    "load_governance",
-    "permits",
-    "permits(effect_kind, mode)",
-    "merge_guardrails",
-    "window_key",
-    "GOVERNANCE_SCHEMA_VERSION",
-    "MAINTAINER_REPO",
-    "configure.py",
-    "--describe",
-    "--setup",
-    # Trust-ladder modes (closed set + tolerated legacy alias).
-    "dry-run",
-    "propose",
-    "auto-merge",
-    "gated-merge",
-    # Merge-guardrail never-clauses (the safety backstop names).
-    "never-merge-wrong-base",
-    "never-merge-dirty",
-    "never-delete-non-matching-branch",
-    # Schema fields + the central config file.
-    "schema_version",
-    "per_day_tokens",
-    "window_tz",
-    "interval_minutes",
-    "threshold",
-    "work_own_filings",
-    "config.json",
-    "2.1.0",
-    "2.4.0",
-    # Dispositions (budget auto-resume vs fault latch).
-    "ABORTED",
-    "IDLE",
-    # DESIGN citations + cross-feature references (cross-scope contract refs).
-    "DESIGN",
-    "scheduling",
-    "verify-integrate",
-    "lifecycle-dispositions",
-    "observability",
-    "outbound-report",
-    "safety_governance",
-    # The two DESIGN citations carried by the removed deferred entries MUST
-    # survive elsewhere in the spec — removal must not drop a unique citation.
-    "§3.8.1",
-    "§3.10.1",
-)
+def _declared_load_bearing_tokens():
+    """Read the load-bearing token declaration (test/load_bearing_tokens.json),
+    the single source of truth shared with the #353 doc-survival GATE. The gate
+    and this test MUST assert the same token set, so both read this one file
+    rather than each keeping an independent copy that could silently drift."""
+    with open(os.path.join(_TEST_DIR, "load_bearing_tokens.json"), "r") as f:
+        return tuple(json.load(f)["tokens"])
+
+
+# Load-bearing tokens that MUST survive the slim, read from the shared
+# declaration (single source of truth with the #353 GATE).
+_LOAD_BEARING_DOCS = _declared_load_bearing_tokens()
 
 # The contract block keys are asserted against contract.md specifically.
 _CONTRACT_KEYS = ("provides", "reads", "invokes", "never")

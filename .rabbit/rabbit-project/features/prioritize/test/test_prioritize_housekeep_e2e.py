@@ -109,35 +109,18 @@ def _baseline_snapshot_for_diff(feature_dir):
     return snap
 
 
-# Load-bearing tokens that MUST survive the wave. Asserted against the COMBINED
-# doc surface (spec.md + contract.md): the public-surface symbols, schema
-# fields, signal-vocabulary members, and cross-feature anchors live in the spec;
-# the provides/reads/invokes/never keys live in the contract block. Membership
-# in the union is what "survived" means for the wave.
-_LOAD_BEARING_DOCS = (
-    # public-surface names as they appear in the docs (the docs name the schema
-    # "ExecutionPlan"; the source symbol is EXECUTION_PLAN_SLOT)
-    "ExecutionPlan",
-    "schema_version",
-    "PRIORITIZE",
-    "execution_plan",
-    "work_orders",
-    "run",
-    "factory",
-    # schema fields
-    "ordered",
-    "status",
-    "pending",
-    # closed signal vocabulary members
-    "OK",
-    "EMPTY",
-    # cross-feature anchors (proven live by grep against sibling features)
-    "scheduling.run_tick",
-    "DEFAULT_ADAPTER_MAP",
-    "adapter-wiring",
-    "TickContext",
-    "StateManifest",
-)
+def _declared_load_bearing_tokens():
+    """Read the load-bearing token declaration (test/load_bearing_tokens.json),
+    the single source of truth shared with the #353 doc-survival GATE. The gate
+    and this test MUST assert the same token set, so both read this one file
+    rather than each keeping an independent copy that could silently drift."""
+    with open(os.path.join(_TEST_DIR, "load_bearing_tokens.json"), "r") as f:
+        return tuple(json.load(f)["tokens"])
+
+
+# Load-bearing tokens that MUST survive the slim, read from the shared
+# declaration (single source of truth with the #353 GATE).
+_LOAD_BEARING_DOCS = _declared_load_bearing_tokens()
 
 # The contract block keys are asserted against contract.md specifically.
 _CONTRACT_KEYS = ("provides", "reads", "invokes", "never")

@@ -116,55 +116,18 @@ def _baseline_snapshot_for_diff(feature_dir):
     return snap
 
 
-# Load-bearing tokens that MUST survive the slim, asserted against the COMBINED
-# doc surface (spec.md + contract.md). Route/state/anchor names, trust modes,
-# durable-state keys, public symbols, and schema names live in the spec; the
-# provides/reads/invokes/never keys live in the contract block. Membership in the
-# union is what "survived the slim" means for the wave.
-_LOAD_BEARING_DOCS = (
-    # core route + anchors + the close-the-loop / act-side ports
-    "GUARD",
-    "DRAIN",
-    "PULL",
-    "PERSIST",
-    "EXIT",
-    "TRIAGE",
-    "PRIORITIZE",
-    "IMPLEMENT",
-    "VERIFY",
-    "INTEGRATE",
-    "CLEANUP",
-    "REVIEW",
-    # trust modes
-    "dry-run",
-    "propose",
-    "auto-merge",
-    # route + adapter-map public surface
-    "DEFAULT_ROUTE",
-    "DEFAULT_ADAPTER_MAP",
-    "AGENT_PORT_TEMPLATES",
-    "route.json",
-    "adapter-map.json",
-    # durable-state cross-tick keys / read products
-    "BUDGET_KEY",
-    "ACTED_LEDGER_KEY",
-    "REPORT_LEDGER_KEY",
-    "BACKOFF_LEDGER_KEY",
-    "TRIAGE_MEMORY_KEY",
-    "TICK_CHECKPOINT_KEY",
-    "work_items",
-    "work_orders",
-    "execution_plan",
-    "handoffs",
-    # config-driven interval (the #17-resolved fact must survive)
-    "heartbeat.interval_minutes",
-    # public scripts/skills
-    "run_tick",
-    "start.py",
-    "stop.py",
-    "status.py",
-    "heartbeat.py",
-)
+def _declared_load_bearing_tokens():
+    """Read the load-bearing token declaration (test/load_bearing_tokens.json),
+    the single source of truth shared with the #353 doc-survival GATE. The gate
+    and this test MUST assert the same token set, so both read this one file
+    rather than each keeping an independent copy that could silently drift."""
+    with open(os.path.join(_TEST_DIR, "load_bearing_tokens.json"), "r") as f:
+        return tuple(json.load(f)["tokens"])
+
+
+# Load-bearing tokens that MUST survive the slim, read from the shared
+# declaration (single source of truth with the #353 GATE).
+_LOAD_BEARING_DOCS = _declared_load_bearing_tokens()
 
 # The contract block keys are asserted against contract.md specifically.
 _CONTRACT_KEYS = ("provides", "reads", "invokes", "never")
