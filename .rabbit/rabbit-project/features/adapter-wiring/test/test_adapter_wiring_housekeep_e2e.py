@@ -66,6 +66,9 @@ def _declared_load_bearing_tokens():
 # Membership in the union is what "survived the slim" means for the wave.
 _LOAD_BEARING_DOCS = _declared_load_bearing_tokens()
 
+# The contract block keys are asserted against contract.md specifically.
+_CONTRACT_KEYS = ("provides", "reads", "invokes", "never")
+
 
 # ==========================================================================
 # Gate 1 — no doc growth: current docs no larger than the re-baselined reference.
@@ -110,6 +113,16 @@ def test_docs_retain_all_load_bearing_tokens():
     text = _read(_SPEC) + "\n" + _read(_CONTRACT)
     missing = [tok for tok in _LOAD_BEARING_DOCS if tok not in text]
     assert not missing, f"docs dropped load-bearing tokens: {missing}"
+
+
+def test_contract_retains_block_keys():
+    """The contract provides/reads/invokes/never block keys survived the slim,
+    asserted against contract.md specifically — the union-membership check above
+    would still pass if a block key migrated into spec.md, so this per-doc
+    assertion keeps the placement guarantee the other features hold."""
+    text = _read(_CONTRACT)
+    missing = [k for k in _CONTRACT_KEYS if k not in text]
+    assert not missing, f"contract.md dropped block keys: {missing}"
 
 
 # ==========================================================================
