@@ -1,0 +1,23 @@
+{
+  "tokens": [
+    "TickContext",
+    "StateManifest",
+    "execution_plan",
+    "handoffs",
+    "DEFAULT_ADAPTER_MAP",
+    "run_tick",
+    "work_order_id",
+    "status",
+    "artifact",
+    "discovered_work",
+    "concerns",
+    "blocked_reason",
+    "schema_version",
+    "OK",
+    "BLOCKED",
+    "ship/agents/auto-maintainer-implementer.md",
+    "adapter-wiring",
+    "safety-governance",
+    "auto-maintainer"
+  ]
+}

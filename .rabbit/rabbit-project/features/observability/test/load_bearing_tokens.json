@@ -1,0 +1,22 @@
+{
+  "tokens": [
+    "EVENT_SCHEMA_VERSION",
+    "EVENT_KINDS",
+    "EventLog",
+    "append",
+    "read()",
+    "tail(n)",
+    "escalate",
+    "schema_version",
+    "seq",
+    "tick_id",
+    "kind",
+    "detail",
+    "tick_start",
+    "escalation",
+    "filed_by: autonomous-maintainer",
+    "safety-governance",
+    "work-intake",
+    "outbound-report"
+  ]
+}

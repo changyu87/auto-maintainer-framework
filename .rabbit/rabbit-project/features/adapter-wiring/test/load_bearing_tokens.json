@@ -1,0 +1,25 @@
+{
+  "tokens": [
+    "load_route",
+    "load_adapter_map",
+    "resolve_states",
+    "validate_wiring",
+    "build_loop",
+    "scaffold_adapter",
+    "wire_adapter",
+    "validate_adapter_conformance",
+    "AgentState",
+    "WiringError",
+    "module:factory",
+    "is_agent_entry",
+    "validate_agent_adapter",
+    "GUARD",
+    "DRAIN",
+    "PERSIST",
+    "EXIT",
+    "provides",
+    "reads",
+    "invokes",
+    "never"
+  ]
+}
