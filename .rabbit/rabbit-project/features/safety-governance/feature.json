@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-13T03:57:44Z",
   "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "updated": "2026-07-08",
   "spec_change_reason": "Remove the now-dead self_deploy knob: the self_deploy ACTION was removed in #324 (the auto-maintainer is NOT self-deployable), so the knob gates nothing. Dropped self_deploy from DEFAULT_GOVERNANCE, the _overlay backfill branch, and the self_deploy(config) accessor; a config.json still carrying self_deploy is TOLERATED (dropped, never surfaced). Schema bump 2.3.0 -> 2.4.0 (additive, backward compatible). spec.md/contract.md/CHANGELOG.md updated.",
   "spec_no_change_reason": "spec change for regression_command (schema 2.5.0) was committed prior to this cycle (d9d395a); this cycle implements the code + tests for that already-committed spec"
