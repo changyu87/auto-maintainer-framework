@@ -110,19 +110,19 @@ class _FakeGit:
         self._current_pr = None
 
     def __call__(self, cmd, **kwargs):
-        self.commands.append(list(cmd))
-        # The regression command is a shell string (list form: the runner is
-        # called with the command list OR a shell string). GATE runs the
-        # regression as its own invocation distinct from git.
-        is_git = cmd and cmd[0] == "git"
+        # The regression command is passed as a shell STRING; git commands are
+        # passed as a LIST. Record and branch on that shape.
+        is_git = isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git"
+        self.commands.append(list(cmd) if is_git else [cmd])
         if not is_git:
             # regression run: keyed by _current_pr
             if self._current_pr in self._regression_fails:
                 return _FakeCompleted(returncode=1,
                                       stdout=self._regression_output)
             return _FakeCompleted(returncode=0, stdout=self._regression_output)
-        # git subcommand
-        sub = cmd[1] if len(cmd) > 1 else ""
+        # git subcommand — skip a leading `-C <dir>` so the real subcommand
+        # (merge/fetch/reset/rev-parse/worktree) is found.
+        sub = self._git_sub(cmd)
         if sub == "merge":
             # detect which PR ref is being merged so the regression run keys off
             # the same PR. GATE fetches/merges FETCH_HEAD or a ref carrying the
@@ -142,6 +142,14 @@ class _FakeGit:
         if sub == "rev-parse":
             return _FakeCompleted(returncode=0, stdout="deadbeef\n")
         return _FakeCompleted(returncode=0)
+
+    @staticmethod
+    def _git_sub(cmd):
+        """The git subcommand, skipping a leading `-C <dir>` (and `git`)."""
+        i = 1
+        while i < len(cmd) and cmd[i] == "-C":
+            i += 2
+        return cmd[i] if i < len(cmd) else ""
 
     @staticmethod
     def _pr_num_from_cmd(cmd):
@@ -166,6 +174,17 @@ def _fake_issue_resolver(mapping):
         return orig(pr_ref, repo=repo)
     wrapped.calls = []
     return wrapped
+
+
+def _is_git_sub(cmd, sub):
+    """Whether a recorded command is `git [-C <dir>] <sub> ...` (the runner uses
+    `git -C <worktree>` for merge/reset/rev-parse/fetch and bare `git worktree`)."""
+    if not cmd or cmd[0] != "git":
+        return False
+    i = 1
+    while i < len(cmd) and cmd[i] == "-C":
+        i += 2
+    return i < len(cmd) and cmd[i] == sub
 
 
 def _fresh_ctx():
@@ -323,7 +342,7 @@ def test_gate_e2e_middle_regression_fail_rolled_back_and_excluded():
     assert by_ref["acme/widget#3"]["passed"] is True
 
     # A rollback (git reset --hard) happened for the failed PR.
-    assert any(c[:2] == ["git", "reset"] and "--hard" in c
+    assert any(_is_git_sub(c, "reset") and "--hard" in c
                for c in fake.commands)
     # 3 regression runs (one per PR; #2 fails but #3 still runs on top of #1).
     regression_runs = [c for c in fake.commands if c and c[0] != "git"]
@@ -352,7 +371,7 @@ def test_gate_e2e_merge_conflict_excluded_reason_conflict():
     assert by_ref["acme/widget#3"]["passed"] is True
 
     # a merge --abort happened for the conflicting PR.
-    assert any(c[:2] == ["git", "merge"] and "--abort" in c
+    assert any(_is_git_sub(c, "merge") and "--abort" in c
                for c in fake.commands)
     # the conflicting PR's regression is NOT run: only #1 and #3 regress.
     regression_runs = [c for c in fake.commands if c and c[0] != "git"]
@@ -418,8 +437,9 @@ def test_gate_e2e_worktree_removed_when_runner_raises():
             self.commands = []
 
         def __call__(self, cmd, **kwargs):
-            self.commands.append(list(cmd))
-            if cmd[:2] == ["git", "merge"] and "--abort" not in cmd:
+            is_list = isinstance(cmd, (list, tuple))
+            self.commands.append(list(cmd) if is_list else [cmd])
+            if is_list and _is_git_sub(cmd, "merge") and "--abort" not in cmd:
                 raise RuntimeError("git merge exploded")
             return _FakeCompleted(returncode=0, stdout="deadbeef\n")
 
@@ -463,7 +483,7 @@ def test_gate_never_merges_to_main_or_calls_merge_sink():
     # merges target the disposable worktree, identified by --no-ff; no bare
     # `git merge main` on the real checkout.
     merge_cmds = [c for c in fake.commands
-                  if c[:2] == ["git", "merge"] and "--abort" not in c]
+                  if _is_git_sub(c, "merge") and "--abort" not in c]
     for c in merge_cmds:
         assert "--no-ff" in c, f"GATE must merge with --no-ff: {c}"
 
@@ -506,6 +526,13 @@ def _integrate_ctx():
     return ctx
 
 
+def _apply_integrate(integrate, ctx):
+    result = integrate.run(ctx)
+    vocab = fc.SignalVocabulary(vi.INTEGRATE_SIGNALS)
+    fc.apply_result(ctx, vi.INTEGRATE_MANIFEST, result, vocab)
+    return ctx.read("integration_result")
+
+
 def _gate_result(number, passed=True, issue_ref=None, reason=None,
                  failure_summary=""):
     return vi.GateResult(
@@ -517,10 +544,16 @@ def _gate_result(number, passed=True, issue_ref=None, reason=None,
     ).to_dict()
 
 
-def test_integrate_manifest_reads_gate_results():
+def test_integrate_manifest_reads_verdicts_gate_results_optional():
+    """Coexistence window (spec-rules §3): INTEGRATE CONSULTS gate_results at
+    runtime but reads it OPTIONALLY, so the manifest declares only the guaranteed
+    `verdicts` read — a hard gate_results read would fail data-readiness on the
+    un-wired route (scheduling wires GATE + seeds gate_results in a later cycle).
+    The runtime gating behaviour is covered by the merges-only-gate-passed tests
+    below."""
     m = vi.INTEGRATE_MANIFEST
     assert "verdicts" in m.reads
-    assert "gate_results" in m.reads
+    assert "gate_results" not in m.reads
 
 
 def test_integrate_e2e_merges_only_gate_passed():
@@ -595,8 +628,7 @@ def test_integrate_e2e_gate_failed_no_issue_ref_records_but_no_comment():
     ctx.write("gate_results", [
         _gate_result(8, passed=False, issue_ref=None, reason="regression",
                      failure_summary="boom")])
-    integrate.run(ctx)
-    res = ctx.read("integration_result")
+    res = _apply_integrate(integrate, ctx)
     assert [g["pr_ref"] for g in res["gate_failed"]] == ["acme/widget#8"]
     assert comment_sink.calls == []
     assert sink.calls == []
@@ -613,8 +645,7 @@ def test_integrate_e2e_ok_verdict_missing_gate_result_is_skipped():
     ctx = _integrate_ctx()
     ctx.write("verdicts", [_verdict(number=9, ok=True)])
     ctx.write("gate_results", [])
-    integrate.run(ctx)
-    res = ctx.read("integration_result")
+    res = _apply_integrate(integrate, ctx)
     assert sink.calls == []
     assert res["merged"] == []
     assert len(res["skipped"]) == 1
@@ -634,8 +665,7 @@ def test_integrate_e2e_non_ok_verdict_never_consults_gate():
     ctx.write("verdicts", [_verdict(number=10, ok=False,
                                     reasons=["not mergeable"])])
     ctx.write("gate_results", [_gate_result(10, passed=True)])
-    integrate.run(ctx)
-    res = ctx.read("integration_result")
+    res = _apply_integrate(integrate, ctx)
     assert sink.calls == []
     assert res["merged"] == []
     assert [s["pr_ref"] for s in res["skipped"]] == ["acme/widget#10"]
