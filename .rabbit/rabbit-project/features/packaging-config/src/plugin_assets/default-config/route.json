@@ -9,6 +9,7 @@
     "IMPLEMENT",
     "VERIFY",
     "REVIEW",
+    "GATE",
     "INTEGRATE",
     "CLEANUP",
     "PERSIST",
@@ -125,12 +126,17 @@
     {
       "state": "REVIEW",
       "signal": "OK",
-      "next": "INTEGRATE"
+      "next": "GATE"
     },
     {
       "state": "REVIEW",
       "signal": "EMPTY",
       "next": "PERSIST"
+    },
+    {
+      "state": "GATE",
+      "signal": "OK",
+      "next": "INTEGRATE"
     }
   ],
   "terminal": [

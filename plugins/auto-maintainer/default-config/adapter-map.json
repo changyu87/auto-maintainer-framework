@@ -3,6 +3,7 @@
   "DONE": "run_tick:make_terminal",
   "DRAIN": "run_tick:make_drain",
   "EXIT": "run_tick:make_exit",
+  "GATE": "run_tick:make_gate",
   "GUARD": "run_tick:make_guard",
   "HALTED": "run_tick:make_terminal",
   "IMPLEMENT": {

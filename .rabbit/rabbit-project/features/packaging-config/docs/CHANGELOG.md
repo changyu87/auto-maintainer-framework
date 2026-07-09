@@ -1,5 +1,31 @@
 # Changelog — packaging-config
 
+## 0.9.0 — V2 cumulative GATE
+
+- Adds the GATE state to the shipped default pipeline
+  (`REVIEW -> GATE -> INTEGRATE`): a self-contained cumulative regression gate
+  that runs the configured `regression_command` against each REVIEW-passed PR on
+  top of prior gate-passed PRs, closing the semantic-conflict merge gap without
+  external CI. Reverted the GitHub-CI-runs-tests approach.
+- `default-config/route.json` inserts `GATE` into states after `REVIEW`, changes
+  the `REVIEW OK` edge next `INTEGRATE -> GATE`, and adds `GATE OK -> INTEGRATE`;
+  `REVIEW EMPTY -> PERSIST` and `INTEGRATE OK -> CLEANUP` unchanged.
+- `default-config/adapter-map.json` wires `GATE -> run_tick:make_gate` (a script
+  adapter mirroring VERIFY/INTEGRATE/CLEANUP). The shipped `config.json` leaves
+  `regression_command` absent (= null = no-op gate PASS: a safe generic default;
+  a repo gates by setting `regression_command` in its `.auto-maintainer/config.json`).
+- Bump `_PLUGIN_VERSION` 0.8.2 -> 0.9.0 (`plugin.json` + `marketplace.json`), a
+  V2 minor for the new GATE behaviour.
+- Regenerate the committed `plugins/auto-maintainer/` tree from current src so
+  the shipped lib (`verify_integrate` GATE + `run_tick` `make_gate`) reaches
+  installs; re-anchor `test/release_lib_baseline.json` (version + lib_digest) for
+  the #355 monotonicity guard.
+- Invariant: the shipped route+adapter-map resolve through
+  `adapter_wiring.build_loop` with NO WiringError (GATE reads `verdicts`, writes
+  `gate_results`; INTEGRATE reads `gate_results`); version 0.9.0 is consistent
+  across `plugin.json` + `marketplace.json`; the committed tree matches a fresh
+  build with no source-tree leak.
+
 ## 0.8.2 — regen release: green a red main (build-drift from #368)
 
 - Bump `_PLUGIN_VERSION` 0.8.1 -> 0.8.2 (`plugin.json` + `marketplace.json`).

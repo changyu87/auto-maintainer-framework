@@ -205,6 +205,12 @@ VERDICTS_KEY = "verdicts"
 # carry-forward. The retired review_verdicts merge-gate slot is gone — REVIEW is
 # advisory, so INTEGRATE no longer reads its output.
 REVIEW_FINDINGS_KEY = "review_findings"
+# GATE (the cumulative regression GATE, verify-integrate §2.2 [v2]) reads verdicts
+# and writes gate_results (a list of GateResult dicts). Like verdicts it is a
+# per-tick EPHEMERAL read product (#64): each tick it reflects ONLY what THIS
+# tick's route produced (empty when the route omits GATE), never a stale
+# carry-forward.
+GATE_RESULTS_KEY = "gate_results"
 INTEGRATION_RESULT_KEY = "integration_result"
 
 # The per-tick EPHEMERAL read products (#64), mapped to the empty default the
@@ -222,6 +228,7 @@ EPHEMERAL_READ_PRODUCT_DEFAULTS = {
     HANDOFFS_KEY: [],
     VERDICTS_KEY: [],
     REVIEW_FINDINGS_KEY: [],
+    GATE_RESULTS_KEY: [],
     INTEGRATION_RESULT_KEY: {},
 }
 
@@ -577,6 +584,18 @@ def make_review(runtime):  # noqa: ARG001 - REVIEW binds no runtime config
     return vi.REVIEW_MANIFEST, _run
 
 
+def make_gate(runtime):
+    """GATE adapter (verify-integrate): the cumulative regression GATE between
+    REVIEW and INTEGRATE (verify-integrate §2.2 [v2]). Reads `verdicts`, runs the
+    cumulative regression suite over the loop's open PRs, and writes one
+    GateResult per PR into the `gate_results` slot; emits OK.
+
+    Delegates to verify-integrate's make_gate factory (the sibling owns the GATE
+    state + its gh seams), mirroring make_verify/make_integrate. Returns
+    (GATE_MANIFEST, the state's bound run callable)."""
+    return vi.make_gate(runtime)
+
+
 def make_integrate(runtime):
     """INTEGRATE adapter (verify-integrate): the single highest-stakes act-side
     state, now a THIN merge (FT-C/D). Reads ONLY `verdicts`, merges each `ok`
@@ -643,7 +662,7 @@ DEFAULT_ROUTE = {
 }
 
 # Every known port -> its built-in factory address. TRIAGE, PRIORITIZE,
-# IMPLEMENT, VERIFY, REVIEW, INTEGRATE, and CLEANUP are included even though
+# IMPLEMENT, VERIFY, REVIEW, GATE, INTEGRATE, and CLEANUP are included even though
 # DEFAULT_ROUTE omits them (the ports-and-adapters promise: insert the
 # close-the-loop chain by data, no code change).
 # The terminals are addressed too so adapter-wiring can resolve every state in a
@@ -657,6 +676,7 @@ DEFAULT_ADAPTER_MAP = {
     "IMPLEMENT": "run_tick:make_implement",
     "VERIFY": "run_tick:make_verify",
     "REVIEW": "run_tick:make_review",
+    "GATE": "run_tick:make_gate",
     "INTEGRATE": "run_tick:make_integrate",
     "CLEANUP": "run_tick:make_cleanup",
     "PERSIST": "run_tick:make_persist",
@@ -715,7 +735,8 @@ def _seed_context(state_path, journal_path, route):
     slot TRIAGE writes, the execution_plan slot PRIORITIZE writes, the handoffs
     slot IMPLEMENT writes, the cross_cutting_risk slot TRIAGE writes / VERIFY
     reads, the verdicts + cross_check slots VERIFY writes, the review_findings
-    slot REVIEW writes, and the integration_result slot INTEGRATE writes. Each
+    slot REVIEW writes, the gate_results slot GATE writes, and the
+    integration_result slot INTEGRATE writes. Each
     producible read-product slot
     is WRITTEN with a schema-valid empty default (skipped-state safety): a route
     that SKIPS its producing state via a signal branch still leaves the slot
@@ -793,6 +814,15 @@ def _seed_context(state_path, journal_path, route):
             vi.REVIEW_FINDINGS_SLOT["name"], vi.REVIEW_FINDINGS_SLOT["schema"],
             version=vi.REVIEW_FINDINGS_SLOT["version"])
         ctx.write(vi.REVIEW_FINDINGS_SLOT["name"], [])
+    # gate_results (verify-integrate §2.2 [v2]): the cumulative regression GATE's
+    # output (a list of GateResult dicts). Seeded empty ONLY when GATE is routed
+    # (its producer), so INTEGRATE reading it and a GATE-skipped route both stay
+    # crash-free.
+    if "GATE" in route["states"]:
+        ctx.register_slot(
+            vi.GATE_RESULTS_SLOT["name"], vi.GATE_RESULTS_SLOT["schema"],
+            version=vi.GATE_RESULTS_SLOT["version"])
+        ctx.write(vi.GATE_RESULTS_SLOT["name"], [])
     if "INTEGRATE" in route["states"]:
         ctx.register_slot(
             vi.INTEGRATION_RESULT_SLOT["name"],
@@ -2983,6 +3013,12 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         doc[REVIEW_FINDINGS_KEY] = (
             ctx.read(vi.REVIEW_FINDINGS_SLOT["name"])
             if "REVIEW" in route["states"] else [])
+        # gate_results (verify-integrate §2.2 [v2]): GATE's per-tick read product.
+        # Persisted when GATE is routed (the slot is seeded only then), else empty
+        # (NOT a stale carry-forward), symmetric with the products above.
+        doc[GATE_RESULTS_KEY] = (
+            ctx.read(vi.GATE_RESULTS_SLOT["name"])
+            if "GATE" in route["states"] else [])
         doc[INTEGRATION_RESULT_KEY] = (
             ctx.read(vi.INTEGRATION_RESULT_SLOT["name"])
             if "INTEGRATE" in route["states"] else {})
