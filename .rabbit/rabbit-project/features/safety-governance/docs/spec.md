@@ -32,9 +32,10 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 
 ```json
 {
-  "schema_version": "2.4.0",
+  "schema_version": "2.5.0",
   "mode": "propose",
   "work_own_filings": true,
+  "regression_command": null,
   "budget": {
     "per_day_tokens": null,
     "window_tz": "local"
@@ -75,6 +76,17 @@ single central `userConfig` (§3.10.1); it **replaces** the former
   Owned here; **`work-intake` PULL** consumes it to conditionally apply the
   loopback exclusion and **`scheduling`** threads it from the loaded config into
   PULL (both separate cycles).
+- `regression_command` — the project's full-regression **shell command** the GATE
+  state (§3.7, verify-integrate) runs against each REVIEW-passed PR in a
+  disposable integration worktree; **exit 0 = pass, nonzero = fail** (its output
+  is captured, bounded, for the failure comment). **Default `null` = NO gate** —
+  GATE is a no-op PASS, so an unconfigured project merges exactly as before
+  (non-breaking, opt-in). A maintained project sets its own command (e.g.
+  `pytest`, `npm test`); the shipped self-repo default (in
+  `default-config/config.json`) runs every `rabbit-project/features/*/test/run.py`.
+  Surfaced through `_overlay` like any known key (absent ⇒ `null`). Owned here;
+  **read by `verify-integrate`** GATE via the cross-feature contract (through
+  `load_config`).
 
 The runtime file stays **lean**: schema-definition metadata (`owner`,
 `deprecation_criterion`) lives in this spec, `safety_governance.py`'s module
