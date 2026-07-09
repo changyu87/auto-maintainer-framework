@@ -126,6 +126,16 @@ release that changes the shipped config reaches an existing install
 automatically, while a project-local `.auto-maintainer/config.json` override
 still wins.
 
+**Field-level (3-way) merge of an override (#357, deferred #336).** A present
+`config.json` is 3-way merged via `merge_config(base, theirs, mine)` — `base`
+the embedded `DEFAULT_GOVERNANCE` the override was backfilled against, `theirs`
+the override, `mine` the current shipped default: a new default key the override
+lacks is **adopted** (the unfreeze), a user-set value is **preserved**, and a key
+both sides changed differently is surfaced as a **conflict** (warned on stderr)
+keeping the user value rather than silently overwriting it. With no shipped
+default `mine` equals `base`, so the merge is a no-op (the prior whole-file
+overlay).
+
 ## Trust-ladder gate (§3.8.2)
 
 A deterministic `permits(effect_kind, mode) -> bool` over the closed effect set:

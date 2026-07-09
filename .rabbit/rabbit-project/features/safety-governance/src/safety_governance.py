@@ -10,7 +10,11 @@ config (config.json). Decision surfaces plus one effectful halt helper:
      config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
      §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
-     defaults, and a present file is backfilled key-by-key from the defaults. A
+     defaults, and a present file is FIELD-LEVEL (3-way) MERGED against the
+     current shipped default (#357: merge_config) so an override still adopts
+     newly-added default keys it does not set while user-set values win and a
+     changed-both-sides key is surfaced as a conflict, then backfilled from the
+     defaults. A
      null/absent per_day ceiling means NO LIMIT (the budget gate is a no-op).
      A legacy governance.json is MIGRATED once (see load_config). load_governance
      is a thin alias delegating to load_config during the coexistence window.
@@ -69,6 +73,7 @@ Deprecation criterion: Superseded when trust-ladder / budget enforcement moves
 
 import json
 import os
+import sys
 
 # lifecycle-dispositions is a sibling feature consumed UNCHANGED; the test
 # harness and tick-orchestrator put its src/ on sys.path, so importing by
@@ -187,6 +192,72 @@ def _copy_defaults():
     return d
 
 
+def merge_config(base, theirs, mine, _path=""):
+    """Field-level (3-way) merge of an overridden config against a new default.
+
+    The deferred #336 design-B point (#357): whole-file override (load_config
+    steps 1-2) FREEZES an overridden config.json — it never receives keys added
+    to a later default. This pure function resolves that per-FIELD instead:
+
+      - base  = the default the user's override was taken from (the embedded
+        DEFAULT_GOVERNANCE the config was last backfilled against),
+      - theirs = the user's override,
+      - mine  = the current shipped default (a later release may add/change keys).
+
+    Per key over the union of `theirs` + `mine` (base-only keys — removed from
+    both current sides — are DROPPED):
+
+      - a key only `mine` has (a NEW default key `theirs` never set) -> ADOPT
+        mine's value (the unfreeze);
+      - a key only `theirs` has (a user-only key not in the default) -> KEEP
+        theirs;
+      - a key both have, both dicts -> RECURSE;
+      - a key both have as scalars:
+          * theirs == base (user never changed it)            -> ADOPT mine;
+          * theirs != base but mine == base (only user moved) -> KEEP theirs;
+          * theirs != base, mine != base, theirs == mine      -> KEEP (agree);
+          * theirs != base, mine != base, theirs != mine      -> CONFLICT: KEEP
+            theirs (NEVER silently overwrite a user value) and RECORD it.
+
+    Returns `(merged, conflicts)`. `conflicts` is a list of dicts
+    {path, base, theirs, mine} naming each surfaced conflict by dotted key path,
+    so the caller can flag rather than silently overwrite (acceptance #2). Pure:
+    reads no filesystem and mutates none of its inputs.
+    """
+    if base is None:
+        base = {}
+    merged = {}
+    conflicts = []
+    for key in list(theirs) + [k for k in mine if k not in theirs]:
+        path = f"{_path}.{key}" if _path else key
+        in_theirs = key in theirs
+        in_mine = key in mine
+        if in_theirs and not in_mine:
+            merged[key] = theirs[key]
+            continue
+        if in_mine and not in_theirs:
+            merged[key] = mine[key]
+            continue
+        t, m = theirs[key], mine[key]
+        b = base.get(key) if isinstance(base, dict) else None
+        if isinstance(t, dict) and isinstance(m, dict):
+            sub, sub_conflicts = merge_config(
+                b if isinstance(b, dict) else {}, t, m, path)
+            merged[key] = sub
+            conflicts.extend(sub_conflicts)
+            continue
+        if t == b:
+            merged[key] = m
+        elif m == b:
+            merged[key] = t
+        elif t == m:
+            merged[key] = t
+        else:
+            merged[key] = t
+            conflicts.append({"path": path, "base": b, "theirs": t, "mine": m})
+    return merged, conflicts
+
+
 # The legacy trust-mode name -> its current name. A config (or CLI request) still
 # carrying the pre-2.1.0 `gated-merge` is TOLERATED and mapped forward to
 # `auto-merge` (the rename is a non-breaking coexistence migration, not an error).
@@ -248,7 +319,16 @@ def load_config(project_dir):
     """Load the project-local central config, backfilled from defaults.
 
     Resolution order:
-      1. ${project_dir}/.auto-maintainer/config.json present -> read + backfill.
+      1. ${project_dir}/.auto-maintainer/config.json present -> read + FIELD-LEVEL
+         MERGE it against the current shipped default (#357), then backfill.
+         merge_config(base=embedded DEFAULT_GOVERNANCE, theirs=the override,
+         mine=the shipped default-config/config.json) so an overridden file still
+         receives newly-added default keys it does not set while user-set values
+         are preserved (the deferred #336 design-B unfreeze); a conflict (a key
+         the user changed that the new default ALSO changed) keeps the user value,
+         never silently overwritten. When no shipped default is present (source
+         tree / no plugin) `mine` is the embedded default = the base, so the merge
+         is a no-op and behaviour is byte-for-byte the pre-#357 whole-file overlay.
       2. config.json absent but legacy governance.json present -> MIGRATE ONCE:
          map the surviving fields (mode, budget.per_day_tokens, budget.window_tz),
          DROP per_tick_tokens + maintainer_repo, backfill heartbeat/backoff,
@@ -271,7 +351,26 @@ def load_config(project_dir):
     if os.path.isfile(config_path):
         with open(config_path, "r") as f:
             raw = json.load(f)
-        return _overlay(raw)
+        # Field-level merge (#357): unfreeze the override so new default keys are
+        # adopted while user-set values win. base = the embedded default the
+        # override was backfilled against; mine = the current shipped default
+        # (absent -> the embedded default, making the merge a no-op = the prior
+        # whole-file overlay). _overlay then normalises + drops removed keys.
+        shipped = _shipped_default()
+        mine = shipped if shipped is not None else DEFAULT_GOVERNANCE
+        merged, conflicts = merge_config(DEFAULT_GOVERNANCE, raw, mine)
+        # Surface conflicts (acceptance #2): a key the user changed that the new
+        # default ALSO changed keeps the USER value (merge_config never
+        # overwrites it) but must NOT be silent. load_config is the effectful
+        # boundary (it already writes on migration), so a stderr warning here is
+        # the surfacing without corrupting the pure merge or the returned config.
+        for c in conflicts:
+            sys.stderr.write(
+                "config field-merge conflict at "
+                f"{c['path']!r}: keeping user value {c['theirs']!r} "
+                f"(new shipped default is {c['mine']!r}, "
+                f"prior default was {c['base']!r})\n")
+        return _overlay(merged)
 
     legacy_path = os.path.join(project_dir, _LEGACY_RELPATH)
     if os.path.isfile(legacy_path):
