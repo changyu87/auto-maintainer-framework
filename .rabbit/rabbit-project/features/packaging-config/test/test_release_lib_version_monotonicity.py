@@ -55,19 +55,29 @@ def _load_build():
 def _lib_digest(lib_dir):
     """Deterministic sha256 over a plugin lib/ tree.
 
-    Each *.py file contributes its basename + NUL + bytes + NUL, in sorted-name
-    order; bytecode caches (*.pyc) are excluded (they are gitignored and never
-    part of the committed tree). This is the same digest the baseline records,
-    so a byte change to any shipped lib file changes the digest.
+    Every file under lib/ (recursively) contributes its lib-relative path +
+    NUL + bytes + NUL, in sorted relative-path order; bytecode caches (*.pyc,
+    including everything under __pycache__/) are excluded (they are gitignored
+    and never part of the committed tree). Walking recursively means a byte
+    change to any shipped lib file — including one nested in a subdirectory —
+    changes the digest, so the version-monotonicity guard cannot be evaded by
+    nesting lib content in a subdir. For the flat lib committed today, each
+    relative path is just the file's basename, so the digest is unchanged.
     """
     h = hashlib.sha256()
-    for name in sorted(os.listdir(lib_dir)):
-        p = os.path.join(lib_dir, name)
-        if not os.path.isfile(p) or name.endswith(".pyc"):
-            continue
-        h.update(name.encode("utf-8"))
+    entries = []
+    for root, dirs, files in os.walk(lib_dir):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for name in files:
+            if name.endswith(".pyc"):
+                continue
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, lib_dir)
+            entries.append((rel, full))
+    for rel, full in sorted(entries):
+        h.update(rel.encode("utf-8"))
         h.update(b"\0")
-        with open(p, "rb") as fh:
+        with open(full, "rb") as fh:
             h.update(fh.read())
         h.update(b"\0")
     return h.hexdigest()
