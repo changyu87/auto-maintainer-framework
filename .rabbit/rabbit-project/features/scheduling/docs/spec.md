@@ -32,15 +32,18 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
   (`factory(runtime) -> (manifest, run)`): scheduling provides factories for
   `GUARD`/`EXIT` (lifecycle-dispositions), `DRAIN`/`PERSIST` (durable-state),
   `PULL`/`TRIAGE` (work-intake), `PRIORITIZE` (prioritize), `IMPLEMENT`
-  (implement), and `VERIFY`/`INTEGRATE`/`CLEANUP` (verify-integrate). The
+  (implement), and `VERIFY`/`GATE`/`INTEGRATE`/`CLEANUP` (verify-integrate). The
   **default adapter-map** maps every known port (incl. `TRIAGE`, `PRIORITIZE`,
-  `IMPLEMENT`, `VERIFY`, `INTEGRATE`, `CLEANUP`) to its factory, even though the
-  default route uses a subset. `make_verify`/`make_integrate`/`make_cleanup` wrap
-  the verify-integrate states; `make_integrate` binds the loaded governance
-  `mode` so INTEGRATE merges only at `auto-merge` (and consumes
+  `IMPLEMENT`, `VERIFY`, `GATE`, `INTEGRATE`, `CLEANUP`) to its factory, even
+  though the default route uses a subset.
+  `make_verify`/`make_gate`/`make_integrate`/`make_cleanup` wrap the
+  verify-integrate states (`make_gate` delegates to `verify_integrate.make_gate`,
+  the cumulative regression GATE §2.2 [v2]); `make_integrate` binds the loaded
+  governance `mode` so INTEGRATE merges only at `auto-merge` (and consumes
   `safety_governance.permits` + `merge_guardrails`). The full close-the-loop
-  route `… IMPLEMENT → VERIFY → INTEGRATE → CLEANUP → PERSIST → EXIT` therefore
-  wires with NO code change (all ports pre-mapped) — a pure `route.json` edit.
+  route `… IMPLEMENT → VERIFY → REVIEW → GATE → INTEGRATE → CLEANUP → PERSIST →
+  EXIT` therefore wires with NO code change (all ports pre-mapped) — a pure
+  `route.json` edit.
 - **Override by config, not code:** a project-local
   `${CLAUDE_PROJECT_DIR}/.auto-maintainer/route.json` (and optional
   `adapters.json`) overrides the defaults. Inserting the act-side chain
@@ -67,7 +70,10 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
 - **Producible read-product slots are SEEDED EMPTY (skipped-state safety).**
   `_seed_context` not only registers but WRITES a schema-valid empty default for
   every producible read-product slot it registers (`work_orders`,
-  `execution_plan`, `handoffs`, `verdicts`, `integration_result`). A route may
+  `execution_plan`, `handoffs`, `verdicts`, `gate_results`,
+  `integration_result`). `gate_results` (verify-integrate's GATE product) is
+  seeded EMPTY when GATE is routed, so INTEGRATE reading it and a GATE-skipped
+  route both stay crash-free. A route may
   SKIP a producing state via a signal branch — e.g. `VERIFY EMPTY → PERSIST`
   skips INTEGRATE/CLEANUP, or `TRIAGE EMPTY → VERIFY` skips IMPLEMENT — so that
   state never writes its slot. Without a seeded default, the terminal's
