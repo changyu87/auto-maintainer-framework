@@ -67,9 +67,24 @@ Public surface (REVIEW — the ADVISORY quality state, DESIGN §3.7.7):
     RETAINED deterministic evidence validators (#255): the packaging-config
     release gate asserts the shipped lib carries them.
 
+Public surface (GATE — the cumulative regression gate, DESIGN §2.2 [v2]):
+  - GATE_RESULT_SCHEMA_VERSION + GateResult — the typed, versioned per-gated-PR
+    result ({pr_ref, issue_ref, passed, reason, failure_summary}).
+  - GATE_RESULTS_SLOT — the fsm-contracts slot registration descriptor.
+  - GATE_MANIFEST / GATE_SIGNALS — GATE's manifest (reads verdicts, writes
+    gate_results) + signal set (OK).
+  - gh_closing_issue_ref(pr_ref, repo) — the production closing-issue resolver.
+  - Gate — the GATE state; run(TickContext) -> StateResult. Cumulative: a
+    disposable integration worktree at current main, per-PR --no-ff merge +
+    regression, roll-back-on-fail, exclude, deterministic order. No-op PASS when
+    regression_command is null. Never merges main / never calls the merge sink.
+  - make_gate(runtime) — the adapter factory scheduling wires GATE with.
+
 Public surface (slice 2 — INTEGRATE + CLEANUP):
   - INTEGRATION_RESULT_SCHEMA_VERSION + IntegrationResult — the typed,
-    versioned {merged, skipped, errors} integration-result schema.
+    versioned {merged, skipped, errors, gate_failed} integration-result schema.
+  - gh_issue_comment_sink(issue_ref, body, repo) — the production gate-fail
+    comment sink; gate_fail_comment_body(...) builds the marker+JSON body.
   - INTEGRATION_RESULT_SLOT — the fsm-contracts slot registration descriptor.
   - INTEGRATE_MANIFEST / INTEGRATE_SIGNALS — INTEGRATE's manifest (reads ONLY
     verdicts — thin merge, no review coupling) + signal set.
@@ -79,12 +94,12 @@ Public surface (slice 2 — INTEGRATE + CLEANUP):
   - CLEANUP_MANIFEST / CLEANUP_SIGNALS — CLEANUP's manifest + signal set.
   - Cleanup — the CLEANUP state (v1-thin pass-through; run -> OK).
 
-Version: 0.6.0
+Version: 0.7.0
 Owner: changyu87
 Deprecation criterion: Superseded when the loop adopts a non-git VCS backend,
   or a model-backed verify/integrate policy replaces the deterministic gh-based
-  gates, or when the Verdict / IntegrationResult schemas reach a breaking major
-  version. See docs/spec.md.
+  gates, or when the Verdict / IntegrationResult / GateResult schemas reach a
+  breaking major version. See docs/spec.md.
 """
 
 import json
@@ -972,7 +987,7 @@ class Gate:
                      capture_output=True, text=True)
         merge = self._runner(
             ["git", "-C", worktree, "merge", "--no-ff", "--no-edit",
-             "FETCH_HEAD", str(number)],
+             "-m", f"gate-integrate {pr_ref}", "FETCH_HEAD"],
             capture_output=True, text=True)
         if merge.returncode != 0:
             # textual conflict — abort + exclude (not carried forward).
