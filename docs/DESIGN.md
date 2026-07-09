@@ -179,17 +179,19 @@ the spec/WHAT itself. *Rationale:* lowest prerequisite — a project needs no
 spec subsystem to start. A spec-first TRIAGE is a pluggable adapter, not the
 default. **[v1 default + seam]**
 
-### 2.2 Parallelism — bounded-safe in v1; full scope-conflict model deferred
+### 2.2 Parallelism & merge-safety — cumulative GATE closes the conflict model [v2]
 
-v1 permits **bounded, worktree-isolated parallel dispatch**: a `per_item` acting
-state (e.g. IMPLEMENT) may dispatch its items concurrently, each acting subagent
-isolating its code changes in its OWN git worktree that IT creates and removes
-(per its agent contract), so concurrent work never shares a checkout. Safety
-rests on three layers: (1) per-dispatch self-managed worktree isolation — no
-shared-tree corruption; (2) INTEGRATE's mergeable-gate + the `check=True` merge
-sink — a PR that conflicts after another merges is rejected, recorded, and
-retried, never force-merged; (3) PRIORITIZE's same-`target_feature`
-serialization (§3.8.6, #214) — two PRs never touch one feature in a tick.
+Bounded, worktree-isolated parallel dispatch: a `per_item` acting state (e.g.
+IMPLEMENT) may dispatch its items concurrently, each acting subagent isolating
+its code changes in its OWN git worktree that IT creates and removes (per its
+agent contract), so concurrent work never shares a checkout. Merge safety rests
+on four layers: (1) per-dispatch self-managed worktree isolation — no shared-tree
+corruption; (2) INTEGRATE's mergeable-gate + the `check=True` merge sink — a PR
+that conflicts after another merges is rejected, recorded, and retried, never
+force-merged; (3) PRIORITIZE's same-`target_feature` serialization (§3.8.6, #214)
+— two PRs never touch one feature in a tick; (4) **the GATE state — a
+self-contained cumulative regression gate** between REVIEW and INTEGRATE
+(described below).
 
 **Invariant (auto-maintainer-framework#335):** an ACTING `per_item` agent MUST
 be worktree-isolated, and that isolation is the agent's OWN self-managed git
@@ -202,17 +204,25 @@ file-handoff agent MUST NOT declare harness `isolation: "worktree"`, and the
 adapter-wiring layer REJECTS at wiring validation any agent dispatch declaring
 BOTH a file-based handoff and harness `isolation: "worktree"`.
 
-What stays **[v2]** is the full **scope/conflict model** — up-front blast-radius
-inference to serialize *any* overlapping work (not just same-feature): non-feature
-overlaps (docs / config / shared files that PRIORITIZE cannot classify) and
-*semantic* conflicts that merge cleanly at the text level but break behavior
-(caught today only partially by §3.7.6's conditional cross-feature complement
-run). Until then, overlapping work PRIORITIZE cannot serialize may **churn** (the
-losing PR is skipped and re-done next tick) — bounded and safe, never
-corrupting, but not conflict-free. *Rationale:* worktree isolation + the
-mergeable-gate make concurrency *safe* immediately; conflict-*freedom* is the
-deepest generality gap and waits for the scope model. **[v1 bounded / v2 scope
-model]**
+**GATE closes the conflict model [v2].** GATE runs the project's configured
+regression (`regression_command`, a self-contained loop state — no external CI)
+against each REVIEW-passed PR **cumulatively**: in a disposable integration
+worktree started from current `main`, it merges the PRs in deterministic order,
+running the regression after each merge, so PR *k* is validated on top of `main`
++ the already-gate-passed PRs *1..k-1*. A PR that regresses or textually
+conflicts is rolled out, excluded, and reported (its issue gets a machine-
+readable failure comment); the rest stack on the green set. Only GATE-passed PRs
+reach INTEGRATE's real merge. This catches the **semantic conflict** — PRs that
+merge cleanly at the text level but break behavior *together* — that the earlier
+design left to a deferred static scope/blast-radius model. The cumulative
+test-gate delivers conflict-*freedom* empirically (by testing the combination)
+rather than by up-front inference, so it **supersedes** that static scope model;
+PRIORITIZE's same-`target_feature` serialization remains as a cheap ordering
+optimization, not the safety mechanism. Residual: intra-tick order-dependence (a
+different PR order may pass a different subset — deterministic, acceptable), and
+a GATE-failed PR is retried on later ticks up to a fixed threshold before its
+issue is terminally labelled for human attention (never escalated mid-loop).
+**[v2 — cumulative GATE]**
 
 ### 2.3 Trust default — `auto-merge` (REVIEW-gated)
 
