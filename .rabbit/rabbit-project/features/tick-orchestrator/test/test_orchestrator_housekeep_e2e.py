@@ -102,22 +102,18 @@ def _baseline_snapshot_for_diff(feature_dir):
     return snap
 
 
-# Load-bearing tokens that MUST survive the slim. Asserted against the COMBINED
-# doc surface (spec.md + contract.md): the public-surface symbols, the route
-# schema, the consumed fsm-contracts types, the decoupling guarantee, and the
-# ping-pong conformance symbols live in the spec; the
-# provides/reads/invokes/never keys live in the contract block.
-_LOAD_BEARING_DOCS = (
-    "resolve_next",
-    "validate_signals",
-    "validate_data_readiness",
-    "route.json",
-    "TickContext",
-    "StateResult",
-    "fsm-contracts",
-    "PING",
-    "PONG",
-)
+def _declared_load_bearing_tokens():
+    """Read the load-bearing token declaration (test/load_bearing_tokens.json),
+    the single source of truth shared with the #353 doc-survival GATE. The gate
+    and this test MUST assert the same token set, so both read this one file
+    rather than each keeping an independent copy that could silently drift."""
+    with open(os.path.join(_TEST_DIR, "load_bearing_tokens.json"), "r") as f:
+        return tuple(json.load(f)["tokens"])
+
+
+# Load-bearing tokens that MUST survive the slim, read from the shared
+# declaration (single source of truth with the #353 GATE).
+_LOAD_BEARING_DOCS = _declared_load_bearing_tokens()
 
 # The contract block keys are asserted against contract.md specifically.
 _CONTRACT_KEYS = ("provides", "reads", "invokes", "never")

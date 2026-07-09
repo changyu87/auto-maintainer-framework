@@ -113,49 +113,18 @@ def _baseline_snapshot_for_diff(feature_dir):
     return snap
 
 
-# Load-bearing tokens that MUST survive the slim. Asserted against the COMBINED
-# doc surface (spec.md + contract.md): the public-surface symbols, Disposition
-# members, signal vocabulary, and core anchors live in the spec; the
-# provides/reads/invokes/never keys live in the contract block. Membership in
-# the union is what "survived the slim" means for this wave.
-_LOAD_BEARING_DOCS = (
-    # Public-surface symbols (src/lifecycle_dispositions.py).
-    "Disposition",
-    "read_disposition",
-    "write_disposition",
-    "acquire_lock",
-    "release_lock",
-    "lock_is_held",
-    "Guard",
-    "Exit",
-    "run(TickContext)",
-    "StateResult",
-    # Disposition closed-set members.
-    "RUNNING",
-    "IDLE",
-    "STOPPED",
-    "ABORTED",
-    "RESTART_NEEDED",
-    # GUARD/EXIT emitted signals + EXIT outcome vocabulary.
-    "OK",
-    "HALT_REQUESTED",
-    "RESTART_REQUIRED",
-    "refire",
-    "idle",
-    "break",
-    "halt",
-    # Core anchor states + single-writer mutex concept.
-    "GUARD",
-    "EXIT",
-    "single-writer mutex",
-    "stale-marker detection",
-    "host-agnostic resumption",
-    # Cross-feature references (bounded-scope contract surface).
-    "fsm-contracts",
-    "durable-state",
-    "scheduling",
-    "tick-orchestrator",
-)
+def _declared_load_bearing_tokens():
+    """Read the load-bearing token declaration (test/load_bearing_tokens.json),
+    the single source of truth shared with the #353 doc-survival GATE. The gate
+    and this test MUST assert the same token set, so both read this one file
+    rather than each keeping an independent copy that could silently drift."""
+    with open(os.path.join(_TEST_DIR, "load_bearing_tokens.json"), "r") as f:
+        return tuple(json.load(f)["tokens"])
+
+
+# Load-bearing tokens that MUST survive the slim, read from the shared
+# declaration (single source of truth with the #353 GATE).
+_LOAD_BEARING_DOCS = _declared_load_bearing_tokens()
 
 # The contract block keys are asserted against contract.md specifically.
 _CONTRACT_KEYS = ("provides", "reads", "invokes", "never")

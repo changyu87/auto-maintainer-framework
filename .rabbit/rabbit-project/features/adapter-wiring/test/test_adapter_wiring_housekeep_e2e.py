@@ -15,9 +15,9 @@ assert the wave's two contractual properties end to end:
 
   Gate 2 — LOAD-BEARING SURVIVAL. Every token that names a public-surface
   function, a resolved type, a core anchor, the factory convention, or a
-  contract block key MUST still appear in the slimmed docs (the per-doc lists
-  below say which tokens each doc owns). A slim that drops a load-bearing
-  token FAILS.
+  contract block key MUST still appear in the slimmed docs. The required set is
+  read from the shared declaration (test/load_bearing_tokens.json) and asserted
+  against the combined doc surface. A slim that drops a load-bearing token FAILS.
 
 Owner: changyu87
 """
@@ -49,50 +49,22 @@ def _baseline():
         return json.load(f)
 
 
-# Load-bearing tokens that MUST survive the slim. The spec list names the
-# public surface, the resolved agent type, the error type, the factory
-# convention, the agent-dispatch helpers, and the four core anchors
-# (GUARD/DRAIN/PERSIST/EXIT). The contract list (below) drops the anchors —
-# they live in the spec, not the contract block — and adds the
-# provides/reads/invokes/never block keys instead.
-_LOAD_BEARING_SPEC = (
-    "load_route",
-    "load_adapter_map",
-    "resolve_states",
-    "validate_wiring",
-    "build_loop",
-    "scaffold_adapter",
-    "wire_adapter",
-    "validate_adapter_conformance",
-    "AgentState",
-    "WiringError",
-    "module:factory",
-    "is_agent_entry",
-    "validate_agent_adapter",
-    "GUARD",
-    "DRAIN",
-    "PERSIST",
-    "EXIT",
-)
+def _declared_load_bearing_tokens():
+    """Read the load-bearing token declaration (test/load_bearing_tokens.json),
+    the single source of truth shared with the #353 doc-survival GATE. The gate
+    and this test MUST assert the same token set, so both read this one file
+    rather than each keeping an independent copy that could silently drift."""
+    with open(os.path.join(_TEST_DIR, "load_bearing_tokens.json"), "r") as f:
+        return tuple(json.load(f)["tokens"])
 
-_LOAD_BEARING_CONTRACT = (
-    "load_route",
-    "load_adapter_map",
-    "resolve_states",
-    "validate_wiring",
-    "build_loop",
-    "scaffold_adapter",
-    "wire_adapter",
-    "validate_adapter_conformance",
-    "AgentState",
-    "module:factory",
-    "is_agent_entry",
-    "validate_agent_adapter",
-    "provides",
-    "reads",
-    "invokes",
-    "never",
-)
+
+# Load-bearing tokens that MUST survive the slim, read from the shared
+# declaration (single source of truth with the #353 GATE). The declaration is a
+# flat set asserted against the COMBINED doc surface (spec.md + contract.md):
+# the public surface, resolved types, factory convention and core anchors live
+# in the spec; the provides/reads/invokes/never block keys live in the contract.
+# Membership in the union is what "survived the slim" means for the wave.
+_LOAD_BEARING_DOCS = _declared_load_bearing_tokens()
 
 
 # ==========================================================================
@@ -131,19 +103,13 @@ def test_contract_is_not_larger_than_baseline():
 # Gate 2 — load-bearing survival: required tokens still present after the slim.
 # ==========================================================================
 
-def test_spec_retains_all_load_bearing_tokens():
-    """Every load-bearing token in the spec survived the slim."""
-    text = _read(_SPEC)
-    missing = [tok for tok in _LOAD_BEARING_SPEC if tok not in text]
-    assert not missing, f"spec.md dropped load-bearing tokens: {missing}"
-
-
-def test_contract_retains_all_load_bearing_tokens():
-    """Every load-bearing token in the contract survived the slim, including the
-    provides/reads/invokes/never block keys."""
-    text = _read(_CONTRACT)
-    missing = [tok for tok in _LOAD_BEARING_CONTRACT if tok not in text]
-    assert not missing, f"contract.md dropped load-bearing tokens: {missing}"
+def test_docs_retain_all_load_bearing_tokens():
+    """Every declared load-bearing token survived the slim, asserted against the
+    combined doc surface (spec.md + contract.md) — the same union-membership
+    semantics the #353 GATE applies to the shared declaration."""
+    text = _read(_SPEC) + "\n" + _read(_CONTRACT)
+    missing = [tok for tok in _LOAD_BEARING_DOCS if tok not in text]
+    assert not missing, f"docs dropped load-bearing tokens: {missing}"
 
 
 # ==========================================================================
