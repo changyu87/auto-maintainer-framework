@@ -191,6 +191,38 @@ def test_cli_backoff_threshold_nonpositive_rejected():
 
 
 # ==========================================================================
+# E2E Behaviour: --regression-command sets the top-level GATE regression_command
+# to the given shell command, and a clear sentinel (none/null/"") resets it to
+# JSON null (no gate), mirroring --per-day-tokens.
+# ==========================================================================
+
+def test_cli_regression_command_set_then_clear():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--regression-command", "bash scripts/gate-regression.sh"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["regression_command"]
+                == "bash scripts/gate-regression.sh")
+
+        rc = configure.main(
+            ["--project-dir", project_dir, "--regression-command", "none"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["regression_command"] is None
+
+
+def test_cli_regression_command_empty_clears():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--regression-command", "make check"]) == 0
+        assert _read_cfg(project_dir)["regression_command"] == "make check"
+        assert configure.main(
+            ["--project-dir", project_dir, "--regression-command", ""]) == 0
+        assert _read_cfg(project_dir)["regression_command"] is None
+
+
+# ==========================================================================
 # E2E Behaviour: load-modify-save preserves unmentioned keys. Set mode first,
 # then a budget-only write later; the earlier mode must survive.
 # ==========================================================================
@@ -287,6 +319,7 @@ def test_cli_describe_emits_field_catalog():
         assert "budget.per_day_tokens" in keys
         assert "heartbeat.interval_minutes" in keys
         assert "backoff.threshold" in keys
+        assert "regression_command" in keys
         for entry in catalog:
             for field in ("key", "label", "controls", "default",
                           "current", "type", "validator"):
@@ -318,6 +351,7 @@ def test_describe_catalog_is_complete_one_entry_per_knob():
             "budget.per_day_tokens",
             "heartbeat.interval_minutes",
             "backoff.threshold",
+            "regression_command",
         }
         assert set(keys) == expected_keys, (
             f"catalog knobs {set(keys)} != expected {expected_keys}")
@@ -374,8 +408,8 @@ def _skill_body():
 
 def test_skill_version_bumped():
     fm = _skill_frontmatter()
-    assert fm["version"] == "0.7.0", (
-        f"configure skill must be bumped to 0.7.0, got {fm['version']}")
+    assert fm["version"] == "0.8.0", (
+        f"configure skill must be bumped to 0.8.0, got {fm['version']}")
 
 
 def test_skill_description_advertises_setup_walkthrough():
@@ -433,3 +467,17 @@ def test_skill_body_states_catalog_is_source_of_truth():
         "skill body must state the catalog is the single source of truth")
     assert "hardcode" in body or "hard-code" in body or "hard code" in body, (
         "skill body must state it does not hardcode field names")
+
+
+# ==========================================================================
+# E2E Behaviour: the SKILL.md documents the --regression-command flag and its
+# catalog-key -> flag mapping (regression_command -> --regression-command), so
+# the guided walk-through can drive the new GATE knob.
+# ==========================================================================
+
+def test_skill_body_documents_regression_command():
+    body = _skill_body()
+    assert "--regression-command" in body, (
+        "skill body must document the --regression-command flag")
+    assert "regression_command" in body, (
+        "skill body must map the regression_command catalog key to its flag")
