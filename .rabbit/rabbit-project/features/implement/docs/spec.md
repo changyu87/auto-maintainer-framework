@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.6.1
+version: 0.7.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -167,6 +167,18 @@ the output path. Its rendered prompt is the complete handoff contract (the
   `test_verdict` field — the pass is the script's recorded result, never the
   model's prose. A failing or missing verdict is NOT an open: the order is
   reported `status: blocked` with no open PR.
+- **Regenerates a committed build tree in-PR (v2.7.0,
+  auto-maintainer-framework#354).** Some repos check a built distribution tree
+  (a plugin/package tree assembled from source) into version control, guarded by
+  a build-drift guard that verifies the committed tree matches its source. On the
+  accept path, after committing the code change and BEFORE the self-review, the
+  subagent determines whether its edits touched source mirrored into such a
+  committed tree; if so, it runs the repo's build step and commits the
+  regenerated tree in the SAME PR, so a shipped-source change lands drift-free in
+  one PR (green under the build-drift guard). A change touching only non-mirrored
+  source (docs/tests, or a repo with no committed build tree) does NOT trigger a
+  regen. This prevents the two-PRs-for-one-change churn where a shipped-src edit
+  merges with drift and the guard then forces a second, regen-only PR.
 - **Pre-handoff self-review (v2.3.0).** On the accept path, after committing and
   BEFORE `gh pr create`, the subagent runs a structured self-review against its
   OWN committed diff (it reads the actual diff, not its intent) and fixes any gap

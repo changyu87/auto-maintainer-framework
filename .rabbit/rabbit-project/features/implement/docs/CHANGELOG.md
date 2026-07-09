@@ -3,6 +3,29 @@
 All notable changes to this feature are recorded here. Versions follow the
 spec/contract `version:` frontmatter. Owner: changyu87.
 
+## 0.7.0 — 2026-07-09
+
+In-PR regeneration of a committed build tree (auto-maintainer-framework#354).
+
+- **Shipped implementer regenerates a committed build tree in-PR.** When a repo
+  checks a built distribution tree (a plugin/package tree assembled from source)
+  into version control under a build-drift guard, the shipped implementer
+  subagent (`ship/agents/auto-maintainer-implementer.md`, now v2.7.0) — on the
+  accept path, after committing the code change and BEFORE the self-review —
+  determines whether its edits touched source mirrored into that committed tree
+  and, if so, runs the repo's build step and commits the regenerated tree in the
+  SAME PR. This keeps a shipped-source change drift-free in one PR (green under
+  the build-drift guard) instead of merging with drift and forcing a second,
+  regen-only PR (two PRs for one logical change).
+- **Non-mirrored changes do not regenerate.** A change touching only source not
+  mirrored into a committed build tree (docs/tests, or a repo with no committed
+  build tree) does NOT trigger a regen, avoiding pointless churn.
+- **No dev-path leak.** The regen instruction is phrased generically (a repo's
+  build step / committed distribution tree); the shipped body still references
+  NEITHER `rabbit-project` NOR `.rabbit`.
+- **Spec.** `docs/spec.md` documents the in-PR build-tree regeneration under
+  "Shipped implementer subagent".
+
 ## 0.6.1 — 2026-06-23
 
 Deployment-correctness fix for the shipped implementer subagent's gate
