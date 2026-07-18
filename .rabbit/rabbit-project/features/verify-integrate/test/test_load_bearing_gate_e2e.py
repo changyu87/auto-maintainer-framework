@@ -195,14 +195,22 @@ class _FakeGitWorktree:
 
     The doc-survival check reads real files under the worktree, so this fake
     materializes the worktree's feature doc surfaces up front and answers
-    `git diff --name-only` with the scripted changed paths. Merge/regression are
-    scripted to succeed (so the ONLY thing that can fail the gate here is the
-    token check). Records commands so tests assert roll-back on a token drop."""
+    `git diff --name-only` with the scripted changed paths. It also answers
+    `git show <pre_sha>:<feat>/test/load_bearing_tokens.json` with the BASE
+    (pre-merge) declaration text — GATE anchors the declared set to base (issue
+    #392), so the fake serves `base_tokens[feat_rel]` for that revision rather
+    than the worktree's (post-merge) copy. Merge/regression are scripted to
+    succeed (so the ONLY thing that can fail the gate here is the token check).
+    Records commands so tests assert roll-back on a token drop."""
 
-    def __init__(self, worktree, changed_paths, regression_command="pytest"):
+    def __init__(self, worktree, changed_paths, regression_command="pytest",
+                 base_tokens=None):
         self._worktree = worktree
         self._changed = list(changed_paths)
         self._regression_command = regression_command
+        # base_tokens maps a feature-rel path (e.g. "<root>/alpha") to the token
+        # list declared at the pre-merge base; absent ⇒ no declaration at base.
+        self._base_tokens = dict(base_tokens or {})
         self.commands = []
 
     def __call__(self, cmd, **kwargs):
@@ -216,7 +224,23 @@ class _FakeGitWorktree:
         if sub == "diff":
             return _FakeCompleted(returncode=0,
                                   stdout="\n".join(self._changed) + "\n")
+        if sub == "show":
+            return self._show(cmd)
         return _FakeCompleted(returncode=0)
+
+    def _show(self, cmd):
+        """Answer `git show <rev>:<path>` from base_tokens: nonzero (as real git
+        does for an absent path) when no base declaration is scripted for the
+        feature the path belongs to."""
+        spec = cmd[-1]  # "<rev>:<feat_rel>/test/load_bearing_tokens.json"
+        blob_path = spec.split(":", 1)[-1]
+        suffix = "/test/load_bearing_tokens.json"
+        feat_rel = (blob_path[:-len(suffix)] if blob_path.endswith(suffix)
+                    else blob_path)
+        if feat_rel not in self._base_tokens:
+            return _FakeCompleted(returncode=128, stderr="path does not exist")
+        body = json.dumps({"tokens": self._base_tokens[feat_rel]})
+        return _FakeCompleted(returncode=0, stdout=body)
 
     @staticmethod
     def _git_sub(cmd):
@@ -271,7 +295,9 @@ def test_gate_e2e_doc_pr_dropping_token_is_blocked_load_bearing():
         _make_feature(root, "alpha", spec="the Verdict schema",
                       tokens=["Verdict", "ci_state"])
         changed = [f"{_FEATURES_ROOT}/alpha/docs/spec.md"]
-        fake = _FakeGitWorktree(wt, changed)
+        fake = _FakeGitWorktree(
+            wt, changed,
+            base_tokens={f"{_FEATURES_ROOT}/alpha": ["Verdict", "ci_state"]})
         gate = vi.Gate(regression_command="pytest", runner=fake,
                        repo="acme/widget", default_branch=_DEFAULT_BRANCH,
                        issue_resolver=lambda pr_ref, repo=None: None,
@@ -297,7 +323,10 @@ def test_gate_e2e_doc_pr_preserving_tokens_passes():
                       spec="the Verdict schema has ci_state and reasons",
                       tokens=["Verdict", "ci_state", "reasons"])
         changed = [f"{_FEATURES_ROOT}/alpha/docs/spec.md"]
-        fake = _FakeGitWorktree(wt, changed)
+        fake = _FakeGitWorktree(
+            wt, changed,
+            base_tokens={f"{_FEATURES_ROOT}/alpha":
+                         ["Verdict", "ci_state", "reasons"]})
         gate = vi.Gate(regression_command="pytest", runner=fake,
                        repo="acme/widget", default_branch=_DEFAULT_BRANCH,
                        issue_resolver=lambda pr_ref, repo=None: None,
@@ -374,3 +403,95 @@ def test_gate_e2e_features_root_none_skips_token_check():
     assert results[0]["passed"] is True
     # no `git diff` was consulted (the check short-circuited on None root).
     assert not any(_is_git_sub(c, "diff") for c in fake.commands)
+
+
+# ==========================================================================
+# issue #392 — the declared set is anchored to the pre-merge base, so a PR
+# cannot bypass the gate by dropping a token AND its declaration together.
+# ==========================================================================
+
+def test_gate_e2e_dropping_token_and_its_declaration_is_still_blocked():
+    """issue #392: a PR that drops a load-bearing token from the spec AND removes
+    that token's entry from load_bearing_tokens.json in the SAME PR must STILL be
+    blocked. The post-merge worktree declares nothing (the entry is gone), but the
+    BASE (pre-merge) declaration still names the token, so GATE — anchoring the
+    declared set to base — catches the drop (passed=False, reason='load-bearing')
+    and rolls the merge back."""
+    with tempfile.TemporaryDirectory() as wt:
+        root = os.path.join(wt, _FEATURES_ROOT)
+        # post-merge worktree: BOTH the token is dropped from the spec AND the
+        # declaration is weakened to drop that token's entry.
+        _make_feature(root, "alpha", spec="the Verdict schema",
+                      tokens=["Verdict"])  # ci_state entry ALSO removed
+        changed = [
+            f"{_FEATURES_ROOT}/alpha/docs/spec.md",
+            f"{_FEATURES_ROOT}/alpha/test/load_bearing_tokens.json",
+        ]
+        # base still declares ci_state — anchoring to base defeats the bypass.
+        fake = _FakeGitWorktree(
+            wt, changed,
+            base_tokens={f"{_FEATURES_ROOT}/alpha": ["Verdict", "ci_state"]})
+        gate = vi.Gate(regression_command="pytest", runner=fake,
+                       repo="acme/widget", default_branch=_DEFAULT_BRANCH,
+                       issue_resolver=lambda pr_ref, repo=None: None,
+                       worktree_dir=wt, features_root=_FEATURES_ROOT)
+        ctx = _fresh_ctx()
+        ctx.write("verdicts", [_verdict(1)])
+        results = _run_gate(gate, ctx)
+
+    assert results[0]["passed"] is False
+    assert results[0]["reason"] == "load-bearing"
+    assert "ci_state" in results[0]["failure_summary"]
+    # the drop rolled the merge back and the regression never ran.
+    assert any(_is_git_sub(c, "reset") and "--hard" in c for c in fake.commands)
+    assert not any(c and c[0] != "git" for c in fake.commands)
+
+
+def test_gate_e2e_adding_a_declaration_in_the_pr_is_not_gated():
+    """The declared set is the BASE set, so a token a PR ADDS to its own
+    load_bearing_tokens.json (absent at base) is NOT retroactively gated in this
+    PR — only the base's declared tokens must survive. Here base declared no
+    tokens for the feature, so even a doc PR whose post-merge declaration lists a
+    token missing from the docs passes (that token was not load-bearing at base)."""
+    with tempfile.TemporaryDirectory() as wt:
+        root = os.path.join(wt, _FEATURES_ROOT)
+        # post-merge declares a token the docs do NOT contain, but base declared
+        # nothing (base_tokens omits the feature) -> not gated on it.
+        _make_feature(root, "alpha", spec="slimmed docs",
+                      tokens=["ci_state"])
+        changed = [f"{_FEATURES_ROOT}/alpha/docs/spec.md"]
+        fake = _FakeGitWorktree(wt, changed)  # no base declaration
+        gate = vi.Gate(regression_command="pytest", runner=fake,
+                       repo="acme/widget", default_branch=_DEFAULT_BRANCH,
+                       issue_resolver=lambda pr_ref, repo=None: None,
+                       worktree_dir=wt, features_root=_FEATURES_ROOT)
+        ctx = _fresh_ctx()
+        ctx.write("verdicts", [_verdict(1)])
+        results = _run_gate(gate, ctx)
+
+    assert results[0]["passed"] is True
+    assert results[0]["reason"] is None
+
+
+# ==========================================================================
+# Pure helpers: _parse_declared_tokens + missing_load_bearing_tokens(tokens=)
+# ==========================================================================
+
+def test_parse_declared_tokens_shares_the_declaration_parse():
+    assert vi._parse_declared_tokens('{"tokens": ["a", "", 3, "b"]}') == \
+        ["a", "b"]
+    assert vi._parse_declared_tokens("") == []
+    assert vi._parse_declared_tokens("{not json") == []
+    assert vi._parse_declared_tokens('{"other": 1}') == []
+
+
+def test_missing_tokens_explicit_set_overrides_on_disk_declaration():
+    """When an explicit `tokens` set is passed (as GATE passes the base set), it
+    is checked against the doc surfaces regardless of the feature's own on-disk
+    declaration — the on-disk copy cannot weaken the check."""
+    with tempfile.TemporaryDirectory() as td:
+        # the feature's OWN declaration is empty, but the base set still names
+        # ci_state, which the docs dropped -> reported missing.
+        feat = _make_feature(td, "f", spec="the Verdict schema", tokens=[])
+        assert vi.missing_load_bearing_tokens(
+            feat, tokens=["Verdict", "ci_state"]) == ["ci_state"]

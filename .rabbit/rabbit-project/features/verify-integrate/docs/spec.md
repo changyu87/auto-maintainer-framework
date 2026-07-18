@@ -176,19 +176,19 @@ loop PRs) + `regression_command` from the central config
   - Remove the worktree when done (always, even on error).
 - **Doc-surface load-bearing-token survival (issue #353).** Feature test suites
   do NOT assert doc prose, so a doc-reduction PR that over-deletes a load-bearing
-  token (a schema field, a symbol/script name, an invariant, a cross-reference)
-  can pass the line-count baseline and auto-merge. On each clean merge, BEFORE the
+  token (a schema field, a symbol/script name, an invariant, a cross-reference) can
+  pass the line-count baseline and auto-merge. On each clean merge, BEFORE the
   regression, GATE asserts every token a doc-touched feature DECLARES load-bearing
-  still appears in its post-change doc surfaces (`docs/spec.md`,
-  `docs/contract.md`, `skills/*/SKILL.md`). A feature declares its must-survive
-  tokens in `test/load_bearing_tokens.json` (`{"tokens": [...]}`); GATE reads the
-  PR's changed doc surfaces (`git diff --name-only`), maps them to features, and
-  checks each declared set against the merged worktree. A dropped declared token
-  ⇒ `GateResult{passed:False, reason:"load-bearing"}` (dropped tokens named in
-  `failure_summary`); the merge is ROLLED BACK and the PR EXCLUDED (mirrors the
-  rabbit-housekeep load-bearing-survival test on the loop's own auto-merge path).
-  Opt-in + doc-scoped: a feature that declares no tokens, and a PR touching no doc
-  surface, are unaffected.
+  still appears in its post-change doc surfaces (`docs/spec.md`, `docs/contract.md`,
+  `skills/*/SKILL.md`). A feature declares must-survive tokens in
+  `test/load_bearing_tokens.json` (`{"tokens": [...]}`); GATE reads the PR's changed
+  doc surfaces (`git diff --name-only`), maps them to features, and checks each
+  feature's BASE (pre-merge) declared set — read from the pre-merge revision, NOT
+  the PR's own copy, so a PR cannot bypass the gate by dropping a token AND its
+  declaration together (issue #392) — against the merged worktree. A dropped
+  declared token ⇒ `GateResult{passed:False, reason:"load-bearing"}` (named in
+  `failure_summary`); the merge is ROLLED BACK and the PR EXCLUDED. Opt-in +
+  doc-scoped: a feature that declares no tokens, or a PR touching no doc, is unaffected.
 - Each PR is thus validated on top of the prior GATE-passed PRs, catching
   **semantic conflicts** (clean merges that break together). Residual: intra-tick
   order-dependence (deterministic). GATE writes only the disposable worktree — no
