@@ -74,9 +74,15 @@ Public surface (GATE — the cumulative regression gate, DESIGN §2.2 [v2]):
   - GATE_MANIFEST / GATE_SIGNALS — GATE's manifest (reads verdicts, writes
     gate_results) + signal set (OK).
   - gh_closing_issue_ref(pr_ref, repo) — the production closing-issue resolver.
+  - declared_load_bearing_tokens(feature_dir) / missing_load_bearing_tokens(
+    feature_dir) / features_with_changed_doc_surfaces(changed_paths,
+    features_root) — the pure doc-surface load-bearing-token survival helpers
+    (issue #353): a feature declares its must-survive tokens in
+    test/load_bearing_tokens.json; GATE fails a doc-touched PR that drops one.
   - Gate — the GATE state; run(TickContext) -> StateResult. Cumulative: a
-    disposable integration worktree at current main, per-PR --no-ff merge +
-    regression, roll-back-on-fail, exclude, deterministic order. No-op PASS when
+    disposable integration worktree at current main, per-PR --no-ff merge, the
+    doc-surface load-bearing-token survival check (#353), then the regression,
+    roll-back-on-fail, exclude, deterministic order. No-op PASS when
     regression_command is null. Never merges main / never calls the merge sink.
   - make_gate(runtime) — the adapter factory scheduling wires GATE with.
 
@@ -812,8 +818,10 @@ class GateResult:
 
     `passed` is whether the PR merged cleanly AND its cumulative regression run
     exit-0'd. `reason` is None on pass, else `"regression"` (clean merge, nonzero
-    regression) or `"conflict"` (textual merge conflict — regression not run).
-    `issue_ref` is the PR's closing-issue reference (resolved via the injectable
+    regression), `"conflict"` (textual merge conflict — regression not run), or
+    `"load-bearing"` (a doc-touched feature dropped a declared load-bearing token
+    from its post-change doc surfaces — the #353 doc-survival gate; regression not
+    run). `issue_ref` is the PR's closing-issue reference (resolved via the injectable
     gh resolver; None when unresolvable) so INTEGRATE can comment the failure on
     the issue. `failure_summary` is a BOUNDED tail of the regression output
     (empty on pass). `to_dict`/`from_dict` give the machine-first, versioned
@@ -896,32 +904,162 @@ def _bounded_tail(text, max_bytes=_FAILURE_SUMMARY_MAX_BYTES):
     return text[-max_bytes:]
 
 
+# ==========================================================================
+# Doc-surface load-bearing-token survival check (issue #353).
+#
+# A doc-reduction PR (housekeep-style) is guarded today only by a line-count
+# baseline + the advisory REVIEW gate; feature test suites do NOT assert doc
+# prose, so an over-deletion that drops a load-bearing token (a schema field, a
+# script/symbol name, an invariant statement, a cross-reference) can pass the
+# line-count gate and auto-merge. This mirrors the rabbit-housekeep skill's
+# load-bearing-survival test, but enforced on the loop's OWN auto-merge path:
+# GATE, having already built the post-merge integration tree, asserts that every
+# token a touched feature DECLARES load-bearing still appears in that feature's
+# post-change doc surfaces. A dropped declared token = a "load-bearing" gate
+# failure (block the merge). Features that declare no tokens, and PRs that touch
+# no doc surface, are unaffected.
+# ==========================================================================
+
+# The doc surfaces (feature-relative) the survival check inspects — the same set
+# issue #353 names: the spec + contract prose and every skill's SKILL.md.
+DOC_SURFACE_FIXED = ("docs/spec.md", "docs/contract.md")
+DOC_SURFACE_SKILL_GLOB = os.path.join("skills", "*", "SKILL.md")
+
+# The per-feature declared-token file (a feature-relative path under test/): a
+# JSON object `{"tokens": [str, ...]}` listing the tokens that MUST survive any
+# reduction of that feature's doc surfaces. Absent or empty ⇒ no tokens declared
+# ⇒ the feature is not gated on token survival (opt-in, never mandated).
+LOAD_BEARING_TOKENS_FILE = os.path.join("test", "load_bearing_tokens.json")
+
+
+def _is_doc_surface(rel_path):
+    """Whether a feature-relative path is one of the doc surfaces the survival
+    check inspects (docs/spec.md, docs/contract.md, or skills/<name>/SKILL.md).
+    Pure; path separators are normalized so it matches on any platform."""
+    norm = rel_path.replace("\\", "/")
+    if norm in ("docs/spec.md", "docs/contract.md"):
+        return True
+    parts = norm.split("/")
+    return len(parts) == 3 and parts[0] == "skills" and parts[2] == "SKILL.md"
+
+
+def declared_load_bearing_tokens(feature_dir):
+    """The tokens a feature DECLARES load-bearing, read from its
+    `test/load_bearing_tokens.json` (`{"tokens": [...]}`). Returns [] when the
+    file is absent, unreadable, or declares no tokens (opt-in: a feature that has
+    not declared any tokens is never gated on token survival). Pure read."""
+    path = os.path.join(feature_dir, LOAD_BEARING_TOKENS_FILE)
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    tokens = data.get("tokens") if isinstance(data, dict) else None
+    return [t for t in (tokens or []) if isinstance(t, str) and t]
+
+
+def _doc_surface_text(feature_dir):
+    """The combined text of a feature's PRESENT doc surfaces (spec + contract +
+    each skill's SKILL.md). A missing surface contributes nothing (it cannot
+    carry a token). Pure read."""
+    import glob as _glob
+    paths = [os.path.join(feature_dir, rel) for rel in DOC_SURFACE_FIXED]
+    paths += sorted(_glob.glob(os.path.join(feature_dir,
+                                            DOC_SURFACE_SKILL_GLOB)))
+    chunks = []
+    for p in paths:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r") as f:
+                    chunks.append(f.read())
+            except OSError:
+                continue
+    return "\n".join(chunks)
+
+
+def missing_load_bearing_tokens(feature_dir):
+    """The declared load-bearing tokens ABSENT from a feature's post-change doc
+    surfaces, in declared order. Empty when the feature declares no tokens or all
+    declared tokens survive. Pure: it reads the feature's declared-token file and
+    its doc surfaces, computes set-membership, and does no I/O beyond those reads.
+    """
+    tokens = declared_load_bearing_tokens(feature_dir)
+    if not tokens:
+        return []
+    text = _doc_surface_text(feature_dir)
+    return [tok for tok in tokens if tok not in text]
+
+
+def _feature_dir_of(rel_path, features_root):
+    """The feature directory owning a repo-relative changed path, or None when
+    the path is not under `<features_root>/<feature>/...`. `features_root` is the
+    repo-relative root the feature dirs live under (e.g. `features` or a nested
+    `<subtree>/features`). Pure path arithmetic."""
+    norm = rel_path.replace("\\", "/").lstrip("/")
+    root = (features_root or "").replace("\\", "/").strip("/")
+    if not root or not norm.startswith(root + "/"):
+        return None
+    tail = norm[len(root) + 1:].split("/")
+    if len(tail) < 2:
+        return None
+    return "/".join([root, tail[0]])
+
+
+def features_with_changed_doc_surfaces(changed_paths, features_root):
+    """The set of feature dirs (repo-relative) whose DOC SURFACES a PR changed,
+    given the PR's changed repo-relative paths + the `features_root`. A path is
+    counted only when it is one of a feature's doc surfaces (spec/contract/SKILL);
+    a PR that changed no doc surface yields the empty set (the survival check is
+    then a no-op — no effect on non-doc PRs). Deterministic, sorted. Pure."""
+    feats = set()
+    for path in changed_paths or []:
+        feat_dir = _feature_dir_of(path, features_root)
+        if feat_dir is None:
+            continue
+        rel_within = path.replace("\\", "/").lstrip("/")[len(feat_dir) + 1:]
+        if _is_doc_surface(rel_within):
+            feats.add(feat_dir)
+    return sorted(feats)
+
+
 class Gate:
     """The GATE state (cumulative regression gate, DESIGN §2.2 [v2]).
 
     Reads the `verdicts` slot and, when `regression_command` is configured, runs
     the command CUMULATIVELY against each ok verdict PR in a disposable
     integration worktree at current `main`: merge PR k with --no-ff, run the
-    regression, keep the merge on pass / roll it back + exclude on a nonzero
-    regression, and record a `GateResult` per PR. A textual conflict excludes the
-    PR with reason `"conflict"`. When `regression_command` is null GATE is a no-op
-    PASS (every passed=True). Writes `gate_results`, emits OK.
+    load-bearing-token survival check (issue #353) then the regression, keep the
+    merge on pass / roll it back + exclude on a failure, and record a `GateResult`
+    per PR. A textual conflict excludes the PR with reason `"conflict"`; a dropped
+    declared load-bearing token excludes it with reason `"load-bearing"`. When
+    `regression_command` is null GATE is a no-op PASS (every passed=True). Writes
+    `gate_results`, emits OK.
 
     Every external edge — git (via `runner`), the regression subprocess (via the
     same `runner`), and the closing-issue resolver (`issue_resolver`) — is
     injectable so the cumulative logic is unit-tested with a fake. GATE never
     merges to `main` and never calls the INTEGRATE merge sink.
+
+    `features_root` is the repo-relative root the feature dirs live under (e.g.
+    `features` or a nested `<subtree>/features`); it is REQUIRED for the
+    doc-surface token survival check to map a PR's changed paths to features and
+    locate their doc surfaces in the merged worktree. When it is None the token
+    check is skipped (the regression gate is unaffected) — the check is opt-in per
+    feature anyway.
     """
 
     def __init__(self, regression_command, runner=subprocess.run, repo=None,
                  default_branch=None, issue_resolver=gh_closing_issue_ref,
-                 worktree_dir=None):
+                 worktree_dir=None, features_root=None):
         self._regression_command = regression_command
         self._runner = runner
         self._repo = repo
         self._default_branch = default_branch
         self._issue_resolver = issue_resolver
         self._worktree_dir = worktree_dir
+        self._features_root = features_root
 
     def _ok_verdicts_ordered(self, verdicts):
         """The ok verdicts in deterministic PR-number order (a non-ok verdict
@@ -997,6 +1135,19 @@ class Gate:
                               passed=False, reason="conflict",
                               failure_summary=_bounded_tail(merge.stdout))
 
+        # Doc-surface load-bearing-token survival (issue #353): before the
+        # regression (feature suites do NOT assert doc prose), assert every token
+        # a doc-touched feature declares load-bearing survived in the merged tree.
+        dropped = self._load_bearing_violation(worktree, pre_sha)
+        if dropped:
+            # roll back the merge; exclude the PR (a dropped token = INVALID).
+            self._runner(["git", "-C", worktree, "reset", "--hard", pre_sha],
+                         capture_output=True, text=True)
+            return GateResult(
+                pr_ref=pr_ref, issue_ref=issue_ref, passed=False,
+                reason="load-bearing",
+                failure_summary=_bounded_tail(dropped))
+
         reg = self._runner(self._regression_command, shell=True, cwd=worktree,
                            capture_output=True, text=True)
         if reg.returncode != 0:
@@ -1011,6 +1162,34 @@ class Gate:
         # clean merge + passing regression — KEEP as base for the next PR.
         return GateResult(pr_ref=pr_ref, issue_ref=issue_ref, passed=True)
 
+    def _load_bearing_violation(self, worktree, pre_sha):
+        """Assert the doc-surface load-bearing tokens survived in the merged
+        tree (issue #353). Returns a human-readable failure_summary string when a
+        doc-touched feature DROPPED a declared token, else '' (survival OK / not
+        applicable). Reads the PR's changed doc surfaces via `git diff
+        --name-only <pre_sha> HEAD` (the merge just applied) and checks each
+        touched feature's declared tokens against its post-change doc surfaces IN
+        THE WORKTREE. Skipped (returns '') when `features_root` is unconfigured or
+        the PR touched no doc surface — no effect on non-doc PRs."""
+        if self._features_root is None:
+            return ""
+        diff = self._runner(
+            ["git", "-C", worktree, "diff", "--name-only", pre_sha, "HEAD"],
+            capture_output=True, text=True)
+        changed = [ln.strip() for ln in (diff.stdout or "").splitlines()
+                   if ln.strip()]
+        feat_dirs = features_with_changed_doc_surfaces(
+            changed, self._features_root)
+        problems = []
+        for feat_rel in feat_dirs:
+            missing = missing_load_bearing_tokens(
+                os.path.join(worktree, feat_rel))
+            if missing:
+                problems.append(
+                    f"{feat_rel}: dropped load-bearing token(s): "
+                    f"{', '.join(missing)}")
+        return "\n".join(problems)
+
 
 def make_gate(runtime):
     """GATE adapter factory (verify-integrate): the cumulative regression gate
@@ -1020,6 +1199,15 @@ def make_gate(runtime):
     injectable git+regression runner, the closing-issue resolver, the repo, and
     the resolved default branch. Returns (GATE_MANIFEST, Gate.run) per the
     factory(runtime) -> (StateManifest, run_callable) convention scheduling wires.
+
+    For the doc-surface load-bearing-token survival check (issue #353) it binds a
+    REPO-RELATIVE `features_root` (the subdir feature dirs live under, e.g.
+    `features` or a nested `<subtree>/features`), needed to map a PR's `git diff`
+    paths (the integration worktree's repo-relative paths) to features. Only a
+    RELATIVE configured `features_root` is used here — an absolute path is the
+    complement runner's on-disk locator, which cannot match repo-relative diff
+    paths, so it leaves the token check off (a conservative no-op; the check is
+    opt-in per feature via test/load_bearing_tokens.json anyway).
     """
     project_dir = runtime.get("project_dir") or "."
     cfg = sg.load_config(project_dir)
@@ -1028,9 +1216,14 @@ def make_gate(runtime):
     default_branch = runtime.get("default_branch")
     if default_branch is None:
         default_branch = gh_default_branch_source(repo)
+    configured_root = cfg.get("features_root")
+    doc_features_root = (configured_root
+                         if configured_root and not os.path.isabs(configured_root)
+                         else None)
     gate = Gate(regression_command=regression, runner=subprocess.run,
                 repo=repo, default_branch=default_branch,
-                issue_resolver=gh_closing_issue_ref)
+                issue_resolver=gh_closing_issue_ref,
+                features_root=doc_features_root)
     return GATE_MANIFEST, gate.run
 
 
