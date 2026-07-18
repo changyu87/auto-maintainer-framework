@@ -23,10 +23,13 @@ Knobs:
     ""} meaning NO LIMIT (stored as JSON null).
   - ``--interval-minutes`` (heartbeat cadence) and ``--backoff-threshold`` are
     POSITIVE ints.
+  - ``--regression-command`` is the GATE full-regression shell command (an
+    arbitrary string), or one of {none, null, ""} meaning NO gate (stored as
+    JSON null), mirroring the ``--per-day-tokens`` clear sentinel.
   - ``--describe`` emits the machine-first field catalog as JSON (read-only).
   - ``--show`` (or no mutating flag) prints the current config and writes nothing.
 
-Version: 0.2.0
+Version: 0.3.0
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the central-config schema
   (safety_governance.GOVERNANCE_SCHEMA_VERSION) reaches a breaking major
@@ -68,6 +71,16 @@ def _parse_ceiling(raw):
     return value
 
 
+def _parse_regression_command(raw):
+    """Parse a --regression-command CLI value -> None (no gate) or the command
+    string. The clear sentinels none/null/"" (case-insensitive) map to None,
+    mirroring the per-day-ceiling clear; any other value is kept verbatim
+    (whitespace-trimmed)."""
+    if str(raw).strip().lower() in ("none", "null", ""):
+        return None
+    return str(raw).strip()
+
+
 def _parse_positive_int(raw, label):
     """Parse a CLI value -> a positive int. Raises ValueError otherwise."""
     value = int(str(raw).strip())  # ValueError on non-int
@@ -77,7 +90,8 @@ def _parse_positive_int(raw, label):
 
 
 def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
-              interval_minutes=_UNSET, backoff_threshold=_UNSET):
+              interval_minutes=_UNSET, backoff_threshold=_UNSET,
+              regression_command=_UNSET):
     """Apply the requested changes to config.json and return the new config.
 
     Loads the current (backfilled, migrated) config, applies only the mentioned
@@ -105,6 +119,9 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
 
     if backoff_threshold is not _UNSET:
         cfg.setdefault("backoff", {})["threshold"] = backoff_threshold
+
+    if regression_command is not _UNSET:
+        cfg["regression_command"] = regression_command
 
     path = _config_path(project_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -158,6 +175,16 @@ def _field_catalog(project_dir):
             "type": "int",
             "validator": "a positive int",
         },
+        {
+            "key": "regression_command",
+            "label": "GATE regression command",
+            "controls": "The full-regression shell command the GATE state runs "
+                        "against each REVIEW-passed PR; null = no gate.",
+            "default": defaults["regression_command"],
+            "current": current["regression_command"],
+            "type": "str_or_null",
+            "validator": "a shell command string, or none/null to clear",
+        },
     ]
 
 
@@ -169,8 +196,9 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(
         prog="configure.py",
-        description="Set the trust mode and budget/heartbeat/backoff knobs in "
-        "the project-local central config (.auto-maintainer/config.json).",
+        description="Set the trust mode and budget/heartbeat/backoff/"
+        "regression-command knobs in the project-local central config "
+        "(.auto-maintainer/config.json).",
     )
     parser.add_argument("--project-dir", default=None)
     parser.add_argument(
@@ -195,6 +223,12 @@ def main(argv=None):
         help="consecutive-blocked count K before escalate+defer: a positive int",
     )
     parser.add_argument(
+        "--regression-command",
+        default=None,
+        help="GATE full-regression shell command, or none/null to clear "
+             "(no gate)",
+    )
+    parser.add_argument(
         "--describe",
         action="store_true",
         help="emit the machine-first field catalog as JSON (read-only)",
@@ -216,6 +250,7 @@ def main(argv=None):
         or args.per_day_tokens is not None
         or args.interval_minutes is not None
         or args.backoff_threshold is not None
+        or args.regression_command is not None
     )
 
     # --show, or no mutating flags at all: print the current config and stop.
@@ -230,12 +265,15 @@ def main(argv=None):
                     if args.interval_minutes is not None else _UNSET)
         threshold = (_parse_positive_int(args.backoff_threshold, "backoff-threshold")
                      if args.backoff_threshold is not None else _UNSET)
+        regression = (_parse_regression_command(args.regression_command)
+                      if args.regression_command is not None else _UNSET)
         cfg = configure(
             project_dir,
             mode=args.mode,
             per_day_tokens=per_day,
             interval_minutes=interval,
             backoff_threshold=threshold,
+            regression_command=regression,
         )
     except ValueError as exc:
         print(f"configure: error: {exc}", file=sys.stderr)
