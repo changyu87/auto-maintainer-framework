@@ -918,11 +918,23 @@ validator; scheduling supplies the defaults + per-port knowledge those CLIs need
 ### `AGENT_PORT_TEMPLATES` (scheduling-owned)
 
 A table mapping each known agent-capable port (e.g. `TRIAGE`, `IMPLEMENT`) →
-`{writes, cardinality, effect?, output_example}`, built from the ports' own slot
-owners (work-intake `WORK_ORDERS_SLOT`, implement `HANDOFFS_SLOT`, …) so a bare
-`subagent_type` is enough to produce a valid agent entry. This per-port knowledge
-is why the adapter-map CLI lives in scheduling (which imports those slot owners),
-not in dependency-free adapter-wiring.
+`{writes, cardinality, effect?, output_example, task?}`, built from the ports' own
+slot owners (work-intake `WORK_ORDERS_SLOT`, implement `HANDOFFS_SLOT`, …) so a
+bare `subagent_type` is enough to produce a valid agent entry. `_build_agent_entry`
+threads the template's `task` onto the dispatch entry (`dispatch["task"]`) so the
+rendered envelope carries a real `## Task` instead of `(no task)`. This per-port
+knowledge is why the adapter-map CLI lives in scheduling (which imports those slot
+owners), not in dependency-free adapter-wiring.
+
+**IMPLEMENT template specifics (convergence):** its `reads`
+(`= im.IMPLEMENT_MANIFEST.reads = [execution_plan, work_orders]`) become the
+dispatch `inputs`, so `work_orders` is in `slot_values` and
+`agent_dispatch.build_envelopes` can join each `execution_plan.ordered` id to its
+full WorkOrder as the per-item `item`. The template carries a `task` (enact this
+accepted work order: implement + open a PR, never merge; fetch the issue if the
+item lacks its body) and an **`opened`** `output_example` (a `pr` artifact +
+`test_verdict` + empty `concerns`) — NOT the dry-run's `planned` example — so the
+acting implementer mimics a real opened handoff, never a `planned` no-op.
 
 ### Self-healing known-port migration — `migrate_known_port_entries`
 
