@@ -433,10 +433,11 @@ def test_gate_e2e_features_root_none_skips_token_check():
 
 
 # ==========================================================================
-# make_gate wiring (issue #381): the doc check is LIVE on the production path
-# only when a REPO-RELATIVE root is wired. The dedicated `doc_check_features_root`
-# config key turns it on independently of `features_root` (the complement runner's
-# on-disk locator, which may be absolute).
+# make_gate wiring (issue #381 + #391): the doc check is LIVE on the production
+# path only when a REPO-RELATIVE root is wired via the DEDICATED
+# `doc_check_features_root` key. That key is fully DECOUPLED from `features_root`
+# (VERIFY's complement on-disk locator, which may be absolute): setting
+# `features_root` alone must never turn this gate on or off (issue #391).
 # ==========================================================================
 
 def test_make_gate_wires_doc_check_features_root_key():
@@ -450,9 +451,9 @@ def test_make_gate_wires_doc_check_features_root_key():
     assert gate._features_root == _FEATURES_ROOT
 
 
-def test_make_gate_doc_check_key_takes_precedence_over_features_root():
-    """When both are set, the dedicated key wins (features_root stays the
-    complement locator)."""
+def test_make_gate_ignores_features_root_uses_only_doc_check_key():
+    """Decoupling (issue #391): `features_root` (VERIFY's complement locator) never
+    drives the doc gate; only the dedicated `doc_check_features_root` key does."""
     with tempfile.TemporaryDirectory() as pd:
         _write_config(pd, {"regression_command": "pytest",
                            "features_root": "/abs/on/disk/features",
@@ -462,23 +463,23 @@ def test_make_gate_doc_check_key_takes_precedence_over_features_root():
     assert gate._features_root == _FEATURES_ROOT
 
 
-def test_make_gate_falls_back_to_relative_features_root():
-    """Backward compat: with no dedicated key, a RELATIVE features_root still
-    wires the doc check."""
+def test_make_gate_relative_features_root_alone_leaves_doc_check_off():
+    """Decoupling (issue #391): a RELATIVE `features_root` with NO dedicated key
+    must NOT silently turn the doc gate on — the keys no longer share semantics."""
     with tempfile.TemporaryDirectory() as pd:
         _write_config(pd, {"regression_command": "pytest",
                            "features_root": _FEATURES_ROOT})
         gate = _gate_of(vi.make_gate({"project_dir": pd, "repo": "acme/widget",
                                       "default_branch": _DEFAULT_BRANCH}))
-    assert gate._features_root == _FEATURES_ROOT
+    assert gate._features_root is None
 
 
-def test_make_gate_absolute_features_root_leaves_doc_check_off():
-    """An absolute features_root (the complement's on-disk locator) cannot match
-    repo-relative diff paths, so with no dedicated key the doc check stays off."""
+def test_make_gate_absolute_doc_check_root_leaves_doc_check_off():
+    """An absolute `doc_check_features_root` cannot match repo-relative diff paths,
+    so the doc check stays off (conservative no-op)."""
     with tempfile.TemporaryDirectory() as pd:
         _write_config(pd, {"regression_command": "pytest",
-                           "features_root": "/abs/on/disk/features"})
+                           "doc_check_features_root": "/abs/on/disk/features"})
         gate = _gate_of(vi.make_gate({"project_dir": pd, "repo": "acme/widget",
                                       "default_branch": _DEFAULT_BRANCH}))
     assert gate._features_root is None
