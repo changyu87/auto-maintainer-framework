@@ -174,6 +174,20 @@ loop PRs) + `regression_command` from the central config
     `failure_summary` = bounded output tail, and **ROLL BACK** the merge
     (`git reset --hard` to the pre-merge commit); continue.
   - Remove the worktree when done (always, even on error).
+- **Setup robustness — never gate against a stale or wrong tree.** The
+  integration worktree lives at a FIXED path (`/tmp/am-gate-integration` by
+  default), so a crashed prior tick can leave it behind. Before `git worktree
+  add`, GATE proactively clears any stale leftover (best-effort `git worktree
+  remove --force` then `git worktree prune`) so a leftover never wedges every
+  subsequent tick. GATE then checks the `worktree add` RETURN CODE: on failure it
+  writes an EMPTY `gate_results` list (a setup failure is not any PR's fault) so
+  INTEGRATE merges nothing and posts NO gate-fail marker — the tick converges to
+  idle and retries cleanly next tick, rather than false-failing every PR into the
+  park threshold. Inside the per-PR loop GATE checks the `git fetch origin
+  pull/<n>/head` RETURN CODE before merging: on a fetch failure it returns
+  `GateResult{passed:False, reason:"fetch-failed"}` for that PR WITHOUT merging,
+  so a failed fetch can never silently merge the PREVIOUS PR's stale `FETCH_HEAD`
+  into the cumulative tree (which would produce a verdict for the wrong tree).
 - **Doc-surface load-bearing-token survival (issue #353).** Feature test suites
   do NOT assert doc prose, so a doc-reduction PR that over-deletes a load-bearing
   token (a schema field, a symbol/script name, an invariant, a cross-reference)
