@@ -4,9 +4,9 @@
 A pure, deterministic decision library over a machine-first, versioned CENTRAL
 config (config.json). Decision surfaces plus one effectful halt helper:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.5.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.6.0),
      DEFAULT_GOVERNANCE, load_config(project_dir), work_own_filings(config),
-     regression_command(config). The
+     regression_command(config), doc_check_features_root(config). The
      config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
      §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
@@ -100,8 +100,13 @@ import lifecycle_dispositions as ld
 # backward compatible. 2.5.0: additive `regression_command` knob (default null =
 # NO gate) — the GATE full-regression shell command read by verify-integrate; an
 # absent key backfills null (GATE is a no-op PASS), so the bump is backward
-# compatible.
-GOVERNANCE_SCHEMA_VERSION = "2.5.0"
+# compatible. 2.6.0: additive `doc_check_features_root` knob (default null = the
+# doc-surface load-bearing-token GATE check is OFF) — a REPO-RELATIVE features
+# root read by verify-integrate's GATE, kept SEPARATE from `features_root` (which
+# VERIFY's complement runner treats as an on-disk locator) so the doc gate can be
+# turned on without perturbing the complement; an absent key backfills null (the
+# check stays off), so the bump is backward compatible.
+GOVERNANCE_SCHEMA_VERSION = "2.6.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
 # config field. The loop's OWN defects route here ALWAYS, never the project
@@ -128,10 +133,18 @@ MAINTAINER_REPO = "changyu87/auto-maintainer-framework"
 # PR (exit 0 = pass), but a null command makes GATE a no-op PASS, so an
 # unconfigured project merges exactly as before (non-breaking opt-in). Owned here;
 # read by verify-integrate through load_config.
+# doc_check_features_root (§3.7, verify-integrate GATE) defaults null (the
+# doc-surface load-bearing-token survival check is OFF): a REPO-RELATIVE features
+# root (e.g. `features` or a nested `<subtree>/features`) the GATE uses to map
+# a PR's repo-relative diff paths to features and locate their doc surfaces in the
+# merged worktree. Kept DISTINCT from `features_root` (VERIFY's complement locator,
+# which may be absolute) so the doc gate is opt-in independently; null keeps the
+# check off. Owned here; read by verify-integrate through load_config.
 DEFAULT_GOVERNANCE = {
     "schema_version": GOVERNANCE_SCHEMA_VERSION,
     "mode": "propose",
     "features_root": None,
+    "doc_check_features_root": None,
     "work_own_filings": True,
     "regression_command": None,
     "budget": {
@@ -288,7 +301,10 @@ def _overlay(raw):
     surfaced; absent keeps the default True (the loop works its own filings). An
     explicit top-level `regression_command` (the GATE full-regression shell
     command read by verify-integrate, §3.7) is surfaced, including an explicit
-    null; absent keeps the default None (NO gate -> GATE is a no-op PASS). A
+    null; absent keeps the default None (NO gate -> GATE is a no-op PASS). An
+    explicit top-level `doc_check_features_root` (the repo-relative features root
+    the GATE doc-surface load-bearing-token check uses) is surfaced, including an
+    explicit null; absent keeps the default None (the doc check is OFF). A
     stale top-level `self_deploy` key (the removed self-deployment gate, #324) is
     silently dropped (tolerated, ignored — the self_deploy ACTION was removed, so
     the knob gates nothing).
@@ -298,6 +314,8 @@ def _overlay(raw):
         config["mode"] = _normalize_mode(raw["mode"])
     if "features_root" in raw:
         config["features_root"] = raw["features_root"]
+    if "doc_check_features_root" in raw:
+        config["doc_check_features_root"] = raw["doc_check_features_root"]
     if "work_own_filings" in raw:
         config["work_own_filings"] = raw["work_own_filings"]
     if "regression_command" in raw:
@@ -423,6 +441,19 @@ def regression_command(config):
     against each REVIEW-passed PR (exit 0 = pass); a None command skips the gate.
     """
     return config.get("regression_command")
+
+
+def doc_check_features_root(config):
+    """The repo-relative features root for the GATE doc-surface load-bearing-token
+    survival check (§3.7), or None when the check is OFF.
+
+    A pure config read: returns the loaded config's `doc_check_features_root`,
+    defaulting to None when the key is absent (the doc check stays off,
+    non-breaking). Kept SEPARATE from `features_root` (VERIFY's complement locator,
+    which may be absolute) so verify-integrate's GATE can turn the doc check on
+    without perturbing the complement runner.
+    """
+    return config.get("doc_check_features_root")
 
 
 # --------------------------------------------------------------------------

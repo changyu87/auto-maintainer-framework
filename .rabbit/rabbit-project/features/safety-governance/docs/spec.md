@@ -32,10 +32,11 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 
 ```json
 {
-  "schema_version": "2.5.0",
+  "schema_version": "2.6.0",
   "mode": "propose",
   "work_own_filings": true,
   "regression_command": null,
+  "doc_check_features_root": null,
   "budget": {
     "per_day_tokens": null,
     "window_tz": "local"
@@ -87,6 +88,12 @@ single central `userConfig` (§3.10.1); it **replaces** the former
   Surfaced through `_overlay` like any known key (absent ⇒ `null`). Owned here;
   **read by `verify-integrate`** GATE via the cross-feature contract (through
   `load_config`).
+- `doc_check_features_root` — the **repo-relative** features root the GATE's
+  doc-surface load-bearing-token survival check (§3.7, verify-integrate) uses to
+  map a PR's diff paths to features. **Default `null` = the doc check is OFF.**
+  Kept **separate** from `features_root` (VERIFY's complement locator, which may
+  be absolute) so the doc gate is opt-in **independently** and is LIVE on the
+  auto-merge path when set. Read through `doc_check_features_root(config)`.
 
 The runtime file stays **lean**: schema-definition metadata (`owner`,
 `deprecation_criterion`) lives in this spec, `safety_governance.py`'s module
