@@ -4,17 +4,19 @@
 A pure, deterministic decision library over a machine-first, versioned CENTRAL
 config (config.json). Decision surfaces plus one effectful halt helper:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.5.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.6.0),
      DEFAULT_GOVERNANCE, load_config(project_dir), work_own_filings(config),
-     regression_command(config). The
+     regression_command(config), doc_check_features_root(config). The
      config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
      §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
      defaults, and a present file is FIELD-LEVEL (3-way) MERGED against the
      current shipped default (#357: merge_config) so an override still adopts
-     newly-added default keys it does not set while user-set values win and a
-     changed-both-sides key is surfaced as a conflict, then backfilled from the
-     defaults. A
+     newly-added default keys it does not set while a user value that DIFFERS from
+     the base wins and a changed-both-sides key is surfaced as a conflict, then
+     backfilled from the defaults. (A user value equal to the embedded base is
+     indistinguishable from unset and may be re-adopted from a changed default —
+     see merge_config, #396.) A
      null/absent per_day ceiling means NO LIMIT (the budget gate is a no-op).
      A legacy governance.json is MIGRATED once (see load_config). load_governance
      is a thin alias delegating to load_config during the coexistence window.
@@ -106,8 +108,13 @@ import lifecycle_dispositions as ld
 # backward compatible. 2.5.0: additive `regression_command` knob (default null =
 # NO gate) — the GATE full-regression shell command read by verify-integrate; an
 # absent key backfills null (GATE is a no-op PASS), so the bump is backward
-# compatible.
-GOVERNANCE_SCHEMA_VERSION = "2.5.0"
+# compatible. 2.6.0: additive `doc_check_features_root` knob (default null = the
+# doc-surface load-bearing-token GATE check is OFF) — a REPO-RELATIVE features
+# root read by verify-integrate's GATE, kept SEPARATE from `features_root` (which
+# VERIFY's complement runner treats as an on-disk locator) so the doc gate can be
+# turned on without perturbing the complement; an absent key backfills null (the
+# check stays off), so the bump is backward compatible.
+GOVERNANCE_SCHEMA_VERSION = "2.6.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
 # config field. The loop's OWN defects route here ALWAYS, never the project
@@ -134,10 +141,18 @@ MAINTAINER_REPO = "changyu87/auto-maintainer-framework"
 # PR (exit 0 = pass), but a null command makes GATE a no-op PASS, so an
 # unconfigured project merges exactly as before (non-breaking opt-in). Owned here;
 # read by verify-integrate through load_config.
+# doc_check_features_root (§3.7, verify-integrate GATE) defaults null (the
+# doc-surface load-bearing-token survival check is OFF): a REPO-RELATIVE features
+# root (e.g. `features` or a nested `<subtree>/features`) the GATE uses to map
+# a PR's repo-relative diff paths to features and locate their doc surfaces in the
+# merged worktree. Kept DISTINCT from `features_root` (VERIFY's complement locator,
+# which may be absolute) so the doc gate is opt-in independently; null keeps the
+# check off. Owned here; read by verify-integrate through load_config.
 DEFAULT_GOVERNANCE = {
     "schema_version": GOVERNANCE_SCHEMA_VERSION,
     "mode": "propose",
     "features_root": None,
+    "doc_check_features_root": None,
     "work_own_filings": True,
     "regression_command": None,
     "budget": {
@@ -205,8 +220,9 @@ def merge_config(base, theirs, mine, _path=""):
     steps 1-2) FREEZES an overridden config.json — it never receives keys added
     to a later default. This pure function resolves that per-FIELD instead:
 
-      - base  = the default the user's override was taken from (the embedded
-        DEFAULT_GOVERNANCE the config was last backfilled against),
+      - base  = the reference default the override is judged against. No
+        HISTORICAL base is recorded: load_config passes the CURRENT embedded
+        DEFAULT_GOVERNANCE here (see the KNOWN LIMITATION below),
       - theirs = the user's override,
       - mine  = the current shipped default (a later release may add/change keys).
 
@@ -219,11 +235,22 @@ def merge_config(base, theirs, mine, _path=""):
         theirs;
       - a key both have, both dicts -> RECURSE;
       - a key both have as scalars:
-          * theirs == base (user never changed it)            -> ADOPT mine;
+          * theirs == base (treated as UNSET, see limitation)  -> ADOPT mine;
           * theirs != base but mine == base (only user moved) -> KEEP theirs;
           * theirs != base, mine != base, theirs == mine      -> KEEP (agree);
           * theirs != base, mine != base, theirs != mine      -> CONFLICT: KEEP
             theirs (NEVER silently overwrite a user value) and RECORD it.
+
+    KNOWN LIMITATION (#396): because the base passed in is the CURRENT embedded
+    default (not the historical default the override was actually taken from), a
+    user value that HAPPENS to equal `base` is indistinguishable from "never set"
+    — the `theirs == base` branch fires and ADOPTS `mine`. So if a later release
+    changes that key's shipped default, a DELIBERATE user choice equal to the old
+    default is re-adopted from the new default, with NO conflict recorded. The
+    "a user-set value is preserved" property therefore holds only for a user value
+    that DIFFERS from the base; a user value equal to the base is treated as unset
+    and may be re-adopted from a changed default. Persisting the base each override
+    was taken from would remove this ambiguity but is out of scope here.
 
     Returns `(merged, conflicts)`. `conflicts` is a list of dicts
     {path, base, theirs, mine} naming each surfaced conflict by dotted key path,
@@ -294,7 +321,10 @@ def _overlay(raw):
     surfaced; absent keeps the default True (the loop works its own filings). An
     explicit top-level `regression_command` (the GATE full-regression shell
     command read by verify-integrate, §3.7) is surfaced, including an explicit
-    null; absent keeps the default None (NO gate -> GATE is a no-op PASS). A
+    null; absent keeps the default None (NO gate -> GATE is a no-op PASS). An
+    explicit top-level `doc_check_features_root` (the repo-relative features root
+    the GATE doc-surface load-bearing-token check uses) is surfaced, including an
+    explicit null; absent keeps the default None (the doc check is OFF). A
     stale top-level `self_deploy` key (the removed self-deployment gate, #324) is
     silently dropped (tolerated, ignored — the self_deploy ACTION was removed, so
     the knob gates nothing).
@@ -304,6 +334,8 @@ def _overlay(raw):
         config["mode"] = _normalize_mode(raw["mode"])
     if "features_root" in raw:
         config["features_root"] = raw["features_root"]
+    if "doc_check_features_root" in raw:
+        config["doc_check_features_root"] = raw["doc_check_features_root"]
     if "work_own_filings" in raw:
         config["work_own_filings"] = raw["work_own_filings"]
     if "regression_command" in raw:
@@ -329,10 +361,14 @@ def load_config(project_dir):
          MERGE it against the current shipped default (#357), then backfill.
          merge_config(base=embedded DEFAULT_GOVERNANCE, theirs=the override,
          mine=the shipped default-config/config.json) so an overridden file still
-         receives newly-added default keys it does not set while user-set values
-         are preserved (the deferred #336 design-B unfreeze); a conflict (a key
-         the user changed that the new default ALSO changed) keeps the user value,
-         never silently overwritten. When no shipped default is present (source
+         receives newly-added default keys it does not set while a user value that
+         DIFFERS from the base is preserved (the deferred #336 design-B unfreeze);
+         a conflict (a key the user changed that the new default ALSO changed)
+         keeps the user value, never silently overwritten. CAVEAT (#396): the base
+         is the CURRENT embedded default, not the historical default the override
+         was taken from, so a user value equal to that base is indistinguishable
+         from unset and may be re-adopted from a changed shipped default (see
+         merge_config's KNOWN LIMITATION). When no shipped default is present (source
          tree / no plugin) `mine` is the embedded default = the base, so the merge
          is a no-op and behaviour is byte-for-byte the pre-#357 whole-file overlay.
       2. config.json absent but legacy governance.json present -> MIGRATE ONCE:
@@ -429,6 +465,19 @@ def regression_command(config):
     against each REVIEW-passed PR (exit 0 = pass); a None command skips the gate.
     """
     return config.get("regression_command")
+
+
+def doc_check_features_root(config):
+    """The repo-relative features root for the GATE doc-surface load-bearing-token
+    survival check (§3.7), or None when the check is OFF.
+
+    A pure config read: returns the loaded config's `doc_check_features_root`,
+    defaulting to None when the key is absent (the doc check stays off,
+    non-breaking). Kept SEPARATE from `features_root` (VERIFY's complement locator,
+    which may be absolute) so verify-integrate's GATE can turn the doc check on
+    without perturbing the complement runner.
+    """
+    return config.get("doc_check_features_root")
 
 
 # --------------------------------------------------------------------------
