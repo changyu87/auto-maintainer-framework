@@ -89,13 +89,67 @@ PARK_THRESHOLD = 5
 GATE_FAIL_MARKER = "<!-- auto-maintainer:gate-fail -->"
 
 
+def _gate_fail_pr_ref(body):
+    """Extract the failed `pr_ref` from a gate-fail marker comment body, or None.
+
+    The marker comment body is (verify_integrate.gate_fail_comment_body): the
+    FIXED marker line, a human sentence, a blank line, then a compact
+    json.dumps({pr_ref, reason, failure_summary}) block, then a trailing newline.
+    We locate the first `{` after the marker and json.loads the balanced object,
+    returning its `pr_ref`. Returns None when the payload is absent, unparseable,
+    or carries no `pr_ref` — the caller then treats that marker as one distinct
+    attempt (keyed by position) so a malformed marker never silently defeats the
+    guard. Pure and deterministic."""
+    marker_idx = body.find(GATE_FAIL_MARKER)
+    if marker_idx == -1:
+        return None
+    brace_idx = body.find("{", marker_idx)
+    if brace_idx == -1:
+        return None
+    # The payload is a single balanced JSON object; take from the first `{` to
+    # its matching `}`. Scan for the balanced close so trailing text (the
+    # comment's trailing newline, or any prose) cannot break the parse.
+    depth = 0
+    end = -1
+    for i in range(brace_idx, len(body)):
+        ch = body[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end == -1:
+        return None
+    try:
+        payload = json.loads(body[brace_idx:end])
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    pr_ref = payload.get("pr_ref")
+    return pr_ref if isinstance(pr_ref, str) and pr_ref else None
+
+
 def is_parked(item):
     """Return True when `item` has failed to merge too many times and must be
     PARKED (excluded from PULL) so the loop converges instead of looping forever.
 
-    Counts occurrences of GATE_FAIL_MARKER across the item's (bounded) comment
-    bodies; parked when the count is >= PARK_THRESHOLD. `item` may be a WorkItem
-    or a dict (the machine-first WorkItem form). Pure and deterministic.
+    Counts DISTINCT failed PRs — NOT raw GATE_FAIL_MARKER occurrences — across
+    the item's (bounded) comment bodies; parked when the count is >=
+    PARK_THRESHOLD. Each real retry is a distinct PR (the implementer supersedes
+    its prior open PR before opening a new one), so for each comment carrying the
+    marker we parse the comment's JSON payload and collect its `pr_ref`. A marker
+    whose payload is absent/unparseable (or carries no `pr_ref`) counts as one
+    distinct attempt keyed by its comment index, so malformed markers never
+    silently defeat the guard. This makes park a true RETRY counter rather than a
+    tick-age timer: INTEGRATE re-posts a gate-fail marker every tick the SAME
+    unchanged PR is re-gated, so counting raw markers would park an item after
+    PARK_THRESHOLD *ticks* regardless of how many times it was actually retried.
+
+    `item` may be a WorkItem or a dict (the machine-first WorkItem form). Pure
+    and deterministic.
 
     PULL uses this to EXCLUDE parked items UNCONDITIONALLY (independent of
     work_own_filings) — they never become work_items / work_orders and stay open
@@ -107,13 +161,21 @@ def is_parked(item):
         comments = item.get("comments") or []
     else:
         comments = getattr(item, "comments", None) or []
-    count = 0
-    for comment in comments:
+    attempts = set()
+    for index, comment in enumerate(comments):
         body = comment.get("body") or "" if isinstance(comment, dict) else ""
-        count += body.count(GATE_FAIL_MARKER)
-        if count >= PARK_THRESHOLD:
+        if GATE_FAIL_MARKER not in body:
+            continue
+        pr_ref = _gate_fail_pr_ref(body)
+        if pr_ref is not None:
+            attempts.add(pr_ref)
+        else:
+            # Malformed marker: count as one distinct attempt keyed by position
+            # so it still contributes to the guard exactly once.
+            attempts.add(("__unparsed__", index))
+        if len(attempts) >= PARK_THRESHOLD:
             return True
-    return count >= PARK_THRESHOLD
+    return len(attempts) >= PARK_THRESHOLD
 
 
 @dataclass(eq=True)
