@@ -197,6 +197,60 @@ def test_shipped_implementer_body_supersedes_prior_same_issue_pr():
         "body must constrain the close to the SAME issue only")
 
 
+def test_shipped_implementer_frontmatter_version_is_2_9_0():
+    """v2.9.0 bumps the shipped implementer for the never-planned / accepted-only
+    default / fetch-fallback behaviour."""
+    fm = _frontmatter()
+    assert fm["version"] == "2.9.0"
+
+
+def test_shipped_implementer_body_never_reports_planned():
+    """v2.9.0: `planned` is the DRY-RUN adapter's status, NOT the agent's. The
+    shipped implementer reports only `opened`, `closed`, or `blocked` — never
+    `planned`. The body must state it never reports `planned`."""
+    body = _body().lower().replace("*", "")
+    assert "planned" in body, "body must name the planned status it must never use"
+    assert "never" in body and "planned" in body
+    # the never-planned instruction must be explicit
+    assert "never report" in body and "planned" in body, (
+        "body must explicitly instruct the implementer to never report planned")
+
+
+def test_shipped_implementer_body_treats_orders_as_accepted_only():
+    """v2.9.0: PRIORITIZE fans out ACCEPTED-ONLY orders to IMPLEMENT, so the
+    default action is implement->open PR; the rejected->close branch is
+    defensive. The body must state IMPLEMENT receives accepted-only orders and
+    that implement is the default."""
+    body = _body().lower().replace("*", "")
+    assert "accepted-only" in body or "accepted only" in body, (
+        "body must state IMPLEMENT receives accepted-only orders")
+    assert "defensive" in body, (
+        "body must note the rejected->close branch is defensive")
+
+
+def test_shipped_implementer_body_fetches_issue_when_envelope_underfilled():
+    """v2.9.0 ROBUSTNESS: if the `## Inputs` work order lacks the source issue's
+    title/body (an under-filled envelope), the agent FETCHES it from the work
+    order's ref/url before enacting rather than bailing to a silent no-op. The
+    body must instruct the fetch-fallback via `gh issue view` with the
+    title,body,comments JSON fields."""
+    body = _body()
+    lower = body.lower().replace("*", "")
+    assert "gh issue view" in lower, (
+        "body must instruct fetching the issue via `gh issue view`")
+    assert "title,body,comments" in body, (
+        "body must fetch the title,body,comments JSON fields")
+    # the fetch is conditioned on an under-filled envelope (missing title/body)
+    assert "title" in lower and "body" in lower
+
+
+def test_shipped_implementer_body_still_supersedes_prior_pr():
+    """v2.8.0 supersede-on-retry must remain intact after the v2.9.0 bump."""
+    lower = _body().lower().replace("*", "")
+    assert "supersede" in lower
+    assert "gh pr close" in lower
+
+
 def test_shipped_implementer_body_instructs_emitting_concerns():
     """v2.5.0 (auto-maintainer-framework#212): the implementer is the PRODUCER of
     the Handoff's `concerns[]` — residual doubts on an opened handoff for the
