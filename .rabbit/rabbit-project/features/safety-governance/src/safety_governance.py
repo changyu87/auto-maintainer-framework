@@ -12,9 +12,11 @@ config (config.json). Decision surfaces plus one effectful halt helper:
      §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
      defaults, and a present file is FIELD-LEVEL (3-way) MERGED against the
      current shipped default (#357: merge_config) so an override still adopts
-     newly-added default keys it does not set while user-set values win and a
-     changed-both-sides key is surfaced as a conflict, then backfilled from the
-     defaults. A
+     newly-added default keys it does not set while a user value that DIFFERS from
+     the base wins and a changed-both-sides key is surfaced as a conflict, then
+     backfilled from the defaults. (A user value equal to the embedded base is
+     indistinguishable from unset and may be re-adopted from a changed default —
+     see merge_config, #396.) A
      null/absent per_day ceiling means NO LIMIT (the budget gate is a no-op).
      A legacy governance.json is MIGRATED once (see load_config). load_governance
      is a thin alias delegating to load_config during the coexistence window.
@@ -212,8 +214,9 @@ def merge_config(base, theirs, mine, _path=""):
     steps 1-2) FREEZES an overridden config.json — it never receives keys added
     to a later default. This pure function resolves that per-FIELD instead:
 
-      - base  = the default the user's override was taken from (the embedded
-        DEFAULT_GOVERNANCE the config was last backfilled against),
+      - base  = the reference default the override is judged against. No
+        HISTORICAL base is recorded: load_config passes the CURRENT embedded
+        DEFAULT_GOVERNANCE here (see the KNOWN LIMITATION below),
       - theirs = the user's override,
       - mine  = the current shipped default (a later release may add/change keys).
 
@@ -226,11 +229,22 @@ def merge_config(base, theirs, mine, _path=""):
         theirs;
       - a key both have, both dicts -> RECURSE;
       - a key both have as scalars:
-          * theirs == base (user never changed it)            -> ADOPT mine;
+          * theirs == base (treated as UNSET, see limitation)  -> ADOPT mine;
           * theirs != base but mine == base (only user moved) -> KEEP theirs;
           * theirs != base, mine != base, theirs == mine      -> KEEP (agree);
           * theirs != base, mine != base, theirs != mine      -> CONFLICT: KEEP
             theirs (NEVER silently overwrite a user value) and RECORD it.
+
+    KNOWN LIMITATION (#396): because the base passed in is the CURRENT embedded
+    default (not the historical default the override was actually taken from), a
+    user value that HAPPENS to equal `base` is indistinguishable from "never set"
+    — the `theirs == base` branch fires and ADOPTS `mine`. So if a later release
+    changes that key's shipped default, a DELIBERATE user choice equal to the old
+    default is re-adopted from the new default, with NO conflict recorded. The
+    "a user-set value is preserved" property therefore holds only for a user value
+    that DIFFERS from the base; a user value equal to the base is treated as unset
+    and may be re-adopted from a changed default. Persisting the base each override
+    was taken from would remove this ambiguity but is out of scope here.
 
     Returns `(merged, conflicts)`. `conflicts` is a list of dicts
     {path, base, theirs, mine} naming each surfaced conflict by dotted key path,
@@ -341,10 +355,14 @@ def load_config(project_dir):
          MERGE it against the current shipped default (#357), then backfill.
          merge_config(base=embedded DEFAULT_GOVERNANCE, theirs=the override,
          mine=the shipped default-config/config.json) so an overridden file still
-         receives newly-added default keys it does not set while user-set values
-         are preserved (the deferred #336 design-B unfreeze); a conflict (a key
-         the user changed that the new default ALSO changed) keeps the user value,
-         never silently overwritten. When no shipped default is present (source
+         receives newly-added default keys it does not set while a user value that
+         DIFFERS from the base is preserved (the deferred #336 design-B unfreeze);
+         a conflict (a key the user changed that the new default ALSO changed)
+         keeps the user value, never silently overwritten. CAVEAT (#396): the base
+         is the CURRENT embedded default, not the historical default the override
+         was taken from, so a user value equal to that base is indistinguishable
+         from unset and may be re-adopted from a changed shipped default (see
+         merge_config's KNOWN LIMITATION). When no shipped default is present (source
          tree / no plugin) `mine` is the embedded default = the base, so the merge
          is a no-op and behaviour is byte-for-byte the pre-#357 whole-file overlay.
       2. config.json absent but legacy governance.json present -> MIGRATE ONCE:
