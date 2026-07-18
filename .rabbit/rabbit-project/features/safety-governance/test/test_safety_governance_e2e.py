@@ -91,10 +91,13 @@ def _write_json(path, payload):
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.5.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.6.0"
     d = sg.DEFAULT_GOVERNANCE
-    assert d["schema_version"] == "2.5.0"
+    assert d["schema_version"] == "2.6.0"
     assert d["mode"] == "propose"
+    # doc_check_features_root (§3.7, verify-integrate GATE doc check) defaults
+    # null (the doc check is OFF); schema 2.5.0 -> 2.6.0.
+    assert d["doc_check_features_root"] is None
     # self_deploy (#309) is REMOVED from the schema (the self_deploy ACTION was
     # removed in #324, so the knob is dead; schema 2.3.0 -> 2.4.0).
     assert "self_deploy" not in d
@@ -126,7 +129,7 @@ def test_maintainer_repo_is_fixed_constant():
 def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["schema_version"] == "2.5.0"
+        assert config["schema_version"] == "2.6.0"
         assert config["mode"] == "propose"
         assert "self_deploy" not in config
         assert config["budget"]["per_day_tokens"] is None
@@ -331,6 +334,53 @@ def test_regression_command_accessor_value_when_set():
 
 
 # ==========================================================================
+# E2E Behaviour: doc_check_features_root (the repo-relative features root the GATE
+# doc-surface load-bearing-token check uses, §3.7) defaults null (the check is
+# OFF), is surfaced from config.json (including an explicit null), and is read
+# through the pure accessor doc_check_features_root(config). Kept SEPARATE from
+# features_root (VERIFY's complement locator) so the doc gate turns on
+# independently (issue #381).
+# ==========================================================================
+
+def test_default_doc_check_features_root_is_null():
+    """doc_check_features_root defaults null — the doc check is OFF until a
+    repo-relative root is configured."""
+    assert sg.DEFAULT_GOVERNANCE["doc_check_features_root"] is None
+    with tempfile.TemporaryDirectory() as project_dir:
+        config = sg.load_config(project_dir)
+        assert config["doc_check_features_root"] is None
+
+
+def test_load_config_reads_doc_check_features_root_override():
+    """An explicit top-level doc_check_features_root in config.json is surfaced on
+    the loaded config (the repo-relative root the GATE doc check uses)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"doc_check_features_root": ".rabbit/rabbit-project/features"})
+        config = sg.load_config(project_dir)
+        assert (config["doc_check_features_root"]
+                == ".rabbit/rabbit-project/features")
+
+
+def test_load_config_backfills_doc_check_features_root_none_when_absent():
+    """A config.json that omits doc_check_features_root loads with the default
+    None (the doc check stays off, non-breaking)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"mode": "propose"})
+        config = sg.load_config(project_dir)
+        assert config["doc_check_features_root"] is None
+
+
+def test_doc_check_features_root_accessor():
+    """The pure accessor returns None by default and the configured value when
+    set (kept separate from the features_root complement locator)."""
+    assert sg.doc_check_features_root({}) is None
+    assert sg.doc_check_features_root(sg.DEFAULT_GOVERNANCE) is None
+    assert sg.doc_check_features_root(
+        {"doc_check_features_root": "features"}) == "features"
+
+
+# ==========================================================================
 # E2E Behaviour: self_deploy is REMOVED (#324 removed the self_deploy ACTION, so
 # the knob is dead). DEFAULT_GOVERNANCE carries NO self_deploy; there is NO
 # self_deploy accessor; load_config does not surface it; and a config.json still
@@ -497,7 +547,7 @@ def test_load_config_falls_back_to_default_governance_when_no_shipped_file():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.5.0"
+        assert config["schema_version"] == "2.6.0"
         assert config["budget"]["per_day_tokens"] is None
         assert config["heartbeat"]["interval_minutes"] == 3
         assert config["backoff"]["threshold"] == 5
@@ -535,7 +585,7 @@ def test_load_config_unparsable_shipped_file_falls_back_to_defaults():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.5.0"
+        assert config["schema_version"] == "2.6.0"
 
 
 # ==========================================================================

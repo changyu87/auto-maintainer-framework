@@ -38,10 +38,24 @@ for _sib in ("fsm-contracts", "safety-governance", "lifecycle-dispositions"):
         sys.path.insert(0, _p)
 
 import fsm_contracts as fc  # noqa: E402
+import safety_governance as sg  # noqa: E402
 import verify_integrate as vi  # noqa: E402
 
 _DEFAULT_BRANCH = "main"
 _FEATURES_ROOT = ".rabbit/rabbit-project/features"
+
+
+def _gate_of(manifest_and_run):
+    """The Gate instance behind a make_gate() -> (manifest, gate.run) result."""
+    _, run = manifest_and_run
+    return run.__self__
+
+
+def _write_config(project_dir, cfg):
+    conf_dir = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(conf_dir, exist_ok=True)
+    with open(os.path.join(conf_dir, "config.json"), "w") as f:
+        json.dump(cfg, f)
 
 
 # --------------------------------------------------------------------------
@@ -374,3 +388,64 @@ def test_gate_e2e_features_root_none_skips_token_check():
     assert results[0]["passed"] is True
     # no `git diff` was consulted (the check short-circuited on None root).
     assert not any(_is_git_sub(c, "diff") for c in fake.commands)
+
+
+# ==========================================================================
+# make_gate wiring (issue #381): the doc check is LIVE on the production path
+# only when a REPO-RELATIVE root is wired. The dedicated `doc_check_features_root`
+# config key turns it on independently of `features_root` (the complement runner's
+# on-disk locator, which may be absolute).
+# ==========================================================================
+
+def test_make_gate_wires_doc_check_features_root_key():
+    """make_gate reads the dedicated `doc_check_features_root` key so the doc gate
+    is live on the auto-merge path (issue #381)."""
+    with tempfile.TemporaryDirectory() as pd:
+        _write_config(pd, {"regression_command": "pytest",
+                           "doc_check_features_root": _FEATURES_ROOT})
+        gate = _gate_of(vi.make_gate({"project_dir": pd, "repo": "acme/widget",
+                                      "default_branch": _DEFAULT_BRANCH}))
+    assert gate._features_root == _FEATURES_ROOT
+
+
+def test_make_gate_doc_check_key_takes_precedence_over_features_root():
+    """When both are set, the dedicated key wins (features_root stays the
+    complement locator)."""
+    with tempfile.TemporaryDirectory() as pd:
+        _write_config(pd, {"regression_command": "pytest",
+                           "features_root": "/abs/on/disk/features",
+                           "doc_check_features_root": _FEATURES_ROOT})
+        gate = _gate_of(vi.make_gate({"project_dir": pd, "repo": "acme/widget",
+                                      "default_branch": _DEFAULT_BRANCH}))
+    assert gate._features_root == _FEATURES_ROOT
+
+
+def test_make_gate_falls_back_to_relative_features_root():
+    """Backward compat: with no dedicated key, a RELATIVE features_root still
+    wires the doc check."""
+    with tempfile.TemporaryDirectory() as pd:
+        _write_config(pd, {"regression_command": "pytest",
+                           "features_root": _FEATURES_ROOT})
+        gate = _gate_of(vi.make_gate({"project_dir": pd, "repo": "acme/widget",
+                                      "default_branch": _DEFAULT_BRANCH}))
+    assert gate._features_root == _FEATURES_ROOT
+
+
+def test_make_gate_absolute_features_root_leaves_doc_check_off():
+    """An absolute features_root (the complement's on-disk locator) cannot match
+    repo-relative diff paths, so with no dedicated key the doc check stays off."""
+    with tempfile.TemporaryDirectory() as pd:
+        _write_config(pd, {"regression_command": "pytest",
+                           "features_root": "/abs/on/disk/features"})
+        gate = _gate_of(vi.make_gate({"project_dir": pd, "repo": "acme/widget",
+                                      "default_branch": _DEFAULT_BRANCH}))
+    assert gate._features_root is None
+
+
+def test_make_gate_no_root_configured_leaves_doc_check_off():
+    """Neither key set -> the doc check is off (conservative no-op)."""
+    with tempfile.TemporaryDirectory() as pd:
+        _write_config(pd, {"regression_command": "pytest"})
+        gate = _gate_of(vi.make_gate({"project_dir": pd, "repo": "acme/widget",
+                                      "default_branch": _DEFAULT_BRANCH}))
+    assert gate._features_root is None
