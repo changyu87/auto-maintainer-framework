@@ -825,10 +825,12 @@ class GateResult:
 
     `passed` is whether the PR merged cleanly AND its cumulative regression run
     exit-0'd. `reason` is None on pass, else `"regression"` (clean merge, nonzero
-    regression), `"conflict"` (textual merge conflict — regression not run), or
-    `"load-bearing"` (a doc-touched feature dropped a declared load-bearing token
-    from its post-change doc surfaces — the #353 doc-survival gate; regression not
-    run). `issue_ref` is the PR's closing-issue reference (resolved via the injectable
+    regression), `"conflict"` (textual merge conflict — regression not run),
+    `"fetch-failed"` (the PR head `git fetch` returned nonzero — merged nothing,
+    excluded so a stale FETCH_HEAD is never merged), or `"load-bearing"` (a
+    doc-touched feature dropped a declared load-bearing token from its post-change
+    doc surfaces — the #353 doc-survival gate; regression not run). `issue_ref`
+    is the PR's closing-issue reference (resolved via the injectable
     gh resolver; None when unresolvable) so INTEGRATE can comment the failure on
     the issue. `failure_summary` is a BOUNDED tail of the regression output
     (empty on pass). `to_dict`/`from_dict` give the machine-first, versioned
@@ -1117,11 +1119,30 @@ class Gate:
 
         worktree = self._worktree_dir or os.path.join(
             "/tmp", "am-gate-integration")
+
+        # Setup robustness: the worktree lives at a FIXED path, so a crashed
+        # prior tick can leave a stale leftover. Best-effort clear it BEFORE the
+        # add (ignore returncodes — purely defensive cleanup) so a leftover
+        # never wedges every subsequent tick.
+        self._runner(["git", "worktree", "remove", "--force", worktree],
+                     capture_output=True, text=True)
+        self._runner(["git", "worktree", "prune"],
+                     capture_output=True, text=True)
+
+        # Create the disposable integration worktree; CHECK the add returncode.
+        # On failure, a setup fault is not any PR's fault: write an EMPTY
+        # gate_results list so INTEGRATE merges nothing and posts NO gate-fail
+        # marker — the tick converges to idle and retries cleanly next tick,
+        # rather than false-failing every PR into the park threshold. Do NOT
+        # enter the try/finally (a failed add created nothing to remove).
+        add = self._runner(["git", "worktree", "add", "--detach", worktree,
+                            self._default_branch],
+                           capture_output=True, text=True)
+        if add.returncode != 0:
+            return fc.StateResult(signal="OK", writes={"gate_results": []})
+
         results = []
         try:
-            self._runner(["git", "worktree", "add", "--detach", worktree,
-                          self._default_branch],
-                         capture_output=True, text=True)
             for v in ordered:
                 results.append(self._gate_one(v, worktree))
         finally:
@@ -1146,10 +1167,19 @@ class Gate:
         pre_sha = (pre.stdout or "").strip()
 
         # Fetch the PR head then merge it with the same --no-ff strategy
-        # INTEGRATE uses (the validated tree equals the merged tree).
-        self._runner(["git", "-C", worktree, "fetch", "origin",
-                      f"pull/{number}/head"],
-                     capture_output=True, text=True)
+        # INTEGRATE uses (the validated tree equals the merged tree). CHECK the
+        # fetch returncode BEFORE merging: on a fetch failure return a
+        # fetch-failed GateResult WITHOUT merging, so a failed fetch can never
+        # silently merge the PREVIOUS PR's stale FETCH_HEAD into the cumulative
+        # tree. No rollback is needed (no merge happened).
+        fetch = self._runner(["git", "-C", worktree, "fetch", "origin",
+                              f"pull/{number}/head"],
+                             capture_output=True, text=True)
+        if fetch.returncode != 0:
+            return GateResult(
+                pr_ref=pr_ref, issue_ref=issue_ref, passed=False,
+                reason="fetch-failed",
+                failure_summary=_bounded_tail(fetch.stderr or fetch.stdout))
         merge = self._runner(
             ["git", "-C", worktree, "merge", "--no-ff", "--no-edit",
              "-m", f"gate-integrate {pr_ref}", "FETCH_HEAD"],
