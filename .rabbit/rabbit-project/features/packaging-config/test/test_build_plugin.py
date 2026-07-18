@@ -556,14 +556,16 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.11.0, convergence hardening): version bumped to 0.11.0 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. v0.11.0
-# regenerates the committed plugin tree to clean the drift left by merged src
-# PRs after the 0.10.1 cut (implementer agent supersede-on-retry v2.8.0 +
-# work_intake Phase 2 park), so the shipped lib/agent reach installs
-# release-clean.
+# Release (v0.12.0, convergence hardening): version bumped to 0.12.0 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. v0.12.0 ships the
+# full accepted-work threading fix (execution_plan carries the work order; the
+# IMPLEMENT adapter entry reads work_orders + carries the enact task + opened
+# handoff example), park-as-true-retry-counter (is_parked counts distinct failed
+# PRs, not raw markers), and GATE setup robustness (stale-worktree cleanup +
+# fetch-returncode check), regenerating the committed plugin tree + shipped
+# default-config so the fixes reach installs release-clean.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_11_0_and_consistent():
+def test_version_bumped_to_0_12_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -575,10 +577,10 @@ def test_version_bumped_to_0_11_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.11.0", \
-            f"plugin.json version must be 0.11.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.11.0", \
-            "marketplace.json plugin entry version must be 0.11.0"
+        assert pdata.get("version") == "0.12.0", \
+            f"plugin.json version must be 0.12.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.12.0", \
+            "marketplace.json plugin entry version must be 0.12.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -3261,13 +3263,20 @@ def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
         d = impl["dispatch"][0]
         assert d["cardinality"] == {"per_item": "execution_plan.ordered"}, \
             "IMPLEMENT must fan out per_item over execution_plan.ordered"
-        assert d["inputs"] == ["execution_plan"], \
-            "IMPLEMENT must read the execution_plan slot"
+        assert d["inputs"] == ["execution_plan", "work_orders"], \
+            "IMPLEMENT must read execution_plan AND work_orders (threading fix: " \
+            "the per-item work order body/decision is joined from work_orders)"
         assert "isolation" not in d, \
             "IMPLEMENT must declare NO harness isolation (#335 guard rejects it)"
         assert d.get("effect") == "implement", "IMPLEMENT effect must be implement"
         assert impl["signal"]["rule"] == "blocked_if_any"
         assert impl["manifest"]["writes"] == ["handoffs"]
+        assert impl["manifest"]["reads"] == ["execution_plan", "work_orders"], \
+            "IMPLEMENT manifest must read execution_plan AND work_orders"
+        assert d.get("task"), \
+            "IMPLEMENT dispatch must carry the per-item enact task (threading fix)"
+        assert d["output_example"].get("status") == "opened", \
+            "IMPLEMENT output_example must be the OPENED handoff shape, not planned"
 
         # E2E: resolve the SHIPPED route + adapter-map through the SHIPPED
         # adapter_wiring.build_loop, from the plugin's own lib/ ALONE (the plugin

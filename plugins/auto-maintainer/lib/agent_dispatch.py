@@ -240,9 +240,25 @@ def build_envelopes(adapter, slot_values, tick_context, state, output_dir):
             envelopes.append(env)
         else:
             collection = _resolve_path(slot_values, cardinality["per_item"])
+            # Per-item id->record join: when an element is a BARE id string and
+            # a `work_orders` list of {id, ...} records is a read slot, enrich
+            # the item to its matching work_orders record so the subagent gets
+            # the full work order. Deterministic (id index), built once per
+            # dispatch entry. Backward-compatible: an object element, an id with
+            # no match, or an absent work_orders slot leaves the item unchanged.
+            work_orders = slot_values.get("work_orders")
+            work_order_index = {}
+            if isinstance(work_orders, list):
+                work_order_index = {
+                    wo["id"]: wo for wo in work_orders
+                    if isinstance(wo, dict) and "id" in wo
+                }
             for item_index, element in enumerate(collection):
                 env = dict(base)
-                env["item"] = element
+                if isinstance(element, str):
+                    env["item"] = work_order_index.get(element, element)
+                else:
+                    env["item"] = element
                 env["output_contract"] = {
                     "slot": entry["writes"],
                     "schema": schema,
