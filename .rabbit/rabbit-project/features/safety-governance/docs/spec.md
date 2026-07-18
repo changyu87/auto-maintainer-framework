@@ -128,13 +128,18 @@ still wins.
 
 **Field-level (3-way) merge of an override (#357, deferred #336).** A present
 `config.json` is 3-way merged via `merge_config(base, theirs, mine)` — `base`
-the embedded `DEFAULT_GOVERNANCE` the override was backfilled against, `theirs`
-the override, `mine` the current shipped default: a new default key the override
-lacks is **adopted** (the unfreeze), a user-set value is **preserved**, and a key
-both sides changed differently is surfaced as a **conflict** (warned on stderr)
-keeping the user value rather than silently overwriting it. With no shipped
+the **current** embedded `DEFAULT_GOVERNANCE` (no historical base is recorded),
+`theirs` the override, `mine` the current shipped default: a new default key the
+override lacks is **adopted** (the unfreeze), a user value that **differs from
+the base** is **preserved**, and a key both sides changed differently is surfaced
+as a **conflict** (warned on stderr) keeping the user value. With no shipped
 default `mine` equals `base`, so the merge is a no-op (the prior whole-file
-overlay).
+overlay). CAVEAT (#396): since `base` is today's embedded default (not the
+historical default the override was taken from), a user value that **equals the
+base** is indistinguishable from unset — treated as unset and, if a later release
+changes that key's default, **re-adopted** with **no conflict recorded**. So
+preservation holds only for a user value that differs from the base; recording
+the base each override was taken from (out of scope) would remove this.
 
 ## Trust-ladder gate (§3.8.2)
 
