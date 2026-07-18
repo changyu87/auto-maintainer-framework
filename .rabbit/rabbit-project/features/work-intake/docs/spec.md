@@ -159,19 +159,30 @@ wanted.
   path and CLOSE the discovery. `is_loop_filed` lives in work-intake (next to the
   label + `<!-- am-dedup: -->` body marker that `gh_issue_file_sink` writes).
 - **Park guard (Phase 2 convergence) — UNCONDITIONAL PULL EXCLUSION at the retry
-  threshold.** An issue whose (bounded) comments carry **>= `PARK_THRESHOLD`
-  (hardcoded 5)** gate-fail markers — the FIXED string
-  `<!-- auto-maintainer:gate-fail -->` that verify-integrate's INTEGRATE posts on
-  the issue for each failed merge attempt (source of truth:
-  `verify_integrate.GATE_FAIL_MARKER`) — has failed too many times. PULL
-  **EXCLUDES** it (parks it) via the pure `work_intake.is_parked(item)`, so the
-  loop stops re-working it and **CONVERGES to idle** instead of looping forever;
-  the issue stays OPEN with its gate-fail comments for a human to resolve on the
-  tracker (the loop NEVER stops or escalates mid-run — this is how "never
-  escalate" holds). Unlike the loopback guard this exclusion is UNCONDITIONAL
-  (not gated on a config knob) and, like it, is a PULL exclusion (NOT a TRIAGE
-  reject, which would close the issue). `is_parked` counts the marker across the
-  item's `comments` bodies.
+  threshold.** An issue whose (bounded) comments record **>= `PARK_THRESHOLD`
+  (hardcoded 5)** DISTINCT failed merge attempts — each attempt marked by the
+  FIXED string `<!-- auto-maintainer:gate-fail -->` that verify-integrate's
+  INTEGRATE posts on the issue (source of truth:
+  `verify_integrate.GATE_FAIL_MARKER`), whose JSON payload carries the failed
+  `pr_ref` — has failed too many times. PULL **EXCLUDES** it (parks it) via the
+  pure `work_intake.is_parked(item)`, so the loop stops re-working it and
+  **CONVERGES to idle** instead of looping forever; the issue stays OPEN with its
+  gate-fail comments for a human to resolve on the tracker (the loop NEVER stops
+  or escalates mid-run — this is how "never escalate" holds). Unlike the loopback
+  guard this exclusion is UNCONDITIONAL (not gated on a config knob) and, like it,
+  is a PULL exclusion (NOT a TRIAGE reject, which would close the issue).
+- **`is_parked` counts DISTINCT attempts, not raw marker occurrences.** Each
+  retry is a distinct PR (the implementer supersedes its prior open PR before
+  opening a new one), so `is_parked` parses the marker comment's JSON payload and
+  counts the number of **distinct `pr_ref` values** across the item's `comments`
+  bodies; the count reaches `PARK_THRESHOLD` only after that many genuinely
+  distinct failed PRs. This is what makes park a true RETRY counter rather than a
+  tick-age timer: INTEGRATE re-posts a gate-fail marker every tick the same
+  unchanged PR is re-gated, so counting raw marker occurrences would park an item
+  after `PARK_THRESHOLD` *ticks* regardless of how many times it was actually
+  retried. A marker whose JSON payload is absent or unparseable (or carries no
+  `pr_ref`) falls back to counting that comment as one distinct attempt (keyed by
+  its position) so malformed markers never silently defeat the guard.
 
 ## Slice 3 — REPORT (outbound filing → DiscoveredIssue)
 
