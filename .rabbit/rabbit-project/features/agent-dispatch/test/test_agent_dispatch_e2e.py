@@ -457,6 +457,123 @@ def test_build_envelopes_per_item_empty_collection_yields_no_envelopes():
 
 
 # ==========================================================================
+# E2E Behaviour: build_envelopes per-item id->record join. When a per_item
+# element is a BARE id string AND slot_values carries a `work_orders` list of
+# {id, ...} records, the envelope's `item` is enriched to the matching
+# work_orders record (joined by id) so the subagent receives the full work
+# order. The join is deterministic, script-tier, and BACKWARD-COMPATIBLE:
+# an object element, an id with no matching record, an absent work_orders
+# slot, and `once` cardinality all leave the element/dispatch unchanged.
+# ==========================================================================
+
+def _per_item_join_adapter():
+    """A per_item adapter fanning out over execution_plan.ordered (bare ids)
+    whose read slots include work_orders (the join source)."""
+    return {
+        "kind": "agent",
+        "manifest": {
+            "reads": ["execution_plan", "work_orders"],
+            "writes": ["implement_results"],
+            "emits": ["OK", "BLOCKED"],
+        },
+        "dispatch": [
+            {
+                "subagent_type": "rabbit-implementer",
+                "task": "Implement the work item.",
+                "inputs": ["execution_plan", "work_orders"],
+                "cardinality": {"per_item": "execution_plan.ordered"},
+                "writes": "implement_results",
+                "output_example": {"id": "wo-1", "status": "done"},
+            }
+        ],
+        "signal": {"rule": "blocked_if_any"},
+    }
+
+
+def test_build_envelopes_per_item_bare_id_joins_to_work_order_record():
+    adapter = _per_item_join_adapter()
+    work_orders = [
+        {"id": "wo-1", "title": "First", "body": "Do the first thing",
+         "decision": "accept", "url": "http://x/1"},
+        {"id": "wo-2", "title": "Second", "body": "Do the second thing",
+         "decision": "accept", "url": "http://x/2"},
+        {"id": "wo-3", "title": "Third", "body": "Do the third thing",
+         "decision": "accept", "url": "http://x/3"},
+    ]
+    slot_values = {
+        "execution_plan": {"ordered": ["wo-3", "wo-1", "wo-2"]},
+        "work_orders": work_orders,
+    }
+    envelopes = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)
+
+    assert len(envelopes) == 3
+    # Each envelope's item is the FULL work-order record, joined by id, in
+    # execution-plan order.
+    assert [e["item"] for e in envelopes] == [
+        work_orders[2], work_orders[0], work_orders[1]]
+    # The joined item carries the full record, not a bare id.
+    assert envelopes[0]["item"]["title"] == "Third"
+    assert envelopes[0]["item"]["body"] == "Do the third thing"
+    assert envelopes[0]["item"]["decision"] == "accept"
+
+
+def test_build_envelopes_per_item_id_with_no_matching_record_stays_bare():
+    adapter = _per_item_join_adapter()
+    slot_values = {
+        "execution_plan": {"ordered": ["wo-1", "wo-missing"]},
+        "work_orders": [{"id": "wo-1", "title": "First"}],
+    }
+    envelopes = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)
+    assert envelopes[0]["item"] == {"id": "wo-1", "title": "First"}
+    # No matching work_orders record -> the bare id is left unchanged.
+    assert envelopes[1]["item"] == "wo-missing"
+
+
+def test_build_envelopes_per_item_object_element_unchanged():
+    adapter = _per_item_join_adapter()
+    obj = {"id": "wo-1", "title": "Already an object"}
+    slot_values = {
+        "execution_plan": {"ordered": [obj]},
+        "work_orders": [{"id": "wo-1", "title": "Would-be join"}],
+    }
+    envelopes = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)
+    # An element that is already an object is never replaced by the join.
+    assert envelopes[0]["item"] == obj
+
+
+def test_build_envelopes_per_item_no_work_orders_slot_leaves_bare_ids():
+    # Backward-compat: the original per_item adapter reads no work_orders slot,
+    # so bare ids stay bare (existing behaviour is unchanged).
+    adapter = _per_item_adapter()
+    slot_values = {
+        "execution_plan": {"ordered": ["wo-3", "wo-1"]},
+        "policy": {"max_retries": 2},
+    }
+    envelopes = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="IMPLEMENT",
+        output_dir=_OUT_DIR)
+    assert [e["item"] for e in envelopes] == ["wo-3", "wo-1"]
+
+
+def test_build_envelopes_once_unaffected_by_join():
+    # `once` cardinality never carries an `item` and is unaffected by the join,
+    # even when a work_orders slot is present.
+    adapter = _once_adapter()
+    slot_values = {"work_orders": [{"id": "wo-1", "title": "First"}]}
+    envelopes = ad.build_envelopes(
+        adapter, slot_values, _tick_context(), state="TRIAGE",
+        output_dir=_OUT_DIR)
+    assert len(envelopes) == 1
+    assert "item" not in envelopes[0]
+
+
+# ==========================================================================
 # E2E Behaviour: build_envelopes reads the dispatch entry's `output_example`
 # (the concrete example value) into output_contract.schema (the internal
 # envelope key name is unchanged so run_tick/scheduling stays the same).

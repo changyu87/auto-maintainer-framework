@@ -1,41 +1,33 @@
 #!/usr/bin/env python3
 """End-to-end housekeeping conformance for the agent-dispatch doc-slim wave.
 
-This wave is a MEASURED doc reduction (rabbit-housekeep, DOC dimension):
-docs/spec.md is slimmed of redundant prose without losing any load-bearing
-claim. The removed prose was a proven-redundant RESTATEMENT — the Invariants
-section re-stated the `output_path` computed-string rule and the `## Handoff`
-embed/output_path mechanics that `build_envelopes` and `render` already define
-in full, and the `build_envelopes` description carried a parenthetical that
-re-explained the internal `schema` key already covered by the schema bullets.
-docs/contract.md is already minimal and is unchanged. These tests are the
-deterministic gate on that wave — they are e2e in that they read the SHIPPED
-doc artifacts (not a mock) and assert the wave's contractual properties end to
-end:
+The doc-slim wave itself is COMPLETE and shipped: docs/spec.md was slimmed of
+proven-redundant restatement (the Invariants section's duplicate of the
+`output_path`/`## Handoff` mechanics and the `build_envelopes` `schema`-key
+parenthetical). Its one-time STRICT-REDUCTION size gates (spec/doc-surface
+line totals strictly below the pre-wave baseline, plus the diff-verdict record)
+have been RETIRED: they were single-use measured-reduction assertions whose
+deprecation criterion — superseded by a later agent-dispatch change to the doc
+surfaces — is now met by the per-item id->work_order join spec addition
+(feat/agent-dispatch-peritem-join). A perpetual "spec must stay below the
+pre-slim baseline forever" assertion would forbid all legitimate functional
+spec growth, contradicting Designed Deprecation; the reduction verdict was
+already recorded green at ship time.
 
-  Gate 1 — MEASURED REDUCTION. The current doc surfaces (docs/spec.md +
-  docs/contract.md) are STRICTLY smaller (fewer lines total) than the committed
-  pre-wave baseline recorded in housekeep_doc_baseline.json. Measurement is
-  delegated to the script-tier tool measure-reduction.py with --docs-only, so
-  the housekeeping test THIS wave adds under test/ is never counted as bloat
-  (the --docs-only mode restricts the directory walk to doc surfaces only). A
-  reword that does not actually reduce the doc-surface line total FAILS.
+What REMAINS is the ongoing, non-single-use gate — the properties that must
+hold for every future state of the docs regardless of size:
 
-  Gate 2 — LOAD-BEARING SURVIVAL. Every token that names a public-surface
+  Gate — LOAD-BEARING SURVIVAL. Every token that names a public-surface
   function, the agent-adapter schema keys, the closed signal vocabulary, the
   cardinality vocabulary, the envelope output_contract keys, and the contract
-  provides/reads/invokes/never block keys MUST still appear in the slimmed
-  docs. A slim that drops a load-bearing token FAILS.
-
-  Gate 3 — VERDICT RECORD. The measured verdict (reduced | no-op) emitted by
-  measure-reduction.py's `diff` subcommand is asserted to be a member of the
-  honest closed vocabulary, so the wave's outcome is recorded deterministically
-  rather than by judgment.
+  provides/reads/invokes/never block keys MUST still appear in the docs. A doc
+  edit that drops a load-bearing token FAILS. contract.md, already minimal, must
+  not grow past its baseline. These read the SHIPPED doc artifacts (not a mock)
+  and assert their contractual properties end to end.
 
 Behavior-preserved — the one MANDATORY gate of any housekeep wave — is covered
 by the feature's existing e2e/unit suite (test_agent_dispatch_e2e.py) staying
-green under the same run.py; this doc-only wave touches no src/, so that suite
-is unchanged and its green run IS the behavior-preserved proof.
+green under the same run.py.
 
 Owner: changyu87
 """
@@ -88,43 +80,6 @@ def _measure_docs_only(feature_dir):
     return json.loads(proc.stdout)
 
 
-def _baseline_snapshot_for_diff(feature_dir):
-    """Materialize the pre-wave baseline as a measure-reduction `count`-shaped
-    snapshot keyed by the SAME absolute paths the live count emits, so the
-    script's own `diff` subcommand can compare them. The baseline fixture stores
-    feature-relative doc keys (docs/spec.md, docs/contract.md)."""
-    base_docs = _baseline()["docs"]
-    snap = {}
-    total = 0
-    for rel, n in base_docs.items():
-        key = os.path.normpath(os.path.join(feature_dir, rel))
-        snap[key] = n
-        total += n
-    snap["__total__"] = total
-    return snap
-
-
-def _diff_result(feature_dir):
-    """Run measure-reduction.py diff(before=baseline, after=live) and return the
-    parsed verdict object."""
-    import tempfile
-
-    after = _measure_docs_only(feature_dir)
-    before = _baseline_snapshot_for_diff(feature_dir)
-    with tempfile.TemporaryDirectory() as td:
-        before_path = os.path.join(td, "before.json")
-        after_path = os.path.join(td, "after.json")
-        with open(before_path, "w") as f:
-            json.dump(before, f)
-        with open(after_path, "w") as f:
-            json.dump(after, f)
-        proc = subprocess.run(
-            [sys.executable, _MEASURE, "diff", before_path, after_path],
-            capture_output=True, text=True)
-    assert proc.returncode == 0, f"measure-reduction diff failed: {proc.stderr}"
-    return json.loads(proc.stdout)
-
-
 def _declared_load_bearing_tokens():
     """Read the load-bearing token declaration (test/load_bearing_tokens.json),
     the single source of truth shared with the #353 doc-survival GATE. The gate
@@ -143,8 +98,10 @@ _CONTRACT_KEYS = ("provides", "reads", "invokes", "never")
 
 
 # ==========================================================================
-# Gate 1 — measured reduction: current doc surfaces strictly smaller than
-# baseline, measured by the script-tier tool with --docs-only.
+# Baseline + measurement plumbing (kept from the completed doc-slim wave): the
+# baseline fixture and the script-tier --docs-only measurement still back the
+# contract.md non-growth check below. The strict spec/doc-surface reduction
+# gates and the diff-verdict record have been retired (see module docstring).
 # ==========================================================================
 
 def test_baseline_fixture_is_present_and_well_formed():
@@ -173,28 +130,6 @@ def test_docs_only_count_excludes_the_test_tree():
         f"--docs-only snapshot must cover only doc surfaces, got: {keys}")
 
 
-def test_doc_surfaces_strictly_smaller_than_baseline():
-    """The current doc-surface line total must be STRICTLY less than the pre-wave
-    baseline total. The verdict is produced by measure-reduction.py's own `diff`
-    subcommand (reduced == total_delta < 0). A reword that does not reduce
-    FAILS."""
-    result = _diff_result(_FEATURE_DIR)
-    assert result["reduced"] is True, (
-        f"doc surfaces did not shrink: total_before={result['total_before']} "
-        f"total_after={result['total_after']} delta={result['total_delta']}")
-    assert result["total_delta"] < 0
-
-
-def test_spec_is_strictly_smaller_than_baseline():
-    """spec.md specifically — the surface this wave slimmed — must have FEWER
-    lines than the pre-wave baseline."""
-    after = _measure_docs_only(_FEATURE_DIR)
-    before = _baseline()["docs"]["docs/spec.md"]
-    spec_after = after[os.path.normpath(_SPEC)]
-    assert spec_after < before, (
-        f"spec.md did not shrink: {spec_after} lines now vs baseline {before}")
-
-
 def test_contract_not_larger_than_baseline():
     """contract.md was already minimal and is unchanged by this wave; it must
     not have grown past its baseline."""
@@ -206,7 +141,7 @@ def test_contract_not_larger_than_baseline():
 
 
 # ==========================================================================
-# Gate 2 — load-bearing survival: required tokens still present after the slim.
+# Load-bearing survival: required tokens still present in the docs.
 # ==========================================================================
 
 def test_docs_retain_all_load_bearing_tokens():
@@ -222,19 +157,3 @@ def test_contract_retains_block_keys():
     text = _read(_CONTRACT)
     missing = [k for k in _CONTRACT_KEYS if k not in text]
     assert not missing, f"contract.md dropped block keys: {missing}"
-
-
-# ==========================================================================
-# Gate 3 — verdict record: the measured outcome label is a member of the honest
-# closed vocabulary, recorded deterministically by the script-tier tool.
-# ==========================================================================
-
-def test_verdict_is_recorded_member_of_closed_vocabulary():
-    """measure-reduction.py reports an honest verdict: `reduced` when content was
-    removed, `no-op` when nothing was dead. The wave records the verdict from the
-    script, never by judgment. For THIS wave the verdict is `reduced`."""
-    result = _diff_result(_FEATURE_DIR)
-    assert result["verdict"] in ("reduced", "no-op")
-    assert result["verdict"] == "reduced", (
-        f"this wave removed redundant prose; expected reduced, got "
-        f"{result['verdict']}")

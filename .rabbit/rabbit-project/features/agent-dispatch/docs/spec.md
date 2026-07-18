@@ -90,7 +90,16 @@ unchanged) or an **agent-adapter object** (DESIGN §3.4.6):
 - `build_envelopes(adapter, slot_values, tick_context, state, output_dir) ->
   [envelope]` — produce the invocation envelope(s) the executor will dispatch.
   `once` → one envelope per dispatch entry; `{per_item: path}` → one envelope per
-  element of that collection, each carrying its `item`. Each envelope gets a
+  element of that collection, each carrying its `item`. **Per-item id→record
+  join:** when a per-item element is a BARE id string AND the dispatch's read
+  slots include `work_orders` (a list of `{id, ...}` records, e.g. an acting
+  IMPLEMENT fanning out over `execution_plan.ordered` ids), the envelope's `item`
+  is enriched to the matching `work_orders` record (joined by `id`) so the
+  dispatched subagent receives the FULL work order (title/body/decision/url), not
+  a bare id. The join is deterministic (script-tier, not a model lookup) and
+  BACKWARD-COMPATIBLE: an element that is already an object, or has no matching
+  `work_orders` record, or a dispatch that does not read `work_orders`, keeps the
+  bare element unchanged. Each envelope gets a
   deterministic, unique `output_path` =
   `os.path.join(output_dir, f"{state}-{dispatch_index}-{item_index}.json")`
   (`item_index` is 0 for `once`). Envelope shape:
