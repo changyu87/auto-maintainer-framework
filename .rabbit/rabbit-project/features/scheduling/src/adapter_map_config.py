@@ -61,9 +61,12 @@ import run_tick as rt  # noqa: E402
 # --------------------------------------------------------------------------
 # AGENT_PORT_TEMPLATES (scheduling-owned).
 #
-# Each known agent-capable port -> {writes, cardinality, effect?, output_example},
-# built from the ports' OWN slot owners so a bare subagent_type is enough to
-# produce a valid agent entry. `effect` is present ONLY for ACTING ports. Each
+# Each known agent-capable port ->
+# {writes, cardinality, effect?, output_example, task?}, built from the ports'
+# OWN slot owners so a bare subagent_type is enough to produce a valid agent
+# entry. `effect` is present ONLY for ACTING ports; `task` (threaded onto
+# dispatch['task'] by _build_agent_entry) is present only when the port needs a
+# real ## Task instruction (IMPLEMENT). Each
 # `output_example` is a CONCRETE example value in the slot's top-level type — a
 # real sample output to mimic — NEVER a JSON-Schema descriptor (the agent-adapter
 # rule / #119: protocol-naive subagents copy a concrete example reliably but are
@@ -94,6 +97,29 @@ _HANDOFF_EXAMPLE = {
     "artifact": {"kind": "none", "ref": None},
     "discovered_work": [],
     "blocked_reason": None,
+}
+
+# A concrete OPENED handoff (the shape the ACTING IMPLEMENT produces per accepted
+# work_order). A real example value — an opened PR handoff shaped like implement's
+# opened schema: it carries a `pr` artifact, the SCRIPT-produced passing
+# `test_verdict` (required on an opened handoff per implement.validate_handoff),
+# and an empty `concerns`. This is the acting implementer's example to mimic —
+# NOT the dry-run's `planned` no-op (_HANDOFF_EXAMPLE above), so the real doer
+# opens a PR instead of reporting planned.
+_IMPLEMENT_AGENT_HANDOFF_EXAMPLE = {
+    "schema_version": im.HANDOFF_SCHEMA_VERSION,
+    "work_order_id": "owner/repo#1-wo",
+    "status": "opened",
+    "artifact": {"kind": "pr", "ref": "https://github.com/owner/repo/pull/1"},
+    "discovered_work": [],
+    "blocked_reason": None,
+    "test_verdict": {
+        "feature": "owner-repo-feature",
+        "passed": True,
+        "returncode": 0,
+        "summary": "1 passed, 0 failed",
+    },
+    "concerns": [],
 }
 
 # A concrete review_findings record (the ADVISORY shape REVIEW produces, FT-C). A
@@ -135,7 +161,14 @@ AGENT_PORT_TEMPLATES = {
         "cardinality": {"per_item": "execution_plan.ordered"},
         "signal_rule": "blocked_if_any",
         "effect": "implement",
-        "output_example": _HANDOFF_EXAMPLE,
+        "output_example": _IMPLEMENT_AGENT_HANDOFF_EXAMPLE,
+        "task": (
+            "Enact this ACCEPTED work order: implement the change in your own "
+            "git worktree and open a PR (never merge). If your item lacks the "
+            "source issue body, fetch it (gh issue view) first. Follow the "
+            "## Handoff section exactly; report opened (or blocked), never "
+            "planned."
+        ),
     },
     # REVIEW: the ADVISORY quality state (FT-C). Maps verdicts -> review_findings,
     # NON-acting (read-only judgment — no outward effect; NOT a merge gate), ONE
@@ -219,6 +252,7 @@ def _build_agent_entry(port, subagent_type, writes=None, effect=None,
         signal_rule = template["signal_rule"]
         eff = template.get("effect")
         example = template["output_example"]
+        task = template.get("task", "")
     else:
         if not writes:
             raise ValueError(
@@ -237,6 +271,7 @@ def _build_agent_entry(port, subagent_type, writes=None, effect=None,
         signal_rule = "nonempty_else_empty"
         eff = effect
         example = output_example
+        task = ""
 
     dispatch = {
         "subagent_type": subagent_type,
@@ -245,6 +280,12 @@ def _build_agent_entry(port, subagent_type, writes=None, effect=None,
         "cardinality": cardinality,
         "output_example": example,
     }
+    # Thread the template's task onto the dispatch so the rendered envelope
+    # carries a real ## Task instead of "(no task)". Templates without a task
+    # (TRIAGE, REVIEW) and custom ports default to empty; the key is added only
+    # when non-empty so a task-free entry is byte-unchanged.
+    if task:
+        dispatch["task"] = task
     if eff:
         dispatch["effect"] = eff
         # An acting dispatch declares harness isolation ONLY when a template
