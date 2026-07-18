@@ -6,7 +6,7 @@
   "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-07-08",
+  "updated": "2026-07-18",
   "spec_change_reason": "#355 version-monotonicity-on-content-change guard: add a deterministic invariant that a change to the committed plugins/auto-maintainer/lib bytes relative to the last released version MUST advance _PLUGIN_VERSION (a same-version content change is marketplace-invisible \u2014 /plugin marketplace update serves by version; the #350 drift regenerated the shipped lib at 0.8.0 without a bump). Complements the existing build-drift guard (committed == fresh build) with a version-monotonicity-on-content-change invariant. Anchored by test/release_lib_baseline.json ({version, lib_digest}: the last released version + the deterministic sha256 over the committed lib/ tree at that release); the guard test test_shipped_lib_change_requires_version_bump fails when the current committed-lib digest differs from the baseline digest but _PLUGIN_VERSION still equals the baseline version, passes when the version advanced, and is a no-op for docs-only / test-only changes (lib digest identical). Baseline seeded at version 0.8.1 / the current committed-lib digest. spec.md documents the invariant (housekeep doc baseline re-anchored 305 -> 314 for the appended bullet).",
-  "spec_no_change_reason": "V2 GATE release: shipped-route GATE insertion + regen + version bump; notes in CHANGELOG; version + shipped-route-wires tests provide RED->GREEN"
+  "spec_no_change_reason": "Spec change (RABBIT_GATE release-hygiene-skip bullet) already committed on this branch (15ee5e7); this cycle lands the test-only skip guards + e2e."
 }

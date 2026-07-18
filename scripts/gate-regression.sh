@@ -17,6 +17,15 @@
 # Deprecation criterion: superseded if the feature test runners are replaced by
 #   a single project-level test entrypoint.
 set -u
+
+# RABBIT_GATE marks this as a PER-PR gate run (not a release). The packaging-config
+# RELEASE-hygiene guards — those that build a FRESH plugin tree/digest from src and
+# assert it equals the COMMITTED tree/baseline (build-drift, baseline-digest) — SKIP
+# under it: a src-only PR legitimately drifts from the committed tree until a release
+# regenerates it, so those are release gates, not per-PR correctness. They still run
+# at release time (RABBIT_GATE unset).
+export RABBIT_GATE=1
+
 rc=0
 for d in .rabbit/rabbit-project/features/*/; do
   if [ -f "${d}test/run.py" ]; then
