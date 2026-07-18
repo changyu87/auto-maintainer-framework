@@ -170,6 +170,33 @@ def test_shipped_implementer_body_opened_only_with_passing_verdict():
     assert "script" in body
 
 
+def test_shipped_implementer_body_supersedes_prior_same_issue_pr():
+    """v2.8.0: on the accept path, BEFORE `gh pr create`, the implementer closes
+    an EXISTING open `auto-maintainer`-labelled PR that resolves the SAME source
+    issue (a prior superseded attempt), so a stale duplicate never lingers to
+    conflict or generate un-executable 'close PR X' work (spec: Supersede-on-retry).
+    The body must:
+      - query open auto-maintainer PRs by closingIssuesReferences,
+      - close a prior same-issue PR via `gh pr close`,
+      - constrain the close to the SAME issue only (never an unrelated PR),
+      - do it BEFORE `gh pr create`, and be a no-op when none exists."""
+    body = _body()
+    lower = body.lower().replace("*", "")
+    # queries open auto-maintainer PRs and their closing-issue references
+    assert "closingissuesreferences" in lower, (
+        "body must query open auto-maintainer PRs' closingIssuesReferences to "
+        "find a prior same-issue attempt")
+    # closes the prior PR (never merges)
+    assert "gh pr close" in lower, (
+        "body must close the prior same-issue PR via `gh pr close`")
+    # the supersede concept is named
+    assert "supersede" in lower, (
+        "body must describe the supersede-on-retry behaviour")
+    # constrained to the SAME issue only — never an unrelated PR
+    assert "same issue" in lower or "same source issue" in lower, (
+        "body must constrain the close to the SAME issue only")
+
+
 def test_shipped_implementer_body_instructs_emitting_concerns():
     """v2.5.0 (auto-maintainer-framework#212): the implementer is the PRODUCER of
     the Handoff's `concerns[]` — residual doubts on an opened handoff for the
