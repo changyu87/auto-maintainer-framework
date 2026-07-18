@@ -6,25 +6,37 @@ the loop CONVERGES to idle instead of looping/escalating forever. verify-
 integrate's INTEGRATE posts the FIXED gate-fail marker
 `<!-- auto-maintainer:gate-fail -->` (source of truth
 `verify_integrate.GATE_FAIL_MARKER`) on the issue for each failed merge attempt.
-Once an issue's (bounded) comments carry >= PARK_THRESHOLD (5) such markers PULL
-UNCONDITIONALLY EXCLUDES (parks) it — independent of work_own_filings — so it
-never becomes a work_item / work_order and stays OPEN with its gate-fail
-comments for a human to resolve on the tracker.
+Each marker comment carries a JSON payload with the failed `pr_ref`.
+
+`is_parked` counts DISTINCT failed PRs, NOT raw marker occurrences: each real
+retry is a distinct PR (the implementer supersedes its prior open PR before
+opening a new one), so `is_parked` parses each marker comment's JSON payload and
+counts the number of DISTINCT `pr_ref` values across the item's comments. Once
+that count is >= PARK_THRESHOLD (5) PULL UNCONDITIONALLY EXCLUDES (parks) it —
+independent of work_own_filings — so it never becomes a work_item / work_order
+and stays OPEN with its gate-fail comments for a human to resolve on the tracker.
+This makes park a true RETRY counter rather than a tick-age timer: INTEGRATE
+re-posts a gate-fail marker every tick the SAME unchanged PR is re-gated, so
+counting raw marker occurrences would park an item after PARK_THRESHOLD *ticks*
+regardless of how many times it was actually retried.
 
 Unlike the loopback guard (which is gated on work_own_filings) this exclusion is
 UNCONDITIONAL; like it, it is a PULL exclusion, NOT a TRIAGE reject (a reject
 would route to the doer's close path and CLOSE the issue).
 
 These tests are fully deterministic — no network. They cover:
-  1. is_parked counts the gate-fail marker across the item's comments' bodies;
-     >= 5 -> parked (True), 4 -> not parked (False); markers counted across
-     MULTIPLE comments; is_parked is pure (WorkItem or dict).
+  1. is_parked counts DISTINCT pr_ref across the item's marker comments;
+     5 distinct PRs -> parked (True), 5 markers for the SAME pr_ref -> NOT parked
+     (the bug this cycle fixes); mixed duplicates dedupe; a marker with
+     unparseable/missing pr_ref counts as one distinct attempt (keyed by index)
+     so malformed markers never silently defeat the guard.
   2. PULL EXCLUDES parked items — even with work_own_filings=True (unconditional).
   3. A mixed batch drops ONLY the parked items, keeping the rest.
 
 Owner: changyu87
 """
 
+import json
 import os
 import sys
 
@@ -47,20 +59,31 @@ import work_intake as wi  # noqa: E402
 _GATE_FAIL_MARKER = "<!-- auto-maintainer:gate-fail -->"
 
 
+def _gate_fail_body(pr_ref):
+    """Build a gate-fail comment body in the EXACT layout verify-integrate's
+    gate_fail_comment_body emits: the FIXED marker line, a human sentence, a
+    blank line, then a compact sort_keys json.dumps({pr_ref, reason,
+    failure_summary}) block, then a trailing newline. Kept byte-identical to the
+    verify-integrate source so is_parked parses the real production shape."""
+    payload = json.dumps({
+        "pr_ref": pr_ref,
+        "reason": "gate-failed",
+        "failure_summary": "regression suite red",
+    }, sort_keys=True)
+    return (f"{_GATE_FAIL_MARKER}\n"
+            f"Automated regression GATE did not pass for {pr_ref}; "
+            f"this PR was NOT merged.\n\n{payload}\n")
+
+
 def _comment(body, author="ci-bot", created_at="2026-05-02T11:30:00Z"):
     return {"author": author, "created_at": created_at, "body": body}
 
 
-def _item_with_marker_comments(count, number=7, per_comment=1):
-    """A WorkItem whose comments carry `count` gate-fail markers total, spread
-    `per_comment` markers per comment."""
-    comments = []
-    remaining = count
-    while remaining > 0:
-        n = min(per_comment, remaining)
-        body = "merge attempt failed\n" + ("\n".join([_GATE_FAIL_MARKER] * n))
-        comments.append(_comment(body))
-        remaining -= n
+def _item_with_pr_refs(pr_refs, number=7):
+    """A WorkItem whose comments carry one gate-fail marker each, one per
+    pr_ref in `pr_refs` (which may contain duplicates to model the same PR being
+    re-gated across ticks)."""
+    comments = [_comment(_gate_fail_body(ref)) for ref in pr_refs]
     return wi.WorkItem(
         id=f"acme/widget#{number}",
         number=number,
@@ -74,6 +97,12 @@ def _item_with_marker_comments(count, number=7, per_comment=1):
         updated_at="2026-05-02T11:30:00Z",
         comments=comments,
     )
+
+
+def _item_with_distinct_prs(count, number=7):
+    """A WorkItem with `count` DISTINCT failed PRs (one marker comment each)."""
+    return _item_with_pr_refs(
+        [f"acme/widget#{100 + i}" for i in range(count)], number=number)
 
 
 def _normal_item(number=9):
@@ -122,23 +151,23 @@ def test_gate_fail_marker_matches_verify_integrate_source_of_truth():
 
 
 # ==========================================================================
-# Behaviour: is_parked counts the marker across the item's comments' bodies.
-# >= PARK_THRESHOLD -> parked; below -> not parked. Pure (WorkItem or dict).
+# Behaviour: is_parked counts DISTINCT failed PRs (pr_ref), not raw markers.
+# >= PARK_THRESHOLD distinct -> parked; below -> not. Pure (WorkItem or dict).
 # ==========================================================================
 
-def test_is_parked_true_at_threshold():
-    item = _item_with_marker_comments(5)
+def test_is_parked_true_at_threshold_distinct_prs():
+    item = _item_with_distinct_prs(5)
     assert wi.is_parked(item) is True
     assert wi.is_parked(item.to_dict()) is True
 
 
-def test_is_parked_true_above_threshold():
-    item = _item_with_marker_comments(6)
+def test_is_parked_true_above_threshold_distinct_prs():
+    item = _item_with_distinct_prs(6)
     assert wi.is_parked(item) is True
 
 
-def test_is_parked_false_below_threshold():
-    item = _item_with_marker_comments(4)
+def test_is_parked_false_below_threshold_distinct_prs():
+    item = _item_with_distinct_prs(4)
     assert wi.is_parked(item) is False
     assert wi.is_parked(item.to_dict()) is False
 
@@ -148,22 +177,70 @@ def test_is_parked_false_for_normal_item():
     assert wi.is_parked(_normal_item().to_dict()) is False
 
 
-def test_is_parked_counts_markers_across_multiple_comments():
-    # Five markers spread one-per-comment across five comments still parks.
-    item = _item_with_marker_comments(5, per_comment=1)
+def test_is_parked_false_when_same_pr_re_gated_five_times():
+    """The bug this cycle fixes: INTEGRATE re-posts a gate-fail marker every tick
+    the SAME unchanged PR is re-gated. Five markers ALL for one pr_ref is ONE
+    distinct failed PR, so the item is NOT parked (a raw-marker count would have
+    wrongly parked it after 5 ticks)."""
+    item = _item_with_pr_refs(["acme/widget#100"] * 5)
     assert len(item.comments) == 5
+    assert wi.is_parked(item) is False
+    assert wi.is_parked(item.to_dict()) is False
+
+
+def test_is_parked_dedupes_mixed_duplicate_pr_refs():
+    """A mix of distinct + repeated pr_refs counts only DISTINCT PRs. Here PRs
+    100..103 (4 distinct) each appear twice — 8 markers, but only 4 distinct
+    failed PRs -> NOT parked."""
+    refs = [f"acme/widget#{100 + i}" for i in range(4)] * 2
+    item = _item_with_pr_refs(refs)
+    assert len(item.comments) == 8
+    assert wi.is_parked(item) is False
+    # Add a 5th distinct PR -> now 5 distinct -> parked.
+    refs5 = refs + ["acme/widget#104"]
+    item5 = _item_with_pr_refs(refs5)
+    assert wi.is_parked(item5) is True
+
+
+def test_is_parked_unparseable_marker_counts_as_one_distinct_attempt():
+    """A marker comment whose JSON payload is absent/unparseable (or carries no
+    pr_ref) must NOT silently defeat the guard: it counts as ONE distinct attempt
+    keyed by its comment position. Five such malformed markers -> parked."""
+    bad = _GATE_FAIL_MARKER + "\nsomething went wrong (no json payload here)\n"
+    item = wi.WorkItem(
+        id="acme/widget#7", number=7, title="t", body="b",
+        url="https://github.com/acme/widget/issues/7", state="OPEN",
+        comments=[_comment(bad) for _ in range(5)])
     assert wi.is_parked(item) is True
-    # Four one-per-comment does not.
-    item4 = _item_with_marker_comments(4, per_comment=1)
-    assert len(item4.comments) == 4
+    # Four malformed markers -> not parked.
+    item4 = wi.WorkItem(
+        id="acme/widget#7", number=7, title="t", body="b",
+        url="https://github.com/acme/widget/issues/7", state="OPEN",
+        comments=[_comment(bad) for _ in range(4)])
     assert wi.is_parked(item4) is False
 
 
-def test_is_parked_counts_multiple_markers_within_one_comment():
-    # All five markers in a single comment body still parks.
-    item = _item_with_marker_comments(5, per_comment=5)
-    assert len(item.comments) == 1
+def test_is_parked_mix_of_valid_and_malformed_markers():
+    """Malformed markers (index-keyed) and valid distinct pr_refs both count.
+    Two malformed + three distinct valid pr_refs = 5 distinct attempts -> parked."""
+    bad = _GATE_FAIL_MARKER + "\nno payload\n"
+    good = [_comment(_gate_fail_body(f"acme/widget#{200 + i}")) for i in range(3)]
+    comments = [_comment(bad), _comment(bad)] + good
+    item = wi.WorkItem(
+        id="acme/widget#7", number=7, title="t", body="b",
+        url="https://github.com/acme/widget/issues/7", state="OPEN",
+        comments=comments)
     assert wi.is_parked(item) is True
+
+
+def test_is_parked_ignores_non_marker_comments():
+    """Comments without the gate-fail marker are not attempts at all, even if the
+    item has many of them."""
+    item = wi.WorkItem(
+        id="acme/widget#7", number=7, title="t", body="b",
+        url="https://github.com/acme/widget/issues/7", state="OPEN",
+        comments=[_comment("just chatting") for _ in range(10)])
+    assert wi.is_parked(item) is False
 
 
 # ==========================================================================
@@ -173,7 +250,7 @@ def test_is_parked_counts_multiple_markers_within_one_comment():
 
 def test_pull_excludes_parked_item_default_flag():
     ctx = _fresh_ctx()
-    items = [_item_with_marker_comments(5, number=7), _normal_item(9)]
+    items = [_item_with_distinct_prs(5, number=7), _normal_item(9)]
     state = wi.Pull(source=_stub_source(items))  # default work_own_filings=True
 
     result = state.run(ctx)
@@ -193,7 +270,7 @@ def test_pull_excludes_parked_item_default_flag():
 def test_pull_excludes_parked_item_with_work_own_filings_true():
     # Explicit True: the park exclusion is UNCONDITIONAL, not gated on the flag.
     ctx = _fresh_ctx()
-    items = [_item_with_marker_comments(5, number=7), _normal_item(9)]
+    items = [_item_with_distinct_prs(5, number=7), _normal_item(9)]
     state = wi.Pull(source=_stub_source(items), work_own_filings=True)
 
     result = state.run(ctx)
@@ -204,10 +281,23 @@ def test_pull_excludes_parked_item_with_work_own_filings_true():
     assert numbers == {9}
 
 
-def test_pull_includes_below_threshold_item():
-    # Four markers is below threshold -> NOT parked -> included.
+def test_pull_includes_same_pr_re_gated_item():
+    # Same PR re-gated 5 times is ONE distinct attempt -> NOT parked -> included.
     ctx = _fresh_ctx()
-    items = [_item_with_marker_comments(4, number=7)]
+    items = [_item_with_pr_refs(["acme/widget#100"] * 5, number=7)]
+    state = wi.Pull(source=_stub_source(items))
+
+    result = state.run(ctx)
+    assert result.signal == "OK"
+    vocab = fc.SignalVocabulary(wi.PULL_SIGNALS)
+    fc.apply_result(ctx, wi.PULL_MANIFEST, result, vocab)
+    assert {w["number"] for w in ctx.read("work_items")} == {7}
+
+
+def test_pull_includes_below_threshold_item():
+    # Four distinct failed PRs is below threshold -> NOT parked -> included.
+    ctx = _fresh_ctx()
+    items = [_item_with_distinct_prs(4, number=7)]
     state = wi.Pull(source=_stub_source(items))
 
     result = state.run(ctx)
@@ -220,8 +310,8 @@ def test_pull_includes_below_threshold_item():
 def test_pull_all_parked_emits_empty():
     ctx = _fresh_ctx()
     items = [
-        _item_with_marker_comments(5, number=7),
-        _item_with_marker_comments(6, number=8),
+        _item_with_distinct_prs(5, number=7),
+        _item_with_distinct_prs(6, number=8),
     ]
     state = wi.Pull(source=_stub_source(items))
 
@@ -240,9 +330,9 @@ def test_pull_mixed_batch_drops_only_parked():
     ctx = _fresh_ctx()
     items = [
         _normal_item(9),
-        _item_with_marker_comments(5, number=7),   # parked
+        _item_with_distinct_prs(5, number=7),   # 5 distinct PRs -> parked
         _normal_item(10),
-        _item_with_marker_comments(4, number=8),   # below threshold, kept
+        _item_with_distinct_prs(4, number=8),   # 4 distinct PRs -> kept
     ]
     state = wi.Pull(source=_stub_source(items))
 
@@ -252,7 +342,7 @@ def test_pull_mixed_batch_drops_only_parked():
     fc.apply_result(ctx, wi.PULL_MANIFEST, result, vocab)
 
     numbers = {w["number"] for w in ctx.read("work_items")}
-    # 7 parked (dropped); 8 (4 markers), 9, 10 kept.
+    # 7 parked (dropped); 8 (4 distinct PRs), 9, 10 kept.
     assert numbers == {8, 9, 10}
 
 
@@ -264,7 +354,7 @@ def test_pull_mixed_batch_drops_only_parked():
 
 def test_park_is_pull_exclusion_not_triage_reject():
     ctx = _fresh_ctx()
-    parked = _item_with_marker_comments(5, number=7)
+    parked = _item_with_distinct_prs(5, number=7)
     state = wi.Pull(source=_stub_source([parked]))
 
     result = state.run(ctx)
