@@ -158,6 +158,20 @@ wanted.
   deliberately NOT a TRIAGE reject — a reject would route to the doer's close
   path and CLOSE the discovery. `is_loop_filed` lives in work-intake (next to the
   label + `<!-- am-dedup: -->` body marker that `gh_issue_file_sink` writes).
+- **Park guard (Phase 2 convergence) — UNCONDITIONAL PULL EXCLUSION at the retry
+  threshold.** An issue whose (bounded) comments carry **>= `PARK_THRESHOLD`
+  (hardcoded 5)** gate-fail markers — the FIXED string
+  `<!-- auto-maintainer:gate-fail -->` that verify-integrate's INTEGRATE posts on
+  the issue for each failed merge attempt (source of truth:
+  `verify_integrate.GATE_FAIL_MARKER`) — has failed too many times. PULL
+  **EXCLUDES** it (parks it) via the pure `work_intake.is_parked(item)`, so the
+  loop stops re-working it and **CONVERGES to idle** instead of looping forever;
+  the issue stays OPEN with its gate-fail comments for a human to resolve on the
+  tracker (the loop NEVER stops or escalates mid-run — this is how "never
+  escalate" holds). Unlike the loopback guard this exclusion is UNCONDITIONAL
+  (not gated on a config knob) and, like it, is a PULL exclusion (NOT a TRIAGE
+  reject, which would close the issue). `is_parked` counts the marker across the
+  item's `comments` bodies.
 
 ## Slice 3 — REPORT (outbound filing → DiscoveredIssue)
 

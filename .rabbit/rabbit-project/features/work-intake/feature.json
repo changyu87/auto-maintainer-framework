@@ -9,5 +9,6 @@
   "created": "2026-06-11T07:47:37Z",
   "deprecation_criterion": "Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version).",
   "tdd_state": "test-green",
-  "updated": "2026-06-27"
+  "updated": "2026-07-18",
+  "spec_no_change_reason": "spec park-guard bullet committed pre-cycle in 664a13e"
 }
