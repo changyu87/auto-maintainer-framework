@@ -110,6 +110,7 @@ Deprecation criterion: Superseded when the loop adopts a non-git VCS backend,
 
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -979,17 +980,37 @@ def _doc_surface_text(feature_dir):
     return "\n".join(chunks)
 
 
+def _token_survives(token, text):
+    """Whether a declared token still appears in `text` as a STANDALONE token
+    rather than an incidental substring of unrelated prose. Survival requires a
+    word-boundary match: the token's occurrence must not be flanked by a word
+    character (letter/digit/underscore) that would fold it into a larger
+    identifier. So `Verdict` does NOT survive on `ReviewVerdict`, and `3.7` does
+    NOT survive on `13.7`; but `ci_state`, `fsm-contracts`, and `docs/spec.md`
+    still match their real occurrences. Pure."""
+    esc = re.escape(token)
+    # (?<![\w]) / (?![\w]) only bite when the token edge is itself a word char;
+    # a token whose edge is punctuation (e.g. "/foo") is matched literally there.
+    left = r"(?<!\w)" if token[:1].isalnum() or token[:1] == "_" else ""
+    right = r"(?!\w)" if token[-1:].isalnum() or token[-1:] == "_" else ""
+    return re.search(left + esc + right, text) is not None
+
+
 def missing_load_bearing_tokens(feature_dir):
     """The declared load-bearing tokens ABSENT from a feature's post-change doc
     surfaces, in declared order. Empty when the feature declares no tokens or all
-    declared tokens survive. Pure: it reads the feature's declared-token file and
-    its doc surfaces, computes set-membership, and does no I/O beyond those reads.
+    declared tokens survive. Survival is a WORD-BOUNDARY match (see
+    `_token_survives`), not a raw substring test: a token counts as surviving only
+    when it appears as a standalone token, so a dropped token cannot pass on an
+    incidental substring of unrelated prose (e.g. `Verdict` inside `ReviewVerdict`)
+    and short/common tokens can actually fail. Pure: it reads the feature's
+    declared-token file and its doc surfaces, and does no I/O beyond those reads.
     """
     tokens = declared_load_bearing_tokens(feature_dir)
     if not tokens:
         return []
     text = _doc_surface_text(feature_dir)
-    return [tok for tok in tokens if tok not in text]
+    return [tok for tok in tokens if not _token_survives(tok, text)]
 
 
 def _feature_dir_of(rel_path, features_root):
