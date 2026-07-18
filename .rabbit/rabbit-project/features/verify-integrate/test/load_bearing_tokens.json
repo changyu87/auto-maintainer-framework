@@ -24,6 +24,7 @@
     "gate_results",
     "regression",
     "conflict",
+    "fetch-failed",
     "failure_summary",
     "OK",
     "EMPTY",
