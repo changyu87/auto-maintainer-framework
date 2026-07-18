@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-14T16:35:52Z",
   "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict schemas reach a breaking major version.",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "updated": "2026-07-18",
   "spec_no_change_reason": "spec docs/spec.md Setup-robustness GATE bullet was authored+committed before this TDD cycle; this cycle implements it \u2014 no working-tree spec diff remains"
 }
