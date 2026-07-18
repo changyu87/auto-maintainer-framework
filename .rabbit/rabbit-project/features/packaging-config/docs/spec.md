@@ -295,6 +295,19 @@ is added via git. Updates: `/plugin marketplace update`.
   must differ from the baseline `version`. Docs-only / test-only changes leave the
   lib digest identical and are unaffected. Complements the build-drift guard
   (committed == fresh build).
+- **Release-hygiene guards SKIP under `RABBIT_GATE` (per-PR gate context).** The
+  guards that build/normalize a FRESH artifact from current src and assert it
+  equals the COMMITTED tree/lib/baseline — the build-drift guard, the per-file
+  committed-vs-fresh-normalization checks, and the baseline-digest guard — are
+  **release** invariants, not per-PR correctness: a src-only PR legitimately
+  drifts from the committed tree until a release regenerates it. So when the
+  environment variable `RABBIT_GATE` is set (the verify-integrate GATE runs the
+  regression with it exported via `scripts/gate-regression.sh`), these tests
+  SKIP (return early, pass). With `RABBIT_GATE` unset — a normal local run or a
+  release cut — they run in full. This keeps the per-PR GATE from false-failing
+  every src-changing PR on expected pre-release drift while preserving the
+  release gate. Correctness/logic tests (build_plugin behavior, shipped-route
+  wires via build_loop, version consistency) always run.
 
 ## Current behaviour
 
