@@ -1,5 +1,29 @@
 # Changelog — packaging-config
 
+## 0.11.0 — convergence hardening for the GATE loop
+
+- Regen release: cleans the build-drift left by two merged src PRs after the
+  0.10.1 cut — the implementer agent supersede-on-retry (v2.8.0) and the
+  work_intake Phase 2 park guard — neither of which regenerated the committed
+  plugin tree.
+- Ships supersede-on-retry: the implementer closes a prior open same-issue
+  auto-maintainer PR before opening its replacement, so stale superseded PRs
+  never linger to conflict or generate un-executable close-work.
+- Ships the Phase 2 park guard: PULL excludes an issue after >=5 gate-fail
+  markers, so a repeatedly-failing issue parks and the loop converges to idle
+  instead of looping or escalating.
+- Together they make the loop never stop or escalate.
+- Bump `_PLUGIN_VERSION` 0.10.1 -> 0.11.0 (`plugin.json` + `marketplace.json`),
+  a minor for the shipped convergence behavior.
+- Regenerate the committed `plugins/auto-maintainer/` tree from current src so
+  the shipped implementer agent + `work_intake` lib reach installs release-clean;
+  re-anchor `test/release_lib_baseline.json` (version + lib_digest) for the #355
+  monotonicity guard.
+- Invariant: version 0.11.0 is consistent across `plugin.json` +
+  `marketplace.json`; the committed tree matches a fresh build with no
+  source-tree leak; the shipped route resolves through `adapter_wiring.build_loop`
+  with NO WiringError.
+
 ## 0.10.0 — regen release: clean post-merge drift + ship 3 features
 
 - Ships three merged src features whose PRs changed src WITHOUT regenerating the
