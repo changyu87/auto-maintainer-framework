@@ -1,5 +1,29 @@
 # Changelog — packaging-config
 
+## 0.10.0 — regen release: clean post-merge drift + ship 3 features
+
+- Ships three merged src features whose PRs changed src WITHOUT regenerating the
+  committed plugin tree, leaving main with build-drift:
+  - #353 — `verify_integrate` load-bearing-token doc-surface gate (#379).
+  - #376 — `configure.py --regression-command` knob (#382).
+  - #357 — `safety_governance` field-level 3-way merge for overridden config
+    (#393).
+- Ships the GATE-regression fix: the release-hygiene guards (build-drift guard,
+  per-file committed-vs-fresh-normalization checks, baseline-digest guard) SKIP
+  under `RABBIT_GATE`, so the per-PR cumulative GATE no longer false-fails every
+  src-changing PR on expected pre-release drift; with `RABBIT_GATE` unset (a
+  local run or a release cut) they run in full.
+- Bump `_PLUGIN_VERSION` 0.9.0 -> 0.10.0 (`plugin.json` + `marketplace.json`), a
+  minor for the shipped feature set.
+- Regenerate the committed `plugins/auto-maintainer/` tree from current src so
+  the shipped lib (`verify_integrate`, `configure`, `safety_governance`) reaches
+  installs release-clean; re-anchor `test/release_lib_baseline.json` (version +
+  lib_digest) for the #355 monotonicity guard.
+- Invariant: version 0.10.0 is consistent across `plugin.json` +
+  `marketplace.json`; the committed tree matches a fresh build with no
+  source-tree leak; the shipped route resolves through `adapter_wiring.build_loop`
+  with NO WiringError.
+
 ## 0.9.0 — V2 cumulative GATE
 
 - Adds the GATE state to the shipped default pipeline
