@@ -1224,15 +1224,14 @@ def make_gate(runtime):
     For the doc-surface load-bearing-token survival check (issue #353) it binds a
     REPO-RELATIVE features root, needed to map a PR's `git diff` paths (the
     integration worktree's repo-relative paths) to features. It reads the
-    DEDICATED `doc_check_features_root` config key (§3.7) — kept separate from
-    `features_root` (which VERIFY's complement runner treats as an on-disk locator
-    that may be absolute) so the doc gate is turned on independently and is LIVE on
-    the production auto-merge path (issue #381). For backward compatibility, when
-    `doc_check_features_root` is unset it falls back to a RELATIVE `features_root`
-    (an absolute `features_root` cannot match repo-relative diff paths, so it is
-    ignored here). When neither yields a relative root the token check is left off
-    (a conservative no-op; the check is opt-in per feature via
-    test/load_bearing_tokens.json anyway).
+    DEDICATED `doc_check_features_root` config key (§3.7) ONLY — deliberately
+    kept SEPARATE from `features_root` (which VERIFY's complement runner treats
+    as an on-disk locator that may be absolute) so the two semantics never share
+    one overloaded key (issue #391): setting `features_root` for VERIFY must
+    never silently turn this gate on or off. An absolute `doc_check_features_root`
+    cannot match repo-relative diff paths, so it is ignored here; when the key is
+    unset or absolute the token check is left off (a conservative no-op; the
+    check is opt-in per feature via test/load_bearing_tokens.json anyway).
     """
     project_dir = runtime.get("project_dir") or "."
     cfg = sg.load_config(project_dir)
@@ -1241,8 +1240,7 @@ def make_gate(runtime):
     default_branch = runtime.get("default_branch")
     if default_branch is None:
         default_branch = gh_default_branch_source(repo)
-    configured_root = (sg.doc_check_features_root(cfg)
-                       or cfg.get("features_root"))
+    configured_root = sg.doc_check_features_root(cfg)
     doc_features_root = (configured_root
                          if configured_root and not os.path.isabs(configured_root)
                          else None)

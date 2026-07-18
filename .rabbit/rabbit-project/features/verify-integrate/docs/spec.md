@@ -187,10 +187,10 @@ loop PRs) + `regression_command` from the central config
   ⇒ `GateResult{passed:False, reason:"load-bearing"}` (dropped tokens named in
   `failure_summary`); the merge is ROLLED BACK and the PR EXCLUDED (mirrors the
   rabbit-housekeep load-bearing-survival test on the loop's own auto-merge path).
-  Wired from the central `doc_check_features_root` config key (a repo-relative
-  root; separate from `features_root` so the check is LIVE on the auto-merge path,
-  #381) — unset ⇒ the check is off. Opt-in + doc-scoped: no declared tokens, or a
-  PR touching no doc surface, are unaffected.
+  Wired from the central `doc_check_features_root` config key ONLY (a repo-relative
+  root; fully DECOUPLED from `features_root` so VERIFY's complement locator never
+  silently toggles this gate, #391) — unset/absolute ⇒ off. Opt-in + doc-scoped:
+  no declared tokens, or a PR touching no doc surface, are unaffected.
 - Each PR is thus validated on top of the prior GATE-passed PRs, catching
   **semantic conflicts** (clean merges that break together). Residual: intra-tick
   order-dependence (deterministic). GATE writes only the disposable worktree — no
