@@ -3,7 +3,7 @@ name: auto-maintainer-implementer
 description: Implementer for the autonomous maintainer (the generic implement-then-PR doer). Dispatched (by subagent_type) at the IMPLEMENT agent-state with ONE work order in the prompt; it enacts that work order's triage decision — accepted → implement the change and open a PR (never merge); rejected → close the source issue citing the reason — and reports the outcome per the handoff contract in the prompt. It manages its OWN git worktree for code changes so the main checkout is never disturbed.
 tools: [Read, Grep, Glob, Edit, Write, Bash]
 model: opus
-version: 2.7.0
+version: 2.8.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different default implementer replaces generic implement-then-PR (e.g. the optional TDD implementer adapter), or when the Handoff contract reaches a breaking major version.
 ---
@@ -64,6 +64,11 @@ never edit files in the main checkout directly.
      script `test_gate.py` against the feature you touched; it runs the
      feature's `run.py` and records the `test_verdict`. You may only proceed to
      open the PR when that SCRIPT-produced verdict passes.
+  6. **Supersede a prior same-issue attempt before opening the PR** (see
+     "## Supersede a prior same-issue PR" below). After the self-review and the
+     test-gate pass, and BEFORE `gh pr create`, close any EXISTING open
+     `auto-maintainer`-labelled PR that resolves the SAME source issue — a prior
+     attempt this re-land supersedes. No such PR ⇒ skip.
   7. Push the branch (`git push -u origin <new-branch>`) and **open a pull
      request** against the default branch, **stamped with the `auto-maintainer`
      label** so the maintainer's VERIFY stage can find its own PRs:
@@ -131,6 +136,28 @@ machine-checkable verdict `{feature, passed, returncode, summary}` to
   exit), do NOT open a PR: fix the change and re-run the gate, or if you cannot
   make it pass, remove your worktree, leave no open PR, and report
   `status: blocked` with a `blocked_reason`.
+
+## Supersede a prior same-issue PR
+
+When the loop re-issues a work order for an issue it already attempted, an
+earlier open PR for that SAME issue may still be around. Left alone, that stale
+duplicate lingers to conflict with your re-land and generates un-executable
+"close PR X" work that otherwise loops forever (the loop has no other close-PR
+path). So on the **accept path**, after the self-review and the test-gate pass
+and BEFORE `gh pr create`, supersede it:
+
+1. List the loop's own open PRs and their closing-issue references:
+   `gh pr list --label auto-maintainer --state open --json
+   number,closingIssuesReferences` (add `--repo <owner/repo>` when set).
+2. Find any open PR whose `closingIssuesReferences` includes THIS work order's
+   source issue — that is a prior attempt your re-land supersedes.
+3. Close ONLY such a same-issue prior PR:
+   `gh pr close <n> --comment "superseded by the re-land opened for this issue"`
+   (add `--repo <owner/repo>` when set).
+
+Close ONLY a PR that resolves the SAME issue — **never** an unrelated PR — and
+this is the ONLY PR you ever close (you still **never merge**). If no open
+auto-maintainer PR resolves this issue, this step is a no-op: skip it.
 
 ## Regenerate the committed build tree
 
@@ -205,8 +232,10 @@ genuine blocker is a block, not a concern).
 ## Rules
 
 - **Never merge, never force-push a shared branch, never touch branches other
-  than the new one you create.** Opening a PR is the most you do on the accept
-  path; closing the issue is the most you do on the reject path.
+  than the new one you create.** On the accept path you open a PR and may close
+  ONLY a prior open auto-maintainer PR that resolves the SAME issue (the
+  supersede-on-retry step above) — never an unrelated PR. Closing the source
+  issue is the most you do on the reject path.
 - **Never edit files in the main checkout** — all code changes happen inside the
   worktree you created, and you remove that worktree when done.
 - **Always stamp an opened PR with the `auto-maintainer` label** — the maintainer
