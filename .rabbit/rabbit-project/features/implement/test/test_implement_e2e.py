@@ -84,15 +84,18 @@ def test_handoffs_slot_descriptor_is_versioned():
 
 
 # ==========================================================================
-# Behaviour: per-state manifest is {reads: [execution_plan],
+# Behaviour: per-state manifest is {reads: [execution_plan, work_orders],
 # writes: [handoffs], emits: [OK, BLOCKED]} and conforms to the fsm-contracts
-# manifest shape. NOTE: reads execution_plan ONLY — NOT workspace.
+# manifest shape. `work_orders` is read so the ACTING IMPLEMENT's per-item
+# dispatch can join each execution_plan.ordered id to its full WorkOrder record
+# via agent_dispatch.build_envelopes; the dry-run adapter ignores it. NOTE:
+# reads execution_plan + work_orders but NOT workspace.
 # ==========================================================================
 
 def test_implement_manifest_declares_reads_writes_emits():
     m = impl.IMPLEMENT_MANIFEST
     assert isinstance(m, fc.StateManifest)
-    assert m.reads == ("execution_plan",)
+    assert m.reads == ("execution_plan", "work_orders")
     assert "workspace" not in m.reads
     assert m.writes == ("handoffs",)
     assert set(m.emits) == {"OK", "BLOCKED"}
@@ -218,6 +221,59 @@ def test_implement_no_budget_cap_processes_whole_plan():
     handoffs = result.writes["handoffs"]
     assert len(handoffs) == 50
     assert [h["work_order_id"] for h in handoffs] == ordered
+
+
+# ==========================================================================
+# E2E Behaviour: the dry-run adapter IGNORES `work_orders`. `work_orders` is
+# read by the manifest so the ACTING IMPLEMENT can join ids -> full WorkOrder
+# records, but the dry-run run() uses ONLY execution_plan. Whether work_orders
+# is present in ctx or absent, run() yields byte-identical handoffs.
+# ==========================================================================
+
+def _plan_and_orders_ctx(ordered, work_orders):
+    """A ctx that also registers + seeds `work_orders`, as the ACTING route
+    (TRIAGE upstream) would, to exercise data-readiness with the new manifest
+    read. The dry-run run() must ignore it."""
+    ctx = _fresh_ctx(_plan(ordered))
+    ctx.register_slot("work_orders", {"type": "array"}, version="1.0.0")
+    ctx.write("work_orders", work_orders)
+    return ctx
+
+
+def test_implement_e2e_dry_run_ignores_work_orders_when_present():
+    ordered = ["wo-2", "wo-1"]
+    work_orders = [
+        {"id": "wo-1", "title": "fix A", "body": "...", "decision": "accepted"},
+        {"id": "wo-2", "title": "fix B", "body": "...", "decision": "accepted"},
+    ]
+    ctx = _plan_and_orders_ctx(ordered, work_orders)
+
+    result = impl.run(ctx)
+    assert result.signal == "OK"
+
+    handoffs = result.writes["handoffs"]
+    # The dry-run rung ignores work_orders: output is a pure function of the
+    # execution_plan ordered ids, always status=planned, artifact none.
+    assert [h["work_order_id"] for h in handoffs] == ordered
+    for h in handoffs:
+        assert h["status"] == "planned"
+        assert h["artifact"] == {"kind": "none", "ref": None}
+
+
+def test_implement_e2e_dry_run_identical_with_and_without_work_orders():
+    ordered = ["wo-3", "wo-1", "wo-2"]
+
+    # work_orders absent from ctx entirely.
+    ctx_without = _fresh_ctx(_plan(ordered))
+    handoffs_without = impl.run(ctx_without).writes["handoffs"]
+
+    # work_orders registered + seeded.
+    ctx_with = _plan_and_orders_ctx(
+        ordered, [{"id": oid, "title": oid} for oid in ordered])
+    handoffs_with = impl.run(ctx_with).writes["handoffs"]
+
+    assert json.dumps(handoffs_without, sort_keys=True) == json.dumps(
+        handoffs_with, sort_keys=True)
 
 
 # ==========================================================================

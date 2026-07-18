@@ -14,7 +14,10 @@ schema, the execution_plan -> handoffs wiring, the signal) with ZERO repo risk.
 The model-backed implement-then-PR doer (the `propose` rung, DESIGN §3.6.3) is a
 separate, swappable adapter deferred to a later milestone.
 
-It reads `execution_plan` ONLY. DESIGN §2.6 also lists `workspace` for
+The manifest reads `execution_plan` and `work_orders`; the dry-run run() uses
+only `execution_plan` and IGNORES `work_orders`. `work_orders` is declared so
+the ACTING IMPLEMENT's per-item dispatch can join each execution_plan.ordered id
+to its full WorkOrder record. DESIGN §2.6 also lists `workspace` for
 IMPLEMENT, but `workspace` is the isolated worktree the model-backed doer
 consumes; the dry-run adapter does no isolated code work, so it deliberately
 does NOT read `workspace` — keeping the route validator's data-readiness check
@@ -66,10 +69,14 @@ HANDOFFS_SLOT = {
 # was empty), BLOCKED when a plan entry was malformed.
 IMPLEMENT_SIGNALS = ["OK", "BLOCKED"]
 
-# Per-state manifest (bounded-scope contract): reads execution_plan (NOT
-# workspace), writes handoffs, emits OK | BLOCKED.
+# Per-state manifest (bounded-scope contract): reads execution_plan and
+# work_orders (NOT workspace), writes handoffs, emits OK | BLOCKED. The dry-run
+# adapter uses only execution_plan; work_orders is declared so the ACTING
+# IMPLEMENT's per-item dispatch can join each execution_plan.ordered id to its
+# full WorkOrder record via agent_dispatch.build_envelopes.
 IMPLEMENT_MANIFEST = fc.StateManifest(
-    reads=["execution_plan"], writes=["handoffs"], emits=IMPLEMENT_SIGNALS)
+    reads=["execution_plan", "work_orders"], writes=["handoffs"],
+    emits=IMPLEMENT_SIGNALS)
 
 
 def _planned_handoff(work_order_id):

@@ -29,7 +29,13 @@ state      reads           writes    signals
 IMPLEMENT  execution_plan  handoffs  OK | BLOCKED
 ```
 
-- **reads** `execution_plan` ONLY. DESIGN §2.6 also lists `workspace` for
+- **reads** `execution_plan` **and `work_orders`.** The dry-run adapter uses only
+  `execution_plan` (the ordered ids). `work_orders` is read so the ACTING
+  IMPLEMENT's per-item dispatch can join each `execution_plan.ordered` id to its
+  full WorkOrder record (title/body/decision/url) via
+  `agent_dispatch.build_envelopes` — without it the implementer would receive a
+  bare id and an empty task and could not enact. The dry-run rung ignores
+  `work_orders`. DESIGN §2.6 also lists `workspace` for
   IMPLEMENT, but that is the isolated worktree consumed by the model-backed doer
   (DESIGN §3.6.2). The dry-run adapter does no isolated code work, so it
   deliberately does NOT read `workspace` — keeping the route validator's
@@ -141,7 +147,7 @@ handoffs.
 Wired as a route-as-data adapter (adapter-wiring's
 `factory(runtime) -> (StateManifest, run_callable)` convention), consumed by
 `scheduling.run_tick` via `DEFAULT_ADAPTER_MAP`. Manifest declares
-`reads=["execution_plan"]`, `writes=["handoffs"]`,
+`reads=["execution_plan", "work_orders"]`, `writes=["handoffs"]`,
 `emits=["OK", "BLOCKED"]`.
 
 ## Shipped implementer subagent (the propose-rung doer)
@@ -159,6 +165,17 @@ the output path. Its rendered prompt is the complete handoff contract (the
   (it owns the WHAT, DESIGN §2.1), run the project's checks, and **open a PR
   against the default branch — never merge**. If it cannot complete an accepted
   order it reports `status: blocked` and leaves no open PR.
+- **Never reports `planned`; enacts accepted-only orders (v2.9.0).** `planned` is
+  the DRY-RUN adapter's status, NOT the agent's — the shipped implementer reports
+  only `opened`, `closed`, or `blocked`, never `planned`. PRIORITIZE fans out
+  ACCEPTED-ONLY orders to IMPLEMENT, so the default action is implement→PR (the
+  `rejected`→close branch is defensive — rejected orders do not normally reach
+  IMPLEMENT). ROBUSTNESS: if the `## Inputs` work order lacks the source issue's
+  title/body (an under-filled envelope), the agent FETCHES it from the work
+  order's ref/url (`gh issue view <number> --repo <owner/repo> --json
+  title,body,comments`) before enacting rather than bailing — an under-informed
+  envelope becomes real work or an honest `blocked`, never a silent `planned`
+  no-op.
 - **Deterministic test-gate on the accept path (v2.6.0, DESIGN §3.6.3).** After
   committing and BEFORE `gh pr create`, the subagent MUST invoke the gate script
   at its deployed location `${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py` against the touched target feature; the gate runs `run.py` and
