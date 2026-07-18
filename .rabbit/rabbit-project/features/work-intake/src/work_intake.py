@@ -73,6 +73,48 @@ WORK_ITEM_SCHEMA_VERSION = "1.1.0"
 MAX_COMMENTS_PER_ITEM = 20
 MAX_COMMENT_BODY_CHARS = 4000
 
+# Park guard (Phase 2 convergence, §3.11 park guard bullet). verify-integrate's
+# INTEGRATE posts the FIXED gate-fail marker below on the issue for each failed
+# merge attempt; once an issue's (bounded) comments carry >= PARK_THRESHOLD such
+# markers PULL UNCONDITIONALLY EXCLUDES (parks) it so the loop stops re-working
+# it and CONVERGES to idle. The issue stays OPEN with its gate-fail comments for
+# a human to resolve on the tracker.
+PARK_THRESHOLD = 5
+
+# The exact gate-fail marker. SOURCE OF TRUTH: verify_integrate.GATE_FAIL_MARKER
+# ('<!-- auto-maintainer:gate-fail -->'). Hardcoded here (work-intake imports
+# only fsm_contracts, not verify_integrate) — keep this identical to the
+# verify-integrate constant; the park e2e test pins the exact string so drift
+# fails loudly.
+GATE_FAIL_MARKER = "<!-- auto-maintainer:gate-fail -->"
+
+
+def is_parked(item):
+    """Return True when `item` has failed to merge too many times and must be
+    PARKED (excluded from PULL) so the loop converges instead of looping forever.
+
+    Counts occurrences of GATE_FAIL_MARKER across the item's (bounded) comment
+    bodies; parked when the count is >= PARK_THRESHOLD. `item` may be a WorkItem
+    or a dict (the machine-first WorkItem form). Pure and deterministic.
+
+    PULL uses this to EXCLUDE parked items UNCONDITIONALLY (independent of
+    work_own_filings) — they never become work_items / work_orders and stay open
+    with their gate-fail comments for a human to resolve. This is exclusion at
+    PULL, NOT a TRIAGE reject (a reject would route to the doer's close path and
+    CLOSE the issue).
+    """
+    if isinstance(item, dict):
+        comments = item.get("comments") or []
+    else:
+        comments = getattr(item, "comments", None) or []
+    count = 0
+    for comment in comments:
+        body = comment.get("body") or "" if isinstance(comment, dict) else ""
+        count += body.count(GATE_FAIL_MARKER)
+        if count >= PARK_THRESHOLD:
+            return True
+    return count >= PARK_THRESHOLD
+
 
 @dataclass(eq=True)
 class WorkItem:
@@ -286,6 +328,13 @@ class Pull:
 
     def run(self, ctx):  # noqa: ARG002 — ctx is the fsm-contracts TickContext
         items = self._source(self._repo)
+        # Park guard (Phase 2 convergence): UNCONDITIONALLY exclude parked items
+        # — an issue whose comments carry >= PARK_THRESHOLD gate-fail markers has
+        # failed too many times, so the loop stops re-working it and converges to
+        # idle. Unlike the loopback guard below this is NOT gated on any config
+        # knob; like it, it is a PULL exclusion (the issue stays open), NOT a
+        # TRIAGE reject (which would close it).
+        items = [item for item in items if not is_parked(item)]
         # §3.11.5 loopback guard: the exclusion is CONDITIONAL on work_own_filings
         # (default True = the loop works its own filings, so INCLUDE loop-filed
         # items). Only under the opt-out (work_own_filings=False) does PULL drop
