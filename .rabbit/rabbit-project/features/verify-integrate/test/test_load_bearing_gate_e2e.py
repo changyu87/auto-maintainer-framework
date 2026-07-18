@@ -151,6 +151,48 @@ def test_missing_tokens_empty_when_no_tokens_declared():
         assert vi.missing_load_bearing_tokens(feat) == []
 
 
+def test_missing_tokens_dropped_token_not_saved_by_incidental_substring():
+    # `Verdict` was DROPPED, but `ReviewVerdict` remains: a raw substring test
+    # would falsely count it as surviving. Word-boundary matching catches it.
+    with tempfile.TemporaryDirectory() as td:
+        feat = _make_feature(
+            td, "f",
+            spec="the ReviewVerdict schema explains findings",
+            tokens=["Verdict"])
+        assert vi.missing_load_bearing_tokens(feat) == ["Verdict"]
+
+
+def test_missing_tokens_standalone_token_still_survives():
+    # The same token DOES survive when it appears as a standalone word.
+    with tempfile.TemporaryDirectory() as td:
+        feat = _make_feature(
+            td, "f",
+            spec="the Verdict schema and the ReviewVerdict schema",
+            tokens=["Verdict"])
+        assert vi.missing_load_bearing_tokens(feat) == []
+
+
+def test_missing_tokens_short_numeric_section_id_not_saved_by_substring():
+    # A bare section id like `3.7` must not be judged surviving on `13.7`.
+    with tempfile.TemporaryDirectory() as td:
+        feat = _make_feature(
+            td, "f",
+            spec="see DESIGN 13.7 for the async model",
+            tokens=["3.7"])
+        assert vi.missing_load_bearing_tokens(feat) == ["3.7"]
+
+
+def test_missing_tokens_hyphenated_and_path_tokens_survive():
+    # Tokens with internal/edge punctuation (cross-refs, paths) still match
+    # their real occurrences under word-boundary semantics.
+    with tempfile.TemporaryDirectory() as td:
+        feat = _make_feature(
+            td, "f",
+            spec="cross-ref: fsm-contracts; reads docs/spec.md",
+            tokens=["fsm-contracts", "docs/spec.md"])
+        assert vi.missing_load_bearing_tokens(feat) == []
+
+
 # ==========================================================================
 # Pure helper: features_with_changed_doc_surfaces
 # ==========================================================================
