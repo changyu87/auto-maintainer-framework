@@ -75,10 +75,13 @@ Public surface (GATE — the cumulative regression gate, DESIGN §2.2 [v2]):
     gate_results) + signal set (OK).
   - gh_closing_issue_ref(pr_ref, repo) — the production closing-issue resolver.
   - declared_load_bearing_tokens(feature_dir) / missing_load_bearing_tokens(
-    feature_dir) / features_with_changed_doc_surfaces(changed_paths,
+    feature_dir, tokens=None) / features_with_changed_doc_surfaces(changed_paths,
     features_root) — the pure doc-surface load-bearing-token survival helpers
     (issue #353): a feature declares its must-survive tokens in
     test/load_bearing_tokens.json; GATE fails a doc-touched PR that drops one.
+    GATE anchors the declared set to the pre-merge base (not the PR's own copy),
+    so a PR cannot bypass the gate by dropping a token AND its declaration
+    together (issue #392).
   - Gate — the GATE state; run(TickContext) -> StateResult. Cumulative: a
     disposable integration worktree at current main, per-PR --no-ff merge, the
     doc-surface load-bearing-token survival check (#353), then the regression,
@@ -944,6 +947,21 @@ def _is_doc_surface(rel_path):
     return len(parts) == 3 and parts[0] == "skills" and parts[2] == "SKILL.md"
 
 
+def _parse_declared_tokens(text):
+    """The declared token list parsed from `load_bearing_tokens.json` source
+    text (`{"tokens": [...]}`), keeping only non-empty strings in declared order.
+    Returns [] when the text is absent, unparseable, or declares no tokens.
+    Pure — the shared parse used by both the on-disk and the git-blob readers."""
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    tokens = data.get("tokens") if isinstance(data, dict) else None
+    return [t for t in (tokens or []) if isinstance(t, str) and t]
+
+
 def declared_load_bearing_tokens(feature_dir):
     """The tokens a feature DECLARES load-bearing, read from its
     `test/load_bearing_tokens.json` (`{"tokens": [...]}`). Returns [] when the
@@ -954,11 +972,10 @@ def declared_load_bearing_tokens(feature_dir):
         return []
     try:
         with open(path, "r") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
+            text = f.read()
+    except OSError:
         return []
-    tokens = data.get("tokens") if isinstance(data, dict) else None
-    return [t for t in (tokens or []) if isinstance(t, str) and t]
+    return _parse_declared_tokens(text)
 
 
 def _doc_surface_text(feature_dir):
@@ -996,17 +1013,23 @@ def _token_survives(token, text):
     return re.search(left + esc + right, text) is not None
 
 
-def missing_load_bearing_tokens(feature_dir):
+def missing_load_bearing_tokens(feature_dir, tokens=None):
     """The declared load-bearing tokens ABSENT from a feature's post-change doc
-    surfaces, in declared order. Empty when the feature declares no tokens or all
-    declared tokens survive. Survival is a WORD-BOUNDARY match (see
-    `_token_survives`), not a raw substring test: a token counts as surviving only
-    when it appears as a standalone token, so a dropped token cannot pass on an
-    incidental substring of unrelated prose (e.g. `Verdict` inside `ReviewVerdict`)
-    and short/common tokens can actually fail. Pure: it reads the feature's
-    declared-token file and its doc surfaces, and does no I/O beyond those reads.
-    """
-    tokens = declared_load_bearing_tokens(feature_dir)
+    surfaces, in declared order. Empty when no tokens are declared or all declared
+    tokens survive. Survival is a WORD-BOUNDARY match (see `_token_survives`), not
+    a raw substring test: a token counts as surviving only when it appears as a
+    standalone token, so a dropped token cannot pass on an incidental substring of
+    unrelated prose (e.g. `Verdict` inside `ReviewVerdict`) and short/common
+    tokens can actually fail. Pure: it computes set-membership against the
+    feature's doc surfaces (read from `feature_dir`) and does no I/O beyond those
+    reads.
+
+    `tokens` is the declared must-survive set to check. When None, it falls back
+    to the feature's own `test/load_bearing_tokens.json`. GATE passes the BASE
+    (pre-merge) declaration explicitly so a PR cannot bypass the gate by dropping
+    a token's declaration alongside the token itself (issue #392)."""
+    if tokens is None:
+        tokens = declared_load_bearing_tokens(feature_dir)
     if not tokens:
         return []
     text = _doc_surface_text(feature_dir)
@@ -1183,15 +1206,35 @@ class Gate:
         # clean merge + passing regression — KEEP as base for the next PR.
         return GateResult(pr_ref=pr_ref, issue_ref=issue_ref, passed=True)
 
+    def _declared_tokens_at_base(self, worktree, feat_rel, pre_sha):
+        """The load-bearing tokens a feature DECLARED at the pre-merge base
+        (`pre_sha`), read from that revision's `<feat_rel>/test/
+        load_bearing_tokens.json` via `git show`. Anchoring the declared set to
+        the base — not the PR's own post-merge copy — is what stops a PR from
+        weakening the gate that guards it: dropping a token AND its declaration in
+        one PR still fails, because the base still declares the token (issue
+        #392). Returns [] when the file was absent at base or `git show` failed
+        (opt-in: an undeclared feature is never gated)."""
+        blob = f"{pre_sha}:{feat_rel}/{LOAD_BEARING_TOKENS_FILE}"
+        show = self._runner(
+            ["git", "-C", worktree, "show", blob],
+            capture_output=True, text=True)
+        if show.returncode != 0:
+            return []
+        return _parse_declared_tokens(show.stdout or "")
+
     def _load_bearing_violation(self, worktree, pre_sha):
         """Assert the doc-surface load-bearing tokens survived in the merged
         tree (issue #353). Returns a human-readable failure_summary string when a
         doc-touched feature DROPPED a declared token, else '' (survival OK / not
         applicable). Reads the PR's changed doc surfaces via `git diff
-        --name-only <pre_sha> HEAD` (the merge just applied) and checks each
-        touched feature's declared tokens against its post-change doc surfaces IN
-        THE WORKTREE. Skipped (returns '') when `features_root` is unconfigured or
-        the PR touched no doc surface — no effect on non-doc PRs."""
+        --name-only <pre_sha> HEAD` (the merge just applied), and for each touched
+        feature checks the BASE (pre-merge, `pre_sha`) declared token set against
+        its post-change doc surfaces IN THE WORKTREE. The declared set is anchored
+        to base so a PR cannot bypass the gate by dropping a token's declaration
+        together with the token (issue #392). Skipped (returns '') when
+        `features_root` is unconfigured or the PR touched no doc surface — no
+        effect on non-doc PRs."""
         if self._features_root is None:
             return ""
         diff = self._runner(
@@ -1203,8 +1246,10 @@ class Gate:
             changed, self._features_root)
         problems = []
         for feat_rel in feat_dirs:
+            base_tokens = self._declared_tokens_at_base(
+                worktree, feat_rel, pre_sha)
             missing = missing_load_bearing_tokens(
-                os.path.join(worktree, feat_rel))
+                os.path.join(worktree, feat_rel), tokens=base_tokens)
             if missing:
                 problems.append(
                     f"{feat_rel}: dropped load-bearing token(s): "
