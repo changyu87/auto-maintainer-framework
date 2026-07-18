@@ -556,14 +556,15 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.9.0, V2 cumulative GATE): version bumped to 0.9.0 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. v0.9.0 inserts
-# the GATE state into the shipped default pipeline (REVIEW->GATE->INTEGRATE), a
-# self-contained cumulative regression gate replacing the reverted
-# GitHub-CI-runs-tests approach, and regenerates the committed plugin tree so
-# the shipped lib (verify_integrate GATE + run_tick make_gate) reaches installs.
+# Release (v0.10.0, post-merge drift cleanup + 3-feature ship): version bumped
+# to 0.10.0 in BOTH plugin.json and marketplace.json, and the two are
+# consistent. v0.10.0 regenerates the committed plugin tree to clean the drift
+# left by three merged src PRs (#379 verify-integrate load-bearing-token doc
+# gate, #382 --regression-command configure knob, #393 field-level 3-way config
+# merge) and ships the GATE-regression fix (release-hygiene guards skip under
+# RABBIT_GATE), so the shipped lib reaches installs release-clean.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_9_0_and_consistent():
+def test_version_bumped_to_0_10_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -575,10 +576,10 @@ def test_version_bumped_to_0_9_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.9.0", \
-            f"plugin.json version must be 0.9.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.9.0", \
-            "marketplace.json plugin entry version must be 0.9.0"
+        assert pdata.get("version") == "0.10.0", \
+            f"plugin.json version must be 0.10.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.10.0", \
+            "marketplace.json plugin entry version must be 0.10.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:

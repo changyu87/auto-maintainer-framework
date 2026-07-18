@@ -1,19 +1,20 @@
 ---
 name: configure
-description: Set the auto-maintainer's trust mode, token budget, heartbeat cadence, and backoff threshold in the project-local central config. Use this whenever the user runs /auto-maintainer:configure, or asks to set/change the maintainer's mode (dry-run, propose, auto-merge), arm or disarm the implementer doer, set or clear a daily token budget, change the heartbeat/tick interval, change the backoff threshold, or view the current settings. Also use this for the guided --setup walk-through whenever the user runs /auto-maintainer:configure --setup or asks to be "walked through" / "set up" / "configured step by step" — it walks every config knob field-by-field and writes the choices. It relays the requested values to the deterministic configure script, which validates them and writes .auto-maintainer/config.json.
-version: 0.7.0
+description: Set the auto-maintainer's trust mode, token budget, heartbeat cadence, backoff threshold, and GATE regression command in the project-local central config. Use this whenever the user runs /auto-maintainer:configure, or asks to set/change the maintainer's mode (dry-run, propose, auto-merge), arm or disarm the implementer doer, set or clear a daily token budget, change the heartbeat/tick interval, change the backoff threshold, set or clear the GATE regression command, or view the current settings. Also use this for the guided --setup walk-through whenever the user runs /auto-maintainer:configure --setup or asks to be "walked through" / "set up" / "configured step by step" — it walks every config knob field-by-field and writes the choices. It relays the requested values to the deterministic configure script, which validates them and writes .auto-maintainer/config.json.
+version: 0.8.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when the central-config schema reaches a breaking major version, or when governance configuration moves out of a project-local JSON file consulted at tick entry.
 ---
 
 # auto-maintainer configure
 
-Set the maintainer's **trust mode**, **token budget**, **heartbeat cadence**, and
-**backoff threshold**, which live in the project-local central config
+Set the maintainer's **trust mode**, **token budget**, **heartbeat cadence**,
+**backoff threshold**, and **GATE regression command**, which live in the
+project-local central config
 `${CLAUDE_PROJECT_DIR}/.auto-maintainer/config.json`. This config is what the
 tick loop consults to decide whether an acting state (e.g. the IMPLEMENT doer)
-may act, how much it may spend, how often the loop ticks, and when to defer a
-stuck work order.
+may act, how much it may spend, how often the loop ticks, when to defer a
+stuck work order, and what regression command the GATE state runs before merge.
 
 All validation and the file write are owned by the deterministic script
 `${CLAUDE_PLUGIN_ROOT}/lib/configure.py` — this skill only relays the values the
@@ -42,6 +43,14 @@ user asked for. It never edits the JSON by hand.
   integer; default 3).
 - `--backoff-threshold` is the consecutive-blocked count at which the loop
   escalates and defers a stuck work order (a positive integer; default 5).
+
+## GATE regression command
+
+- `--regression-command` is the full-regression shell command the GATE state
+  (verify-integrate) runs against each REVIEW-passed PR before merge (exit 0 =
+  pass). An arbitrary command string sets it; `none` (also `null`/empty) clears
+  it back to `null`, which makes GATE a no-op PASS (no gate). With no config.json
+  it defaults to no gate.
 
 ## How to run
 
@@ -73,6 +82,12 @@ negative ceiling exits non-zero with an error) and prints the resulting config.
   ```
   python3 ${CLAUDE_PLUGIN_ROOT}/lib/configure.py --interval-minutes <int>
   python3 ${CLAUDE_PLUGIN_ROOT}/lib/configure.py --backoff-threshold <int>
+  ```
+
+- Set the GATE regression command (or clear it with `none`):
+
+  ```
+  python3 ${CLAUDE_PLUGIN_ROOT}/lib/configure.py --regression-command "<shell command>|none"
   ```
 
 - Combine in one call when the user asked for several at once, e.g. mode +
@@ -114,7 +129,7 @@ paraphrase).
    - `controls` — a one-line explanation of what the knob does.
    - `default` — the value used when nothing is set.
    - `current` — the value in effect right now (from `config.json` or defaults).
-   - `type` — the value's shape (`enum`, `int`, `int_or_null`).
+   - `type` — the value's shape (`enum`, `int`, `int_or_null`, `str_or_null`).
    - `validator` — the accepted values, to quote when prompting.
 
 2. For **each** entry, in catalog order, show the user its `label`, what it
@@ -126,7 +141,8 @@ paraphrase).
 3. Apply every chosen change in **one** `configure.py` invocation, mapping each
    catalog `key` to its flag (`mode` → `--mode`, `budget.per_day_tokens` →
    `--per-day-tokens`, `heartbeat.interval_minutes` → `--interval-minutes`,
-   `backoff.threshold` → `--backoff-threshold`). The deterministic writer
+   `backoff.threshold` → `--backoff-threshold`, `regression_command` →
+   `--regression-command`). The deterministic writer
    validates and writes `config.json`. Then `--show` the result and read it back
    to the user:
 
