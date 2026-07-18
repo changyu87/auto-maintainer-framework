@@ -185,6 +185,116 @@ def test_invalid_agent_entry_rejected_no_write():
         assert not os.path.isfile(_override_path(project_dir)), out
 
 
+def test_implement_template_carries_task_and_opened_example():
+    """The IMPLEMENT template carries a NON-EMPTY `task` (enact the accepted order,
+    open a PR, never merge) and an `opened` output_example (a `pr` artifact +
+    passing `test_verdict` + empty `concerns`) — NOT the dry-run planned example —
+    so the acting implementer mimics a real opened handoff. work_orders is in the
+    reads (inputs) so build_envelopes can join each ordered id to its WorkOrder."""
+    impl = amc.AGENT_PORT_TEMPLATES["IMPLEMENT"]
+    task = impl.get("task", "")
+    assert isinstance(task, str) and task.strip(), impl
+    ex = impl["output_example"]
+    assert isinstance(ex, dict), ex
+    assert ex["status"] == "opened", ex
+    assert ex["artifact"]["kind"] == "pr", ex
+    assert isinstance(ex.get("test_verdict"), dict), ex
+    assert ex["test_verdict"]["passed"] is True, ex
+    assert ex["concerns"] == [], ex
+    # work_orders is one of the IMPLEMENT reads (the join source).
+    assert "work_orders" in impl["reads"], impl
+
+
+def test_build_agent_entry_implement_threads_task_and_inputs():
+    """_build_agent_entry('IMPLEMENT', ...) yields a dispatch whose inputs include
+    'work_orders', whose `task` is non-empty, and whose output_example.status is
+    'opened'. It declares NO harness isolation (#335: acting agents self-isolate)."""
+    entry = amc._build_agent_entry("IMPLEMENT", "auto-maintainer-doer")
+    dispatch = entry["dispatch"][0]
+    assert "work_orders" in dispatch["inputs"], dispatch
+    assert isinstance(dispatch.get("task"), str) and dispatch["task"].strip(), dispatch
+    assert dispatch["output_example"]["status"] == "opened", dispatch
+    assert dispatch.get("effect") == "implement", dispatch
+    assert "isolation" not in dispatch, dispatch  # no harness isolation
+    ad.validate_agent_adapter(entry)  # the deep validator accepts it
+
+
+def test_build_agent_entry_without_task_still_builds():
+    """A template without a `task` (TRIAGE) still builds; the dispatch `task`
+    defaults to empty and the entry is a valid agent-adapter."""
+    entry = amc._build_agent_entry("TRIAGE", "auto-maintainer-echo")
+    dispatch = entry["dispatch"][0]
+    assert dispatch.get("task", "") == "", dispatch
+    ad.validate_agent_adapter(entry)
+
+
+def test_implement_agent_entry_resolves_via_build_loop():
+    """A built IMPLEMENT agent entry resolves via adapter_wiring.build_loop in a
+    REVIEW->GATE->INTEGRATE (close-the-loop) route with NO WiringError, and
+    IMPLEMENT resolves to an AgentState carrying the threaded task."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        amap = json.loads(json.dumps(rt.DEFAULT_ADAPTER_MAP))
+        amap["TRIAGE"] = amc._build_agent_entry("TRIAGE", "auto-maintainer-echo")
+        amap["IMPLEMENT"] = amc._build_agent_entry(
+            "IMPLEMENT", "auto-maintainer-doer")
+        amap["REVIEW"] = amc._build_agent_entry("REVIEW", "auto-maintainer-echo")
+        route = json.loads(json.dumps(rt.DEFAULT_ROUTE))
+        route["states"] = ["GUARD", "DRAIN", "PULL", "TRIAGE", "PRIORITIZE",
+                           "IMPLEMENT", "VERIFY", "REVIEW", "GATE", "INTEGRATE",
+                           "CLEANUP", "PERSIST", "EXIT", "DONE", "HALTED"]
+        route["edges"] = [
+            {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+            {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+            {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+            {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+            {"state": "PULL", "signal": "OK", "next": "TRIAGE"},
+            {"state": "PULL", "signal": "EMPTY", "next": "TRIAGE"},
+            {"state": "TRIAGE", "signal": "OK", "next": "PRIORITIZE"},
+            {"state": "TRIAGE", "signal": "EMPTY", "next": "PRIORITIZE"},
+            {"state": "PRIORITIZE", "signal": "OK", "next": "IMPLEMENT"},
+            {"state": "PRIORITIZE", "signal": "EMPTY", "next": "IMPLEMENT"},
+            {"state": "IMPLEMENT", "signal": "OK", "next": "VERIFY"},
+            {"state": "IMPLEMENT", "signal": "BLOCKED", "next": "VERIFY"},
+            {"state": "VERIFY", "signal": "OK", "next": "REVIEW"},
+            {"state": "VERIFY", "signal": "EMPTY", "next": "REVIEW"},
+            {"state": "REVIEW", "signal": "OK", "next": "GATE"},
+            {"state": "REVIEW", "signal": "EMPTY", "next": "GATE"},
+            {"state": "GATE", "signal": "OK", "next": "INTEGRATE"},
+            {"state": "INTEGRATE", "signal": "OK", "next": "CLEANUP"},
+            {"state": "CLEANUP", "signal": "OK", "next": "PERSIST"},
+            {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+            {"state": "EXIT", "signal": "refire", "next": "DONE"},
+            {"state": "EXIT", "signal": "idle", "next": "DONE"},
+            {"state": "EXIT", "signal": "break", "next": "DONE"},
+            {"state": "EXIT", "signal": "halt", "next": "DONE"},
+        ]
+        rpath = os.path.join(project_dir, ".auto-maintainer", "route.json")
+        mpath = _override_path(project_dir)
+        os.makedirs(os.path.dirname(rpath), exist_ok=True)
+        with open(rpath, "w") as f:
+            json.dump(route, f)
+        with open(mpath, "w") as f:
+            json.dump(amap, f)
+        runtime = {"project_dir": project_dir, "runtime_dir": project_dir,
+                   "source": None, "now": None,
+                   "governance": {"mode": "dry-run"}}
+        rroute, states = aw.build_loop(
+            rt.DEFAULT_ROUTE, rt.DEFAULT_ADAPTER_MAP, runtime,
+            start="GUARD", initial=rt._INITIAL_SLOTS)
+        assert isinstance(states["IMPLEMENT"][1], aw.AgentState), \
+            states["IMPLEMENT"]
+
+
+def test_migrated_implement_entry_carries_task_and_opened_example():
+    """A re-derived IMPLEMENT entry (via _build_agent_entry, the migration path)
+    carries the threaded task + opened output_example + work_orders in inputs."""
+    entry = amc._build_agent_entry("IMPLEMENT", "auto-maintainer-doer")
+    dispatch = entry["dispatch"][0]
+    assert dispatch["task"].strip(), dispatch
+    assert dispatch["output_example"]["status"] == "opened", dispatch
+    assert "work_orders" in dispatch["inputs"], dispatch
+
+
 def test_set_agent_then_route_runs_end_to_end():
     """A full drop-in: set-agent TRIAGE + a route routing TRIAGE makes build_loop
     resolve TRIAGE to an AgentState (the ports-and-adapters promise — no code
