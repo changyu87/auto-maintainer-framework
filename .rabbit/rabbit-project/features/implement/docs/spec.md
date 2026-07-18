@@ -179,6 +179,19 @@ the output path. Its rendered prompt is the complete handoff contract (the
   source (docs/tests, or a repo with no committed build tree) does NOT trigger a
   regen. This prevents the two-PRs-for-one-change churn where a shipped-src edit
   merges with drift and the guard then forces a second, regen-only PR.
+- **Supersede-on-retry: closes a prior open loop-PR for the same issue (v2.8.0).**
+  On the accept path, BEFORE `gh pr create`, the subagent checks for an EXISTING
+  open `auto-maintainer`-labelled PR that resolves the SAME source issue
+  (`gh pr list --label auto-maintainer --state open --json
+  number,closingIssuesReferences`, matched to this issue). If one exists it is a
+  PRIOR attempt this re-land supersedes, so the subagent CLOSES it
+  (`gh pr close <n> --comment "superseded by the re-land"`) as it opens the
+  replacement — a stale duplicate never lingers to conflict or to generate the
+  un-executable "close PR X" work that otherwise loops forever (the loop has no
+  other close-PR path). This is the ONLY PR the subagent ever closes, and only
+  when it resolves the same issue as the PR being opened; no prior open PR for the
+  issue ⇒ no-op. Complements Phase 2 park (work-intake) which bounds any residual
+  non-convergence.
 - **Pre-handoff self-review (v2.3.0).** On the accept path, after committing and
   BEFORE `gh pr create`, the subagent runs a structured self-review against its
   OWN committed diff (it reads the actual diff, not its intent) and fixes any gap
