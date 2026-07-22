@@ -5,6 +5,29 @@ All notable changes to this feature are recorded here. Versions follow the
 `version` field, and the central-config `schema_version`
 (`GOVERNANCE_SCHEMA_VERSION`).
 
+## schema 2.7.0 — 2026-07-22
+
+- **Additive `issue_filter` knob (default no-filter).** An optional filter
+  narrowing WHICH open GitHub issues the PULL stage (work-intake) pulls, an
+  object `{"labels": <DNF>, "title_pattern": <regex-string-or-null>}`.
+  - `labels` is a **disjunctive-normal-form (OR-of-ANDs)** matcher in canonical
+    `List[List[str]]` form; `title_pattern` is a post-fetch title regex or
+    `null`. Default `{"labels": [], "title_pattern": null}` = NO filter (pull
+    all open issues), so the bump is non-breaking, opt-in.
+  - `DEFAULT_GOVERNANCE['issue_filter']` is the no-filter object; `_overlay` /
+    `load_config` backfill it when the key is absent and preserve an explicit
+    override.
+  - New pure accessor `issue_filter(config)` normalizes + validates: absent /
+    `null` / `[]` => no-filter; a flat string list is sugar for one AND-group;
+    a `List[List[str]]` is validated as-is. Raises `ValueError` (never a silent
+    write) on a non-string label, an empty-string label, an empty inner group,
+    or a `title_pattern` that is neither `null` nor a compilable regex. Consumed
+    by `work-intake` PULL, threaded by `scheduling`/`tick-orchestrator`
+    (separate cycles).
+- **Schema bump `2.6.0` -> `2.7.0`** (`GOVERNANCE_SCHEMA_VERSION`): additive and
+  backward compatible — an existing `config.json` without the key loads with the
+  no-filter default.
+
 ## schema 2.4.0 — 2026-06-28
 
 - **Removed the dead `self_deploy` knob.** The `self_deploy` ACTION was removed
