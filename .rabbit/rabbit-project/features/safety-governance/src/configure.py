@@ -30,10 +30,28 @@ Knobs:
     verify-integrate GATE uses for the doc-surface load-bearing-token survival
     check; it must be non-absolute (repo-relative), or one of {none, null, ""}
     meaning the check is OFF (stored as JSON null).
-  - ``--describe`` emits the machine-first field catalog as JSON (read-only).
+  - ``--features-root`` is VERIFY's cross-feature complement locator. An
+    arbitrary path string that MAY be absolute (UNLIKE doc-check-features-root);
+    one of {none, null, ""} clears it to JSON null (unconfigured).
+  - ``--work-own-filings`` is the §3.11.5 loopback toggle: a bool
+    (true/false, also 1/0, yes/no, case-insensitive); an unparseable value
+    raises ValueError.
+  - ``--issue-labels`` is the ``issue_filter.labels`` DNF in compact syntax
+    (comma = AND within a group, semicolon = OR between groups); one of
+    {none, null, ""} clears it to ``[]``. Validated + canonicalized through
+    safety_governance's ``issue_filter`` normalizer before the write.
+  - ``--issue-title-pattern`` is the ``issue_filter.title_pattern`` regex; one
+    of {none, null, ""} clears it to null. It must compile as a regex
+    (validated via the same ``issue_filter`` normalizer).
+  - ``--describe`` emits the machine-first field catalog as JSON (read-only);
+    each entry carries a loop-``stage`` and the catalog is ORDERED by loop
+    stage (PULL -> IMPLEMENT -> VERIFY -> GATE -> SCHEDULING -> SAFETY).
+  - ``--preflight`` is a READ-ONLY environment probe emitting JSON
+    ``{gh_authenticated, gh_account, resolved_repo, config_exists}`` for the
+    guided ``--setup`` onboarding; it shells ``gh`` and writes nothing.
   - ``--show`` (or no mutating flag) prints the current config and writes nothing.
 
-Version: 0.3.0
+Version: 0.4.0
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the central-config schema
   (safety_governance.GOVERNANCE_SCHEMA_VERSION) reaches a breaking major
@@ -44,12 +62,18 @@ Deprecation criterion: Superseded when the central-config schema
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 import safety_governance as sg
 
 # config.json lives at the same project-local path safety_governance reads.
 _CONFIG_RELPATH = os.path.join(".auto-maintainer", "config.json")
+
+# The default subprocess runner used by --preflight to shell `gh`. Kept as a
+# module-level attribute (not a hard-coded call) so tests can inject a fake that
+# drives the probe without network.
+_DEFAULT_RUNNER = subprocess.run
 
 # Sentinel: "this field was not mentioned, leave it as-is". Distinct from None,
 # which is an explicit "no limit" the caller CAN request for per_day_tokens.
@@ -109,9 +133,126 @@ def _parse_positive_int(raw, label):
     return value
 
 
+def _parse_bool(raw):
+    """Parse a --work-own-filings CLI value -> a Python bool.
+
+    Accepts true/false, 1/0, yes/no (case-insensitive). An unparseable value
+    raises ValueError (never a silent write)."""
+    s = str(raw).strip().lower()
+    if s in ("true", "1", "yes"):
+        return True
+    if s in ("false", "0", "no"):
+        return False
+    raise ValueError(
+        f"work-own-filings must be a bool (true/false/1/0/yes/no), got {raw!r}")
+
+
+def _parse_features_root(raw):
+    """Parse a --features-root CLI value -> None (unconfigured) or the path.
+
+    The clear sentinels none/null/"" (case-insensitive) map to None. Any other
+    value is kept verbatim (whitespace-trimmed); it MAY be absolute (UNLIKE
+    doc-check-features-root), so no absolute-path check."""
+    s = str(raw).strip()
+    if s.lower() in ("none", "null", ""):
+        return None
+    return s
+
+
+def _parse_issue_labels(raw):
+    """Parse a --issue-labels CLI value -> a DNF List[List[str]] candidate.
+
+    Compact syntax: comma = AND within a group, semicolon = OR between groups
+    (e.g. "bug,triaged;urgent" -> [["bug","triaged"],["urgent"]]). The clear
+    sentinels none/null/"" (case-insensitive) map to [] (no label filter). Each
+    label is whitespace-trimmed; stray-delimiter empties WITHIN a non-empty
+    group are dropped, but a genuinely-empty group (e.g. between ';;') is kept as
+    [] so the issue_filter normalizer rejects it (the writer owns no validation
+    the reader does not)."""
+    s = str(raw).strip()
+    if s.lower() in ("none", "null", ""):
+        return []
+    groups = []
+    for group_str in s.split(";"):
+        labels = [lbl.strip() for lbl in group_str.split(",")]
+        nonempty = [lbl for lbl in labels if lbl]
+        groups.append(nonempty if nonempty else [])
+    return groups
+
+
+def _parse_issue_title_pattern(raw):
+    """Parse a --issue-title-pattern CLI value -> None (no filter) or the regex
+    string. The clear sentinels none/null/"" (case-insensitive) map to None; any
+    other value is kept verbatim (whitespace-trimmed). The regex is COMPILED by
+    the issue_filter normalizer at write time, not here."""
+    s = str(raw).strip()
+    if s.lower() in ("none", "null", ""):
+        return None
+    return s
+
+
+def _preflight(project_dir, runner=None):
+    """READ-ONLY environment probe for the guided --setup onboarding.
+
+    Emits {gh_authenticated, gh_account, resolved_repo, config_exists}. Shells
+    `gh auth status` (authenticated = exit 0; the active account is parsed from
+    the output when present) and resolves the repo the loop would maintain
+    (`gh repo view --json nameWithOwner -q .nameWithOwner`, tolerating failure ->
+    None). The subprocess runner is injectable (default `_DEFAULT_RUNNER`) so
+    tests drive it without network. Writes NOTHING."""
+    if runner is None:
+        runner = _DEFAULT_RUNNER
+
+    gh_authenticated = False
+    gh_account = None
+    try:
+        result = runner(
+            ["gh", "auth", "status"], capture_output=True, text=True)
+        gh_authenticated = result.returncode == 0
+        if gh_authenticated:
+            gh_account = _parse_gh_account(result.stdout)
+    except Exception:
+        gh_authenticated = False
+        gh_account = None
+
+    resolved_repo = None
+    try:
+        result = runner(
+            ["gh", "repo", "view", "--json", "nameWithOwner",
+             "-q", ".nameWithOwner"],
+            capture_output=True, text=True)
+        if result.returncode == 0:
+            out = (result.stdout or "").strip()
+            resolved_repo = out or None
+    except Exception:
+        resolved_repo = None
+
+    return {
+        "gh_authenticated": gh_authenticated,
+        "gh_account": gh_account,
+        "resolved_repo": resolved_repo,
+        "config_exists": os.path.exists(_config_path(project_dir)),
+    }
+
+
+def _parse_gh_account(text):
+    """Parse the active account login from `gh auth status` output, or None.
+
+    The output carries a line like 'Logged in to github.com account <login>
+    (keyring)'; the token after 'account' is the login."""
+    for line in (text or "").splitlines():
+        parts = line.split()
+        for i, token in enumerate(parts):
+            if token == "account" and i + 1 < len(parts):
+                return parts[i + 1]
+    return None
+
+
 def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
               interval_minutes=_UNSET, backoff_threshold=_UNSET,
-              regression_command=_UNSET, doc_check_features_root=_UNSET):
+              regression_command=_UNSET, doc_check_features_root=_UNSET,
+              features_root=_UNSET, work_own_filings=_UNSET,
+              issue_labels=_UNSET, issue_title_pattern=_UNSET):
     """Apply the requested changes to config.json and return the new config.
 
     Loads the current (backfilled, migrated) config, applies only the mentioned
@@ -146,6 +287,28 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
     if doc_check_features_root is not _UNSET:
         cfg["doc_check_features_root"] = doc_check_features_root
 
+    if features_root is not _UNSET:
+        cfg["features_root"] = features_root
+
+    if work_own_filings is not _UNSET:
+        cfg["work_own_filings"] = work_own_filings
+
+    if issue_labels is not _UNSET or issue_title_pattern is not _UNSET:
+        # Preserve unmentioned issue_filter sub-keys: start from the current
+        # (backfilled) issue_filter and override only what was mentioned.
+        existing = cfg.get("issue_filter") or {}
+        candidate_labels = (issue_labels if issue_labels is not _UNSET
+                            else existing.get("labels", []))
+        candidate_pattern = (issue_title_pattern
+                            if issue_title_pattern is not _UNSET
+                            else existing.get("title_pattern"))
+        # Validate + canonicalize THROUGH this feature's reader normalizer (the
+        # writer owns no validation the reader does not); a bad label/group/
+        # pattern raises ValueError -> non-zero exit, no partial write.
+        cfg["issue_filter"] = sg.issue_filter(
+            {"issue_filter": {"labels": candidate_labels,
+                              "title_pattern": candidate_pattern}})
+
     path = _config_path(project_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
@@ -156,11 +319,51 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
 
 def _field_catalog(project_dir):
     """The machine-first field catalog: a list of
-    {key, label, controls, default, current, type, validator} entries — the
-    single source of truth the guided --setup walk-through reads. Read-only."""
+    {key, label, controls, default, current, type, validator, stage} entries —
+    the single source of truth the guided --setup walk-through reads. Each entry
+    carries the loop `stage` that consumes it, and the catalog is ORDERED by loop
+    stage (PULL -> IMPLEMENT -> VERIFY -> GATE -> SCHEDULING -> SAFETY) so the
+    walk-through follows the route. Read-only."""
     current = sg.load_config(project_dir)
     defaults = sg.DEFAULT_GOVERNANCE
     return [
+        # ---- PULL (work-intake): which issues, and the loopback toggle. ----
+        {
+            "key": "issue_filter.labels",
+            "label": "Issue label filter",
+            "controls": "Which open issues PULL pulls, by label (DNF: "
+                        "comma = AND within a group, semicolon = OR between "
+                        "groups); empty = no label filter.",
+            "default": defaults["issue_filter"]["labels"],
+            "current": current["issue_filter"]["labels"],
+            "type": "dnf_labels",
+            "validator": "compact DNF 'a,b;c' (comma=AND, semicolon=OR), "
+                         "or none/null to clear",
+            "stage": "PULL",
+        },
+        {
+            "key": "issue_filter.title_pattern",
+            "label": "Issue title pattern",
+            "controls": "A regex an issue's title must match (post-fetch); "
+                        "null = no title filter.",
+            "default": defaults["issue_filter"]["title_pattern"],
+            "current": current["issue_filter"]["title_pattern"],
+            "type": "str_or_null",
+            "validator": "a compilable regex string, or none/null to clear",
+            "stage": "PULL",
+        },
+        {
+            "key": "work_own_filings",
+            "label": "Work own filings",
+            "controls": "Whether the loop works its OWN filings (the loopback "
+                        "provision).",
+            "default": defaults["work_own_filings"],
+            "current": current["work_own_filings"],
+            "type": "bool",
+            "validator": "a bool: true/false (also 1/0, yes/no)",
+            "stage": "PULL",
+        },
+        # ---- IMPLEMENT: the trust mode. ----
         {
             "key": "mode",
             "label": "Trust mode",
@@ -169,35 +372,22 @@ def _field_catalog(project_dir):
             "current": current["mode"],
             "type": "enum",
             "validator": "one of dry-run | propose | auto-merge",
+            "stage": "IMPLEMENT",
         },
+        # ---- VERIFY: the complement locator. ----
         {
-            "key": "budget.per_day_tokens",
-            "label": "Per-day token budget",
-            "controls": "The per-day token ceiling; null = no limit.",
-            "default": defaults["budget"]["per_day_tokens"],
-            "current": current["budget"]["per_day_tokens"],
-            "type": "int_or_null",
-            "validator": "a non-negative int, or none/null/unlimited",
+            "key": "features_root",
+            "label": "VERIFY features root",
+            "controls": "VERIFY's cross-feature complement locator (the "
+                        "maintained project's features directory); "
+                        "null = unconfigured.",
+            "default": defaults["features_root"],
+            "current": current["features_root"],
+            "type": "str_or_null",
+            "validator": "a path (MAY be absolute), or none/null to clear",
+            "stage": "VERIFY",
         },
-        {
-            "key": "heartbeat.interval_minutes",
-            "label": "Heartbeat interval (minutes)",
-            "controls": "The tick cadence the /start heartbeat schedules.",
-            "default": defaults["heartbeat"]["interval_minutes"],
-            "current": current["heartbeat"]["interval_minutes"],
-            "type": "int",
-            "validator": "a positive int",
-        },
-        {
-            "key": "backoff.threshold",
-            "label": "Backoff threshold",
-            "controls": "Consecutive-blocked count K at which the loop "
-                        "escalates + defers a work order.",
-            "default": defaults["backoff"]["threshold"],
-            "current": current["backoff"]["threshold"],
-            "type": "int",
-            "validator": "a positive int",
-        },
+        # ---- GATE: regression + doc-check. ----
         {
             "key": "regression_command",
             "label": "GATE regression command",
@@ -207,6 +397,7 @@ def _field_catalog(project_dir):
             "current": current["regression_command"],
             "type": "str_or_null",
             "validator": "a shell command string, or none/null to clear",
+            "stage": "GATE",
         },
         {
             "key": "doc_check_features_root",
@@ -219,6 +410,40 @@ def _field_catalog(project_dir):
             "type": "str_or_null",
             "validator": "a repo-relative (non-absolute) path, "
                          "or none/null to clear",
+            "stage": "GATE",
+        },
+        # ---- SCHEDULING: the tick cadence. ----
+        {
+            "key": "heartbeat.interval_minutes",
+            "label": "Heartbeat interval (minutes)",
+            "controls": "The tick cadence the /start heartbeat schedules.",
+            "default": defaults["heartbeat"]["interval_minutes"],
+            "current": current["heartbeat"]["interval_minutes"],
+            "type": "int",
+            "validator": "a positive int",
+            "stage": "SCHEDULING",
+        },
+        # ---- SAFETY: budget + backoff. ----
+        {
+            "key": "budget.per_day_tokens",
+            "label": "Per-day token budget",
+            "controls": "The per-day token ceiling; null = no limit.",
+            "default": defaults["budget"]["per_day_tokens"],
+            "current": current["budget"]["per_day_tokens"],
+            "type": "int_or_null",
+            "validator": "a non-negative int, or none/null/unlimited",
+            "stage": "SAFETY",
+        },
+        {
+            "key": "backoff.threshold",
+            "label": "Backoff threshold",
+            "controls": "Consecutive-blocked count K at which the loop "
+                        "escalates + defers a work order.",
+            "default": defaults["backoff"]["threshold"],
+            "current": current["backoff"]["threshold"],
+            "type": "int",
+            "validator": "a positive int",
+            "stage": "SAFETY",
         },
     ]
 
@@ -271,9 +496,39 @@ def main(argv=None):
              "(check off)",
     )
     parser.add_argument(
+        "--features-root",
+        default=None,
+        help="VERIFY's complement locator path (MAY be absolute), or "
+             "none/null to clear (unconfigured)",
+    )
+    parser.add_argument(
+        "--work-own-filings",
+        default=None,
+        help="whether the loop works its OWN filings: a bool "
+             "(true/false, also 1/0, yes/no)",
+    )
+    parser.add_argument(
+        "--issue-labels",
+        default=None,
+        help="issue_filter.labels DNF: compact 'a,b;c' (comma=AND within a "
+             "group, semicolon=OR between groups), or none/null to clear",
+    )
+    parser.add_argument(
+        "--issue-title-pattern",
+        default=None,
+        help="issue_filter.title_pattern: a compilable regex an issue title "
+             "must match, or none/null to clear",
+    )
+    parser.add_argument(
         "--describe",
         action="store_true",
         help="emit the machine-first field catalog as JSON (read-only)",
+    )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="emit the read-only environment probe as JSON "
+             "(gh auth + resolved repo + config_exists); writes nothing",
     )
     parser.add_argument(
         "--show",
@@ -287,6 +542,10 @@ def main(argv=None):
         print(json.dumps(_field_catalog(project_dir), indent=2))
         return 0
 
+    if args.preflight:
+        print(json.dumps(_preflight(project_dir), indent=2))
+        return 0
+
     mutating = (
         args.mode is not None
         or args.per_day_tokens is not None
@@ -294,6 +553,10 @@ def main(argv=None):
         or args.backoff_threshold is not None
         or args.regression_command is not None
         or args.doc_check_features_root is not None
+        or args.features_root is not None
+        or args.work_own_filings is not None
+        or args.issue_labels is not None
+        or args.issue_title_pattern is not None
     )
 
     # --show, or no mutating flags at all: print the current config and stop.
@@ -313,6 +576,14 @@ def main(argv=None):
         doc_check_root = (
             _parse_doc_check_features_root(args.doc_check_features_root)
             if args.doc_check_features_root is not None else _UNSET)
+        feats_root = (_parse_features_root(args.features_root)
+                      if args.features_root is not None else _UNSET)
+        work_own = (_parse_bool(args.work_own_filings)
+                    if args.work_own_filings is not None else _UNSET)
+        labels = (_parse_issue_labels(args.issue_labels)
+                  if args.issue_labels is not None else _UNSET)
+        title_pattern = (_parse_issue_title_pattern(args.issue_title_pattern)
+                         if args.issue_title_pattern is not None else _UNSET)
         cfg = configure(
             project_dir,
             mode=args.mode,
@@ -321,6 +592,10 @@ def main(argv=None):
             backoff_threshold=threshold,
             regression_command=regression,
             doc_check_features_root=doc_check_root,
+            features_root=feats_root,
+            work_own_filings=work_own,
+            issue_labels=labels,
+            issue_title_pattern=title_pattern,
         )
     except ValueError as exc:
         print(f"configure: error: {exc}", file=sys.stderr)
