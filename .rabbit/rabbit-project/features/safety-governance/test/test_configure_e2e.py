@@ -75,7 +75,7 @@ def test_cli_sets_mode_and_writes_file():
         assert rc == 0
         cfg = _read_cfg(project_dir)
         assert cfg["mode"] == "dry-run"
-        assert cfg["schema_version"] == "2.6.0"
+        assert cfg["schema_version"] == "2.7.0"
 
 
 # ==========================================================================
