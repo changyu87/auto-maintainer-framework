@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.30.0
+version: 0.31.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -210,7 +210,29 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    - `src/status.py` — reads the disposition marker + the persisted `work_items`
      count (via `run_tick`'s `resolve_runtime_paths`), the **route source**
      (`default` vs the project-local `route.json` override path, #59), and the
-     real loop status.
+     real loop status. It exposes a **machine-first `status_data()`** returning a
+     dict of every surfaced field — `plugin_version`, `disposition`, `awaiting`,
+     `mode`, budget (`budget_spent`/`budget_ceiling`/`budget_window`/
+     `budget_paused`), the four read-product counts, `reported`
+     (`filed`/`skipped`), `route` (`{source, states, chain}`), and `runtime_dir`
+     — and a derived **human view `render_status(data)`** (philosophy §1: the
+     pretty view is produced from the machine artifact, never authored
+     alongside it). The CLI prints the human view by default, `--json` prints
+     `status_data()`, and `--line` prints the legacy one-line `status_line()`
+     (retained, byte-identical, for back-compat + machine parsing). New fields:
+     - **`plugin_version`** — the shipped plugin version, read from
+       `<lib_dir>/../.claude-plugin/plugin.json` (the installed-plugin
+       deployment context; `null` when that file is absent, e.g. the source
+       tree). Emphasized in the human view's header.
+     - **`route`** — the ACTIVE route resolved the SAME way `run_tick` hands it
+       to `build_loop` (shipped `default-config/route.json` fresh, else the
+       embedded `DEFAULT_ROUTE`, then the project-local `route.json` override),
+       via a shared `run_tick` helper so status NEVER diverges from what the
+       loop runs. `states` is the resolved state list; `chain` is the ordered
+       happy-path walk (follow the `OK` edge, else `EMPTY`, from `GUARD` to a
+       terminal) the human view renders as `A → B → C …`. The route is listed
+       EVEN WHEN it is the default (no override) — a reader always sees what the
+       loop will run.
    - `src/stop.py` — writes disposition `STOPPED` (via the lifecycle-dispositions
      API) using the same runtime-path resolution. Owns the state write.
    These own ALL state operations so the skills never hand-roll Python.
@@ -239,8 +261,10 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    - `/auto-maintainer:stop` — invokes `stop.py` (latch STOPPED **and clear the
      durable loop-intent**, so the next session's `SessionStart` hook does not
      auto-resume) then cancels the heartbeat (CronDelete).
-   - `/auto-maintainer:status` — invokes `status.py` and reports the real
-     disposition + last-pull `work_items` count.
+   - `/auto-maintainer:status` — invokes `status.py` (default human view) and
+     relays its rendered output: the emphasized plugin version, the disposition/
+     awaiting/mode/budget/reported/read-product fields, and the active route
+     listing (states + happy-path chain, shown even when default).
    Only the heartbeat scheduling (CronCreate/CronDelete) is agent-mediated (no
    plugin-level cron API); every state operation is a script.
 5. **Scheduler detection (§3.3.1)** — slice 1 uses the in-session durable
@@ -281,8 +305,10 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 `/auto-maintainer:start` → tick #1 pulls the repo's open issues into `work_items`
 (trace shows the count), PERSISTs them, and EXITs **IDLE**. Every
 `heartbeat.interval_minutes` (default 3) the heartbeat re-pulls the current open
-issues. `/auto-maintainer:status` shows the disposition + last-pull count.
-`/stop` latches STOPPED + cancels the heartbeat.
+issues. `/auto-maintainer:status` shows a formatted report: the emphasized
+plugin version, disposition/awaiting/mode/budget/reported/read-product counts,
+and the active route listing (states + happy-path chain, shown even when it is
+the default). `/stop` latches STOPPED + cancels the heartbeat.
 
 ## Current behaviour
 
