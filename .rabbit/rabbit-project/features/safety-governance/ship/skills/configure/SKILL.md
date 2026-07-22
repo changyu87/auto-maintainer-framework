@@ -1,7 +1,7 @@
 ---
 name: configure
-description: Set the auto-maintainer's trust mode, token budget, heartbeat cadence, backoff threshold, and GATE regression command in the project-local central config. Use this whenever the user runs /auto-maintainer:configure, or asks to set/change the maintainer's mode (dry-run, propose, auto-merge), arm or disarm the implementer doer, set or clear a daily token budget, change the heartbeat/tick interval, change the backoff threshold, set or clear the GATE regression command, or view the current settings. Also use this for the guided --setup walk-through whenever the user runs /auto-maintainer:configure --setup or asks to be "walked through" / "set up" / "configured step by step" — it walks every config knob field-by-field and writes the choices. It relays the requested values to the deterministic configure script, which validates them and writes .auto-maintainer/config.json.
-version: 0.8.0
+description: Set the auto-maintainer's trust mode, token budget, heartbeat cadence, backoff threshold, GATE regression command, and GATE doc-check features root in the project-local central config. Use this whenever the user runs /auto-maintainer:configure, or asks to set/change the maintainer's mode (dry-run, propose, auto-merge), arm or disarm the implementer doer, set or clear a daily token budget, change the heartbeat/tick interval, change the backoff threshold, set or clear the GATE regression command, set or clear the GATE doc-check features root (the doc-surface load-bearing-token survival check), or view the current settings. Also use this for the guided --setup walk-through whenever the user runs /auto-maintainer:configure --setup or asks to be "walked through" / "set up" / "configured step by step" — it walks every config knob field-by-field and writes the choices. It relays the requested values to the deterministic configure script, which validates them and writes .auto-maintainer/config.json.
+version: 0.9.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when the central-config schema reaches a breaking major version, or when governance configuration moves out of a project-local JSON file consulted at tick entry.
 ---
@@ -9,12 +9,14 @@ deprecation_criterion: Superseded when the central-config schema reaches a break
 # auto-maintainer configure
 
 Set the maintainer's **trust mode**, **token budget**, **heartbeat cadence**,
-**backoff threshold**, and **GATE regression command**, which live in the
-project-local central config
+**backoff threshold**, **GATE regression command**, and **GATE doc-check
+features root**, which live in the project-local central config
 `${CLAUDE_PROJECT_DIR}/.auto-maintainer/config.json`. This config is what the
 tick loop consults to decide whether an acting state (e.g. the IMPLEMENT doer)
 may act, how much it may spend, how often the loop ticks, when to defer a
-stuck work order, and what regression command the GATE state runs before merge.
+stuck work order, what regression command the GATE state runs before merge, and
+where the GATE looks for feature doc surfaces when checking load-bearing-token
+survival.
 
 All validation and the file write are owned by the deterministic script
 `${CLAUDE_PLUGIN_ROOT}/lib/configure.py` — this skill only relays the values the
@@ -52,6 +54,17 @@ user asked for. It never edits the JSON by hand.
   it back to `null`, which makes GATE a no-op PASS (no gate). With no config.json
   it defaults to no gate.
 
+## GATE doc-check features root
+
+- `--doc-check-features-root` is the **repo-relative** features root the GATE
+  state (verify-integrate) uses for its doc-surface load-bearing-token survival
+  check — it maps a PR's diff paths to features and locates their doc surfaces.
+  A repo-relative path (e.g. `features` or `<subtree>/features`) turns the check
+  ON; an **absolute** path is rejected (exits non-zero). `none` (also
+  `null`/empty) clears it back to `null`, which turns the check OFF. With no
+  config.json it defaults to off. This is kept distinct from the loop's on-disk
+  feature locator so the doc check can be enabled independently.
+
 ## How to run
 
 Invoke the script, passing ONLY the flags for what the user asked to change. The
@@ -88,6 +101,13 @@ negative ceiling exits non-zero with an error) and prints the resulting config.
 
   ```
   python3 ${CLAUDE_PLUGIN_ROOT}/lib/configure.py --regression-command "<shell command>|none"
+  ```
+
+- Set the GATE doc-check features root (repo-relative path, or clear it with
+  `none`):
+
+  ```
+  python3 ${CLAUDE_PLUGIN_ROOT}/lib/configure.py --doc-check-features-root "<repo-relative path>|none"
   ```
 
 - Combine in one call when the user asked for several at once, e.g. mode +
@@ -142,7 +162,8 @@ paraphrase).
    catalog `key` to its flag (`mode` → `--mode`, `budget.per_day_tokens` →
    `--per-day-tokens`, `heartbeat.interval_minutes` → `--interval-minutes`,
    `backoff.threshold` → `--backoff-threshold`, `regression_command` →
-   `--regression-command`). The deterministic writer
+   `--regression-command`, `doc_check_features_root` →
+   `--doc-check-features-root`). The deterministic writer
    validates and writes `config.json`. Then `--show` the result and read it back
    to the user:
 
