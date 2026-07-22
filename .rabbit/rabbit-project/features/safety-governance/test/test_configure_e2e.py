@@ -223,6 +223,54 @@ def test_cli_regression_command_empty_clears():
 
 
 # ==========================================================================
+# E2E Behaviour: --doc-check-features-root sets the top-level
+# doc_check_features_root to a repo-relative path (turning the GATE doc-survival
+# check ON), and a clear sentinel (none/null/"") resets it to JSON null (check
+# off), mirroring --regression-command.
+# ==========================================================================
+
+def test_cli_doc_check_features_root_set_then_clear():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--doc-check-features-root", "features"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["doc_check_features_root"]
+                == "features")
+
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--doc-check-features-root", "none"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["doc_check_features_root"] is None
+
+
+def test_cli_doc_check_features_root_nested_repo_relative():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--doc-check-features-root", ".rabbit/rabbit-project/features"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["doc_check_features_root"]
+                == ".rabbit/rabbit-project/features")
+
+
+# ==========================================================================
+# E2E Behaviour: an ABSOLUTE doc-check-features-root is rejected (non-zero exit,
+# no write) — the GATE doc root must stay repo-relative, kept distinct from
+# features_root (which may be absolute).
+# ==========================================================================
+
+def test_cli_doc_check_features_root_absolute_rejected():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--doc-check-features-root", "/abs/features"])
+        assert rc != 0
+        assert not os.path.exists(_cfg_path(project_dir))
+
+
+# ==========================================================================
 # E2E Behaviour: load-modify-save preserves unmentioned keys. Set mode first,
 # then a budget-only write later; the earlier mode must survive.
 # ==========================================================================
@@ -320,6 +368,7 @@ def test_cli_describe_emits_field_catalog():
         assert "heartbeat.interval_minutes" in keys
         assert "backoff.threshold" in keys
         assert "regression_command" in keys
+        assert "doc_check_features_root" in keys
         for entry in catalog:
             for field in ("key", "label", "controls", "default",
                           "current", "type", "validator"):
@@ -352,6 +401,7 @@ def test_describe_catalog_is_complete_one_entry_per_knob():
             "heartbeat.interval_minutes",
             "backoff.threshold",
             "regression_command",
+            "doc_check_features_root",
         }
         assert set(keys) == expected_keys, (
             f"catalog knobs {set(keys)} != expected {expected_keys}")
@@ -408,8 +458,8 @@ def _skill_body():
 
 def test_skill_version_bumped():
     fm = _skill_frontmatter()
-    assert fm["version"] == "0.8.0", (
-        f"configure skill must be bumped to 0.8.0, got {fm['version']}")
+    assert fm["version"] == "0.9.0", (
+        f"configure skill must be bumped to 0.9.0, got {fm['version']}")
 
 
 def test_skill_description_advertises_setup_walkthrough():
@@ -481,3 +531,19 @@ def test_skill_body_documents_regression_command():
         "skill body must document the --regression-command flag")
     assert "regression_command" in body, (
         "skill body must map the regression_command catalog key to its flag")
+
+
+# ==========================================================================
+# E2E Behaviour: the SKILL.md documents the --doc-check-features-root flag and
+# its catalog-key -> flag mapping (doc_check_features_root ->
+# --doc-check-features-root), so the guided walk-through can drive the GATE
+# doc-survival knob.
+# ==========================================================================
+
+def test_skill_body_documents_doc_check_features_root():
+    body = _skill_body()
+    assert "--doc-check-features-root" in body, (
+        "skill body must document the --doc-check-features-root flag")
+    assert "doc_check_features_root" in body, (
+        "skill body must map the doc_check_features_root catalog key to its "
+        "flag")

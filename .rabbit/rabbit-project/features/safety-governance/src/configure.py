@@ -26,6 +26,10 @@ Knobs:
   - ``--regression-command`` is the GATE full-regression shell command (an
     arbitrary string), or one of {none, null, ""} meaning NO gate (stored as
     JSON null), mirroring the ``--per-day-tokens`` clear sentinel.
+  - ``--doc-check-features-root`` is the REPO-RELATIVE features root the
+    verify-integrate GATE uses for the doc-surface load-bearing-token survival
+    check; it must be non-absolute (repo-relative), or one of {none, null, ""}
+    meaning the check is OFF (stored as JSON null).
   - ``--describe`` emits the machine-first field catalog as JSON (read-only).
   - ``--show`` (or no mutating flag) prints the current config and writes nothing.
 
@@ -81,6 +85,22 @@ def _parse_regression_command(raw):
     return str(raw).strip()
 
 
+def _parse_doc_check_features_root(raw):
+    """Parse a --doc-check-features-root CLI value -> None (check OFF) or a
+    repo-relative features-root string. The clear sentinels none/null/""
+    (case-insensitive) map to None, mirroring the per-day-ceiling clear. Any
+    other value is kept verbatim (whitespace-trimmed) but MUST be repo-relative:
+    an absolute path raises ValueError (it is kept DISTINCT from `features_root`,
+    which may be absolute, so the doc gate stays repo-relative)."""
+    s = str(raw).strip()
+    if s.lower() in ("none", "null", ""):
+        return None
+    if os.path.isabs(s):
+        raise ValueError(
+            "doc-check-features-root must be repo-relative, not absolute")
+    return s
+
+
 def _parse_positive_int(raw, label):
     """Parse a CLI value -> a positive int. Raises ValueError otherwise."""
     value = int(str(raw).strip())  # ValueError on non-int
@@ -91,7 +111,7 @@ def _parse_positive_int(raw, label):
 
 def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
               interval_minutes=_UNSET, backoff_threshold=_UNSET,
-              regression_command=_UNSET):
+              regression_command=_UNSET, doc_check_features_root=_UNSET):
     """Apply the requested changes to config.json and return the new config.
 
     Loads the current (backfilled, migrated) config, applies only the mentioned
@@ -122,6 +142,9 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
 
     if regression_command is not _UNSET:
         cfg["regression_command"] = regression_command
+
+    if doc_check_features_root is not _UNSET:
+        cfg["doc_check_features_root"] = doc_check_features_root
 
     path = _config_path(project_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -185,6 +208,18 @@ def _field_catalog(project_dir):
             "type": "str_or_null",
             "validator": "a shell command string, or none/null to clear",
         },
+        {
+            "key": "doc_check_features_root",
+            "label": "GATE doc-check features root",
+            "controls": "The repo-relative features root the GATE uses for the "
+                        "doc-surface load-bearing-token survival check; "
+                        "null = check off.",
+            "default": defaults["doc_check_features_root"],
+            "current": current["doc_check_features_root"],
+            "type": "str_or_null",
+            "validator": "a repo-relative (non-absolute) path, "
+                         "or none/null to clear",
+        },
     ]
 
 
@@ -229,6 +264,13 @@ def main(argv=None):
              "(no gate)",
     )
     parser.add_argument(
+        "--doc-check-features-root",
+        default=None,
+        help="repo-relative features root for the GATE doc-surface "
+             "load-bearing-token survival check, or none/null to clear "
+             "(check off)",
+    )
+    parser.add_argument(
         "--describe",
         action="store_true",
         help="emit the machine-first field catalog as JSON (read-only)",
@@ -251,6 +293,7 @@ def main(argv=None):
         or args.interval_minutes is not None
         or args.backoff_threshold is not None
         or args.regression_command is not None
+        or args.doc_check_features_root is not None
     )
 
     # --show, or no mutating flags at all: print the current config and stop.
@@ -267,6 +310,9 @@ def main(argv=None):
                      if args.backoff_threshold is not None else _UNSET)
         regression = (_parse_regression_command(args.regression_command)
                       if args.regression_command is not None else _UNSET)
+        doc_check_root = (
+            _parse_doc_check_features_root(args.doc_check_features_root)
+            if args.doc_check_features_root is not None else _UNSET)
         cfg = configure(
             project_dir,
             mode=args.mode,
@@ -274,6 +320,7 @@ def main(argv=None):
             interval_minutes=interval,
             backoff_threshold=threshold,
             regression_command=regression,
+            doc_check_features_root=doc_check_root,
         )
     except ValueError as exc:
         print(f"configure: error: {exc}", file=sys.stderr)
