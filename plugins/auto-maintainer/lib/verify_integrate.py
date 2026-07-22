@@ -91,7 +91,8 @@ Public surface (GATE — the cumulative regression gate, DESIGN §2.2 [v2]):
 
 Public surface (slice 2 — INTEGRATE + CLEANUP):
   - INTEGRATION_RESULT_SCHEMA_VERSION + IntegrationResult — the typed,
-    versioned {merged, skipped, errors, gate_failed} integration-result schema.
+    versioned {merged, skipped, errors, gate_failed, closed_orphaned}
+    integration-result schema.
   - gh_issue_comment_sink(issue_ref, body, repo) — the production gate-fail
     comment sink; gate_fail_comment_body(...) builds the marker+JSON body.
   - INTEGRATION_RESULT_SLOT — the fsm-contracts slot registration descriptor.
@@ -99,11 +100,16 @@ Public surface (slice 2 — INTEGRATE + CLEANUP):
     verdicts — thin merge, no review coupling) + signal set.
   - gh_pr_merge_sink(pr_ref, repo) — the production merge sink: shells
     `gh pr merge <pr> --merge --delete-branch` (the determinism seam).
-  - Integrate — the INTEGRATE state; merges only at auto-merge, guardrail-gated.
+  - gh_pr_close_sink(pr_ref, repo) — the production orphan close sink: shells
+    `gh pr close <pr> --delete-branch --comment <body>` (the determinism seam).
+  - gh_closing_issue_state(pr_ref, repo) — the production orphan resolver: the
+    closing issue's state ('OPEN'/'CLOSED'/None) VERIFY reads (a READ only).
+  - Integrate — the INTEGRATE state; merges only at auto-merge, guardrail-gated;
+    CLOSES orphaned loop PRs first (trust-gated on permits('merge', mode)).
   - CLEANUP_MANIFEST / CLEANUP_SIGNALS — CLEANUP's manifest + signal set.
   - Cleanup — the CLEANUP state (v1-thin pass-through; run -> OK).
 
-Version: 0.7.0
+Version: 0.8.0
 Owner: changyu87
 Deprecation criterion: Superseded when the loop adopts a non-git VCS backend,
   or a model-backed verify/integrate policy replaces the deterministic gh-based
@@ -140,7 +146,7 @@ import safety_governance as sg
 
 # The versioned Verdict schema (machine-first; bumped on a breaking change to
 # the field set). Slot-schema version, distinct from the feature version.
-VERDICT_SCHEMA_VERSION = "1.0.0"
+VERDICT_SCHEMA_VERSION = "1.1.0"
 
 
 @dataclass(eq=True)
@@ -151,8 +157,13 @@ class Verdict:
     base == default branch. CI is NO LONGER a blocking condition (the correctness
     gate lives in IMPLEMENT); `ci_state` (one of passing|pending|failing|unknown)
     is still RECORDED as informational defense-in-depth but does not flip `ok`.
-    `reasons` explains a non-ok verdict (empty when ok). `to_dict`/`from_dict`
-    give a machine-first, versioned representation for the `verdicts` slot.
+    `reasons` explains a non-ok verdict (empty when ok). `orphaned` is True when
+    the loop PR's closing issue is CLOSED — the driver work is resolved/abandoned,
+    so the PR will never merge and INTEGRATE must CLOSE it; an orphaned verdict is
+    forced `ok=False`. It defaults False (a PR with no closing issue, or an
+    unresolvable one, is conservatively NOT treated as orphaned). `to_dict`/
+    `from_dict` give a machine-first, versioned representation for the `verdicts`
+    slot.
     """
 
     pr_ref: str
@@ -162,6 +173,7 @@ class Verdict:
     mergeable: bool
     base: str
     reasons: List[str] = field(default_factory=list)
+    orphaned: bool = False
 
     def to_dict(self):
         return {
@@ -173,6 +185,7 @@ class Verdict:
             "mergeable": self.mergeable,
             "base": self.base,
             "reasons": list(self.reasons),
+            "orphaned": self.orphaned,
         }
 
     @classmethod
@@ -185,6 +198,7 @@ class Verdict:
             mergeable=d["mergeable"],
             base=d["base"],
             reasons=list(d.get("reasons", [])),
+            orphaned=d.get("orphaned", False),
         )
 
 
@@ -704,6 +718,33 @@ _UNVERIFIABLE_REASON = (
     "complement run skipped: features_root not configured — "
     "cross-cutting risk unverifiable")
 
+# The reason stamped on a verdict whose driver (closing) issue is CLOSED — an
+# orphaned loop PR that will never merge and must be CLOSED by INTEGRATE. VERIFY
+# only READS the issue state (never closes); the close is INTEGRATE's act.
+_ORPHANED_REASON = (
+    "driver issue is closed — orphaned loop PR (will be closed by INTEGRATE)")
+
+
+def gh_closing_issue_state(pr_ref, repo=None, runner=subprocess.run):
+    """Production orphan resolver: resolve the loop PR's closing issue and return
+    its state string ('OPEN'/'CLOSED'), or None when the PR closes no issue.
+
+    Resolves the closing-issue ref via `gh_closing_issue_ref` (the same
+    injectable `runner`; defined below — invoked at call time), parses its number,
+    then shells `gh issue view <n> --json state -q .state` (adding `--repo` when
+    given). VERIFY uses this to mark an orphaned verdict when the issue is CLOSED —
+    a READ only; VERIFY never mutates GitHub. Injectable `runner` for
+    deterministic tests (no network), mirroring the sibling gh resolvers/sinks."""
+    ref = gh_closing_issue_ref(pr_ref, repo=repo, runner=runner)
+    if ref is None:
+        return None
+    number = ref.split("#")[-1]
+    cmd = ["gh", "issue", "view", number, "--json", "state", "-q", ".state"]
+    if repo:
+        cmd += ["--repo", repo]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    return (out.stdout or "").strip()
+
 
 class Verify:
     """The VERIFY state (thinned by DESIGN §3.7.1/§3.7.2 + §3.7.6).
@@ -731,13 +772,15 @@ class Verify:
                  default_branch=None,
                  default_branch_source=gh_default_branch_source,
                  complement_runner=default_complement_runner,
-                 features_root=None):
+                 features_root=None,
+                 orphan_resolver=gh_closing_issue_state):
         self._source = source
         self._repo = repo
         self._default_branch = default_branch
         self._default_branch_source = default_branch_source
         self._complement_runner = complement_runner
         self._features_root = features_root
+        self._orphan_resolver = orphan_resolver
 
     def _resolve_default_branch(self):
         if self._default_branch is not None:
@@ -773,10 +816,28 @@ class Verify:
         gate_reason = _cross_break_reason(failing, reason) if failing else None
         return CrossCheck(ran=True, reason=reason, results=results), gate_reason
 
+    def _resolve_orphan_state(self, pr_ref):
+        """Resolve a PR's closing-issue state via the injected resolver, returning
+        None on ANY fault (CONSERVATIVE: never orphaned on uncertainty). READ
+        only — VERIFY never mutates GitHub."""
+        try:
+            return self._orphan_resolver(pr_ref, repo=self._repo)
+        except Exception:  # noqa: BLE001 — a resolver fault must not orphan a PR
+            return None
+
     def run(self, ctx):
         prs = self._source(repo=self._repo, label=LOOP_PR_LABEL)
         default_branch = self._resolve_default_branch()
         verdicts = [derive_verdict(pr, default_branch).to_dict() for pr in prs]
+
+        # Orphaned-PR detection (convergence, §3.7): a loop PR whose closing issue
+        # is CLOSED is forced ok=False + orphaned=True so GATE skips it and
+        # INTEGRATE closes it. This is a READ — VERIFY never closes.
+        for vd in verdicts:
+            if self._resolve_orphan_state(vd["pr_ref"]) == "CLOSED":
+                vd["orphaned"] = True
+                vd["ok"] = False
+                vd["reasons"] = list(vd.get("reasons") or []) + [_ORPHANED_REASON]
 
         cross_check, gate_reason = self._run_complement(ctx)
         if gate_reason:
@@ -1338,22 +1399,26 @@ def make_gate(runtime):
 
 # The versioned IntegrationResult schema (machine-first; bumped on a breaking
 # change to the field set). Distinct from the feature version.
-INTEGRATION_RESULT_SCHEMA_VERSION = "1.0.0"
+INTEGRATION_RESULT_SCHEMA_VERSION = "1.1.0"
 
 
 @dataclass(eq=True)
 class IntegrationResult:
     """The outcome of an INTEGRATE run (DESIGN §3.7).
 
-    Partitions each considered PR into exactly one of four lists:
+    Partitions each considered PR into exactly one of these lists:
       - `merged`  — [{pr_ref, url}] the PRs the merge sink merged.
       - `skipped` — [{pr_ref, reason}] non-ok verdicts, not-permitted modes
-        (the dry-run/propose NO-OP), guardrail violations, and ok verdicts with
-        no matching GateResult (defensive: never merge an un-gated PR).
-      - `errors`  — [{pr_ref, reason}] PRs whose merge sink raised.
+        (the dry-run/propose NO-OP), guardrail violations, ok verdicts with
+        no matching GateResult (defensive: never merge an un-gated PR), and the
+        would-close intent for an orphaned PR at a mode that does not permit merge.
+      - `errors`  — [{pr_ref, reason}] PRs whose merge sink or close sink raised.
       - `gate_failed` — [{pr_ref, issue_ref, reason}] PRs INTEGRATE did NOT merge
         because their GATE result failed; a machine-readable marker comment was
         posted on their linked issue instead (the Phase-2 retry/threshold model).
+      - `closed_orphaned` — [{pr_ref, issue_ref}] loop PRs INTEGRATE CLOSED because
+        their driver issue is closed (orphaned verdicts) — the convergence
+        guarantee that a superseded loop PR does not linger open forever.
 
     Idempotent at the loop level: a merged PR leaves the open set, so a re-run
     never double-merges. `to_dict`/`from_dict` give the machine-first, versioned
@@ -1364,6 +1429,7 @@ class IntegrationResult:
     skipped: List[dict] = field(default_factory=list)
     errors: List[dict] = field(default_factory=list)
     gate_failed: List[dict] = field(default_factory=list)
+    closed_orphaned: List[dict] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -1372,6 +1438,7 @@ class IntegrationResult:
             "skipped": [dict(e) for e in self.skipped],
             "errors": [dict(e) for e in self.errors],
             "gate_failed": [dict(e) for e in self.gate_failed],
+            "closed_orphaned": [dict(e) for e in self.closed_orphaned],
         }
 
     @classmethod
@@ -1381,6 +1448,7 @@ class IntegrationResult:
             skipped=[dict(e) for e in d.get("skipped", [])],
             errors=[dict(e) for e in d.get("errors", [])],
             gate_failed=[dict(e) for e in d.get("gate_failed", [])],
+            closed_orphaned=[dict(e) for e in d.get("closed_orphaned", [])],
         )
 
 
@@ -1466,6 +1534,28 @@ def gh_pr_merge_sink(pr_ref, repo=None, runner=subprocess.run):
     return {"pr_ref": pr_ref, "url": _pr_url(pr_ref, repo)}
 
 
+# The machine+human explanation the orphan-close comment carries.
+_ORPHAN_CLOSE_COMMENT = (
+    "Closed by auto-maintainer: the driver issue for this PR is closed, so this "
+    "loop PR is superseded/abandoned and will not be merged.")
+
+
+def gh_pr_close_sink(pr_ref, repo=None, runner=subprocess.run):
+    """Production close sink: shell `gh pr close <number> --delete-branch
+    --comment <body>` (and `--repo` when given) to CLOSE an orphaned loop PR (its
+    driver issue is closed) and delete its head branch in one deterministic CLI
+    call. `gh` carries its own auth; check=True so a failed close is loud and
+    locatable at the close boundary. Injectable `runner` for deterministic tests
+    (no network), mirroring gh_pr_merge_sink / gh_issue_comment_sink. Returns
+    None."""
+    number = pr_ref.split("#")[-1]
+    cmd = ["gh", "pr", "close", number, "--delete-branch",
+           "--comment", _ORPHAN_CLOSE_COMMENT]
+    if repo:
+        cmd += ["--repo", repo]
+    runner(cmd, capture_output=True, text=True, check=True)
+
+
 class Integrate:
     """The INTEGRATE state (DESIGN §3.7.3, §3.8.1, §3.8.2) — a THIN merge.
 
@@ -1492,7 +1582,8 @@ class Integrate:
     def __init__(self, mode, merge_sink=gh_pr_merge_sink, repo=None,
                  default_branch=None, permits_fn=sg.permits,
                  guardrails_fn=sg.merge_guardrails,
-                 comment_sink=gh_issue_comment_sink):
+                 comment_sink=gh_issue_comment_sink,
+                 close_sink=gh_pr_close_sink):
         self._mode = mode
         self._merge_sink = merge_sink
         self._repo = repo
@@ -1500,6 +1591,7 @@ class Integrate:
         self._permits_fn = permits_fn
         self._guardrails_fn = guardrails_fn
         self._comment_sink = comment_sink
+        self._close_sink = close_sink
 
     def run(self, ctx):
         verdicts = ctx.read("verdicts")
@@ -1515,6 +1607,29 @@ class Integrate:
 
         for vd in verdicts:
             pr_ref = vd["pr_ref"]
+            # Orphaned loop PRs are CLOSED, not merged (convergence, §3.7). This
+            # is the FIRST disposition — checked before the not-ok/gated/merge
+            # logic. Trust-gated on permits('merge', mode) exactly like merge:
+            # only at auto-merge does INTEGRATE actually close; at propose/dry-run
+            # the would-close intent is recorded under skipped (a human closes).
+            # A close-sink fault is recorded under errors (never wedges the tick).
+            if vd.get("orphaned"):
+                if permitted:
+                    try:
+                        self._close_sink(pr_ref, repo=self._repo)
+                    except Exception as exc:  # noqa: BLE001 — record close fault
+                        result.errors.append({"pr_ref": pr_ref,
+                                              "reason": str(exc)})
+                    else:
+                        result.closed_orphaned.append({
+                            "pr_ref": pr_ref, "issue_ref": None})
+                else:
+                    result.skipped.append({
+                        "pr_ref": pr_ref,
+                        "reason": ("orphaned (driver issue closed) — would close "
+                                   "at auto-merge"),
+                    })
+                continue
             if not vd["ok"]:
                 reason = "; ".join(vd.get("reasons") or []) or "verdict not ok"
                 result.skipped.append({"pr_ref": pr_ref, "reason": reason})
