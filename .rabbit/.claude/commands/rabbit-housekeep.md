@@ -1,7 +1,7 @@
 ---
 name: "rabbit-housekeep"
-description: "Run a measured verify-or-flag housekeeping wave over the CONSUMING PROJECT's declared features. Default DOC dimension; opt-in --code dimension simplifies a feature's src/."
-version: 0.9.0
+description: "Run a measured verify-or-flag housekeeping wave over the CONSUMING PROJECT's declared features. Default DOC dimension; --code adds the code dimension ON TOP of docs (additive: docs AND code); --docs-only for doc-only waves."
+version: 0.11.0
 owner: "rabbit-workflow team"
 deprecation_criterion: "when housekeeping is provided natively by the rabbit CLI as a first-class measured-reduction subcommand"
 template_version: 1.0.0
@@ -28,13 +28,14 @@ decompose, dispatch).
 ## Usage
 
 ```
-/rabbit-housekeep [<target>] [--code] [--no-automerge]
+/rabbit-housekeep [<target>] [--code] [--docs-only] [--no-automerge]
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `<target>` | No | A single project feature name, several names, or `--repo`/`all` for the whole project. Omit to housekeep every consuming-project feature. |
-| `--code` | No | Opt into the CODE dimension: simplify and dead-code-prune the target feature's `src/` instead of slimming doc surfaces. Defaults to the DOC dimension when omitted. |
+| `--code` | No | Add the CODE dimension on top of the doc dimension (additive: docs AND code). Runs doc surface slimming first, then simplifies and dead-code-prunes the target feature's `src/`. Defaults to doc-only when omitted. |
+| `--docs-only` | No | Explicit doc-only wave: slim doc surfaces only, skip the code dimension. Same as the default; use as an escape hatch when you want to be explicit. |
 | `--no-automerge` | No | Opt OUT of auto-merge: create each wave's PR and leave it open for you to merge by hand. By default a wave's PR is auto-merged to `main` on green gates (mechanical, fully gated); a wave that fails any gate always leaves its PR open. |
 
 ---
@@ -79,6 +80,9 @@ dispatching the underlying TDD subagent directly at level-1.
 # Housekeep the whole consuming project
 /rabbit-housekeep --repo
 
-# Simplify and dead-code-prune a feature's src/ (opt-in code dimension)
+# Run both doc AND code dimensions (additive: slim docs, then simplify src/)
 /rabbit-housekeep user-auth --code
+
+# Doc-only wave (explicit escape hatch, same as default)
+/rabbit-housekeep user-auth --docs-only
 ```

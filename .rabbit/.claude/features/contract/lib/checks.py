@@ -255,6 +255,10 @@ _CLAUDE_PATH_RE = re.compile(
     r'\.claude/(?:features|hooks|skills|commands|agents)/[a-z][a-z0-9-]+'
     r'(?:/[^\s`)\]\'",]+)?'
 )
+# Inv 22: an angle-bracket <...> segment marks an illustrative documentation
+# placeholder (e.g. <x>.py, <feature-name>, <branch>), never a live file
+# reference — skip it exactly as the {{...}} template-placeholder skip does.
+_PLACEHOLDER_RE = re.compile(r'<[^>]*>')
 
 
 def check_imports_resolve(feature_dir: str) -> CheckResult:
@@ -280,11 +284,15 @@ def check_imports_resolve(feature_dir: str) -> CheckResult:
                 path = match.group(1)
                 if "{{" in path:
                     continue
+                if _PLACEHOLDER_RE.search(path):
+                    continue
                 if not os.path.exists(os.path.join(repo_root, path)):
                     messages.append(f"MISSING: {path} (in {filepath})")
             for match in _CLAUDE_PATH_RE.finditer(content):
                 path = match.group(0)
                 if "{{" in path:
+                    continue
+                if _PLACEHOLDER_RE.search(path):
                     continue
                 if not os.path.exists(os.path.join(repo_root, path)):
                     messages.append(f"MISSING: {path} (in {filepath})")
