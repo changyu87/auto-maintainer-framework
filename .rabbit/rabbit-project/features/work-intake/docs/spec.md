@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.8.0
+version: 0.9.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -35,7 +35,8 @@ Greenfield. Code under `.../features/work-intake/src/`.
    the rendered triager/implementer envelope.
 
 2. **`PULL` state** — `run(TickContext) -> StateResult` (fsm-contracts contract).
-   Fetches the configured repo's **open** issues, maps each to a `WorkItem`,
+   Fetches the configured repo's **open** issues (narrowed by the optional
+   `issue_filter`, item 5 below), maps each to a `WorkItem`,
    under the `work_own_filings=False` opt-out **excludes loop-filed items**
    (`is_loop_filed`, §3.11.5 — see below), writes survivors to `work_items`,
    emits `OK` if any remain else `EMPTY`. Per-state manifest:
@@ -55,7 +56,36 @@ Greenfield. Code under `.../features/work-intake/src/`.
 
 4. **Repo resolution** — slice 1 resolves the target repo from the project's `gh`
    default / git remote, or an injectable `repo` argument. Explicit config
-   (repo, token, label filters) is deferred to the configuration feature.
+   (repo, token) beyond the `issue_filter` (item 5) is deferred to the
+   configuration feature.
+
+5. **Issue filter (`issue_filter`) — optional label + title narrowing.** PULL
+   optionally narrows WHICH open issues it pulls, from the canonical
+   `issue_filter` object `{labels: List[List[str]], title_pattern: str|None}`
+   that `safety-governance` owns + normalizes (its `issue_filter(config)`
+   accessor) and `scheduling`/`tick-orchestrator` threads into
+   `Pull(issue_filter=...)`. work-intake stays repo-I/O-bounded: it CONSUMES the
+   already-normalized object (it does NOT read `config.json` — that is
+   safety-governance's job), applying it as:
+   - **Labels (DNF, OR-of-ANDs) — server-side.** For a non-empty `labels`, the
+     production `gh_issue_source` runs **one `gh issue list --state open
+     --label <l1> --label <l2> …` query per AND-group** (repeated `--label` is
+     `gh`'s native AND) and **unions the results, deduped by issue `number`**
+     (`gh` cannot OR labels in one query, so OR is the union of per-group
+     queries). An empty `labels` `[]` runs the single existing all-open query.
+     Filtering server-side also cuts the per-issue `gh issue view … comments`
+     fetches to only the matching issues.
+   - **Title (`title_pattern`) — post-fetch.** `gh` has no title query, so a
+     non-`null` `title_pattern` is applied as a regex `search` over each fetched
+     issue's title, dropping non-matches **before** the comment enrichment. A
+     `null` pattern is a no-op.
+   The two narrowings **compose** (an issue must clear the labels DNF AND match
+   the title pattern). The default `issue_filter` (empty labels + `null` pattern)
+   is a no-op: PULL pulls every open issue exactly as before (non-breaking). The
+   filter is threaded through the injectable source seam — the source contract is
+   `source(repo, issue_filter=None) -> list[WorkItem]` — so tests drive it with a
+   stub, and the live-`gh` label/union/title logic is tested against an injected
+   `runner` (no network).
 
 ## Determinism & testability
 
@@ -256,7 +286,12 @@ idempotency live in scheduling).
   loop-filed items by default (`work_own_filings=True`, the loop works its own
   filings) and EXCLUDES them only under the `work_own_filings=False` opt-out.
 - **`PRIORITIZE`** (execution_plan) — separate state, deferred.
-- **Non-GitHub trackers**, label/filter config, pagination tuning — deferred.
+- **Label + title issue filtering** — IMPLEMENTED (public surface item 5): PULL
+  consumes the normalized `issue_filter` (DNF labels applied server-side via
+  per-AND-group `gh --label` union, `title_pattern` applied post-fetch). Owned +
+  normalized by `safety-governance`; threaded in by `scheduling`.
+- **Non-GitHub trackers**, explicit repo/token config, pagination tuning —
+  deferred.
 
 ## Interfaces (composition)
 

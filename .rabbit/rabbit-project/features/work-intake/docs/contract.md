@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.8.0
+version: 0.9.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version). See spec.md / feature.json.
 ---
@@ -12,7 +12,8 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
   "provides": {
     "files": [
       "WorkItem slot schema (versioned, machine-first)",
-      "PULL state: run(TickContext) -> StateResult, writes work_items, emits OK|EMPTY",
+      "PULL state: run(TickContext) -> StateResult, writes work_items, emits OK|EMPTY; accepts an optional issue_filter (Pull(issue_filter=...)) narrowing pulled issues by DNF labels (server-side per-AND-group gh --label union) + a post-fetch title_pattern regex; default (empty labels + null pattern) pulls all open issues (non-breaking)",
+      "gh_issue_source(repo=None, runner=..., issue_filter=None) -> [WorkItem]: injectable production issue source; with a non-empty labels DNF runs one gh issue list --label query per AND-group and unions by number, applies title_pattern post-fetch, then enriches with comments",
       "WorkOrder slot schema (versioned, machine-first; decision-carrying; carries target_feature: the TRIAGE-stamped blast-radius feature key(s), #258)",
       "target_features_for(labels, body, title) -> [str]: pure detection of a WorkOrder's blast-radius target feature(s) from authoritative signals (prefixed labels, a Component:/Feature: body line, a conventional title prefix; sorted, empty when none provable) — TRIAGE stamps the result so PRIORITIZE reads an authoritative field (#258)",
       "TRIAGE state: run(TickContext) -> StateResult, reads work_items, writes work_orders + cross_cutting_risk, emits OK|EMPTY (deterministic validity gate; stamps each order's target_feature)",
@@ -34,7 +35,7 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
   "invokes": {
     "scripts": [],
     "agents": [],
-    "external": ["gh issue list --state open --json number,title,body,url,state,labels,author,createdAt,updatedAt [--repo <repo>]", "gh issue view <number> --json comments [--repo <repo>]", "gh issue create --title <title> --body <body> --label filed-by:autonomous-maintainer [--repo <repo>] (REPORT filing sink)", "gh label create filed-by:autonomous-maintainer --description <desc> [--repo <repo>] (REPORT idempotent label ensure; non-zero 'already exists' tolerated)"]
+    "external": ["gh issue list --state open --json number,title,body,url,state,labels,author,createdAt,updatedAt [--repo <repo>] [--label <l> …] (one such query per issue_filter AND-group; results unioned + deduped by number)", "gh issue view <number> --json comments [--repo <repo>]", "gh issue create --title <title> --body <body> --label filed-by:autonomous-maintainer [--repo <repo>] (REPORT filing sink)", "gh label create filed-by:autonomous-maintainer --description <desc> [--repo <repo>] (REPORT idempotent label ensure; non-zero 'already exists' tolerated)"]
   },
   "never": [
     "performs dedup-vs-closed / 1-level decompose / dependency ordering / WHAT-generation seam (slice 3+)",
