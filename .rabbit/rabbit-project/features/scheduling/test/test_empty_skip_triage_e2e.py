@@ -83,7 +83,7 @@ def _stub_source(json_text=None):
     items = wi.parse_gh_issues(json_text if json_text is not None
                               else _gh_fixture())
 
-    def source(repo=None):
+    def source(repo=None, issue_filter=None):
         return list(items)
     return source
 

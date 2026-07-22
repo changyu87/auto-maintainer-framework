@@ -71,13 +71,13 @@ GH_JSON_FIXTURE = """[
 def _stub_source(json_text=GH_JSON_FIXTURE):
     items = wi.parse_gh_issues(json_text)
 
-    def source(repo=None):
+    def source(repo=None, issue_filter=None):
         return list(items)
     return source
 
 
 def _empty_source():
-    def source(repo=None):
+    def source(repo=None, issue_filter=None):
         return []
     return source
 

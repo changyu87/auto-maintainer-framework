@@ -88,7 +88,7 @@ def _mixed_source():
     """An injectable PULL source returning the mixed batch (no network)."""
     items = wi.parse_gh_issues(_MIXED_FIXTURE)
 
-    def source(repo=None):
+    def source(repo=None, issue_filter=None):
         return list(items)
     return source
 
