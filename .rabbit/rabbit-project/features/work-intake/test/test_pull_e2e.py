@@ -71,7 +71,7 @@ def _stub_source(issues):
     The injectable source contract is: callable(repo) -> list[WorkItem].
     The stub ignores repo and returns a fixed list, so no network is touched.
     """
-    def source(repo=None):
+    def source(repo=None, issue_filter=None):
         return list(issues)
     return source
 

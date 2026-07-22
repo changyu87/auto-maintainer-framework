@@ -155,7 +155,7 @@ def test_pull_commits_comments_into_slot():
                       version=wi.WORK_ITEMS_SLOT["version"])
     items = wi.parse_gh_issues(GH_JSON_WITH_COMMENTS)
 
-    def source(repo=None):
+    def source(repo=None, issue_filter=None):
         return list(items)
 
     result = wi.Pull(source=source).run(ctx)

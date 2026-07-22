@@ -122,7 +122,7 @@ def _normal_item(number=9):
 
 
 def _stub_source(items):
-    def source(repo=None):
+    def source(repo=None, issue_filter=None):
         return list(items)
     return source
 
