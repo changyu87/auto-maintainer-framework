@@ -55,11 +55,17 @@ The acting pipeline runs `… VERIFY → REVIEW → GATE → INTEGRATE → CLEAN
 ## Schemas (owned here, machine-first, versioned)
 
 - **`Verdict`** — one per open loop PR: `{ schema_version, pr_ref, url, ok,
-  ci_state: passing|pending|failing|unknown, mergeable: bool, base, reasons: [str] }`.
+  ci_state: passing|pending|failing|unknown, mergeable: bool, base, reasons: [str],
+  orphaned: bool }`.
   `ok` is the conservative AND of the BLOCKING conditions: mergeable AND
   base == default branch. CI is RECORDED (`ci_state`) but is OPTIONAL — it no
   longer gates `ok` (DESIGN §3.7.1/§3.7.2: the correctness gate lives in
-  IMPLEMENT). `reasons` explains a non-ok verdict.
+  IMPLEMENT). `reasons` explains a non-ok verdict. `orphaned` is True when the
+  loop PR's **closing issue is CLOSED** — the driver work is resolved or
+  abandoned, so the PR will never merge and must be CLOSED (not merged, not left
+  to linger); an orphaned verdict is forced `ok=False` so GATE skips it and
+  INTEGRATE closes it (see below). `orphaned` defaults False (a PR with no closing
+  issue, or an unresolvable one, is conservatively NOT treated as orphaned).
 - **`CrossCheck`** — the conditional cross-feature complement-run result
   (§3.7.6): `{ schema_version, ran: bool, reason, results: [{feature, passed,
   returncode, summary}] }`. `ran` is True only when TRIAGE flagged
@@ -67,13 +73,16 @@ The acting pipeline runs `… VERIFY → REVIEW → GATE → INTEGRATE → CLEAN
   was run.
 - **`IntegrationResult`** — `{ schema_version, merged: [{pr_ref, url}],
   skipped: [{pr_ref, reason}], errors: [{pr_ref, reason}], gate_failed: [{pr_ref,
-  issue_ref, reason}] }`. Idempotent: an
+  issue_ref, reason}], closed_orphaned: [{pr_ref, issue_ref}] }`. Idempotent: an
   already-merged PR leaves the open set, so a re-run never double-merges. Each
   `merged` entry's `url` is derived from its `pr_ref` (`owner/repo#number` →
   `.../owner/repo/pull/number`; bare `#number` uses the configured repo; neither
   → `''`) so a successful merge is observable, not an empty link. `gate_failed`
   records PRs INTEGRATE did not merge because their GATE result failed (a comment
-  was posted on their issue instead).
+  was posted on their issue instead). `closed_orphaned` records loop PRs INTEGRATE
+  CLOSED because their driver issue is closed (orphaned verdicts) — the
+  convergence guarantee that a stale/superseded loop PR whose issue was closed
+  does not linger open forever and keep the loop refiring.
 - **`GateResult`** — one per REVIEW-passed PR the GATE state gated:
   `{ schema_version, pr_ref, issue_ref, passed: bool, reason: null | "regression"
   | "conflict" | "load-bearing", failure_summary }`. GATE runs the configured
@@ -143,6 +152,17 @@ backlog issues by the downstream REPORT port and fixed on a later tick.
   flagged batch that cannot be verified must NEVER auto-merge. When `risk` is
   False (or the slot is absent), NO complement runs and `cross_check` records
   `ran=False` — VERIFY stays thin; verdicts reflect only mergeable+base.
+- **Orphaned-PR detection (convergence, DESIGN §3.7).** For each open loop PR,
+  VERIFY resolves the state of the PR's **closing issue** via an **injectable
+  resolver** (production: `gh_closing_issue_state` — resolves the closing-issue
+  ref, then `gh issue view <n> --json state`). When that issue is **CLOSED**, the
+  verdict is marked `orphaned=True` and forced `ok=False` with reason `driver
+  issue <ref> is closed — orphaned loop PR (will be closed by INTEGRATE)`. This is
+  a READ only — VERIFY still never mutates GitHub; INTEGRATE performs the close.
+  Resolution is CONSERVATIVE: a PR that closes no issue, or whose issue state
+  cannot be resolved (any resolver fault), is left `orphaned=False` (never closed
+  on uncertainty). Because `gh pr list --label auto-maintainer` scopes VERIFY to
+  loop-authored PRs, only the loop's own PRs are ever flagged orphaned.
 - Writes the `verdicts` and `cross_check` slots; emits `OK` if any open PRs were
   found else `EMPTY`.
 - Read-only w.r.t. GitHub: VERIFY never merges, closes, or writes to GitHub.
@@ -227,6 +247,18 @@ loop PRs) + `regression_command` from the central config
   comment carries a FIXED marker + `{pr_ref, reason, failure_summary}` so a later
   tick's TRIAGE reads it deterministically (the Phase-2 retry/threshold model).
   These PRs are recorded in `IntegrationResult.gate_failed`.
+- **Orphaned loop PRs are CLOSED, not merged (convergence).** For each verdict
+  with `orphaned=True` (its driver issue is closed — see VERIFY), INTEGRATE CLOSES
+  the PR via an **injectable close sink** (production: `gh pr close <pr>
+  --delete-branch` with a machine-readable explanatory comment) and records it in
+  `IntegrationResult.closed_orphaned`. This closes the convergence gap where a
+  stale/superseded loop PR whose issue was already closed lingers open forever
+  (never superseded, since supersede only fires on issue-retry) and keeps the loop
+  refiring. The close is checked FIRST (before the merge/skip disposition) and is
+  **trust-gated by `permits("merge", mode)`** exactly like merge: only at
+  `auto-merge` does INTEGRATE actually close; at `dry-run`/`propose` the
+  would-close intent is recorded under `skipped` (a human closes it). A
+  close-sink fault does not wedge the tick (recorded under `errors`).
 - **Trust-gated by `permits("merge", mode)`** (§3.8.2): merge is permitted ONLY
   at `auto-merge`. At `dry-run` and the default `propose`, INTEGRATE is a NO-OP
   that logs the would-merge intent — a human merges. Arming autonomous merge is
