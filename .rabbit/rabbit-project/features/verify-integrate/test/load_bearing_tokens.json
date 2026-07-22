@@ -19,6 +19,8 @@
     "skipped",
     "errors",
     "gate_failed",
+    "orphaned",
+    "closed_orphaned",
     "GATE",
     "GateResult",
     "gate_results",
