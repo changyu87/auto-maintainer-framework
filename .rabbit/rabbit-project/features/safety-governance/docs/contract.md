@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.8.0
+version: 0.9.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0). See spec.md / feature.json.
 ---
@@ -18,19 +18,19 @@ deprecation_criterion: Superseded when trust-ladder / budget enforcement moves i
       "Budget readiness gate (per-day token ceiling, local-tz day window, null=unlimited): window rollover reset + over-ceiling idle (auto-resume, no latch), over an injectable spend seam",
       "No-AskUserQuestion->ABORTED helper: latches ABORTED + emits an escalation seam"
     ],
-    "scripts": ["src/configure.py — deterministic central-config writer (load_config-modify-save of config.json; --mode/--per-day-tokens/--interval-minutes/--backoff-threshold/--describe/--show)"],
-    "skills": ["ship/skills/configure/SKILL.md — /auto-maintainer:configure relay over configure.py"]
+    "scripts": ["src/configure.py — deterministic central-config writer (load_config-modify-save of config.json; --mode/--per-day-tokens/--interval-minutes/--backoff-threshold/--regression-command/--doc-check-features-root/--features-root/--work-own-filings/--issue-labels (DNF: comma=AND, semicolon=OR)/--issue-title-pattern/--show; --describe emits the field catalog with a loop-stage per knob; --preflight emits the read-only gh-auth + resolved-repo probe for --setup onboarding — issue_filter values validated through this feature's issue_filter normalizer)"],
+    "skills": ["ship/skills/configure/SKILL.md — /auto-maintainer:configure relay over configure.py, including the guided --setup onboarding (preflight -> confirm repo -> loop-stage-ordered walk -> opt-in route/adapter -> apply -> offer /start)"]
   },
   "reads": {
     "files": ["${CLAUDE_PROJECT_DIR}/.auto-maintainer/config.json (project-local override; absent => defaults; legacy governance.json migrated once)"],
     "external": []
   },
-  "invokes": {"scripts": [], "agents": [], "external": []},
+  "invokes": {"scripts": [], "agents": [], "external": ["gh auth status (configure.py --preflight: read-only auth probe for the --setup onboarding)", "gh repo resolution for --preflight (the gh-default / git-remote repo the loop would maintain; read-only, e.g. gh repo view --json nameWithOwner)"]},
   "never": [
     "latches a halt disposition for budget exhaustion (budget is an auto-resuming readiness gate, not a latch; only faults/ABORTED latch)",
     "modifies lifecycle-dispositions (consumes it unchanged to latch ABORTED)",
     "performs backoff/circuit-breaker enforcement (§3.8.5) or the loopback/provenance guard (§3.11.5) — deferred to consumer milestones",
-    "calls a model, the network, the filesystem (beyond the durable central config + budget state), or the wall clock except through the injectable now",
+    "calls a model, the network, the filesystem (beyond the durable central config + budget state), or the wall clock except through the injectable now — EXCEPT configure.py --preflight, which shells read-only gh (auth status + repo resolution) for the --setup onboarding and writes nothing",
     "prompts userConfig values or implements the real issue-comment escalation sink (§3.9.3 / §3.10.1, deferred)",
     "edits files in other features"
   ]

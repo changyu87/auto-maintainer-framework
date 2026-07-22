@@ -371,7 +371,7 @@ def test_cli_describe_emits_field_catalog():
         assert "doc_check_features_root" in keys
         for entry in catalog:
             for field in ("key", "label", "controls", "default",
-                          "current", "type", "validator"):
+                          "current", "type", "validator", "stage"):
                 assert field in entry, f"catalog entry missing {field}: {entry}"
         # read-only: no config.json written.
         assert not os.path.exists(_cfg_path(project_dir))
@@ -402,13 +402,17 @@ def test_describe_catalog_is_complete_one_entry_per_knob():
             "backoff.threshold",
             "regression_command",
             "doc_check_features_root",
+            "features_root",
+            "work_own_filings",
+            "issue_filter.labels",
+            "issue_filter.title_pattern",
         }
         assert set(keys) == expected_keys, (
             f"catalog knobs {set(keys)} != expected {expected_keys}")
         assert len(keys) == len(set(keys)), "duplicate keys in catalog"
-        # Every entry carries exactly the seven required fields (no more).
+        # Every entry carries exactly the eight required fields (no more).
         required = {"key", "label", "controls", "default",
-                    "current", "type", "validator"}
+                    "current", "type", "validator", "stage"}
         for entry in catalog:
             assert set(entry.keys()) == required, (
                 f"catalog entry fields {set(entry.keys())} != {required}: "
@@ -458,8 +462,8 @@ def _skill_body():
 
 def test_skill_version_bumped():
     fm = _skill_frontmatter()
-    assert fm["version"] == "0.9.0", (
-        f"configure skill must be bumped to 0.9.0, got {fm['version']}")
+    assert fm["version"] == "0.10.0", (
+        f"configure skill must be bumped to 0.10.0, got {fm['version']}")
 
 
 def test_skill_description_advertises_setup_walkthrough():
@@ -547,3 +551,352 @@ def test_skill_body_documents_doc_check_features_root():
     assert "doc_check_features_root" in body, (
         "skill body must map the doc_check_features_root catalog key to its "
         "flag")
+
+
+# ==========================================================================
+# Phase 2 E2E Behaviour: --features-root sets the top-level features_root
+# (VERIFY's complement locator). Unlike doc_check_features_root it MAY be
+# absolute; a clear sentinel (none/null/"") resets it to JSON null.
+# ==========================================================================
+
+def test_cli_features_root_set_then_clear():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--features-root", "rabbit-project/features"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["features_root"]
+                == "rabbit-project/features")
+
+        rc = configure.main(
+            ["--project-dir", project_dir, "--features-root", "none"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["features_root"] is None
+
+
+def test_cli_features_root_accepts_absolute():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--features-root", "/abs/project/features"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["features_root"]
+                == "/abs/project/features")
+
+
+# ==========================================================================
+# Phase 2 E2E Behaviour: --work-own-filings parses a bool (true/false, also
+# 1/0, yes/no case-insensitive) and writes work_own_filings; an unparseable
+# value is a non-zero exit and writes nothing.
+# ==========================================================================
+
+def test_cli_work_own_filings_true_then_false():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir, "--work-own-filings", "false"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["work_own_filings"] is False
+
+        rc = configure.main(
+            ["--project-dir", project_dir, "--work-own-filings", "true"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["work_own_filings"] is True
+
+
+def test_cli_work_own_filings_tolerant_synonyms():
+    for raw, expected in (("1", True), ("0", False),
+                          ("yes", True), ("NO", False), ("True", True)):
+        with tempfile.TemporaryDirectory() as project_dir:
+            rc = configure.main(
+                ["--project-dir", project_dir, "--work-own-filings", raw])
+            assert rc == 0, f"{raw!r} should parse"
+            assert _read_cfg(project_dir)["work_own_filings"] is expected
+
+
+def test_cli_work_own_filings_unparseable_rejected():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir, "--work-own-filings", "maybe"])
+        assert rc != 0
+        assert not os.path.exists(_cfg_path(project_dir))
+
+
+# ==========================================================================
+# Phase 2 E2E Behaviour: --issue-labels parses the compact DNF syntax
+# (comma = AND within a group, semicolon = OR between groups) into the
+# canonical List[List[str]] and writes issue_filter.labels; a clear sentinel
+# (none/null/"") resets it to [].
+# ==========================================================================
+
+def test_cli_issue_labels_dnf_parse():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--issue-labels", "bug,triaged;urgent"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["issue_filter"]["labels"]
+                == [["bug", "triaged"], ["urgent"]])
+
+
+def test_cli_issue_labels_single_group():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir, "--issue-labels", "bug"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["issue_filter"]["labels"] == [["bug"]]
+
+
+def test_cli_issue_labels_clear():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir, "--issue-labels", "bug"]) == 0
+        assert configure.main(
+            ["--project-dir", project_dir, "--issue-labels", "none"]) == 0
+        assert _read_cfg(project_dir)["issue_filter"]["labels"] == []
+
+
+# ==========================================================================
+# Phase 2 E2E Behaviour: an --issue-labels value that normalizes to an empty
+# label / empty group (e.g. all-delimiters) is rejected THROUGH this feature's
+# issue_filter normalizer (non-zero exit, no partial write).
+# ==========================================================================
+
+def test_cli_issue_labels_empty_group_rejected():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir, "--issue-labels", "bug;;urgent"])
+        assert rc != 0
+        assert not os.path.exists(_cfg_path(project_dir))
+
+
+# ==========================================================================
+# Phase 2 E2E Behaviour: --issue-title-pattern sets issue_filter.title_pattern
+# to a regex string; a clear sentinel (none/null/"") resets it to null; a
+# non-compilable regex is a non-zero exit (validated via the normalizer) with
+# no write.
+# ==========================================================================
+
+def test_cli_issue_title_pattern_set_then_clear():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--issue-title-pattern", r"^\[bug\]"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["issue_filter"]["title_pattern"]
+                == r"^\[bug\]")
+
+        rc = configure.main(
+            ["--project-dir", project_dir, "--issue-title-pattern", "none"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["issue_filter"]["title_pattern"] is None
+
+
+def test_cli_issue_title_pattern_compile_fail_rejected():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--issue-title-pattern", "(unclosed"])
+        assert rc != 0
+        assert not os.path.exists(_cfg_path(project_dir))
+
+
+# ==========================================================================
+# Phase 2 E2E Behaviour: setting ONLY --issue-labels preserves an existing
+# title_pattern (and vice versa) — the writer preserves unmentioned issue_filter
+# sub-keys.
+# ==========================================================================
+
+def test_cli_issue_labels_preserves_existing_title_pattern():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-title-pattern", r"^\[bug\]"]) == 0
+        assert configure.main(
+            ["--project-dir", project_dir, "--issue-labels", "urgent"]) == 0
+        cfg = _read_cfg(project_dir)
+        assert cfg["issue_filter"]["labels"] == [["urgent"]]
+        assert cfg["issue_filter"]["title_pattern"] == r"^\[bug\]"
+
+
+def test_cli_issue_title_pattern_preserves_existing_labels():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir, "--issue-labels", "urgent"]) == 0
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-title-pattern", r"^\[bug\]"]) == 0
+        cfg = _read_cfg(project_dir)
+        assert cfg["issue_filter"]["labels"] == [["urgent"]]
+        assert cfg["issue_filter"]["title_pattern"] == r"^\[bug\]"
+
+
+# ==========================================================================
+# Phase 2 E2E Behaviour: --describe entries carry a loop-'stage' field and the
+# catalog is ORDERED by loop stage:
+# PULL -> IMPLEMENT -> VERIFY -> GATE -> SCHEDULING -> SAFETY, with the new
+# knobs (issue_filter.labels/title_pattern, work_own_filings, features_root)
+# present under their stages.
+# ==========================================================================
+
+def _describe(project_dir):
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = configure.main(["--project-dir", project_dir, "--describe"])
+    assert rc == 0
+    return json.loads(buf.getvalue())
+
+
+def test_describe_entries_carry_stage_in_loop_order():
+    with tempfile.TemporaryDirectory() as project_dir:
+        catalog = _describe(project_dir)
+        by_key = {e["key"]: e["stage"] for e in catalog}
+        assert by_key["issue_filter.labels"] == "PULL"
+        assert by_key["issue_filter.title_pattern"] == "PULL"
+        assert by_key["work_own_filings"] == "PULL"
+        assert by_key["mode"] == "IMPLEMENT"
+        assert by_key["features_root"] == "VERIFY"
+        assert by_key["regression_command"] == "GATE"
+        assert by_key["doc_check_features_root"] == "GATE"
+        assert by_key["heartbeat.interval_minutes"] == "SCHEDULING"
+        assert by_key["budget.per_day_tokens"] == "SAFETY"
+        assert by_key["backoff.threshold"] == "SAFETY"
+        # The catalog is ordered by loop stage.
+        stage_order = [e["stage"] for e in catalog]
+        expected_stage_seq = ["PULL", "IMPLEMENT", "VERIFY", "GATE",
+                              "SCHEDULING", "SAFETY"]
+        # The stages appear in the documented order (contiguous, non-repeating
+        # after first appearance).
+        seen = []
+        for st in stage_order:
+            if not seen or seen[-1] != st:
+                seen.append(st)
+        assert seen == expected_stage_seq, (
+            f"catalog stage order {seen} != {expected_stage_seq}")
+
+
+# ==========================================================================
+# Phase 2 E2E Behaviour: --preflight is a READ-ONLY probe emitting the
+# machine-first 4-key dict {gh_authenticated, gh_account, resolved_repo,
+# config_exists}. The gh subprocess runner is injectable so tests drive it
+# without network; --preflight writes nothing.
+# ==========================================================================
+
+class _FakeCompleted:
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _fake_runner(*, auth_rc, auth_out="", repo_rc=0, repo_out=""):
+    def run(cmd, *args, **kwargs):
+        # Distinguish `gh auth status` from `gh repo view ...`.
+        if "auth" in cmd:
+            return _FakeCompleted(auth_rc, stdout=auth_out)
+        if "repo" in cmd:
+            return _FakeCompleted(repo_rc, stdout=repo_out)
+        raise AssertionError(f"unexpected command {cmd!r}")
+    return run
+
+
+def test_preflight_authed_repo_resolved():
+    with tempfile.TemporaryDirectory() as project_dir:
+        runner = _fake_runner(
+            auth_rc=0,
+            auth_out="  Logged in to github.com account changyu87 (keyring)\n",
+            repo_rc=0,
+            repo_out="changyu87/auto-maintainer-framework\n",
+        )
+        result = configure._preflight(project_dir, runner=runner)
+        assert result["gh_authenticated"] is True
+        assert result["gh_account"] == "changyu87"
+        assert result["resolved_repo"] == "changyu87/auto-maintainer-framework"
+        assert result["config_exists"] is False
+        # read-only: no config.json written.
+        assert not os.path.exists(_cfg_path(project_dir))
+
+
+def test_preflight_unauthed():
+    with tempfile.TemporaryDirectory() as project_dir:
+        runner = _fake_runner(
+            auth_rc=1,
+            auth_out="",
+            repo_rc=1,
+            repo_out="",
+        )
+        result = configure._preflight(project_dir, runner=runner)
+        assert result["gh_authenticated"] is False
+        assert result["gh_account"] is None
+        assert result["resolved_repo"] is None
+        assert result["config_exists"] is False
+
+
+def test_preflight_authed_repo_unresolved():
+    with tempfile.TemporaryDirectory() as project_dir:
+        runner = _fake_runner(
+            auth_rc=0,
+            auth_out="  Logged in to github.com account changyu87 (keyring)\n",
+            repo_rc=1,
+            repo_out="",
+        )
+        result = configure._preflight(project_dir, runner=runner)
+        assert result["gh_authenticated"] is True
+        assert result["gh_account"] == "changyu87"
+        assert result["resolved_repo"] is None
+
+
+def test_preflight_reports_config_exists():
+    with tempfile.TemporaryDirectory() as project_dir:
+        # Create a config first.
+        assert configure.main(
+            ["--project-dir", project_dir, "--mode", "propose"]) == 0
+        runner = _fake_runner(
+            auth_rc=0,
+            auth_out="  Logged in to github.com account changyu87 (keyring)\n",
+            repo_rc=0,
+            repo_out="changyu87/auto-maintainer-framework\n",
+        )
+        result = configure._preflight(project_dir, runner=runner)
+        assert result["config_exists"] is True
+
+
+def test_preflight_cli_emits_json_and_writes_nothing():
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        # The CLI --preflight path uses the real subprocess default runner, but
+        # since we only assert the JSON shape + no-write, monkeypatch the module
+        # default runner to a fake to avoid network.
+        original = configure._DEFAULT_RUNNER
+        configure._DEFAULT_RUNNER = _fake_runner(
+            auth_rc=1, auth_out="", repo_rc=1, repo_out="")
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = configure.main(
+                    ["--project-dir", project_dir, "--preflight"])
+            assert rc == 0
+            result = json.loads(buf.getvalue())
+            assert set(result.keys()) == {
+                "gh_authenticated", "gh_account",
+                "resolved_repo", "config_exists"}
+        finally:
+            configure._DEFAULT_RUNNER = original
+        assert not os.path.exists(_cfg_path(project_dir))
+
+
+# ==========================================================================
+# Phase 2 E2E Behaviour: the SKILL.md documents the new Phase 2 flags and the
+# preflight-driven onboarding (--preflight, --features-root, --work-own-filings,
+# --issue-labels, --issue-title-pattern) and groups the walk by loop 'stage'.
+# ==========================================================================
+
+def test_skill_body_documents_phase2_flags():
+    body = _skill_body()
+    for flag in ("--preflight", "--features-root", "--work-own-filings",
+                 "--issue-labels", "--issue-title-pattern"):
+        assert flag in body, f"skill body must document {flag}"
+    assert "stage" in body, (
+        "skill body must group the walk-through by the catalog 'stage' field")

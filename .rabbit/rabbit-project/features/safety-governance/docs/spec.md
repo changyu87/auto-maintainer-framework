@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.9.0
+version: 0.10.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -258,7 +258,10 @@ next window" is distinguishable from "idle: no work".
 safety_governance.py READS + decides over `config.json`; this feature also
 ships its **writer half** — the deterministic `src/configure.py` script and the
 `/auto-maintainer:configure` skill (`ship/skills/configure/`) — so a user can set
-the trust `mode` and budget ceilings without hand-editing JSON.
+**every** central-config knob (trust `mode`, budget, heartbeat, backoff, GATE
+regression command + doc-check root, VERIFY `features_root`, the §3.11.5
+`work_own_filings` loopback toggle, and the PULL `issue_filter`) without
+hand-editing JSON, and be walked through them via the guided `--setup` onboarding.
 
 - **`src/configure.py`** (deterministic, script-tier — spec-rules §1). A
   load-modify-save of `config.json`: it loads the current config via
@@ -275,10 +278,43 @@ the trust `mode` and budget ceilings without hand-editing JSON.
     `--maintainer-repo` are **removed**.
   - `--interval-minutes` (heartbeat cadence) and `--backoff-threshold` accept a
     **positive int**.
+  - `--regression-command` / `--doc-check-features-root` — as documented above
+    (GATE section); `none`/`null`/`""` clear to `null`.
+  - `--features-root` — VERIFY's cross-feature complement locator. An
+    arbitrary path string (it MAY be absolute, UNLIKE `doc_check_features_root`);
+    `none`/`null`/`""` clears to `null` (unconfigured, the conservative gate).
+  - `--work-own-filings` — the §3.11.5 loopback toggle. Accepts a boolean
+    `true`/`false` (case-insensitive; `1`/`0`, `yes`/`no` tolerated); an
+    unparseable value raises `ValueError`.
+  - `--issue-labels` — the `issue_filter.labels` DNF (public surface added in
+    schema 2.7.0). Compact syntax: **comma = AND within a group, semicolon = OR
+    between groups**, e.g. `"bug,triaged;urgent"` → `[["bug","triaged"],["urgent"]]`
+    = *(bug AND triaged) OR urgent*. A single group `"bug"` → `[["bug"]]`;
+    `none`/`null`/`""` clears to `[]` (no label filter). The parsed DNF is
+    validated + canonicalized through this feature's `issue_filter` normalizer
+    (rejecting empty labels/groups) before the write — the writer owns NO
+    validation the reader does not.
+  - `--issue-title-pattern` — the `issue_filter.title_pattern` regex string an
+    issue's title must match; `none`/`null`/`""` clears to `null`. It must
+    **compile** as a regex (validated via the same `issue_filter` normalizer),
+    else `ValueError`.
+  - `--preflight` — a **read-only** environment check emitting machine-first JSON
+    `{gh_authenticated: bool, gh_account: str|null, resolved_repo: str|null,
+    config_exists: bool}` for the guided `--setup` onboarding: it shells
+    `gh auth status` (authenticated? which account?) and resolves the target repo
+    the loop would maintain (the `gh`-default / git-remote repo, the same
+    resolution PULL uses — since there is no `repo` config key), and reports
+    whether a project-local `config.json` already exists. It writes NOTHING.
   - `--describe` emits the machine-first **field catalog** as JSON — a list of
-    `{key, label, controls, default, current, type, validator}` — the single
-    source of truth the guided `--setup` walk-through reads. (The `--setup`
-    orchestration skill is authored separately, after this lib lands.)
+    `{key, label, controls, default, current, type, validator, stage}` — the
+    single source of truth the guided `--setup` walk-through reads. The **`stage`**
+    field (added for the onboarding walk-through) groups each knob by the loop
+    state that consumes it, and the catalog is **ordered by loop stage** so the
+    walk-through follows the route: `PULL` (`issue_filter.labels`,
+    `issue_filter.title_pattern`, `work_own_filings`) → `IMPLEMENT` (`mode`) →
+    `VERIFY` (`features_root`) → `GATE` (`regression_command`,
+    `doc_check_features_root`) → `SCHEDULING` (`heartbeat.interval_minutes`) →
+    `SAFETY` (`budget.per_day_tokens`, `backoff.threshold`).
   - An unmentioned field is preserved unchanged.
   - Project dir resolves from `--project-dir`, else `$CLAUDE_PROJECT_DIR`, else
     cwd. `--show` (or no mutating flag) prints the current config and writes
@@ -289,19 +325,38 @@ the trust `mode` and budget ceilings without hand-editing JSON.
   resulting config. It never edits `config.json` directly. This is the
   arming surface for the model-backed doer: `--mode dry-run` keeps it inert,
   `--mode propose` arms it to open PRs.
-- **Guided `--setup` walk-through** (§3.10.1 userConfig). The same skill supports
+- **Guided `--setup` onboarding** (§3.10.1 userConfig). The same skill supports
   a `--setup` mode (the user runs `/auto-maintainer:configure --setup`, or asks
-  to be "walked through" the config). The skill orchestrates **over the
-  machine-first catalog**, dispatching NO subagent:
-  1. Run `configure.py --describe` → the field catalog
-     (`key`/`label`/`controls`/`default`/`current`/`type`/`validator`).
-  2. For EACH field in catalog order, present the user what it controls, its
-     default, and its current value, and ask for a new value or to keep current.
-  3. Apply the chosen values in ONE `configure.py` invocation (the deterministic
-     writer validates + writes `config.json`), then `--show` the result.
-  The catalog is the **single source of truth** — the skill never hardcodes
-  field names or prose (SKILL.md authoring §4: derive from source, do not
-  paraphrase). A power user may still hand-edit `config.json` directly.
+  to be "walked through" / "set up" the maintainer). It is a **re-runnable**
+  guided onboarding — usable any time, not only right after install — that walks
+  the user through everything needed to run the loop, **ordered by the loop's own
+  stages** (the route). The skill orchestrates **over the machine-first catalog +
+  the `--preflight` probe**, dispatching NO subagent (it must ask the user
+  questions and read their answers inline):
+  1. **Preflight.** Run `configure.py --preflight`. Surface the result: whether
+     `gh` is authenticated (and as which account) and the **resolved repo** the
+     loop would maintain, and confirm it with the user ("I'll maintain
+     `owner/repo` — correct?"). If `gh` is NOT authenticated, tell the user to run
+     `gh auth login` first; if the resolved repo is wrong, tell them to
+     `gh repo set-default <owner/repo>` (there is no `repo` config key — the repo
+     is `gh`-resolved). This step writes nothing.
+  2. **Stage-by-stage walk.** Run `configure.py --describe` and group the knobs by
+     their `stage`, presenting each stage in loop order (PULL → IMPLEMENT →
+     VERIFY → GATE → SCHEDULING → SAFETY). For each knob show its `label`,
+     `controls`, `default`, and `current`, quote its `validator`, and ask for a
+     new value or to keep current. Take answers verbatim (the user's data).
+  3. **Advanced (opt-in) routing.** Offer to keep the recommended default
+     `route`/`adapter-map` (the common case); only dive into `/auto-maintainer:route`
+     / `/auto-maintainer:adapter-map` if the user wants to change which stages run
+     or swap a port's adapter.
+  4. **Review + apply.** Apply all chosen values in ONE `configure.py`
+     invocation (the deterministic writer validates + writes `config.json`), then
+     `--show` the result and read it back. If nothing changed, skip the write.
+  5. **Offer to start.** Point the user at `/auto-maintainer:start`.
+  The catalog + preflight JSON are the **single source of truth** — the skill
+  never hardcodes field names, prose, `stage` grouping, or repo/auth values
+  (SKILL.md authoring §4: derive from source, do not paraphrase). A power user
+  may still hand-edit `config.json` directly.
 
 ## Invariants
 
@@ -309,10 +364,15 @@ the trust `mode` and budget ceilings without hand-editing JSON.
   wall-clock except through the injectable `now`, no filesystem beyond the
   durable budget state.
 - `configure.py` is a deterministic load-modify-save: it validates `mode` against
-  the closed set, `per_day_tokens` as non-negative-int-or-null, and
-  `interval_minutes` / `backoff.threshold` as positive ints; preserves unmentioned
-  keys; and never writes an invalid config (an invalid value is a non-zero exit,
-  not a partial write). `--describe` is read-only (emits the field catalog).
+  the closed set, `per_day_tokens` as non-negative-int-or-null,
+  `interval_minutes` / `backoff.threshold` as positive ints, `work_own_filings`
+  as a bool, and the `issue_filter` (`--issue-labels` DNF + `--issue-title-pattern`)
+  through THIS feature's `issue_filter` normalizer (the writer owns no validation
+  the reader does not); preserves unmentioned keys; and never writes an invalid
+  config (an invalid value is a non-zero exit, not a partial write). `--describe`
+  (field catalog, now carrying a loop-`stage` per knob) and `--preflight` (the
+  read-only `gh` auth + resolved-repo probe for onboarding) are BOTH read-only:
+  they emit JSON and write nothing.
 - The `config.json` runtime file carries only `schema_version` + the knobs; it is
   the single central config (no scattered per-concern files). `maintainer-self`
   routing is a fixed `MAINTAINER_REPO` constant, not a config field.
