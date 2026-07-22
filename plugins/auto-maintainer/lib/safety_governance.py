@@ -4,9 +4,10 @@
 A pure, deterministic decision library over a machine-first, versioned CENTRAL
 config (config.json). Decision surfaces plus one effectful halt helper:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.6.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.7.0),
      DEFAULT_GOVERNANCE, load_config(project_dir), work_own_filings(config),
-     regression_command(config), doc_check_features_root(config). The
+     regression_command(config), doc_check_features_root(config),
+     issue_filter(config) (a pure DNF-label + title_pattern normalizer). The
      config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
      §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
@@ -75,6 +76,7 @@ Deprecation criterion: Superseded when trust-ladder / budget enforcement moves
 
 import json
 import os
+import re
 import sys
 
 # lifecycle-dispositions is a sibling feature consumed UNCHANGED; the test
@@ -113,8 +115,13 @@ import lifecycle_dispositions as ld
 # root read by verify-integrate's GATE, kept SEPARATE from `features_root` (which
 # VERIFY's complement runner treats as an on-disk locator) so the doc gate can be
 # turned on without perturbing the complement; an absent key backfills null (the
-# check stays off), so the bump is backward compatible.
-GOVERNANCE_SCHEMA_VERSION = "2.6.0"
+# check stays off), so the bump is backward compatible. 2.7.0: additive
+# `issue_filter` knob (default the no-filter object {labels: [], title_pattern:
+# null}) — the PULL-stage filter narrowing WHICH open GitHub issues work-intake
+# pulls (a disjunctive-normal-form label matcher + a post-fetch title regex); an
+# absent key backfills the no-filter default (pull all open issues), so the bump
+# is backward compatible.
+GOVERNANCE_SCHEMA_VERSION = "2.7.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
 # config field. The loop's OWN defects route here ALWAYS, never the project
@@ -155,6 +162,10 @@ DEFAULT_GOVERNANCE = {
     "doc_check_features_root": None,
     "work_own_filings": True,
     "regression_command": None,
+    "issue_filter": {
+        "labels": [],
+        "title_pattern": None,
+    },
     "budget": {
         "per_day_tokens": None,
         "window_tz": "local",
@@ -210,6 +221,10 @@ def _copy_defaults():
     d["budget"] = dict(DEFAULT_GOVERNANCE["budget"])
     d["heartbeat"] = dict(DEFAULT_GOVERNANCE["heartbeat"])
     d["backoff"] = dict(DEFAULT_GOVERNANCE["backoff"])
+    d["issue_filter"] = {
+        "labels": list(DEFAULT_GOVERNANCE["issue_filter"]["labels"]),
+        "title_pattern": DEFAULT_GOVERNANCE["issue_filter"]["title_pattern"],
+    }
     return d
 
 
@@ -324,7 +339,11 @@ def _overlay(raw):
     null; absent keeps the default None (NO gate -> GATE is a no-op PASS). An
     explicit top-level `doc_check_features_root` (the repo-relative features root
     the GATE doc-surface load-bearing-token check uses) is surfaced, including an
-    explicit null; absent keeps the default None (the doc check is OFF). A
+    explicit null; absent keeps the default None (the doc check is OFF). An
+    explicit top-level `issue_filter` (the PULL-stage open-issue filter) is
+    surfaced raw here; absent keeps the no-filter default. The pure accessor
+    issue_filter(config) does the DNF/title-pattern normalization + validation
+    (this backfill only carries the key through). A
     stale top-level `self_deploy` key (the removed self-deployment gate, #324) is
     silently dropped (tolerated, ignored — the self_deploy ACTION was removed, so
     the knob gates nothing).
@@ -340,6 +359,8 @@ def _overlay(raw):
         config["work_own_filings"] = raw["work_own_filings"]
     if "regression_command" in raw:
         config["regression_command"] = raw["regression_command"]
+    if "issue_filter" in raw:
+        config["issue_filter"] = raw["issue_filter"]
     budget = raw.get("budget", {})
     for key in ("per_day_tokens", "window_tz"):
         if key in budget:
@@ -478,6 +499,94 @@ def doc_check_features_root(config):
     without perturbing the complement runner.
     """
     return config.get("doc_check_features_root")
+
+
+def _normalize_labels(labels):
+    """Canonicalize the `labels` matcher to disjunctive-normal-form List[List[str]].
+
+    Accepts: None/[] => [] (no label filter); a FLAT list of non-empty strings
+    (sugar for one AND-group) => [that list]; an already-canonical List[List[str]]
+    => validated + returned as-is. Raises ValueError (never a silent write) on a
+    non-string label entry, an empty-string label, or an empty inner AND-group.
+    """
+    if labels is None or labels == []:
+        return []
+    if not isinstance(labels, list):
+        raise ValueError(
+            f"issue_filter.labels must be a list, got {type(labels).__name__}")
+    # Flat form (sugar): every entry is a string -> a single AND-group.
+    if all(isinstance(item, str) for item in labels):
+        group = _validate_group(labels)
+        return [group]
+    # Canonical form: every entry is an inner AND-group (a list).
+    groups = []
+    for item in labels:
+        if not isinstance(item, list):
+            raise ValueError(
+                "issue_filter.labels must be a flat string list or a "
+                f"List[List[str]]; got a mixed entry {item!r}")
+        groups.append(_validate_group(item))
+    return groups
+
+
+def _validate_group(group):
+    """Validate one AND-group: a non-empty list of non-empty strings.
+
+    Returns a new list copy. Raises ValueError on an empty group, a non-string
+    label, or an empty-string label.
+    """
+    if not group:
+        raise ValueError("issue_filter.labels has an empty inner AND-group")
+    out = []
+    for label in group:
+        if not isinstance(label, str):
+            raise ValueError(
+                f"issue_filter label must be a string, got {label!r}")
+        if label == "":
+            raise ValueError("issue_filter label must be a non-empty string")
+        out.append(label)
+    return out
+
+
+def issue_filter(config):
+    """The PULL-stage open-issue filter, normalized to its canonical form.
+
+    A pure normalizer + validator over the loaded config's `issue_filter`
+    (§work-intake PULL). Returns {"labels": List[List[str]], "title_pattern":
+    str|None}. Canonicalizes user input: absent / null / [] => the no-filter
+    default (pull all open issues); a FLAT list of non-empty strings is sugar for
+    a single AND-group; an already-canonical List[List[str]] is validated as-is.
+    Raises ValueError (never a silent/partial write) on a non-string label, an
+    empty-string label, an empty inner AND-group, or a title_pattern that is
+    neither null nor a compilable regex. The default (empty labels + null
+    pattern) preserves the pull-all behavior. work-intake PULL consumes this to
+    build the gh query + post-fetch title match; scheduling threads it from the
+    loaded config.
+    """
+    raw = config.get("issue_filter")
+    if raw is None or raw == []:
+        return {"labels": [], "title_pattern": None}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"issue_filter must be an object or null, got "
+            f"{type(raw).__name__}")
+
+    labels = _normalize_labels(raw.get("labels"))
+
+    pattern = raw.get("title_pattern")
+    if pattern is not None:
+        if not isinstance(pattern, str):
+            raise ValueError(
+                f"issue_filter.title_pattern must be a string or null, got "
+                f"{type(pattern).__name__}")
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(
+                f"issue_filter.title_pattern {pattern!r} is not a compilable "
+                f"regex: {exc}")
+
+    return {"labels": labels, "title_pattern": pattern}
 
 
 # --------------------------------------------------------------------------
