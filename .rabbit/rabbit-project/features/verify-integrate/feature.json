@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-14T16:35:52Z",
   "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict schemas reach a breaking major version.",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-07-22",
   "spec_no_change_reason": "spec docs/spec.md orphaned-PR convergence bullets (Verdict.orphaned, IntegrationResult.closed_orphaned, VERIFY orphan detection, INTEGRATE close-orphaned) were authored+committed before this TDD cycle in commit bde6818; this cycle implements them \u2014 no working-tree spec diff remains"
 }
