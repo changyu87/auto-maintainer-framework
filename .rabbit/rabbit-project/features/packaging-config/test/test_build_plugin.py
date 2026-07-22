@@ -556,16 +556,17 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.12.0, convergence hardening): version bumped to 0.12.0 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. v0.12.0 ships the
-# full accepted-work threading fix (execution_plan carries the work order; the
-# IMPLEMENT adapter entry reads work_orders + carries the enact task + opened
-# handoff example), park-as-true-retry-counter (is_parked counts distinct failed
-# PRs, not raw markers), and GATE setup robustness (stale-worktree cleanup +
-# fetch-returncode check), regenerating the committed plugin tree + shipped
-# default-config so the fixes reach installs release-clean.
+# Release (v0.12.1, GATE #392 base-anchoring re-land): version bumped to 0.12.1
+# in BOTH plugin.json and marketplace.json, and the two are consistent. v0.12.1
+# re-lands the #392 pre-merge-base anchoring of the GATE doc-surface
+# load-bearing-token survival check atop v0.12.0's word-boundary survival (#406),
+# so GATE reads each feature's BASE (pre-merge) declared token set rather than the
+# PR's own post-merge copy — a PR can no longer bypass the gate by dropping a
+# token AND its declaration together. The change touches the shipped
+# verify_integrate.py lib, so the committed plugin tree is regenerated and the
+# version bumped so the marketplace serves the new content to existing installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_12_0_and_consistent():
+def test_version_bumped_to_0_12_1_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -577,10 +578,10 @@ def test_version_bumped_to_0_12_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.12.0", \
-            f"plugin.json version must be 0.12.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.12.0", \
-            "marketplace.json plugin entry version must be 0.12.0"
+        assert pdata.get("version") == "0.12.1", \
+            f"plugin.json version must be 0.12.1, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.12.1", \
+            "marketplace.json plugin entry version must be 0.12.1"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
