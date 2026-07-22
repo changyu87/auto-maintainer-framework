@@ -504,11 +504,17 @@ def make_pull(runtime):
     and the §3.11.5 loopback toggle `work_own_filings` from the loaded central
     config (default True = the loop works its own filings; an explicit false
     opt-out makes PULL drop loop-filed items so they stay open for human
-    triage). safety-governance + work-intake are consumed UNCHANGED."""
+    triage). It ALSO binds safety-governance's `issue_filter` (label + title
+    narrowing): `sg.issue_filter(runtime['governance'])` returns the canonical
+    `{labels, title_pattern}` object (default no-filter when absent, so PULL
+    pulls every open issue), threaded onto the Pull exactly as work_own_filings
+    is; the DNF-label + title_pattern filtering logic is work-intake's, consumed
+    unchanged. safety-governance + work-intake are consumed UNCHANGED."""
     source = runtime.get("source") or DEFAULT_PULL_SOURCE
     pull = wi.Pull(
         source=source,
-        work_own_filings=sg.work_own_filings(runtime.get("governance") or {}))
+        work_own_filings=sg.work_own_filings(runtime.get("governance") or {}),
+        issue_filter=sg.issue_filter(runtime.get("governance") or {}))
     return wi.PULL_MANIFEST, pull.run
 
 
