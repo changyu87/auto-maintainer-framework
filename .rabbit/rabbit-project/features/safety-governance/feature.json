@@ -1,14 +1,14 @@
 {
   "name": "safety-governance",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/safety-governance/src/**"
   ],
   "created": "2026-06-13T03:57:44Z",
   "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-07-22",
-  "spec_change_reason": "Add the additive issue_filter config knob (schema 2.6.0 -> 2.7.0): an optional PULL-stage filter narrowing WHICH open GitHub issues work-intake pulls, an object {labels: <DNF-List[List[str]]>, title_pattern: <regex-or-null>}. Default {labels: [], title_pattern: null} = NO filter (pull all open issues; non-breaking, opt-in). Added issue_filter to DEFAULT_GOVERNANCE + the _overlay backfill, and the pure accessor issue_filter(config) that normalizes (flat-list sugar -> single AND-group; List[List[str]] passthrough; absent/null/[] -> no-filter) and validates (ValueError on non-string label, empty-string label, empty inner group, or non-compilable title_pattern). spec.md/contract.md/CHANGELOG.md updated.",
-  "spec_no_change_reason": "Phase 2 spec (configure writer flags, --preflight, --describe stage ordering, --setup onboarding) was committed to docs/spec.md prior to this cycle; this cycle implements code+tests for the already-committed spec. Schema unchanged (2.7.0)."
+  "spec_change_reason": "Phase 2 (writer-only; config SCHEMA UNCHANGED at 2.7.0): expand the configure WRITER + the /auto-maintainer:configure --setup skill into a full guided onboarding. configure.py gains --features-root (MAY be absolute), --work-own-filings (bool), --issue-labels (issue_filter.labels DNF: comma=AND, semicolon=OR), --issue-title-pattern (regex), all validated for issue_filter THROUGH this feature's issue_filter normalizer (writer owns no validation the reader does not; invalid -> non-zero exit, no partial write); a read-only --preflight probe emitting {gh_authenticated, gh_account, resolved_repo, config_exists}; and a --describe catalog that now carries a loop-'stage' per knob, ordered PULL->IMPLEMENT->VERIFY->GATE->SCHEDULING->SAFETY. The configure SKILL.md (via skill-creator) is rewritten into the 5-step guided --setup onboarding (preflight+confirm-repo -> stage-by-stage from --describe -> opt-in route -> one-shot apply+--show -> offer /start), deriving all knobs/prose/stage/repo+auth from --describe/--preflight and dispatching no subagent. spec.md already carried the Phase 2 surface (committed d04d763); this cycle implements code+tests and raises the housekeep doc-baseline floor 351->411 for the legitimate spec growth.",
+  "spec_no_change_reason": null
 }
