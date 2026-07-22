@@ -90,7 +90,7 @@ def _gh_fixture(updated_7=_UPDATED_T1):
 def _stub_source(json_text=None):
     items = wi.parse_gh_issues(json_text or _gh_fixture())
 
-    def source(repo=None):
+    def source(repo=None, issue_filter=None):
         return list(items)
     return source
 

@@ -89,7 +89,7 @@ def _stub_pull_source():
     saved = rt.DEFAULT_PULL_SOURCE
     items = wi.parse_gh_issues(_GH_JSON)
 
-    def source(repo=None):
+    def source(repo=None, issue_filter=None):
         return list(items)
     rt.DEFAULT_PULL_SOURCE = source
     try:

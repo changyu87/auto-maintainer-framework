@@ -91,13 +91,16 @@ def _write_json(path, payload):
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.6.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.7.0"
     d = sg.DEFAULT_GOVERNANCE
-    assert d["schema_version"] == "2.6.0"
+    assert d["schema_version"] == "2.7.0"
     assert d["mode"] == "propose"
     # doc_check_features_root (§3.7, verify-integrate GATE doc check) defaults
     # null (the doc check is OFF); schema 2.5.0 -> 2.6.0.
     assert d["doc_check_features_root"] is None
+    # issue_filter (the PULL-stage open-issue filter) defaults the no-filter
+    # object {labels: [], title_pattern: null}; schema 2.6.0 -> 2.7.0.
+    assert d["issue_filter"] == {"labels": [], "title_pattern": None}
     # self_deploy (#309) is REMOVED from the schema (the self_deploy ACTION was
     # removed in #324, so the knob is dead; schema 2.3.0 -> 2.4.0).
     assert "self_deploy" not in d
@@ -129,8 +132,9 @@ def test_maintainer_repo_is_fixed_constant():
 def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["schema_version"] == "2.6.0"
+        assert config["schema_version"] == "2.7.0"
         assert config["mode"] == "propose"
+        assert config["issue_filter"] == {"labels": [], "title_pattern": None}
         assert "self_deploy" not in config
         assert config["budget"]["per_day_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
@@ -381,6 +385,158 @@ def test_doc_check_features_root_accessor():
 
 
 # ==========================================================================
+# E2E Behaviour: issue_filter (the PULL-stage open-issue filter, §work-intake)
+# defaults the no-filter object {labels: [], title_pattern: null}, is surfaced
+# from config.json (backfilled when absent, preserved when present), and is
+# read + normalized through the pure accessor issue_filter(config). The
+# normalizer canonicalizes DNF labels (a flat list is sugar for one AND-group),
+# validates a title_pattern regex, and raises ValueError (never a silent write)
+# on a non-string label, an empty-string label, an empty inner group, or a
+# non-compilable title_pattern. Default (empty labels + null pattern) preserves
+# the pull-all behavior.
+# ==========================================================================
+
+def test_default_issue_filter_is_no_filter():
+    """issue_filter defaults the no-filter canonical object — PULL pulls every
+    open issue, exactly as before (non-breaking opt-in)."""
+    assert sg.DEFAULT_GOVERNANCE["issue_filter"] == {
+        "labels": [], "title_pattern": None}
+    with tempfile.TemporaryDirectory() as project_dir:
+        config = sg.load_config(project_dir)
+        assert config["issue_filter"] == {"labels": [], "title_pattern": None}
+
+
+def test_load_config_reads_issue_filter_override():
+    """An explicit top-level issue_filter in config.json is surfaced on the
+    loaded config (already-canonical DNF list-of-lists passthrough)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"issue_filter": {"labels": [["bug", "P1"], ["security"]],
+                                      "title_pattern": "^\\[fix\\]"}})
+        config = sg.load_config(project_dir)
+        assert config["issue_filter"] == {
+            "labels": [["bug", "P1"], ["security"]],
+            "title_pattern": "^\\[fix\\]"}
+
+
+def test_load_config_backfills_issue_filter_when_absent():
+    """A config.json that omits issue_filter loads with the default no-filter
+    object (non-breaking backfill)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"mode": "propose"})
+        config = sg.load_config(project_dir)
+        assert config["issue_filter"] == {"labels": [], "title_pattern": None}
+
+
+def test_issue_filter_accessor_default_no_filter():
+    """The pure accessor returns the no-filter canonical object by default
+    (absent key on a bare config, and on DEFAULT_GOVERNANCE)."""
+    assert sg.issue_filter({}) == {"labels": [], "title_pattern": None}
+    assert sg.issue_filter(sg.DEFAULT_GOVERNANCE) == {
+        "labels": [], "title_pattern": None}
+
+
+def test_issue_filter_accessor_normalizes_null_and_empty_to_no_filter():
+    """absent / null / [] all canonicalize to the no-filter default."""
+    assert sg.issue_filter({"issue_filter": None}) == {
+        "labels": [], "title_pattern": None}
+    assert sg.issue_filter({"issue_filter": {"labels": None,
+                                             "title_pattern": None}}) == {
+        "labels": [], "title_pattern": None}
+    assert sg.issue_filter({"issue_filter": {"labels": [],
+                                             "title_pattern": None}}) == {
+        "labels": [], "title_pattern": None}
+
+
+def test_issue_filter_accessor_expands_flat_list_to_single_and_group():
+    """A flat list of non-empty strings is sugar for a single AND-group."""
+    assert sg.issue_filter(
+        {"issue_filter": {"labels": ["bug", "P1"], "title_pattern": None}}) == {
+        "labels": [["bug", "P1"]], "title_pattern": None}
+
+
+def test_issue_filter_accessor_passes_through_dnf_list_of_lists():
+    """An already-canonical List[List[str]] is validated + returned as-is."""
+    assert sg.issue_filter(
+        {"issue_filter": {"labels": [["bug", "P1"], ["security"]],
+                          "title_pattern": None}}) == {
+        "labels": [["bug", "P1"], ["security"]], "title_pattern": None}
+
+
+def test_issue_filter_accessor_accepts_compilable_title_pattern():
+    """A title_pattern that compiles as a regex is preserved unchanged."""
+    assert sg.issue_filter(
+        {"issue_filter": {"labels": [], "title_pattern": "^\\[bug\\].*"}}) == {
+        "labels": [], "title_pattern": "^\\[bug\\].*"}
+
+
+def test_issue_filter_accessor_rejects_non_compilable_title_pattern():
+    """A title_pattern that is not a compilable regex raises ValueError (never a
+    silent write)."""
+    try:
+        sg.issue_filter(
+            {"issue_filter": {"labels": [], "title_pattern": "([unclosed"}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on non-compilable pattern")
+
+
+def test_issue_filter_accessor_rejects_non_string_title_pattern():
+    """A title_pattern that is neither null nor a string raises ValueError."""
+    try:
+        sg.issue_filter({"issue_filter": {"labels": [], "title_pattern": 123}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on non-string pattern")
+
+
+def test_issue_filter_accessor_rejects_non_string_label():
+    """A non-string label entry raises ValueError."""
+    try:
+        sg.issue_filter(
+            {"issue_filter": {"labels": ["bug", 7], "title_pattern": None}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on non-string label")
+
+
+def test_issue_filter_accessor_rejects_empty_string_label():
+    """An empty-string label raises ValueError."""
+    try:
+        sg.issue_filter(
+            {"issue_filter": {"labels": ["bug", ""], "title_pattern": None}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on empty-string label")
+
+
+def test_issue_filter_accessor_rejects_empty_inner_group():
+    """An empty inner AND-group raises ValueError."""
+    try:
+        sg.issue_filter(
+            {"issue_filter": {"labels": [["bug"], []], "title_pattern": None}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on empty inner group")
+
+
+def test_issue_filter_accessor_rejects_non_string_label_in_group():
+    """A non-string label inside an AND-group raises ValueError."""
+    try:
+        sg.issue_filter(
+            {"issue_filter": {"labels": [["bug", 7]], "title_pattern": None}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on non-string label in group")
+
+
+# ==========================================================================
 # E2E Behaviour: self_deploy is REMOVED (#324 removed the self_deploy ACTION, so
 # the knob is dead). DEFAULT_GOVERNANCE carries NO self_deploy; there is NO
 # self_deploy accessor; load_config does not surface it; and a config.json still
@@ -547,7 +703,7 @@ def test_load_config_falls_back_to_default_governance_when_no_shipped_file():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.6.0"
+        assert config["schema_version"] == "2.7.0"
         assert config["budget"]["per_day_tokens"] is None
         assert config["heartbeat"]["interval_minutes"] == 3
         assert config["backoff"]["threshold"] == 5
@@ -585,7 +741,7 @@ def test_load_config_unparsable_shipped_file_falls_back_to_defaults():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.6.0"
+        assert config["schema_version"] == "2.7.0"
 
 
 # ==========================================================================

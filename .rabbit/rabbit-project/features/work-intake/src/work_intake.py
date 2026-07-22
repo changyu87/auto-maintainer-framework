@@ -332,25 +332,73 @@ _GH_JSON_FIELDS = (
 _GH_COMMENT_FIELDS = "comments"
 
 
-def gh_issue_source(repo=None, runner=subprocess.run):
+def _run_issue_list(repo, label_group, runner):
+    """Run one `gh issue list --state open` query. A non-empty `label_group`
+    (an AND-group) adds a `--label` flag per label — repeated `--label` is gh's
+    native AND. Returns the parsed WorkItems for that single query."""
+    cmd = ["gh", "issue", "list", "--state", "open", "--json", _GH_JSON_FIELDS]
+    if repo:
+        cmd += ["--repo", repo]
+    for label in label_group:
+        cmd += ["--label", label]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    return parse_gh_issues(out.stdout)
+
+
+def gh_issue_source(repo=None, runner=subprocess.run, issue_filter=None):
     """Production issue source: shell the deterministic `gh` CLI for OPEN issues
     and parse its JSON into WorkItems. `gh` carries its own auth. When `repo` is
     given it is passed via `--repo`; otherwise gh resolves the repo from the
     project default / git remote.
 
-    `gh issue list` does not return comments, so for each pulled issue this also
-    shells `gh issue view <number> --json comments` and attaches the bounded
-    human-discussion thread to the WorkItem (so the triager + implementer see
-    follow-up guidance, not just the original body). A per-issue comment fetch
-    that fails is tolerated (the item keeps an empty `comments`) — a flaky
-    comment read must never sink the whole PULL. The subprocess `runner` is
-    INJECTABLE (defaulting to subprocess.run) so tests drive it without network.
+    `issue_filter` is the already-normalized `{labels: List[List[str]],
+    title_pattern: str|None}` object (owned + normalized by safety-governance,
+    threaded in by scheduling — work-intake does NOT read config.json). It
+    narrows WHICH open issues are pulled:
+      - Labels (DNF, OR-of-ANDs) — SERVER-SIDE. For a non-empty `labels`, one
+        `gh issue list --label ...` query runs per AND-group (repeated `--label`
+        is gh's native AND), and the results are UNIONED deduped by issue number
+        (gh cannot OR labels in one query). Empty `labels` runs the single
+        all-open query. Server-side filtering also cuts the per-issue comment
+        fetches to only matching issues.
+      - Title (`title_pattern`) — POST-FETCH. gh has no title query, so a
+        non-null `title_pattern` is applied as a regex `search` over each
+        fetched title, dropping non-matches BEFORE comment enrichment.
+    The two narrowings COMPOSE; the default filter (empty labels + null pattern)
+    is a no-op that pulls every open issue exactly as before.
+
+    `gh issue list` does not return comments, so for each SURVIVING issue this
+    also shells `gh issue view <number> --json comments` and attaches the
+    bounded human-discussion thread to the WorkItem (so the triager +
+    implementer see follow-up guidance, not just the original body). A per-issue
+    comment fetch that fails is tolerated (the item keeps an empty `comments`) —
+    a flaky comment read must never sink the whole PULL. The subprocess `runner`
+    is INJECTABLE (defaulting to subprocess.run) so tests drive it without
+    network.
     """
-    cmd = ["gh", "issue", "list", "--state", "open", "--json", _GH_JSON_FIELDS]
-    if repo:
-        cmd += ["--repo", repo]
-    out = runner(cmd, capture_output=True, text=True, check=True)
-    items = parse_gh_issues(out.stdout)
+    issue_filter = issue_filter or {}
+    label_groups = issue_filter.get("labels") or []
+    title_pattern = issue_filter.get("title_pattern")
+
+    # Labels (DNF) — server-side: one query per AND-group, unioned+deduped by
+    # number (first-seen order preserved). Empty labels => single all-open query.
+    if label_groups:
+        items = []
+        seen = set()
+        for group in label_groups:
+            for item in _run_issue_list(repo, group, runner):
+                if item.number not in seen:
+                    seen.add(item.number)
+                    items.append(item)
+    else:
+        items = _run_issue_list(repo, [], runner)
+
+    # Title — post-fetch regex, applied BEFORE comment enrichment so dropped
+    # issues never incur a comment fetch.
+    if title_pattern is not None:
+        pattern = re.compile(title_pattern)
+        items = [item for item in items if pattern.search(item.title)]
+
     for item in items:
         item.comments = _fetch_issue_comments(item.number, repo, runner)
     return items
@@ -378,18 +426,28 @@ class Pull:
     maps each to a WorkItem, writes the `work_items` slot, and emits OK if any
     were found else EMPTY.
 
-    The source is injectable (a callable `source(repo) -> list[WorkItem]`,
-    defaulting to the production gh-shelling source) so tests pass a stub over
-    fixture issues — the determinism seam.
+    The source is injectable (a callable
+    `source(repo, issue_filter=None) -> list[WorkItem]`, defaulting to the
+    production gh-shelling source) so tests pass a stub over fixture issues — the
+    determinism seam.
+
+    `issue_filter` is the already-normalized `{labels, title_pattern}` object
+    (owned + normalized by safety-governance, threaded in by scheduling); it is
+    the single filter point, passed straight through to the source. work-intake
+    does NOT read config.json. The default `None` pulls every open issue.
     """
 
-    def __init__(self, source=gh_issue_source, repo=None, work_own_filings=True):
+    def __init__(self, source=gh_issue_source, repo=None, work_own_filings=True,
+                 issue_filter=None):
         self._source = source
         self._repo = repo
         self._work_own_filings = work_own_filings
+        self._issue_filter = issue_filter
 
     def run(self, ctx):  # noqa: ARG002 — ctx is the fsm-contracts TickContext
-        items = self._source(self._repo)
+        # The source is the single filter point (issue_filter narrows what it
+        # returns); park/loopback exclusions below remain after the source call.
+        items = self._source(self._repo, issue_filter=self._issue_filter)
         # Park guard (Phase 2 convergence): UNCONDITIONALLY exclude parked items
         # — an issue whose comments carry >= PARK_THRESHOLD gate-fail markers has
         # failed too many times, so the loop stops re-working it and converges to

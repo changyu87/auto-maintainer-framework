@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.8.0
+version: 0.9.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -32,11 +32,15 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 
 ```json
 {
-  "schema_version": "2.6.0",
+  "schema_version": "2.7.0",
   "mode": "propose",
   "work_own_filings": true,
   "regression_command": null,
   "doc_check_features_root": null,
+  "issue_filter": {
+    "labels": [],
+    "title_pattern": null
+  },
   "budget": {
     "per_day_tokens": null,
     "window_tz": "local"
@@ -94,6 +98,30 @@ single central `userConfig` (§3.10.1); it **replaces** the former
   Kept **separate** from `features_root` (VERIFY's complement locator, which may
   be absolute) so the doc gate is opt-in **independently** and is LIVE on the
   auto-merge path when set. Read through `doc_check_features_root(config)`.
+- `issue_filter` — an optional filter narrowing WHICH open GitHub issues the
+  PULL stage (work-intake) pulls. An object
+  `{"labels": <DNF>, "title_pattern": <regex-string-or-null>}`:
+  - `labels` — a **disjunctive-normal-form (OR-of-ANDs)** label matcher in
+    canonical form `List[List[str]]`: the outer list is OR, each inner list is
+    AND. `[["A","B"],["C"]]` means *(label A AND label B) OR (label C)*. The
+    canonical empty form `[]` = **no label filter**.
+  - `title_pattern` — a regular-expression string an issue's title must match
+    (applied post-fetch, since `gh` has no title query), or **`null` = no title
+    filter**.
+  **Default `{"labels": [], "title_pattern": null}` = NO filter** — PULL pulls
+  every open issue, exactly as before (non-breaking, opt-in). Read + normalized
+  through the pure accessor `issue_filter(config)`, which returns the canonical
+  object. The **normalizer** accepts and canonicalizes user input:
+  absent / `null` / `[]` ⇒ no-filter; a **flat** list of non-empty strings
+  `["A","B"]` is sugar for a single AND-group ⇒ `[["A","B"]]`; a `List[List[str]]`
+  is validated as-is. It **rejects** (raises `ValueError`, never a silent write)
+  non-string label entries, empty-string labels, and empty inner groups; and
+  `title_pattern` must be a string that **compiles** as a regex, or `null`.
+  Owned here; **`work-intake` PULL** consumes it to build the `gh` query (one
+  `gh issue list --label …` query per AND-group, unioned + deduped, since `gh`
+  cannot OR labels) plus the post-fetch title match, and
+  **`scheduling`/`tick-orchestrator`** threads it from the loaded config into
+  PULL (separate cycles).
 
 The runtime file stays **lean**: schema-definition metadata (`owner`,
 `deprecation_criterion`) lives in this spec, `safety_governance.py`'s module
@@ -288,6 +316,13 @@ the trust `mode` and budget ceilings without hand-editing JSON.
 - The `config.json` runtime file carries only `schema_version` + the knobs; it is
   the single central config (no scattered per-concern files). `maintainer-self`
   routing is a fixed `MAINTAINER_REPO` constant, not a config field.
+- `issue_filter(config)` is a pure normalizer: it canonicalizes to
+  `{"labels": List[List[str]], "title_pattern": str|None}`, treats
+  absent/`null`/`[]` as the no-filter default, expands a flat string list into a
+  single AND-group, and raises `ValueError` (never a silent/partial write) on a
+  non-string label, an empty-string label, an empty inner group, or a
+  `title_pattern` that is neither `null` nor a compilable regex. The default
+  (empty labels + null pattern) preserves the pull-all behavior.
 - Budget NEVER latches a halt disposition — it gates work and auto-resumes via
   `IDLE` at the next window. `null` ceiling ⇒ unbounded (no gate).
 - ABORTED (§3.8.3 faults) IS a true latch; only budget auto-resumes.

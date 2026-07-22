@@ -314,7 +314,7 @@ def test_pull_then_triage_pipeline_e2e():
         ' "labels": [{"name": "bug"}], "author": {"login": "octocat"},'
         ' "createdAt": "2026-05-01T10:00:00Z", "updatedAt": "%s"}]' % fresh)
 
-    def pull_source(repo=None):
+    def pull_source(repo=None, issue_filter=None):
         return wi.parse_gh_issues(gh_json)
 
     pull = wi.Pull(source=pull_source)

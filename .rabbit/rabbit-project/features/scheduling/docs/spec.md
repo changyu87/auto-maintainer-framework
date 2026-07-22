@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.29.0
+version: 0.30.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -789,6 +789,20 @@ safety-governance + work-intake are consumed UNCHANGED — the edit lives ONLY i
 items (the loop works its own discoveries). An explicit `work_own_filings: false`
 config → the bound `Pull` EXCLUDES loop-filed items at PULL so they stay open for
 human triage (the exclusion logic is work-intake's, consumed unchanged).
+
+## Issue-filter wiring — PULL honors `issue_filter` (label + title narrowing)
+
+`make_pull(runtime)` also threads safety-governance's `issue_filter` into
+work-intake's `Pull`: it constructs
+`wi.Pull(source=source, work_own_filings=sg.work_own_filings(runtime['governance']), issue_filter=sg.issue_filter(runtime['governance']))`.
+`runtime['governance']` is the per-tick loaded central config; `sg.issue_filter`
+is safety-governance's pure normalizer, returning the canonical
+`{labels: List[List[str]], title_pattern: str|None}` (default no-filter when
+absent). safety-governance + work-intake are consumed UNCHANGED — the edit lives
+ONLY in `make_pull`. Default no-filter → the bound `Pull` pulls every open issue
+(non-breaking). A configured `issue_filter` → the bound `Pull` narrows the pulled
+issues by the DNF labels (server-side per-AND-group `gh --label` union) and the
+`title_pattern` regex (the filtering logic is work-intake's, consumed unchanged).
 
 ## Backoff: bounded-retry → escalate → defer for blocked work orders (§3.8.5)
 
