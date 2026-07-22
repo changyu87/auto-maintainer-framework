@@ -21,8 +21,6 @@
     "gate_failed",
     "orphaned",
     "closed_orphaned",
-    "gh_closing_issue_state",
-    "gh_pr_close_sink",
     "GATE",
     "GateResult",
     "gate_results",
