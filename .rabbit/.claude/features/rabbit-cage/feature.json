@@ -1,6 +1,6 @@
 {
   "name": "rabbit-cage",
-  "version": "5.94.0",
+  "version": "5.94.1",
   "contiguous_invariants": true,
   "owner": "rabbit-workflow team",
   "tdd_state": "test-green",
@@ -14,7 +14,7 @@
   },
   "deprecation_criterion": "when Claude Code exposes native event dispatchers and artifact publishing that subsume this role",
   "status": "active",
-  "updated": "2026-06-11",
+  "updated": "2026-06-21",
   "manifest": [
     {
       "api": "publish_settings",
