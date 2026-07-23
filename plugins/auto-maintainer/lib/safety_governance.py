@@ -435,6 +435,14 @@ def load_config(project_dir):
         # whole-file overlay). _overlay then normalises + drops removed keys.
         shipped = _shipped_default()
         mine = shipped if shipped is not None else DEFAULT_GOVERNANCE
+        # schema_version is loader-owned metadata (the GOVERNANCE_SCHEMA_VERSION
+        # stamp), NOT a user knob, and gates nothing at runtime — _overlay always
+        # normalizes it to the current constant (it is never re-surfaced from the
+        # override). Excluding it from the 3-way merge stops a spurious
+        # "field-merge conflict at schema_version" warning when the user/shipped/
+        # base stamps differ; a real knob conflict (e.g. mode) still surfaces.
+        raw = {k: v for k, v in raw.items() if k != "schema_version"}
+        mine = {k: v for k, v in mine.items() if k != "schema_version"}
         merged, conflicts = merge_config(DEFAULT_GOVERNANCE, raw, mine)
         # Surface conflicts (acceptance #2): a key the user changed that the new
         # default ALSO changed keeps the USER value (merge_config never

@@ -34,7 +34,7 @@ no network).
 scheduling CONSUMES run_tick + lifecycle-dispositions + heartbeat UNCHANGED; it
 never edits or forks them.
 
-Version: 0.1.0
+Version: 0.2.0
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the control surface / runtime
@@ -105,19 +105,32 @@ def _resolve_runtime_dir(project_dir=None):
 
 def clobber(runtime_dir, apply=False):
     """Reset the loop: remove the runtime-state artifacts under ``runtime_dir``,
-    preserving config. Returns ``{"removed": [...], "preserved": [...]}`` of
-    absolute paths (the removed list is what WAS removed when ``apply`` is True,
-    else what WOULD be removed on a dry-run).
+    preserving config. Returns ``{"removed": [...], "preserved": [...],
+    "loop_intent_present": <bool>}`` — ``removed``/``preserved`` are absolute
+    paths (the removed list is what WAS removed when ``apply`` is True, else what
+    WOULD be removed on a dry-run).
+
+    ``loop_intent_present`` is heartbeat's durable loop-intent marker, read
+    BEFORE any deletion (clobber removes the marker, so the flag must be captured
+    first). It is True ONLY when the human ``/start``-ed a live scheduled loop; a
+    ``/tick``-only or paused-tick session (``disposition==RUNNING`` + a checkpoint
+    but no loop-intent) reports False. The ``/clobber`` SKILL keys its
+    ``/stop``-first recommendation on this flag, NOT on ``disposition``.
 
     NEVER creates ``runtime_dir``: an absent dir yields empty lists (nothing to
     do). Idempotent: a missing artifact is silently skipped. Config
     (``config.json`` / ``route.json`` / ``adapter-map.json`` / ``*.bak`` /
     ``*.migrated``) is NEVER removed.
     """
+    # Read the durable loop-intent BEFORE deleting anything (clobber removes the
+    # loop-intent marker, so the flag has to be captured up front). Works for an
+    # absent dir too: no marker -> False.
+    loop_intent_present = heartbeat.loop_intent_is_running(runtime_dir)
     removed = []
     preserved = []
     if not os.path.isdir(runtime_dir):
-        return {"removed": removed, "preserved": preserved}
+        return {"removed": removed, "preserved": preserved,
+                "loop_intent_present": loop_intent_present}
 
     state_names = set(_state_artifact_names())
 
@@ -143,7 +156,8 @@ def clobber(runtime_dir, apply=False):
         if apply:
             shutil.rmtree(dispatch_out, ignore_errors=True)
 
-    return {"removed": sorted(removed), "preserved": sorted(preserved)}
+    return {"removed": sorted(removed), "preserved": sorted(preserved),
+            "loop_intent_present": loop_intent_present}
 
 
 def main(argv=None):
@@ -163,10 +177,13 @@ def main(argv=None):
     summary = clobber(runtime_dir, apply=args.yes)
     sys.stdout.write(json.dumps(summary) + "\n")
     verb = "removed" if args.yes else "would remove (dry-run; pass --yes)"
+    intent = ("loop-intent PRESENT (a /start-ed loop is live; /stop first)"
+              if summary["loop_intent_present"]
+              else "no loop-intent (no live scheduled loop)")
     sys.stdout.write(
         f"[clobber] {verb} {len(summary['removed'])} runtime-state artifact(s); "
         f"preserved {len(summary['preserved'])} config file(s) under "
-        f"{runtime_dir}\n")
+        f"{runtime_dir}; {intent}\n")
     return 0
 
 
