@@ -1546,11 +1546,14 @@ def _has_merge_queue(pr_ref, repo, base_branch, runner):
         "query($owner:String!,$name:String!,$branch:String!){"
         "repository(owner:$owner,name:$name){"
         "mergeQueue(branch:$branch){id}}}")
+    # All three are GraphQL String! variables; pass them with -f (always sends a
+    # string) NOT -F (which type-infers, e.g. coercing a numeric branch name to an
+    # int and breaking the String! binding -> a spurious no-queue verdict).
     cmd = ["gh", "api", "graphql",
            "-f", "query=" + query,
-           "-F", "owner=" + owner,
-           "-F", "name=" + name,
-           "-F", "branch=" + base_branch]
+           "-f", "owner=" + owner,
+           "-f", "name=" + name,
+           "-f", "branch=" + base_branch]
     try:
         proc = runner(cmd, capture_output=True, text=True)
         if getattr(proc, "returncode", 0) != 0:
