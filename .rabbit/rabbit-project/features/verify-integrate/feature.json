@@ -1,13 +1,13 @@
 {
   "name": "verify-integrate",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/verify-integrate/src/**"
   ],
   "created": "2026-06-14T16:35:52Z",
   "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict schemas reach a breaking major version.",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-07-23",
-  "spec_no_change_reason": "spec INTEGRATE auto-merge bullet already committed on this branch (1b01155); no further spec edit this cycle"
+  "spec_change_reason": "INTEGRATE enables GitHub native auto-merge in auto-merge mode: new IntegrationResult.auto_merge_enabled outcome + INTEGRATION_RESULT_SCHEMA_VERSION 1.1.0->1.2.0 (additive)"
 }
