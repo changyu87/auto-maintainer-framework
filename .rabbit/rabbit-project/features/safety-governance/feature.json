@@ -1,14 +1,14 @@
 {
   "name": "safety-governance",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/safety-governance/src/**"
   ],
   "created": "2026-06-13T03:57:44Z",
   "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "updated": "2026-07-23",
-  "spec_change_reason": "Stop the spurious 'config field-merge conflict at schema_version' stderr warning. schema_version is loader-owned metadata (the GOVERNANCE_SCHEMA_VERSION stamp, not a user knob, gates nothing at runtime); _overlay already normalizes it to the current constant, but merge_config still ran over it and recorded a bogus conflict (user 2.7.0 vs shipped 2.2.0 vs base 2.8.0 all differ). load_config now strips schema_version from copies of the override (raw) and the shipped default (mine) before merge_config, so no spurious conflict is ever recorded. Pure noise fix, NO behavior change: the loaded schema_version was and remains GOVERNANCE_SCHEMA_VERSION, real knob conflicts (e.g. mode) still warn, and neither _overlay nor the shipped default-config/config.json (frozen 2.2.0) is touched. spec.md carried the exclusion paragraph (committed dfc9e37); this cycle implements the code+tests and re-anchors the housekeep doc-baseline floor 438->454 for the legitimate spec growth.",
+  "spec_change_reason": "Add the pure helper issue_filter_apply_labels(config) -> list[str]: the labels a loop-FILED discovery issue must carry to be re-pullable by a later label-filtered PULL, namely the FIRST non-empty AND-group of the normalized issue_filter.labels (carrying one full AND-group satisfies the whole DNF), or [] when issue_filter has no labels. It reuses the existing issue_filter(config) normalizer; pure, no I/O. GOVERNANCE_SCHEMA_VERSION UNCHANGED (2.8.0) — accessor only, no new config field. Label dimension only (title_pattern is not enforced on filed-issue titles, a documented limitation). scheduling resolves it at the REPORT flush and threads it into work-intake's filing sink. The spec sub-bullet + contract accessor entry were committed in cb35896; this cycle implements the code+tests and re-anchors the housekeep doc-baseline floor 454->468 for the legitimate spec growth.",
   "spec_no_change_reason": "spec sub-bullet for issue_filter_apply_labels already committed in cb35896 (spec version 0.13.0) prior to this test-write cycle"
 }
