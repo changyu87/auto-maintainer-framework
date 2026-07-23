@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.34.0
+version: 0.35.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -274,7 +274,15 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    - `/auto-maintainer:status` — invokes `status.py` (default human view) and
      relays its rendered output: the emphasized plugin version, the disposition/
      awaiting/mode/budget/reported/read-product fields, and the active route
-     listing (states + happy-path chain, shown even when default).
+     listing (states + happy-path chain, shown even when default). The skill MUST
+     reproduce the script's FULL rendered human view **verbatim in a fenced code
+     block** in its reply — NOT a one-line prose summary. Claude Code collapses
+     long Bash *tool* outputs in the terminal (a `+N lines` fold), so surfacing
+     the multi-line view inside the assistant's own message is what lets the user
+     see the whole formatted report without expanding the folded tool result.
+     (Historical note: the v0.1.0 skill said "prints one status line" and told
+     the model to relay "the line" — stale since the v0.14.0 multi-line render;
+     that wording is corrected to the verbatim-fenced-view relay.)
    - `/auto-maintainer:clobber` — invokes `clobber.py` to RESET the loop to a
      clean start: it deletes the RUNTIME-STATE artifacts under the runtime dir
      while PRESERVING user config. **Cleared:** `durable-state.json` (ledgers +
