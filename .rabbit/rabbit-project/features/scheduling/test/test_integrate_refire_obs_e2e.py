@@ -95,9 +95,14 @@ _OK_PR = {
 _DEFAULT_BRANCH = "main"
 
 
-def _patch_vi_seams(open_prs=None, merge_calls=None, raise_merge=False):
+def _patch_vi_seams(open_prs=None, merge_calls=None, raise_merge=False,
+                    auto_enabled=False):
     """Override verify-integrate's gh seams so VERIFY/INTEGRATE touch no network.
-    Returns a restore callable."""
+    Returns a restore callable. The merge sink mirrors the production
+    `gh_pr_merge_sink(pr_ref, repo=None, auto=False)` signature and returns an
+    `auto_enabled` flag: when True the entry is recorded under
+    integration_result.auto_merge_enabled (GitHub native auto-merge queued — a
+    PENDING success), else under merged (merged now)."""
     saved = {
         "open": vi.gh_open_pr_source,
         "branch": vi.gh_default_branch_source,
@@ -110,12 +115,13 @@ def _patch_vi_seams(open_prs=None, merge_calls=None, raise_merge=False):
     def _branch(repo=None):
         return _DEFAULT_BRANCH
 
-    def _merge(pr_ref, repo=None):
+    def _merge(pr_ref, repo=None, auto=False):
         if merge_calls is not None:
             merge_calls.append(pr_ref)
         if raise_merge:
             raise RuntimeError("merge sink failed for " + pr_ref)
-        return {"pr_ref": pr_ref, "url": vi._pr_url(pr_ref, repo)}
+        return {"pr_ref": pr_ref, "url": vi._pr_url(pr_ref, repo),
+                "auto_enabled": auto_enabled}
 
     vi.gh_open_pr_source = _open
     vi.gh_default_branch_source = _branch
@@ -343,6 +349,56 @@ def test_no_error_tick_omits_integrate_errored_token_from_trace():
         restore()
     assert "merged=1" in trace, trace
     assert "integrate_errored=" not in trace, trace
+
+
+# ==========================================================================
+# Behaviour E — auto_merge_enabled (a PENDING success) is surfaced in the
+# tick_end detail (always) + the one-line trace (only when >0), distinct from
+# integrate_errored.
+# ==========================================================================
+
+def test_auto_merge_enabled_tick_surfaces_count_in_detail_and_trace():
+    """When INTEGRATE enables GitHub native auto-merge on a PR (the merge sink
+    returns auto_enabled=True), the integration_result.auto_merge_enabled list
+    carries it. tick_end.detail.auto_merge_enabled == that count, and the
+    one-line trace shows auto_merge_enabled=<n>. The PR is a PENDING success — it
+    is NOT counted under merged (merged=0 / merged_refs=[]) and NOT an error."""
+    project_dir, cfg, state_path, journal_path = _setup_project("auto-merge")
+    restore = _patch_vi_seams(auto_enabled=True)
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                        state_path=state_path, journal_path=journal_path,
+                        source=_stub_source())
+        trace = buf.getvalue()
+    finally:
+        restore()
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("auto_merge_enabled") == 1, detail
+    # Pending, not merged and not an error.
+    assert detail.get("merged") == 0, detail
+    assert detail.get("merged_refs") == [], detail
+    assert detail.get("integrate_errored") == 0, detail
+    # The trace shows the token when >0.
+    assert "auto_merge_enabled=1" in trace, trace
+
+
+def test_no_auto_merge_enabled_shows_zero_and_omits_trace_token():
+    """A route with no INTEGRATE (or an integration_result lacking the key) yields
+    auto_merge_enabled=0 via the .get default, and the trace omits the token
+    (mirroring the integrate_errored=<n>-only-when-positive convention)."""
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "propose", route=rt.DEFAULT_ROUTE)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                    state_path=state_path, journal_path=journal_path,
+                    source=_stub_source())
+    trace = buf.getvalue()
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("auto_merge_enabled") == 0, detail
+    assert "auto_merge_enabled=" not in trace, trace
 
 
 if __name__ == "__main__":

@@ -733,8 +733,8 @@ def _patch_vi_seams():
     def _branch(repo=None):
         return "main"
 
-    def _merge(pr_ref, repo=None):
-        return {"pr_ref": pr_ref, "url": ""}
+    def _merge(pr_ref, repo=None, auto=False):
+        return {"pr_ref": pr_ref, "url": "", "auto_enabled": False}
 
     vi.gh_open_pr_source = _open
     vi.gh_default_branch_source = _branch
