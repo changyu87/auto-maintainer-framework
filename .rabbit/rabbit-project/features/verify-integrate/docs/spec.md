@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.6.0
+version: 0.7.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult schemas reach a breaking major version.
 ---
@@ -239,29 +239,37 @@ loop PRs) + `regression_command` from the central config
   (`safety_governance.merge_guardrails`, §3.8.1) and, if clean, merges via an
   injectable merge sink. Records `IntegrationResult`. Non-ok verdicts and
   guardrail violations go to `skipped`.
-- **Merge via GitHub auto-merge ("merge when ready") at `auto-merge` mode.** Most
-  real repos hard-block an immediate `gh pr merge` behind required status checks
-  (branch protection / rulesets) that are still running when the loop opens a PR —
-  so a direct merge returns non-zero and the PR is (wrongly) recorded as an
-  INTEGRATE error. The production merge sink therefore, in `auto-merge` mode,
-  runs `gh pr merge <pr> --auto --merge --delete-branch` to **enable GitHub's
-  native auto-merge**: GitHub merges the PR automatically once its required checks
-  pass (immediately if already green). If the `--auto` call fails because the repo
-  does not have auto-merge enabled, the sink **falls back** to an immediate
-  `gh pr merge <pr> --merge --delete-branch`. The sink reports which path it took.
-  - When the PR merged immediately → recorded in `IntegrationResult.merged`
-    (`{pr_ref, url}`) as before.
-  - When GitHub auto-merge was ENABLED (merge pending on checks) → recorded in the
-    new `IntegrationResult.auto_merge_enabled` list (`{pr_ref, url}`) — a
-    **pending success, NOT an error** (so it no longer inflates
-    `integrate_errored`). The PR stays OPEN until GitHub merges it; the source
-    issue closes then via the PR's `Closes #<n>`. Re-work is already prevented by
-    the acted-ledger `opened`-lock (an `opened` work order re-enters only when its
-    PR is CLOSED-and-not-merged; an auto-merge-pending PR is OPEN, so it stays
-    locked — the loop treats it as a long-lived open PR and never supersedes it).
-  - A genuine merge fault (both `--auto` and the immediate fallback fail) is
-    recorded in `errors` as before. `INTEGRATION_RESULT_SCHEMA_VERSION` bumps
-    (additive) for the new `auto_merge_enabled` field.
+- **Merge is MERGE-QUEUE-AWARE at `auto-merge` mode.** A branch protected by a
+  **GitHub merge queue** REJECTS a merge-method flag: `gh pr merge <pr> --merge`
+  (or `--squash`/`--rebase`) is refused because the queue owns the merge method,
+  and a direct immediate merge is not allowed at all — the PR must be added to the
+  queue via `gh pr merge <pr> --auto` (no method flag). Passing `--merge` to a
+  queue branch is exactly what made a full batch of INTEGRATE merges fail with an
+  opaque non-zero exit. The production merge sink therefore, in `auto-merge` mode,
+  **detects a merge queue on the PR's base branch** (GraphQL
+  `repository.mergeQueue(branch: <base>)` — non-null ⇒ queue) and branches:
+  - **Queue present →** `gh pr merge <pr> --auto` — **no method flag and no
+    `--delete-branch`** (the queue owns the method, per its `ALLGREEN`/config, and
+    branch deletion is handled by the queue + the repo's `delete_branch_on_merge`).
+    This adds the PR to the merge queue; the queue merges it when all required
+    checks are green. Recorded in `IntegrationResult.auto_merge_enabled` (a
+    **pending success**, NOT an error).
+  - **No queue →** the method-specified path: try an immediate
+    `gh pr merge <pr> --merge --delete-branch`; if that fails because the PR is
+    not yet mergeable (required checks still pending), enable native auto-merge
+    with `gh pr merge <pr> --auto --merge --delete-branch`. An immediate merge →
+    `merged`; an enabled auto-merge → `auto_merge_enabled`.
+  - The sink runs gh with **captured stderr** and, on a non-zero exit, records the
+    **gh stderr text** in `IntegrationResult.errors` (`{pr_ref, reason}`) — never
+    a bare "exit status 1" — so an access failure (403/404 — e.g. the session's
+    gh account lacks repo access), a queue-method conflict, or a transient gh
+    error is diagnosable from the log.
+  - `auto_merge_enabled` PRs stay OPEN until the queue/auto-merge merges them; the
+    source issue closes then via the PR's `Closes #<n>`. Re-work is already
+    prevented by the acted-ledger `opened`-lock (an `opened` work order re-enters
+    only when its PR is CLOSED-and-not-merged; a pending PR is OPEN, so it stays
+    locked — the loop never supersedes it). `INTEGRATION_RESULT_SCHEMA_VERSION`
+    already carries the `auto_merge_enabled` field (no further bump).
   This is `auto-merge`-mode-only: at `dry-run`/`propose` INTEGRATE never merges or
   enables auto-merge (the would-merge intent is logged; a human merges).
 - **GATE-failed PRs are NOT merged.** For each `GateResult.passed=False`,
