@@ -21,6 +21,7 @@
     "gate_failed",
     "orphaned",
     "closed_orphaned",
+    "auto_merge_enabled",
     "GATE",
     "GateResult",
     "gate_results",

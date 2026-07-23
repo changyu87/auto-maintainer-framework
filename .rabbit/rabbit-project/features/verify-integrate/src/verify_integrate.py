@@ -1393,7 +1393,7 @@ def make_gate(runtime):
 
 # The versioned IntegrationResult schema (machine-first; bumped on a breaking
 # change to the field set). Distinct from the feature version.
-INTEGRATION_RESULT_SCHEMA_VERSION = "1.1.0"
+INTEGRATION_RESULT_SCHEMA_VERSION = "1.2.0"
 
 
 @dataclass(eq=True)
@@ -1401,7 +1401,12 @@ class IntegrationResult:
     """The outcome of an INTEGRATE run (DESIGN §3.7).
 
     Partitions each considered PR into exactly one of these lists:
-      - `merged`  — [{pr_ref, url}] the PRs the merge sink merged.
+      - `merged`  — [{pr_ref, url}] the PRs the merge sink merged immediately.
+      - `auto_merge_enabled` — [{pr_ref, url}] PRs for which GitHub NATIVE
+        auto-merge was ENABLED (merge pending on required checks). A PENDING
+        SUCCESS, NOT an error: the PR stays OPEN until GitHub merges it once its
+        checks pass; the existing acted-ledger opened-lock keeps the loop from
+        re-working an OPEN PR.
       - `skipped` — [{pr_ref, reason}] non-ok verdicts, not-permitted modes
         (the dry-run/propose NO-OP), guardrail violations, ok verdicts with
         no matching GateResult (defensive: never merge an un-gated PR), and the
@@ -1420,6 +1425,7 @@ class IntegrationResult:
     """
 
     merged: List[dict] = field(default_factory=list)
+    auto_merge_enabled: List[dict] = field(default_factory=list)
     skipped: List[dict] = field(default_factory=list)
     errors: List[dict] = field(default_factory=list)
     gate_failed: List[dict] = field(default_factory=list)
@@ -1429,6 +1435,7 @@ class IntegrationResult:
         return {
             "schema_version": INTEGRATION_RESULT_SCHEMA_VERSION,
             "merged": [dict(e) for e in self.merged],
+            "auto_merge_enabled": [dict(e) for e in self.auto_merge_enabled],
             "skipped": [dict(e) for e in self.skipped],
             "errors": [dict(e) for e in self.errors],
             "gate_failed": [dict(e) for e in self.gate_failed],
@@ -1439,6 +1446,7 @@ class IntegrationResult:
     def from_dict(cls, d):
         return cls(
             merged=[dict(e) for e in d.get("merged", [])],
+            auto_merge_enabled=[dict(e) for e in d.get("auto_merge_enabled", [])],
             skipped=[dict(e) for e in d.get("skipped", [])],
             errors=[dict(e) for e in d.get("errors", [])],
             gate_failed=[dict(e) for e in d.get("gate_failed", [])],
@@ -1507,25 +1515,64 @@ def gate_fail_comment_body(pr_ref, reason, failure_summary):
             f"this PR was NOT merged.\n\n{payload}\n")
 
 
-def gh_pr_merge_sink(pr_ref, repo=None, runner=subprocess.run):
-    """Production merge sink: shell `gh pr merge <number> --merge
-    --delete-branch` (and `--repo` when given) to merge the PR and delete its
-    head branch in one deterministic CLI call. Returns a {pr_ref, url} merged
-    entry whose `url` is derived from `pr_ref` via `_pr_url` (observability: a
-    merged entry carries a real link, not url:''). `gh` carries its own auth.
-
-    The PR number is parsed off the `owner/repo#number` ref (gh accepts the bare
-    number when `--repo` scopes it). The subprocess `runner` is INJECTABLE
-    (defaulting to subprocess.run) so tests assemble the command with a fake —
-    no network, the failure locatable to the merge boundary (mirror of
-    gh_open_pr_source).
-    """
-    number = pr_ref.split("#")[-1]
+def _gh_pr_merge_immediate(number, pr_ref, url, repo, runner):
+    """Immediate merge: shell `gh pr merge <number> --merge --delete-branch`
+    (and `--repo` when given). Returns a {pr_ref, url, auto_enabled:False} entry.
+    check=True so a merge fault is loud and locatable at the merge boundary."""
     cmd = ["gh", "pr", "merge", number, "--merge", "--delete-branch"]
     if repo:
         cmd += ["--repo", repo]
     runner(cmd, capture_output=True, text=True, check=True)
-    return {"pr_ref": pr_ref, "url": _pr_url(pr_ref, repo)}
+    return {"pr_ref": pr_ref, "url": url, "auto_enabled": False}
+
+
+def gh_pr_merge_sink(pr_ref, repo=None, runner=subprocess.run, auto=False):
+    """Production merge sink. Returns a {pr_ref, url, auto_enabled} entry whose
+    `url` is derived from `pr_ref` via `_pr_url` (observability: the entry carries
+    a real link, not url:''). `gh` carries its own auth. The PR number is parsed
+    off the `owner/repo#number` ref (gh accepts the bare number when `--repo`
+    scopes it). The subprocess `runner` is INJECTABLE (defaulting to
+    subprocess.run) so tests exercise both routes with no network — the failure
+    locatable to the merge boundary (mirror of gh_open_pr_source).
+
+    `auto=False` (propose/dry-run never reach this; used by the plain path):
+    immediate `gh pr merge <n> --merge --delete-branch`; returns
+    `auto_enabled=False`.
+
+    `auto=True` (auto-merge mode): enable GitHub NATIVE auto-merge via
+    `gh pr merge <n> --auto --merge --delete-branch` — GitHub merges the PR once
+    its required checks pass (immediately if already green). Because `gh pr merge
+    --auto` exits 0 both when it QUEUES and when it MERGES-now, after a successful
+    --auto call the PR state is probed once (`gh pr view <n> --json state`, via the
+    same injectable runner): state==MERGED -> merged now (auto_enabled=False);
+    else -> auto-merge queued (auto_enabled=True). If the --auto call RAISES (the
+    repo has auto-merge disabled), FALL BACK to an immediate `--merge`
+    (auto_enabled=False)."""
+    number = pr_ref.split("#")[-1]
+    url = _pr_url(pr_ref, repo)
+    if not auto:
+        return _gh_pr_merge_immediate(number, pr_ref, url, repo, runner)
+    cmd = ["gh", "pr", "merge", number, "--auto", "--merge", "--delete-branch"]
+    if repo:
+        cmd += ["--repo", repo]
+    try:
+        runner(cmd, capture_output=True, text=True, check=True)
+    except Exception:  # noqa: BLE001 — repo auto-merge disabled: fall back
+        return _gh_pr_merge_immediate(number, pr_ref, url, repo, runner)
+    merged_now = _gh_pr_is_merged(number, repo, runner)
+    return {"pr_ref": pr_ref, "url": url, "auto_enabled": not merged_now}
+
+
+def _gh_pr_is_merged(number, repo, runner):
+    """Probe the PR state once (`gh pr view <n> --json state`, via the injectable
+    runner) to classify a successful `gh pr merge --auto`: True when the PR is
+    already MERGED (was green, merged now), False otherwise (auto-merge queued)."""
+    cmd = ["gh", "pr", "view", number, "--json", "state"]
+    if repo:
+        cmd += ["--repo", repo]
+    completed = runner(cmd, capture_output=True, text=True, check=True)
+    data = json.loads(completed.stdout or "{}")
+    return data.get("state") == "MERGED"
 
 
 # The machine+human explanation the orphan-close comment carries.
@@ -1657,12 +1704,21 @@ class Integrate:
                     "reason": "; ".join(guard["violations"]),
                 })
                 continue
+            # This branch is only reached when permits('merge', mode) is True
+            # (auto-merge mode), so the sink enables GitHub native auto-merge:
+            # already-green -> merges now (auto_enabled False -> merged); else ->
+            # auto-merge queued (auto_enabled True -> auto_merge_enabled, a pending
+            # success NOT an error). A genuine both-paths-fail sink fault -> errors.
             try:
-                merged = self._merge_sink(pr_ref, repo=self._repo)
+                outcome = self._merge_sink(pr_ref, repo=self._repo, auto=True)
             except Exception as exc:  # noqa: BLE001 — record any merge fault
                 result.errors.append({"pr_ref": pr_ref, "reason": str(exc)})
             else:
-                result.merged.append(merged)
+                entry = {"pr_ref": outcome["pr_ref"], "url": outcome["url"]}
+                if outcome.get("auto_enabled"):
+                    result.auto_merge_enabled.append(entry)
+                else:
+                    result.merged.append(entry)
 
         return fc.StateResult(
             signal="OK",
