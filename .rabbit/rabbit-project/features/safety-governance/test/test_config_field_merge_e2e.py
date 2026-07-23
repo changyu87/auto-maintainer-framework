@@ -278,3 +278,62 @@ def test_load_config_no_shipped_default_is_whole_file_behaviour():
         # Backfilled from defaults exactly as before.
         assert config["budget"]["window_tz"] == "local"
         assert config["heartbeat"]["interval_minutes"] == 3
+
+
+def test_load_config_schema_version_never_conflicts():
+    """schema_version is loader-owned metadata EXCLUDED from the 3-way merge: a
+    stale user schema_version + a frozen shipped schema_version, both differing
+    from the current base, records NO conflict and emits NO 'schema_version'
+    stderr warning; the loaded schema_version is ALWAYS the current constant."""
+    original = sg.DEFAULT_CONFIG_DIR
+    with tempfile.TemporaryDirectory() as project_dir, \
+            tempfile.TemporaryDirectory() as shipped_dir:
+        # User override carries a stale schema_version (2.7.0); shipped default
+        # carries the frozen 2.2.0; the embedded base is the current 2.8.0 —
+        # all three differ, which pre-fix produced a spurious conflict.
+        _write_json(_config_path(project_dir),
+                    {"schema_version": "2.7.0", "mode": "propose"})
+        _write_json(os.path.join(shipped_dir, "config.json"),
+                    {"schema_version": "2.2.0", "mode": "auto-merge"})
+        sg.DEFAULT_CONFIG_DIR = shipped_dir
+        buf = io.StringIO()
+        try:
+            with redirect_stderr(buf):
+                config = sg.load_config(project_dir)
+        finally:
+            sg.DEFAULT_CONFIG_DIR = original
+        err = buf.getvalue()
+        # No spurious schema_version conflict warning.
+        assert "schema_version" not in err
+        # The loaded schema_version is always the current constant (unchanged
+        # behaviour — _overlay normalizes it).
+        assert config["schema_version"] == sg.GOVERNANCE_SCHEMA_VERSION
+
+
+def test_load_config_real_knob_conflict_still_warns_with_schema_version_stale():
+    """A real knob conflict (mode changed 3 ways) STILL warns even when the
+    override also carries a stale schema_version — the noise fix removes only
+    the schema_version conflict, never a genuine knob conflict."""
+    original = sg.DEFAULT_CONFIG_DIR
+    with tempfile.TemporaryDirectory() as project_dir, \
+            tempfile.TemporaryDirectory() as shipped_dir:
+        # base mode is 'propose'. User set 'dry-run'; shipped set 'auto-merge'
+        # => a genuine 3-way conflict on mode. schema_version also differs.
+        _write_json(_config_path(project_dir),
+                    {"schema_version": "2.7.0", "mode": "dry-run"})
+        _write_json(os.path.join(shipped_dir, "config.json"),
+                    {"schema_version": "2.2.0", "mode": "auto-merge"})
+        sg.DEFAULT_CONFIG_DIR = shipped_dir
+        buf = io.StringIO()
+        try:
+            with redirect_stderr(buf):
+                config = sg.load_config(project_dir)
+        finally:
+            sg.DEFAULT_CONFIG_DIR = original
+        err = buf.getvalue()
+        # The genuine mode conflict is surfaced, keeping the user value.
+        assert "conflict" in err.lower()
+        assert "mode" in err
+        assert config["mode"] == "dry-run"
+        # But schema_version is NOT among the surfaced conflicts.
+        assert "schema_version" not in err

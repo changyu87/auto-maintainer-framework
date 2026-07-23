@@ -1,6 +1,6 @@
 {
   "name": "safety-governance",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/safety-governance/src/**"
@@ -9,6 +9,6 @@
   "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
   "tdd_state": "test-green",
   "updated": "2026-07-23",
-  "spec_change_reason": "Add the additive implement_test_command config key (schema 2.7.0 -> 2.8.0) making the IMPLEMENT-side per-work-order test-gate configurable. safety_governance.py bumps GOVERNANCE_SCHEMA_VERSION to 2.8.0, adds implement_test_command=None to DEFAULT_GOVERNANCE, surfaces it RAW through _overlay (explicit value incl. null/'none'/'skip' honored, absent backfills None), and adds the pure accessor implement_test_command(config) returning the raw value WITHOUT interpreting it (mirrors regression_command); the three-way interpretation (null = run <feature>/test/run.py; a command string = run it; the sentinel 'none'/'skip' = skip the gate) lives in implement's test_gate.py (separate downstream cycle). configure.py adds --implement-test-command via _parse_implement_test_command ('' clears to null, 'none'/'skip' PRESERVED VERBATIM as the skip sentinel because null and 'none' mean different things, else trimmed), extends configure()/argparse/mutating-detection, and adds a _field_catalog entry under the IMPLEMENT stage right after mode. The configure SKILL.md is left unchanged (the --setup walk-through is catalog-driven via --describe). spec.md already carried the surface (committed 3d65008); this cycle implements code+tests and raises the housekeep doc-baseline floor 411->438 for the legitimate spec growth.",
-  "spec_no_change_reason": null
+  "spec_change_reason": "Stop the spurious 'config field-merge conflict at schema_version' stderr warning. schema_version is loader-owned metadata (the GOVERNANCE_SCHEMA_VERSION stamp, not a user knob, gates nothing at runtime); _overlay already normalizes it to the current constant, but merge_config still ran over it and recorded a bogus conflict (user 2.7.0 vs shipped 2.2.0 vs base 2.8.0 all differ). load_config now strips schema_version from copies of the override (raw) and the shipped default (mine) before merge_config, so no spurious conflict is ever recorded. Pure noise fix, NO behavior change: the loaded schema_version was and remains GOVERNANCE_SCHEMA_VERSION, real knob conflicts (e.g. mode) still warn, and neither _overlay nor the shipped default-config/config.json (frozen 2.2.0) is touched. spec.md carried the exclusion paragraph (committed dfc9e37); this cycle implements the code+tests and re-anchors the housekeep doc-baseline floor 438->454 for the legitimate spec growth.",
+  "spec_no_change_reason": "spec.md schema_version field-merge-exclusion paragraph was authored+committed in this cycle's spec-update step (dfc9e37); no further uncommitted spec diff"
 }

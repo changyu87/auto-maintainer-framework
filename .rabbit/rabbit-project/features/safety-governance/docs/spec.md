@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.11.0
+version: 0.12.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -195,6 +195,22 @@ base** is indistinguishable from unset — treated as unset and, if a later rele
 changes that key's default, **re-adopted** with **no conflict recorded**. So
 preservation holds only for a user value that differs from the base; recording
 the base each override was taken from (out of scope) would remove this.
+
+**`schema_version` is loader-owned metadata, EXCLUDED from the field-merge.**
+`schema_version` is the config-schema stamp (`GOVERNANCE_SCHEMA_VERSION`), NOT a
+user knob, and it gates nothing at runtime (purely informational). It is already
+normalized to the current constant by `_overlay` (which never re-surfaces it from
+the override), so the loaded config's `schema_version` is ALWAYS the current
+version. But `merge_config` used to run over it too — with a user `2.7.0`, a
+frozen shipped `2.2.0`, and a base `2.8.0` all differing, it recorded a spurious
+**conflict** and emitted a misleading "keeping user value 2.7.0" stderr warning
+(even though `_overlay` then discarded that value). Therefore `load_config`
+**excludes `schema_version` from the 3-way merge** (it is stripped from `theirs`
+/ `mine` before `merge_config`, or filtered out of the surfaced conflicts), so no
+spurious conflict is ever recorded for it — a pure noise fix with NO behavior
+change (the loaded `schema_version` was, and remains, the current constant). A
+stale `schema_version` in a user's `config.json` is thus harmless (overridden on
+every read); no migration of the on-disk value is required.
 
 ## Trust-ladder gate (§3.8.2)
 
