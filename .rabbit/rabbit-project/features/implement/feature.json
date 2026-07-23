@@ -1,14 +1,13 @@
 {
   "name": "implement",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/implement/src/**"
   ],
   "created": "2026-06-12T06:10:37Z",
   "deprecation_criterion": "Superseded when the model-backed implement-then-PR doer (DESIGN \u00a73.6.2/\u00a73.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.",
-  "tdd_state": "impl",
-  "updated": "2026-07-22",
-  "spec_change_reason": "Configurable implement_test_command in test_gate.py: the IMPLEMENT deterministic correctness gate now resolves its test command from the implement_test_command key, read by a direct tolerant stdlib json.load of ${project_dir}/.auto-maintainer/config.json (the key is owned by safety-governance's schema; the gate is a contract-bound READER of that one key and does NOT import safety-governance, staying stdlib-only and byte-for-byte shippable). Three-way: null/absent runs <feature-dir>/test/run.py (historical behavior, incl. missing-run.py=failed); a shell command string runs that command (shell=True, cwd=feature dir, exit 0=pass); the sentinel 'none'/'skip' (case-insensitive) skips the gate with a passed=True no-op verdict (harness-less opt-out, verification defers to the GATE-state regression_command). Added --test-command (override) and --project-dir (config location) CLI args; resolution is tolerant (missing/unreadable config or absent key -> run.py default, never crashes). The implementer agent invocation and the {feature,passed,returncode,summary} verdict schema are UNCHANGED. spec.md + contract.md were authored/committed in 5f75f5e.",
-  "spec_no_change_reason": "spec bullet 'PR closes its source issue on merge' already committed this cycle at 52c0819 (dispatcher spec-update phase); this subagent implements the agent .md change against it"
+  "tdd_state": "test-green",
+  "updated": "2026-07-23",
+  "spec_change_reason": "PR closes its source issue on merge: the shipped implementer agent's accept-path gh pr create now embeds a --body with the GitHub closing keyword Closes #<source-issue-number> (number from the ## Inputs work order / ROBUSTNESS gh issue view fetch; omitted when unresolvable), so GitHub auto-closes the source issue ONLY on merge (propose=stays open, auto-merge=closes) and the PR's closingIssuesReferences is populated (repairing supersede-on-retry + verify-integrate orphaned-PR detection, both silent no-ops without it). The auto-maintainer label, never-merge rule, worktree lifecycle, reject path (gh issue close), and Handoff contract are UNCHANGED. This is an agent .md prose change (not a SKILL.md; no skill-creator). spec.md + contract.md were authored/committed by the dispatcher spec-update phase at 52c0819; the housekeep doc baseline was re-anchored in-scope (spec.md 336->353)."
 }
