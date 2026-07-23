@@ -90,8 +90,11 @@ enact using the fetched title/body. Never let a thin envelope become a
      attempt this re-land supersedes. No such PR ⇒ skip.
   7. Push the branch (`git push -u origin <new-branch>`) and **open a pull
      request** against the default branch, **stamped with the `auto-maintainer`
-     label** so the maintainer's VERIFY stage can find its own PRs:
-     `gh pr create --base <default> --label auto-maintainer` (if the label does
+     label** so the maintainer's VERIFY stage can find its own PRs, and with a
+     `--body` that **closes the source issue on merge** (see "## Close the
+     source issue on merge" below):
+     `gh pr create --base <default> --label auto-maintainer --title <concise>
+     --body <summary, including a line `Closes #<number>`>` (if the label does
      not exist yet, create it first, e.g. `gh label create auto-maintainer
      --description "opened by the autonomous maintainer" || true`, then create
      the PR). **Never merge** — opening the labelled PR is the whole job.
@@ -177,6 +180,34 @@ and BEFORE `gh pr create`, supersede it:
 Close ONLY a PR that resolves the SAME issue — **never** an unrelated PR — and
 this is the ONLY PR you ever close (you still **never merge**). If no open
 auto-maintainer PR resolves this issue, this step is a no-op: skip it.
+
+## Close the source issue on merge
+
+On the **accept path**, the PR you open MUST close the source issue when — and
+only when — it merges. Embed the GitHub closing keyword `Closes #<number>` in
+the `gh pr create --body`, where `<number>` is the source issue's number (the
+same `<number>` the reject path uses to close the issue, resolved from the
+`## Inputs` work order, or from the ROBUSTNESS `gh issue view` fetch when the
+envelope was under-filled). Concretely, the accept-path PR-create is
+`gh pr create --base <default> --label auto-maintainer --title <concise>
+--body <summary + a line `Closes #<number>`>`.
+
+Why this matters:
+
+- **Auto-close on merge, never before.** `Closes #<number>` makes GitHub's
+  native machinery close the issue when the PR merges: in `propose` mode the PR
+  is never merged, so the issue correctly stays open; in `auto-merge` mode
+  INTEGRATE's merge closes it. This closes the merged-issue lifecycle gap — the
+  loop otherwise never closed a source issue on the accept path.
+- **Populates `closingIssuesReferences`.** Writing the keyword populates the
+  PR's `closingIssuesReferences`, the field both the supersede-on-retry match
+  (above) and verify-integrate's orphaned-PR detection query — so writing it
+  repairs both, which were silent no-ops without it.
+
+The `auto-maintainer` label and the `Closes #<number>` body are complementary:
+the label is the loop→VERIFY coupling, the keyword is the PR→issue coupling.
+If no source issue number is resolvable, **omit** the `Closes` line rather than
+guess a number.
 
 ## Regenerate the committed build tree
 
