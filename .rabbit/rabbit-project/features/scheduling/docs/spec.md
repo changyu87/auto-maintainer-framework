@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.31.0
+version: 0.32.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -243,10 +243,20 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      tick #1 **through the executor** by invoking the `/auto-maintainer:tick`
      skill — NOT `start.py`'s in-process `run_tick` — so an AGENT route's
      agent-state dispatches are fulfilled (DESIGN §2.8 in-session executor model).
-     It then schedules a recurring heartbeat as a **prompt** job (so the
-     session is present to fulfill agent dispatches) whose prompt fires the
-     `/auto-maintainer:tick` executor each interval — NOT a bare `run_tick.py`
-     command, which cannot dispatch agent-states. The latch is cleared ONCE at
+     **`/start` OWNS the drain-loop** (see §3.3.3): because `/tick` now runs
+     exactly ONE tick and stops, `/start` is responsible for continuous
+     draining — after tick #1, and on each heartbeat, when the completed tick's
+     signal is `refire` (actionable work remains) it fires `/auto-maintainer:tick`
+     AGAIN immediately, repeating until a non-`refire` signal, so the backlog
+     drains without waiting for the next interval. It then schedules a recurring
+     heartbeat as a **prompt** job (so the session is present to fulfill agent
+     dispatches) whose prompt runs that SAME drain-loop each interval — NOT a bare
+     `run_tick.py` command, which cannot dispatch agent-states. The latch is
+     cleared ONCE at
+     start; the heartbeat does not re-clear it (re-clearing each interval would
+     defeat a `/stop` that lands between heartbeats). **The interval is
+     config-driven** — `start.py` emits the configured `heartbeat.interval_minutes`
+     (default 3, from the central config) and the `/start` skill schedules at that The latch is cleared ONCE at
      start; the heartbeat does not re-clear it (re-clearing each interval would
      defeat a `/stop` that lands between heartbeats). **The interval is
      config-driven** — `start.py` emits the configured `heartbeat.interval_minutes`
@@ -1114,10 +1124,23 @@ skill).
   tick still IDLE: with no acting agent-state present `has_acting_agent` is False
   and the override never fires. All existing scheduling tests stay green.
 
-- **The tick executor skill loops on `refire`.** `ship/skills/tick/SKILL.md`
-  documents the refire-loop: when a completed tick's final signal is `refire`,
-  run ANOTHER tick immediately, looping until a non-refire signal
-  (`idle`/`halt`/`break`). The cron heartbeat remains the safety net.
+- **`/tick` runs EXACTLY ONE tick and STOPS at the terminal — it does NOT loop
+  on `refire`.** `ship/skills/tick/SKILL.md` drives a single tick to its terminal
+  (through any agent-state pause/dispatch/resume) and then STOPS, reporting the
+  final trace + signal. A `refire` signal is REPORTED (so the caller knows
+  actionable work remains) but the executor does NOT start another tick on its
+  own — one `/tick` invocation is one route pass, even when the issue pool is not
+  drained. This matches the plain meaning of "a tick" (one FSM iteration) and
+  lets a user step the loop deliberately.
+- **`/start` OWNS the drain-loop.** The continuous loop is `/start`'s
+  responsibility: `ship/skills/start/SKILL.md` runs the first tick and, whenever
+  a completed tick's final signal is `refire` (actionable work remains), fires
+  ANOTHER tick immediately, repeating until a non-`refire` signal
+  (`idle`/`halt`/`break`) — so `/start` drains the backlog promptly without
+  waiting for the next heartbeat. The recurring cron heartbeat (each firing also
+  a drain-loop) remains the safety net / cross-session resumer. EXIT's `refire`
+  emission (the POOL check above) is UNCHANGED; only the DRIVER of the repeat
+  moved from `/tick` to `/start`.
 
 ## Release-needed detection — the human-release-owed signal (#319)
 

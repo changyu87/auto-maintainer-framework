@@ -1,14 +1,23 @@
 ---
 name: tick
-description: Run an auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute a tick or step the maintainer loop, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) — pointing each one at the invocation-envelope file the runner names (prompt_path) and passing its description and (when present) isolation — and resumes, reporting the dispatched subagents' token usage, until the tick completes. When a completed tick's final signal is `refire` (actionable work remains), it runs another tick immediately, looping until a non-refire signal (idle/halt/break) so the loop drains its backlog without waiting for the heartbeat.
-version: 0.6.0
+description: Run EXACTLY ONE auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute a single tick or step the maintainer loop once, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) — pointing each one at the invocation-envelope file the runner names (prompt_path) and passing its description and (when present) isolation — and resumes, reporting the dispatched subagents' token usage, until the tick reaches its terminal. It runs one tick and STOPS: a `refire` final signal (actionable work remains) is REPORTED but does NOT auto-loop into another tick. Continuous back-to-back draining is /auto-maintainer:start's job, not this skill's.
+version: 0.7.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when Claude Code can dispatch subagents from within a script (removing the need for a session-mediated executor), or when the tick CLI's --step/--resume protocol reaches a breaking major version.
 ---
 
 # auto-maintainer tick (executor)
 
-Run one tick of the maintainer loop. The tick is **script-driven**: the
+Run **exactly one** tick of the maintainer loop, then STOP. "A tick" is one FSM
+iteration — one route pass from GUARD to a terminal — so this skill runs that
+single pass (through any agent-state pause/dispatch/resume) and stops at the
+terminal, even when actionable work remains in the pool. A `refire` final signal
+is REPORTED so the caller knows work remains, but this skill does NOT start
+another tick on its own; continuous draining belongs to `/auto-maintainer:start`
+(which fires this skill again on `refire` until the backlog drains). Running one
+tick per invocation lets a user step the loop deliberately.
+
+The tick is **script-driven**: the
 deterministic tick-runner at `${CLAUDE_PLUGIN_ROOT}/lib/run_tick.py` walks the
 route and does all control flow. Most states are pure script and need nothing
 from you. An **agent-state** is the exception: a script cannot call the `Agent`
@@ -36,11 +45,10 @@ through files, never through you:
 The runner is advanced by exactly two commands, and **mixing them up corrupts
 the tick**:
 
-- **`--step`** — call it **exactly ONCE per tick, as that tick's very first
-  runner command**. (A `refire` starts a NEW tick, which gets its own single
-  `--step` — see step 2.) The only other time you may call `--step` is to
-  **re-emit a pause after an `invalid_output`** (see step 5). NEVER for anything
-  else.
+- **`--step`** — call it **exactly ONCE for this tick, as its very first runner
+  command**. This skill runs one tick, so there is exactly one `--step`. The only
+  other time you may call `--step` is to **re-emit a pause after an
+  `invalid_output`** (see step 5). NEVER for anything else.
 - **`--resume`** — the ONLY way to advance after you have dispatched the
   subagent(s) for a pause. After **every** `paused` you handle, the next runner
   command is `--resume` — never `--step`.
@@ -82,16 +90,19 @@ until `done`.**
    result. From here on you advance ONLY with `--resume` (except an
    `invalid_output` re-emit, step 5).
 
-2. If `status` is `"done"`: print the `trace`, then look at the `signal`:
+2. If `status` is `"done"`: print the `trace` and **STOP** — this tick is
+   complete. This skill runs exactly one tick, so it does NOT begin another tick
+   regardless of the `signal`. Just note what the `signal` means for the caller:
    - `signal` is `"refire"` — the tick finished but **actionable work remains**
-     (e.g. PRIORITIZE deferred a same-feature order to a later tick). Don't wait
-     for the heartbeat: **immediately begin ANOTHER tick** by going back to step 1
-     (a fresh `--step`). Keep looping — tick, and if it `refire`s, tick again —
-     **until** a completed tick reports a **non-refire** signal (`idle`, `halt`,
-     or `break`). Then stop. The recurring cron heartbeat is only the safety net;
-     refire is what keeps a busy loop draining its backlog promptly.
+     (e.g. PRIORITIZE deferred a same-feature order to a later tick). REPORT this
+     — say the pool still has workable items and that the caller can run
+     `/auto-maintainer:tick` again to do the next one, or `/auto-maintainer:start`
+     for continuous back-to-back draining. Do **NOT** begin another tick yourself;
+     one `/tick` invocation is one tick, even when the pool is not drained. (When
+     `/auto-maintainer:start` drove this tick, IT owns the drain-loop and will
+     fire the next tick on this `refire`.)
    - any other `signal` (`idle` / `halt` / `break` / …) — the loop has no
-     immediate follow-on work, so stop here; the next heartbeat will tick again.
+     immediate follow-on work. Stop here; the next heartbeat will tick again.
 
 3. If `status` is `"paused"`: for **each** entry in `dispatches` (in order),
    dispatch the subagent and point it at its `prompt_path`, passing the entry's
@@ -155,11 +166,13 @@ until `done`.**
   again ONLY to re-emit after `invalid_output`.** Never `--step` mid-tick after a
   successful dispatch — that skips the resume that applies outputs and fires the
   terminal REPORT flush.
-- **Loop on `refire`.** A `done` tick whose `signal` is `refire` means actionable
-  work remains; immediately run another tick (a fresh `--step`) and keep looping
-  until a tick reports a non-refire signal (`idle`/`halt`/`break`). The runner
-  decides refire-vs-idle deterministically — you only relay the loop. The cron
-  heartbeat is the safety net, not the primary driver.
+- **Exactly one tick — do NOT loop on `refire`.** A `done` tick whose `signal` is
+  `refire` means actionable work remains, but this skill runs one tick and STOPS:
+  REPORT the refire (the caller can run `/tick` again or `/start` for continuous
+  draining) and do not begin another tick yourself. The runner decides
+  refire-vs-idle deterministically; the drain-loop that fires the next tick on
+  `refire` is `/auto-maintainer:start`'s job (tick #1 and each heartbeat), never
+  this executor's.
 - Dispatch a subagent ONLY for the entries the runner hands you, pointing it at
   the `prompt_path` the runner provides and passing the `description` and (when
   present) `isolation` unchanged — do not alter them or invoke any other subagent.

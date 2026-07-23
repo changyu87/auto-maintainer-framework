@@ -564,22 +564,83 @@ def test_empty_pool_tick_still_idles():
 
 
 # ==========================================================================
-# Behaviour 4 — the shipped tick executor skill documents the refire-loop.
+# Behaviour 4 — /tick runs EXACTLY ONE tick (no auto-loop on refire); /start
+# OWNS the drain-loop (§3.3.3). The DRIVER of the repeat moved from /tick to
+# /start; EXIT's POOL-based refire emission is UNCHANGED (Behaviours 1-3).
 # ==========================================================================
 
 def _ship_skill(name):
     return os.path.join(_FEATURE_DIR, "ship", "skills", name, "SKILL.md")
 
 
-def test_tick_skill_documents_refire_loop():
-    """The tick executor skill must document that a `refire` final signal means
-    run ANOTHER tick immediately, looping until a non-refire signal."""
+def _skill_frontmatter_description(name):
+    """The `description:` value from the SKILL.md YAML frontmatter block."""
+    text = open(_ship_skill(name)).read()
+    assert text.startswith("---\n"), name
+    block = text[4:text.index("\n---\n", 4)]
+    for line in block.splitlines():
+        if line.startswith("description:"):
+            return line.partition(":")[2].strip()
+    raise AssertionError(("no description frontmatter", name))
+
+
+def test_tick_skill_documents_exactly_one_tick_no_refire_loop():
+    """The tick executor skill must document that it runs EXACTLY ONE tick and
+    STOPS at the terminal — a `refire` final signal is REPORTED (work remains)
+    but the executor does NOT auto-loop into another tick. One /tick = one tick,
+    even when the pool is not drained."""
     body = open(_ship_skill("tick")).read()
-    assert "refire" in body, "tick skill must mention the refire final signal"
     lowered = body.lower()
-    assert "immediately" in lowered, \
-        "tick skill must say a refire fires another tick immediately"
-    # The loop terminates on a non-refire signal (idle/halt/break).
+    # refire is still REPORTED (the caller must know work remains).
+    assert "refire" in lowered, "tick skill must still report the refire signal"
+    # It runs EXACTLY ONE tick and stops.
+    assert "exactly one tick" in lowered, \
+        "tick skill must state it runs exactly one tick"
+    assert "stop" in lowered, "tick skill must state it STOPS at the terminal"
+    # It must NOT auto-loop on refire (the old behaviour is removed).
+    assert "does not" in lowered and "another tick" in lowered, \
+        "tick skill must state it does NOT begin another tick on refire"
+    # The retired auto-loop wording must be gone.
+    assert "looping until a non-refire" not in lowered, \
+        "tick skill must not carry the retired refire auto-loop wording"
+
+
+def test_tick_skill_frontmatter_description_has_no_auto_loop_language():
+    """The tick SKILL frontmatter description must no longer claim it loops on
+    refire / drains its backlog — that ownership moved to /start."""
+    desc = _skill_frontmatter_description("tick").lower()
+    assert "drains its backlog" not in desc, desc
+    assert "looping until a non-refire" not in desc, desc
+
+
+def test_start_skill_owns_the_drain_loop():
+    """/start OWNS the drain-loop: after tick #1, and on each heartbeat, when a
+    completed tick's final signal is `refire` it fires /auto-maintainer:tick
+    AGAIN immediately, repeating until a non-refire signal — so /start drains
+    the backlog without waiting for the heartbeat interval."""
+    body = open(_ship_skill("start")).read()
+    lowered = body.lower()
+    assert "refire" in lowered, "start skill must reference the refire signal"
+    assert "/auto-maintainer:tick" in body, \
+        "start skill must drive ticks via the /auto-maintainer:tick executor"
+    # It fires again on refire, repeating until non-refire.
+    assert "again" in lowered, \
+        "start skill must fire another tick again on refire"
     assert ("until" in lowered and ("non-refire" in lowered
-            or "not refire" in lowered or "idle" in lowered)), \
-        "tick skill must say the refire loop runs until a non-refire signal"
+            or "not refire" in lowered)), \
+        "start skill must repeat until a non-refire signal"
+    assert "drain" in lowered, "start skill must state it drains the backlog"
+
+
+def test_start_heartbeat_prompt_runs_the_drain_loop():
+    """The scheduled heartbeat PROMPT must run the SAME drain-loop (tick, and on
+    a refire signal tick again until non-refire) — NOT the old single-tick
+    'Run one auto-maintainer tick now' prompt."""
+    body = open(_ship_skill("start")).read()
+    lowered = body.lower()
+    # The retired single-tick heartbeat prompt must be gone.
+    assert "run one auto-maintainer tick now" not in lowered, \
+        "start skill heartbeat prompt must no longer be the single-tick prompt"
+    # The heartbeat prompt drains on refire.
+    assert "refire" in lowered and "again" in lowered, \
+        "start heartbeat prompt must drain-loop on refire"
