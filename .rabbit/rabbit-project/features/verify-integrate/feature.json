@@ -1,6 +1,6 @@
 {
   "name": "verify-integrate",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/verify-integrate/src/**"
@@ -9,5 +9,6 @@
   "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict schemas reach a breaking major version.",
   "tdd_state": "test-green",
   "updated": "2026-07-23",
-  "spec_change_reason": "INTEGRATE enables GitHub native auto-merge in auto-merge mode: new IntegrationResult.auto_merge_enabled outcome + INTEGRATION_RESULT_SCHEMA_VERSION 1.1.0->1.2.0 (additive)"
+  "spec_change_reason": "INTEGRATE merge sink is MERGE-QUEUE-AWARE: detect repository.mergeQueue(branch) and, when a queue exists, run `gh pr merge <pr> --auto` with NO method flag and NO --delete-branch (a queue branch REJECTS a method flag); no-queue keeps immediate `--merge --delete-branch` with `--auto --merge` fallback; capture gh stderr into errors (never a bare exit-1)",
+  "spec_no_change_reason": "spec+contract merge-queue-aware changes already committed on this branch (commit 3d86f4a); no further uncommitted spec diff this step"
 }
