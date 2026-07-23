@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.5.0
+version: 0.6.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult schemas reach a breaking major version.
 ---
@@ -237,9 +237,33 @@ loop PRs) + `regression_command` from the central config
   review-approval coupling — REVIEW is advisory). A verdict is merged only when it
   is `ok` AND its `GateResult.passed` is True; it then consults the **guardrails**
   (`safety_governance.merge_guardrails`, §3.8.1) and, if clean, merges via an
-  injectable merge sink (production: `gh pr merge <pr> --merge --delete-branch`).
-  Records `IntegrationResult`. Non-ok verdicts and guardrail violations go to
-  `skipped`.
+  injectable merge sink. Records `IntegrationResult`. Non-ok verdicts and
+  guardrail violations go to `skipped`.
+- **Merge via GitHub auto-merge ("merge when ready") at `auto-merge` mode.** Most
+  real repos hard-block an immediate `gh pr merge` behind required status checks
+  (branch protection / rulesets) that are still running when the loop opens a PR —
+  so a direct merge returns non-zero and the PR is (wrongly) recorded as an
+  INTEGRATE error. The production merge sink therefore, in `auto-merge` mode,
+  runs `gh pr merge <pr> --auto --merge --delete-branch` to **enable GitHub's
+  native auto-merge**: GitHub merges the PR automatically once its required checks
+  pass (immediately if already green). If the `--auto` call fails because the repo
+  does not have auto-merge enabled, the sink **falls back** to an immediate
+  `gh pr merge <pr> --merge --delete-branch`. The sink reports which path it took.
+  - When the PR merged immediately → recorded in `IntegrationResult.merged`
+    (`{pr_ref, url}`) as before.
+  - When GitHub auto-merge was ENABLED (merge pending on checks) → recorded in the
+    new `IntegrationResult.auto_merge_enabled` list (`{pr_ref, url}`) — a
+    **pending success, NOT an error** (so it no longer inflates
+    `integrate_errored`). The PR stays OPEN until GitHub merges it; the source
+    issue closes then via the PR's `Closes #<n>`. Re-work is already prevented by
+    the acted-ledger `opened`-lock (an `opened` work order re-enters only when its
+    PR is CLOSED-and-not-merged; an auto-merge-pending PR is OPEN, so it stays
+    locked — the loop treats it as a long-lived open PR and never supersedes it).
+  - A genuine merge fault (both `--auto` and the immediate fallback fail) is
+    recorded in `errors` as before. `INTEGRATION_RESULT_SCHEMA_VERSION` bumps
+    (additive) for the new `auto_merge_enabled` field.
+  This is `auto-merge`-mode-only: at `dry-run`/`propose` INTEGRATE never merges or
+  enables auto-merge (the would-merge intent is logged; a human merges).
 - **GATE-failed PRs are NOT merged.** For each `GateResult.passed=False`,
   INTEGRATE posts a **machine-readable failure comment** on the PR's linked issue
   (an **injectable comment sink**; production: `gh issue comment <issue> --body

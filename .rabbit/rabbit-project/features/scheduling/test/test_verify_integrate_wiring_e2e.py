@@ -133,10 +133,10 @@ def _patch_vi_seams(monkeypatch_state, open_prs=None, merge_calls=None):
     def _branch(repo=None):
         return _DEFAULT_BRANCH
 
-    def _merge(pr_ref, repo=None):
+    def _merge(pr_ref, repo=None, auto=False):
         if merge_calls is not None:
             merge_calls.append(pr_ref)
-        return {"pr_ref": pr_ref, "url": ""}
+        return {"pr_ref": pr_ref, "url": "", "auto_enabled": False}
 
     vi.gh_open_pr_source = _open
     vi.gh_default_branch_source = _branch

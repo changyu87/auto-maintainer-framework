@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.35.0
+version: 0.36.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -787,13 +787,17 @@ kind outside the closed vocabulary):
   read-product counts (`work_items`/`work_orders`/`execution_plan`/`handoffs`) in
   `detail`, the REPORT counts (`reported_filed`/`reported_skipped`/
   `reported_errored`), the INTEGRATE merge results (`merged` count,
-  `integrate_skipped` count, `integrate_errored` count, and `merged_refs` — the
+  `integrate_skipped` count, `integrate_errored` count, `auto_merge_enabled`
+  count (PRs on which INTEGRATE enabled GitHub native auto-merge this tick — a
+  PENDING success, distinct from `integrate_errored`, from the
+  `integration_result` read product), and `merged_refs` — the
   list of merged `pr_ref`s, from the `integration_result` read product), and a
   `refire` boolean disambiguating idle-because-no-work (`false`) from
   refire-because-work-remains (`true`). The one-line trace also gains a compact
-  `merged=<n>` token (plus `integrate_errored=<n>` only when `> 0`). All existing
+  `merged=<n>` token (plus `integrate_errored=<n>` and `auto_merge_enabled=<n>`
+  each shown only when `> 0`). All existing
   detail keys + trace fields are preserved; a route with no INTEGRATE shows
-  `merged=0`/`merged_refs=[]`.
+  `merged=0`/`merged_refs=[]`/`auto_merge_enabled=0`.
   - **Per-issue / per-PR IDENTIFIERS (additive, so the log alone answers "which
     issues + which PRs").** In addition to the counts above, `tick_end.detail`
     carries identifier lists sourced from the read products already in scope at
