@@ -950,6 +950,59 @@ def route_source_label(project_dir=None):
     return label
 
 
+def resolved_route(project_dir=None):
+    """The ACTIVE route dict this tick would run, resolved the SAME way the tick
+    hands it to build_loop — WITHOUT running or mutating a tick.
+
+    Resolution is override-else-shipped-else-embedded (#337): the shipped
+    ``default-config/route.json`` read FRESH when present else the embedded
+    conservative ``DEFAULT_ROUTE``, with the project-local
+    ``${project_dir}/.auto-maintainer/route.json`` override on top — exactly the
+    ``default_route = _shipped_default('route.json') or DEFAULT_ROUTE`` +
+    ``aw.load_route`` chain the tick body uses (lines ~2866). It is READ-ONLY:
+    it never creates the runtime dir (status must stay non-mutating), so a
+    status call never has a tick's side effects.
+
+    Returns the resolved route dict (``states`` + ``edges``), so status lists
+    what the loop actually runs and never diverges from it. ``project_dir``
+    defaults to the CLAUDE_PROJECT_DIR / cwd anchor, exactly as the loader and
+    resolve_runtime_paths resolve it.
+    """
+    if project_dir is None:
+        project_dir = _resolve_project_dir()
+    default_route = _shipped_default("route.json") or DEFAULT_ROUTE
+    return aw.load_route(default_route, project_dir)
+
+
+def route_happy_chain(route_dict):
+    """The ordered happy-path walk of a route: from ``GUARD`` follow the ``OK``
+    edge (else ``EMPTY``, else the first outgoing edge) to a terminal, collecting
+    each visited state ONCE. Terminals are EXCLUDED, and the walk stops on a
+    terminal or a revisit (so a cyclic route can never loop forever).
+
+    Pure + deterministic (no wall clock, no network) — the human view renders it
+    as ``A → B → C …`` so a reader sees the loop's happy path at a glance.
+    """
+    terminals = set(route_dict.get("terminal", []))
+    by_state = {}
+    for edge in route_dict.get("edges", []):
+        by_state.setdefault(edge["state"], {})[edge["signal"]] = edge["next"]
+    chain = []
+    seen = set()
+    cur = "GUARD"
+    while cur is not None and cur not in terminals and cur not in seen:
+        chain.append(cur)
+        seen.add(cur)
+        outs = by_state.get(cur, {})
+        nxt = outs.get("OK")
+        if nxt is None:
+            nxt = outs.get("EMPTY")
+        if nxt is None:
+            nxt = next(iter(outs.values()), None)
+        cur = nxt
+    return chain
+
+
 def persisted_work_items(state_path):
     """The last pull's work_items snapshot persisted in durable state (a list of
     WorkItem dicts), or [] when the loop never ran a pull."""
