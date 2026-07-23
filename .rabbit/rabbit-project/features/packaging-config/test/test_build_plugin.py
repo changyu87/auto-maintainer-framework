@@ -566,7 +566,7 @@ def test_ship_collection_start_stop_skills_present():
 # verify_integrate.py lib, so the committed plugin tree is regenerated and the
 # version bumped so the marketplace serves the new content to existing installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_14_0_and_consistent():
+def test_version_bumped_to_0_15_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -578,10 +578,10 @@ def test_version_bumped_to_0_14_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.14.0", \
-            f"plugin.json version must be 0.14.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.14.0", \
-            "marketplace.json plugin entry version must be 0.14.0"
+        assert pdata.get("version") == "0.15.0", \
+            f"plugin.json version must be 0.15.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.15.0", \
+            "marketplace.json plugin entry version must be 0.15.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1729,7 +1729,7 @@ def test_shipped_run_tick_imports_observability_from_lib_alone():
 # (heartbeat.interval_minutes, read via start.py --print-interval) rather than a
 # hardcoded cadence.
 # ---------------------------------------------------------------------------
-def test_shipped_start_skill_is_v0_3_0_clear_only_executor_config_interval():
+def test_shipped_start_skill_is_v0_4_0_clear_only_executor_config_interval():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1739,8 +1739,8 @@ def test_shipped_start_skill_is_v0_3_0_clear_only_executor_config_interval():
         assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.3.0\n" in body, \
-            "shipped start skill frontmatter version must be 0.3.0"
+        assert "\nversion: 0.4.0\n" in body, \
+            "shipped start skill frontmatter version must be 0.4.0"
         assert "--clear-only" in body, \
             "shipped start skill must reference the --clear-only latch-clear flag"
         assert "/auto-maintainer:tick" in body, \
@@ -1765,7 +1765,7 @@ def test_shipped_start_skill_is_v0_3_0_clear_only_executor_config_interval():
 # and `prompt_path`, and it does NOT reference the old dispatch-result.json
 # marshalling path.
 # ---------------------------------------------------------------------------
-def test_shipped_tick_skill_is_v0_6_0_file_referenced_dispatch():
+def test_shipped_tick_skill_is_v0_7_0_file_referenced_dispatch():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1775,8 +1775,8 @@ def test_shipped_tick_skill_is_v0_6_0_file_referenced_dispatch():
         assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.6.0\n" in body, \
-            "shipped tick skill frontmatter version must be 0.6.0 " \
+        assert "\nversion: 0.7.0\n" in body, \
+            "shipped tick skill frontmatter version must be 0.7.0 " \
             "(#304 file-referenced dispatch prompts documented)"
         assert "run_tick.py --resume" in body, \
             "shipped tick skill must reference run_tick.py --resume"
