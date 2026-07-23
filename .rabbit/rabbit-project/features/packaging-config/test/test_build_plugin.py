@@ -570,7 +570,7 @@ def test_ship_collection_start_stop_skills_present():
 # verify_integrate.py lib, so the committed plugin tree is regenerated and the
 # version bumped so the marketplace serves the new content to existing installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_18_0_and_consistent():
+def test_version_bumped_to_0_19_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -582,10 +582,10 @@ def test_version_bumped_to_0_18_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.18.0", \
-            f"plugin.json version must be 0.18.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.18.0", \
-            "marketplace.json plugin entry version must be 0.18.0"
+        assert pdata.get("version") == "0.19.0", \
+            f"plugin.json version must be 0.19.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.19.0", \
+            "marketplace.json plugin entry version must be 0.19.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
