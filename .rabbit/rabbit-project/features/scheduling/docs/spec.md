@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.33.0
+version: 0.34.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -286,12 +286,25 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      backups. It resolves the runtime dir via `run_tick.resolve_runtime_paths`
      (never duplicating path logic), is idempotent (a missing artifact is a
      no-op, never an error), and reports a machine-first summary of what it
-     removed vs preserved. It does NOT create the runtime dir. The `/clobber`
-     SKILL surfaces a **confirmation** before invoking the script (this is a
-     destructive reset) and reminds the user to `/stop` first if the loop is
-     running; a `--yes`/confirmed flag lets the script run non-interactively for
-     the confirmed path. `clobber.py` writes NOTHING except the deletions (no
-     model, no network).
+     removed vs preserved. It does NOT create the runtime dir. `clobber.py`
+     writes NOTHING except the deletions (no model, no network).
+     - **`/stop`-first advice is keyed on the durable `loop-intent` marker, NOT
+       on `disposition`.** A `disposition` of `RUNNING` merely means a tick is
+       mid-flight (GUARD sets `RUNNING` at the start of ANY tick, including a
+       single `/tick` paused at an agent-state) — it does NOT indicate a live
+       scheduled loop. The signal for "a live heartbeat loop that should be
+       stopped first" is `heartbeat`'s durable `loop-intent` marker, which is set
+       ONLY by `/start` and never by `/tick`. So `clobber.py`'s machine-first
+       summary carries a deterministic **`loop_intent_present`** boolean
+       (`heartbeat.read_loop_intent(runtime_dir)` is running), and the `/clobber`
+       SKILL recommends running `/auto-maintainer:stop` FIRST **only when
+       `loop_intent_present` is true**. A `/tick`-only or paused-tick session
+       (no loop-intent) is reset directly — no `/stop` needed, since `/stop`
+       would only latch a `STOPPED` that clobber wipes anyway, and clobber
+       already deletes the checkpoint/disposition/lock/heartbeat markers. The
+       SKILL still surfaces a **confirmation** before the destructive reset in
+       every case; a `--yes`/confirmed flag runs the script non-interactively for
+       the confirmed path.
    Only the heartbeat scheduling (CronCreate/CronDelete) is agent-mediated (no
    plugin-level cron API); every state operation is a script.
 5. **Scheduler detection (§3.3.1)** — slice 1 uses the in-session durable
