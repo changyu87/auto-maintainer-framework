@@ -26,6 +26,13 @@ Knobs:
   - ``--regression-command`` is the GATE full-regression shell command (an
     arbitrary string), or one of {none, null, ""} meaning NO gate (stored as
     JSON null), mirroring the ``--per-day-tokens`` clear sentinel.
+  - ``--implement-test-command`` is the IMPLEMENT-side per-work-order test-gate
+    command (implement's test_gate.py). An arbitrary shell command string sets
+    it; ``''`` (empty) clears it to JSON null (the default test/run.py
+    behavior); the literal ``none``/``skip`` is PRESERVED VERBATIM as the skip
+    sentinel (NOT mapped to null — null and 'none' mean different things:
+    null = run test/run.py, 'none' = skip the gate). Stored RAW; implement
+    interprets it.
   - ``--doc-check-features-root`` is the REPO-RELATIVE features root the
     verify-integrate GATE uses for the doc-surface load-bearing-token survival
     check; it must be non-absolute (repo-relative), or one of {none, null, ""}
@@ -51,7 +58,7 @@ Knobs:
     guided ``--setup`` onboarding; it shells ``gh`` and writes nothing.
   - ``--show`` (or no mutating flag) prints the current config and writes nothing.
 
-Version: 0.4.0
+Version: 0.5.0
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the central-config schema
   (safety_governance.GOVERNANCE_SCHEMA_VERSION) reaches a breaking major
@@ -107,6 +114,25 @@ def _parse_regression_command(raw):
     if str(raw).strip().lower() in ("none", "null", ""):
         return None
     return str(raw).strip()
+
+
+def _parse_implement_test_command(raw):
+    """Parse a --implement-test-command CLI value -> None (reset to the default
+    test/run.py behavior) or the raw stored value.
+
+    UNLIKE --regression-command, the sentinels here are NOT all mapped to None,
+    because null and 'none' mean DIFFERENT things: null runs the touched
+    feature's test/run.py, while 'none' SKIPS the IMPLEMENT gate. So:
+      - '' (empty) -> None (clear to the default test/run.py behavior);
+      - 'none'/'skip' (case-insensitive) -> PRESERVED VERBATIM (returned as the
+        lowercased sentinel string) so the reader can distinguish skip from null;
+      - any other value -> kept verbatim (whitespace-trimmed) as the command."""
+    s = str(raw).strip()
+    if s == "":
+        return None
+    if s.lower() in ("none", "skip"):
+        return s.lower()
+    return s
 
 
 def _parse_doc_check_features_root(raw):
@@ -250,7 +276,8 @@ def _parse_gh_account(text):
 
 def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
               interval_minutes=_UNSET, backoff_threshold=_UNSET,
-              regression_command=_UNSET, doc_check_features_root=_UNSET,
+              regression_command=_UNSET, implement_test_command=_UNSET,
+              doc_check_features_root=_UNSET,
               features_root=_UNSET, work_own_filings=_UNSET,
               issue_labels=_UNSET, issue_title_pattern=_UNSET):
     """Apply the requested changes to config.json and return the new config.
@@ -283,6 +310,9 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
 
     if regression_command is not _UNSET:
         cfg["regression_command"] = regression_command
+
+    if implement_test_command is not _UNSET:
+        cfg["implement_test_command"] = implement_test_command
 
     if doc_check_features_root is not _UNSET:
         cfg["doc_check_features_root"] = doc_check_features_root
@@ -363,7 +393,7 @@ def _field_catalog(project_dir):
             "validator": "a bool: true/false (also 1/0, yes/no)",
             "stage": "PULL",
         },
-        # ---- IMPLEMENT: the trust mode. ----
+        # ---- IMPLEMENT: the trust mode + the per-work-order test-gate. ----
         {
             "key": "mode",
             "label": "Trust mode",
@@ -372,6 +402,19 @@ def _field_catalog(project_dir):
             "current": current["mode"],
             "type": "enum",
             "validator": "one of dry-run | propose | auto-merge",
+            "stage": "IMPLEMENT",
+        },
+        {
+            "key": "implement_test_command",
+            "label": "IMPLEMENT test-gate command",
+            "controls": "The per-work-order test-gate implement runs before "
+                        "opening a PR; null = run the touched feature's "
+                        "test/run.py, none/skip = skip the gate.",
+            "default": defaults["implement_test_command"],
+            "current": current["implement_test_command"],
+            "type": "str_or_null",
+            "validator": "a shell command, none/skip to skip the gate, "
+                         "or empty to reset to test/run.py",
             "stage": "IMPLEMENT",
         },
         # ---- VERIFY: the complement locator. ----
@@ -489,6 +532,13 @@ def main(argv=None):
              "(no gate)",
     )
     parser.add_argument(
+        "--implement-test-command",
+        default=None,
+        help="IMPLEMENT-side per-work-order test-gate command; empty ('') "
+             "resets to the default test/run.py, none/skip skips the gate "
+             "(preserved verbatim, NOT cleared to null)",
+    )
+    parser.add_argument(
         "--doc-check-features-root",
         default=None,
         help="repo-relative features root for the GATE doc-surface "
@@ -552,6 +602,7 @@ def main(argv=None):
         or args.interval_minutes is not None
         or args.backoff_threshold is not None
         or args.regression_command is not None
+        or args.implement_test_command is not None
         or args.doc_check_features_root is not None
         or args.features_root is not None
         or args.work_own_filings is not None
@@ -573,6 +624,9 @@ def main(argv=None):
                      if args.backoff_threshold is not None else _UNSET)
         regression = (_parse_regression_command(args.regression_command)
                       if args.regression_command is not None else _UNSET)
+        implement_test = (
+            _parse_implement_test_command(args.implement_test_command)
+            if args.implement_test_command is not None else _UNSET)
         doc_check_root = (
             _parse_doc_check_features_root(args.doc_check_features_root)
             if args.doc_check_features_root is not None else _UNSET)
@@ -591,6 +645,7 @@ def main(argv=None):
             interval_minutes=interval,
             backoff_threshold=threshold,
             regression_command=regression,
+            implement_test_command=implement_test,
             doc_check_features_root=doc_check_root,
             features_root=feats_root,
             work_own_filings=work_own,

@@ -3095,10 +3095,28 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         # filed as duplicate noise (dedup-vs-open, DESIGN §3.5.4).
         extra_discoveries = list(discoveries or []) + list(
             doc.get(REVIEW_FINDINGS_KEY, []))
+        # Snapshot the report-ledger keys BEFORE the flush so the newly-filed
+        # entries (this tick's discoveries) can be named in tick_end's additive
+        # reported_detail below — the delta is exactly what THIS tick filed.
+        _report_ledger_before = set(persisted_report_ledger(state_path))
         reported_filed, reported_skipped, reported_errored = _flush_report(
             state_path, tick_handoffs, extra_discoveries, mode, gov,
             report_sink or DEFAULT_REPORT_SINK,
             work_items=doc.get(WORK_ITEMS_KEY, []))
+        # Additive per-issue/per-PR IDENTIFIERS for tick_end.detail, sourced from
+        # read products already in scope (no new plumbing). handoffs_detail is the
+        # per-issue -> per-outcome/PR bridge; reported_detail names the issues the
+        # loop itself filed THIS tick (the report_ledger delta).
+        handoffs_detail = [
+            {"work_order_id": h.get("work_order_id"),
+             "status": h.get("status"),
+             "ref": (h.get("artifact") or {}).get("ref")}
+            for h in tick_handoffs]
+        reported_detail = [
+            {"dedup_key": k, "tracker_ref": v.get("tracker_ref"),
+             "url": v.get("url")}
+            for k, v in persisted_report_ledger(state_path).items()
+            if k not in _report_ledger_before]
     else:
         # GUARD short-circuited (STOPPED/ABORTED/RESTART_NEEDED): the tick did no
         # read/PERSIST work, but the budget window is still a durable cross-tick
@@ -3109,6 +3127,10 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         ds.DurableState(state_path).save(doc)
         # No route body ran on a halt: nothing to report.
         reported_filed, reported_skipped, reported_errored = 0, 0, 0
+        # No handoffs / discoveries on a halt: the additive identifier lists are
+        # empty (the pre-existing count fields default to 0 above).
+        handoffs_detail = []
+        reported_detail = []
 
     disposition = ld.read_disposition(runtime_dir)
     work_items_count = persisted_work_items_count(state_path)
@@ -3157,6 +3179,16 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     merged_count = len(merged_entries)
     integrate_skipped = len(integration_result.get("skipped", []))
     integrate_errored = len(integration_result.get("errors", []))
+    # Additive per-PR IDENTIFIERS for tick_end.detail: the full INTEGRATE result
+    # ({merged: [{pr_ref, url}], skipped: [{pr_ref, reason}], errored: [{pr_ref,
+    # reason}]}) enriching the count-only merged/integrate_skipped/
+    # integrate_errored + the ref-only merged_refs. merged_entries is already
+    # [{pr_ref, url}]; a route with no INTEGRATE leaves all three empty.
+    integrated = {
+        "merged": merged_entries,
+        "skipped": integration_result.get("skipped", []),
+        "errored": integration_result.get("errors", []),
+    }
     merged_field = f"merged={merged_count}"
     if integrate_errored > 0:
         merged_field += f" integrate_errored={integrate_errored}"
@@ -3212,7 +3244,13 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "integrate_errored": integrate_errored,
         "merged_refs": merged_refs,
         "release_needed": release_needed,
-        "refire": refire})
+        "refire": refire,
+        # Additive per-issue/per-PR identifiers (the log alone answers "which
+        # issues + which PRs"): all bounded to this tick's own work, empty when
+        # none; every count field + merged_refs above is unchanged.
+        "handoffs_detail": handoffs_detail,
+        "integrated": integrated,
+        "reported_detail": reported_detail})
 
     if return_run_result:
         return result

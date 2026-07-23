@@ -75,7 +75,7 @@ def test_cli_sets_mode_and_writes_file():
         assert rc == 0
         cfg = _read_cfg(project_dir)
         assert cfg["mode"] == "dry-run"
-        assert cfg["schema_version"] == "2.7.0"
+        assert cfg["schema_version"] == "2.8.0"
 
 
 # ==========================================================================
@@ -220,6 +220,61 @@ def test_cli_regression_command_empty_clears():
         assert configure.main(
             ["--project-dir", project_dir, "--regression-command", ""]) == 0
         assert _read_cfg(project_dir)["regression_command"] is None
+
+
+# ==========================================================================
+# E2E Behaviour: --implement-test-command sets the top-level
+# implement_test_command to the given shell command; '' (empty) clears it to
+# JSON null (the default test/run.py behavior); the literal 'none'/'skip' is
+# PRESERVED VERBATIM as the skip sentinel (NOT mapped to null — null and 'none'
+# mean different things: null = run test/run.py, 'none' = skip the IMPLEMENT
+# gate). The writer stores the RAW value; implement's test_gate.py interprets it.
+# ==========================================================================
+
+def test_cli_implement_test_command_set_command():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--implement-test-command", "pytest -q"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["implement_test_command"]
+                == "pytest -q")
+
+
+def test_cli_implement_test_command_empty_clears_to_null():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--implement-test-command", "make test"]) == 0
+        assert (_read_cfg(project_dir)["implement_test_command"]
+                == "make test")
+        # '' clears back to the default null (run test/run.py).
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--implement-test-command", ""]) == 0
+        assert _read_cfg(project_dir)["implement_test_command"] is None
+
+
+def test_cli_implement_test_command_none_preserved_verbatim():
+    """The literal 'none' is the SKIP sentinel — preserved verbatim, NOT mapped
+    to null (unlike --regression-command's none -> null clear)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--implement-test-command", "none"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["implement_test_command"] == "none"
+
+
+def test_cli_implement_test_command_skip_preserved_verbatim():
+    """The literal 'skip' is an alias for the skip sentinel — preserved verbatim
+    (lowercased), NOT mapped to null."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--implement-test-command", "SKIP"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["implement_test_command"] == "skip"
 
 
 # ==========================================================================
@@ -397,6 +452,7 @@ def test_describe_catalog_is_complete_one_entry_per_knob():
         # Exactly one entry per writable knob — no duplicates, no omissions.
         expected_keys = {
             "mode",
+            "implement_test_command",
             "budget.per_day_tokens",
             "heartbeat.interval_minutes",
             "backoff.threshold",
@@ -756,6 +812,7 @@ def test_describe_entries_carry_stage_in_loop_order():
         assert by_key["issue_filter.title_pattern"] == "PULL"
         assert by_key["work_own_filings"] == "PULL"
         assert by_key["mode"] == "IMPLEMENT"
+        assert by_key["implement_test_command"] == "IMPLEMENT"
         assert by_key["features_root"] == "VERIFY"
         assert by_key["regression_command"] == "GATE"
         assert by_key["doc_check_features_root"] == "GATE"

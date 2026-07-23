@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.7.0
+version: 0.8.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -93,18 +93,46 @@ SCRIPT, never the model's prose.
 
 ### Gate script — `src/test_gate.py`
 
-A self-contained script (NO rabbit-framework runtime dependency) that runs the
-TARGET feature's `test/run.py` via `subprocess` and records a machine-checkable
-verdict to a known artifact path:
+A script that runs the TARGET feature's test command via `subprocess` and records
+a machine-checkable verdict to a known artifact path:
 
 ```json
 {"feature": "<target-feature-name>", "passed": true, "returncode": 0,
- "summary": "<final line of run.py output>"}
+ "summary": "<final line of the test output>"}
 ```
 
-- Invocation: `test_gate.py <feature-dir> --verdict-out <path>`. The script ships to the installed plugin's lib directory; the implementer subagent invokes it via the deployed Claude Code convention `${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py` (mirroring scheduling's shipped skills), never a dev source-tree path.
-- `passed` is `True` only when the target's `run.py` exits 0. A failing suite, a
-  missing `test/run.py`, or any nonzero exit yields `passed=False`.
+- Invocation: `test_gate.py <feature-dir> --verdict-out <path>`. The script ships to the installed plugin's lib directory; the implementer subagent invokes it via the deployed Claude Code convention `${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py` (mirroring scheduling's shipped skills), never a dev source-tree path. The invocation is UNCHANGED by the configurability below — the gate resolves its command itself.
+- **Configurable test command (`implement_test_command`).** The gate resolves
+  the test command from the `implement_test_command` key in the central
+  `${project_dir}/.auto-maintainer/config.json`. To stay **self-contained**
+  (stdlib-only, byte-for-byte shippable — NO sibling-lib import), the gate reads
+  that key with a direct, tolerant stdlib `json.load` of the config file (absent
+  file / absent key / unreadable → the `null` default), NOT by importing
+  `safety-governance`. The `implement_test_command` KEY is owned by
+  `safety-governance`'s schema (and written by its `configure` surface); the gate
+  is a contract-bound READER of that one key. Three-way:
+  - **`null` / absent (default)** — run the target feature's
+    `<feature-dir>/test/run.py` via `[sys.executable, run.py]` (the historical
+    behavior; a **missing** `run.py` is a FAILED verdict `"no test/run.py found
+    for target feature"`, so no PR is opened).
+  - **a shell command string** — run THAT command instead (`shell=True`, cwd =
+    the feature dir); exit 0 = pass. For repos whose tests are not the rabbit
+    `test/run.py` convention (e.g. `pytest`). The verdict `summary` is the final
+    output line as before.
+  - **the sentinel `"none"` / `"skip"`** (case-insensitive) — the gate is
+    SKIPPED: it writes a `passed=True`, `returncode=0` verdict with summary
+    `"implement test-gate skipped (implement_test_command=none)"` and exits 0, so
+    a PR may open without an implement-time test verdict (the explicit opt-out
+    for harness-less repos; verification defers to the GATE-state
+    `regression_command`).
+  A `--test-command` CLI arg overrides the config-read value (the determinism
+  seam tests drive); `--project-dir` selects the config location (else
+  `$CLAUDE_PROJECT_DIR` / cwd). Resolution is tolerant — a missing/unreadable
+  config or absent key falls back to the `null` (run.py) default, never crashing;
+  the gate remains stdlib-only.
+- `passed` is `True` only when the resolved command exits 0 (or the gate is
+  skipped). A failing suite, a missing `test/run.py` (in the default mode), or
+  any nonzero exit yields `passed=False`.
 - The gate ALWAYS writes the verdict artifact (pass or fail) and mirrors the
   target's pass/fail in its OWN exit code so a caller detects it deterministically.
 - The verdict is byte-deterministic for a given target: same input → equal

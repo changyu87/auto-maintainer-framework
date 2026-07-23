@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.10.0
+version: 0.11.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -32,11 +32,12 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 
 ```json
 {
-  "schema_version": "2.7.0",
+  "schema_version": "2.8.0",
   "mode": "propose",
   "work_own_filings": true,
   "regression_command": null,
   "doc_check_features_root": null,
+  "implement_test_command": null,
   "issue_filter": {
     "labels": [],
     "title_pattern": null
@@ -98,6 +99,25 @@ single central `userConfig` (§3.10.1); it **replaces** the former
   Kept **separate** from `features_root` (VERIFY's complement locator, which may
   be absolute) so the doc gate is opt-in **independently** and is LIVE on the
   auto-merge path when set. Read through `doc_check_features_root(config)`.
+- `implement_test_command` — configures the **IMPLEMENT-side per-work-order
+  test-gate** (`implement`'s `test_gate.py`), which runs BEFORE a PR is opened.
+  This is DISTINCT from `regression_command` (the whole-repo GATE-state gate at
+  PR-merge time): this one is per-touched-feature at implement time. Three modes:
+  - **`null` (default)** — the historical behavior: the gate runs the touched
+    feature's `<feature-dir>/test/run.py` (exit 0 = pass; a **missing** `run.py`
+    is a FAILED verdict, so no PR is opened). Unchanged for existing installs.
+  - **a shell command string** — the gate runs THAT command instead (exit 0 =
+    pass), for repos whose tests are not the rabbit `test/run.py` convention
+    (e.g. `pytest`). Run with the touched feature dir as cwd.
+  - **the literal `"none"`** (also `"skip"`) — the IMPLEMENT test-gate is
+    **SKIPPED** (a no-op PASS): the PR is opened without an implement-time test
+    verdict, deferring verification to the GATE-state `regression_command`. This
+    is the explicit opt-out for repos with no per-feature harness (the case that
+    otherwise blocks every work order with "no test/run.py found"). Read through
+    the accessor `implement_test_command(config)` (returns the raw value, `None`
+    default); the three-way interpretation lives in `implement`'s `test_gate.py`
+    (the consumer), which owns the gate. Owned here (the schema + accessor +
+    configure flag); **read by `implement`** via the cross-feature contract.
 - `issue_filter` — an optional filter narrowing WHICH open GitHub issues the
   PULL stage (work-intake) pulls. An object
   `{"labels": <DNF>, "title_pattern": <regex-string-or-null>}`:
@@ -280,6 +300,12 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
     **positive int**.
   - `--regression-command` / `--doc-check-features-root` — as documented above
     (GATE section); `none`/`null`/`""` clear to `null`.
+  - `--implement-test-command` — the IMPLEMENT-side test-gate command
+    (documented above). An arbitrary shell command string sets it; `""` (empty)
+    clears to `null` (the default `test/run.py` behavior); the literal `none`/
+    `skip` is preserved VERBATIM as the skip sentinel (NOT cleared to null — the
+    reader distinguishes `null` = run `test/run.py` from `"none"` = skip the
+    gate). Stage: IMPLEMENT.
   - `--features-root` — VERIFY's cross-feature complement locator. An
     arbitrary path string (it MAY be absolute, UNLIKE `doc_check_features_root`);
     `none`/`null`/`""` clears to `null` (unconfigured, the conservative gate).
@@ -311,7 +337,8 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
     field (added for the onboarding walk-through) groups each knob by the loop
     state that consumes it, and the catalog is **ordered by loop stage** so the
     walk-through follows the route: `PULL` (`issue_filter.labels`,
-    `issue_filter.title_pattern`, `work_own_filings`) → `IMPLEMENT` (`mode`) →
+    `issue_filter.title_pattern`, `work_own_filings`) →
+    `IMPLEMENT` (`mode`, `implement_test_command`) →
     `VERIFY` (`features_root`) → `GATE` (`regression_command`,
     `doc_check_features_root`) → `SCHEDULING` (`heartbeat.interval_minutes`) →
     `SAFETY` (`budget.per_day_tokens`, `backoff.threshold`).

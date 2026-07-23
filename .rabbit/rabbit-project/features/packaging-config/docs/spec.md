@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.13
+version: 0.7.14
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -106,7 +106,14 @@ real loop reaches the installed plugin:
   land as `plugins/auto-maintainer/skills/{start,stop,status}`. The slice-1
   packaging-config status STUB is REMOVED (scheduling now owns a script-backed
   `status`, #29/#30); packaging-config still ships only the SessionStart persona
-  hook from its own assets.
+  hook from its own assets. As new control skills are added by their owning
+  feature (e.g. `scheduling`'s `clobber` reset skill), `build_plugin` MUST
+  register each so it ships end-to-end: (1) its companion lib in the lib map
+  (a sibling-importing control script is NORMALIZED like `status.py`; e.g.
+  `clobber.py` from `scheduling/src/`), and (2) a curated one-line entry in
+  `_COMMAND_DESCRIPTIONS` (a shipped skill with no curated description FAILS the
+  build, keeping the README command table complete). The shipped-control-lib +
+  control-skill count/enumeration tests are advanced in lockstep.
 - **Version bump** — `plugin.json` + `marketplace.json` `version` → `0.2.0`
   (slice 2); bump the **patch** on each re-ship of the plugin tree (e.g. `0.2.1`
   after the scheduling #24 skill-path fix re-ship).

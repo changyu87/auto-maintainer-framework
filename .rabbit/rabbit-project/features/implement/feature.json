@@ -1,6 +1,6 @@
 {
   "name": "implement",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/implement/src/**"
@@ -8,7 +8,7 @@
   "created": "2026-06-12T06:10:37Z",
   "deprecation_criterion": "Superseded when the model-backed implement-then-PR doer (DESIGN \u00a73.6.2/\u00a73.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-07-18",
-  "spec_change_reason": "auto-maintainer-framework#354: the shipped implementer subagent (ship/agents/auto-maintainer-implementer.md, now v2.7.0) now regenerates a committed build tree in-PR. When a repo checks a built distribution tree (a plugin/package tree assembled from source) into version control under a build-drift guard, the accept path \u2014 after committing the code change and before the self-review \u2014 determines whether its edits touched source mirrored into that committed tree and, if so, runs the repo's build step and commits the regenerated tree in the SAME PR. This keeps a shipped-source change drift-free in one PR instead of merging with drift and forcing a second regen-only PR. A change touching only non-mirrored source (docs/tests, or a repo with no committed build tree) does not regenerate. The instruction is phrased generically; the shipped body still references NEITHER 'rabbit-project' NOR '.rabbit'. spec.md documents the behaviour; an e2e test asserts the body carries the regen instruction and stays leak-free.",
-  "spec_no_change_reason": "spec.md v2.9.0 (reads work_orders + implementer never-planned/accepted-only/fetch-fallback) already committed in 0210b5c prior to this TDD cycle"
+  "updated": "2026-07-23",
+  "spec_change_reason": "Configurable implement_test_command in test_gate.py: the IMPLEMENT deterministic correctness gate now resolves its test command from the implement_test_command key, read by a direct tolerant stdlib json.load of ${project_dir}/.auto-maintainer/config.json (the key is owned by safety-governance's schema; the gate is a contract-bound READER of that one key and does NOT import safety-governance, staying stdlib-only and byte-for-byte shippable). Three-way: null/absent runs <feature-dir>/test/run.py (historical behavior, incl. missing-run.py=failed); a shell command string runs that command (shell=True, cwd=feature dir, exit 0=pass); the sentinel 'none'/'skip' (case-insensitive) skips the gate with a passed=True no-op verdict (harness-less opt-out, verification defers to the GATE-state regression_command). Added --test-command (override) and --project-dir (config location) CLI args; resolution is tolerant (missing/unreadable config or absent key -> run.py default, never crashes). The implementer agent invocation and the {feature,passed,returncode,summary} verdict schema are UNCHANGED. spec.md + contract.md were authored/committed in 5f75f5e.",
+  "spec_no_change_reason": "spec.md + contract.md for configurable implement_test_command already authored and committed in 5f75f5e; this cycle implements test_gate.py against the already-committed spec"
 }

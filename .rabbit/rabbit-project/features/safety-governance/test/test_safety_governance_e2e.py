@@ -91,13 +91,17 @@ def _write_json(path, payload):
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.7.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.8.0"
     d = sg.DEFAULT_GOVERNANCE
-    assert d["schema_version"] == "2.7.0"
+    assert d["schema_version"] == "2.8.0"
     assert d["mode"] == "propose"
     # doc_check_features_root (§3.7, verify-integrate GATE doc check) defaults
     # null (the doc check is OFF); schema 2.5.0 -> 2.6.0.
     assert d["doc_check_features_root"] is None
+    # implement_test_command (the IMPLEMENT-side per-work-order test-gate,
+    # implement's test_gate.py) defaults null (= run <feature>/test/run.py, the
+    # historical behavior); schema 2.7.0 -> 2.8.0.
+    assert d["implement_test_command"] is None
     # issue_filter (the PULL-stage open-issue filter) defaults the no-filter
     # object {labels: [], title_pattern: null}; schema 2.6.0 -> 2.7.0.
     assert d["issue_filter"] == {"labels": [], "title_pattern": None}
@@ -132,7 +136,7 @@ def test_maintainer_repo_is_fixed_constant():
 def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["schema_version"] == "2.7.0"
+        assert config["schema_version"] == "2.8.0"
         assert config["mode"] == "propose"
         assert config["issue_filter"] == {"labels": [], "title_pattern": None}
         assert "self_deploy" not in config
@@ -382,6 +386,84 @@ def test_doc_check_features_root_accessor():
     assert sg.doc_check_features_root(sg.DEFAULT_GOVERNANCE) is None
     assert sg.doc_check_features_root(
         {"doc_check_features_root": "features"}) == "features"
+
+
+# ==========================================================================
+# E2E Behaviour: implement_test_command (the IMPLEMENT-side per-work-order
+# test-gate, implement's test_gate.py) defaults null (= run
+# <feature>/test/run.py, today's behavior), is surfaced from config.json
+# (backfilled when absent, preserved when present incl. an explicit null and the
+# 'none'/'skip' sentinel), and is read through the pure accessor
+# implement_test_command(config) which returns the RAW value — safety-governance
+# stores + provides it but does NOT interpret it (the three-way interpretation
+# lives in implement's test_gate.py). schema 2.7.0 -> 2.8.0.
+# ==========================================================================
+
+def test_default_implement_test_command_is_null():
+    """implement_test_command defaults null — the IMPLEMENT gate runs the touched
+    feature's test/run.py (the historical behavior), unchanged for existing
+    installs."""
+    assert sg.DEFAULT_GOVERNANCE["implement_test_command"] is None
+    with tempfile.TemporaryDirectory() as project_dir:
+        config = sg.load_config(project_dir)
+        assert config["implement_test_command"] is None
+
+
+def test_load_config_reads_implement_test_command_command_override():
+    """An explicit top-level implement_test_command command string in config.json
+    is surfaced on the loaded config so implement's test_gate.py runs it."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"implement_test_command": "pytest -q"})
+        config = sg.load_config(project_dir)
+        assert config["implement_test_command"] == "pytest -q"
+
+
+def test_load_config_reads_implement_test_command_skip_sentinel():
+    """The 'none'/'skip' sentinel is surfaced VERBATIM (NOT mapped to null) —
+    null (run test/run.py) and 'none' (skip the gate) mean DIFFERENT things."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"implement_test_command": "none"})
+        config = sg.load_config(project_dir)
+        assert config["implement_test_command"] == "none"
+
+
+def test_load_config_backfills_implement_test_command_null_when_absent():
+    """A config.json that omits implement_test_command loads with the default
+    null (run test/run.py), so an existing install is unaffected."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir), {"mode": "propose"})
+        config = sg.load_config(project_dir)
+        assert config["implement_test_command"] is None
+
+
+def test_load_config_preserves_explicit_null_implement_test_command():
+    """An explicit implement_test_command=null (run test/run.py) is surfaced
+    unchanged."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"implement_test_command": None})
+        config = sg.load_config(project_dir)
+        assert config["implement_test_command"] is None
+
+
+def test_implement_test_command_accessor_default_none():
+    """The pure accessor returns None when the key is absent, mirroring
+    regression_command(config)."""
+    assert sg.implement_test_command({}) is None
+    assert sg.implement_test_command(sg.DEFAULT_GOVERNANCE) is None
+
+
+def test_implement_test_command_accessor_returns_raw_value():
+    """The accessor returns the RAW value — a command string or the 'none'/'skip'
+    sentinel — WITHOUT interpreting it (interpretation is implement's job)."""
+    assert sg.implement_test_command(
+        {"implement_test_command": "npm test"}) == "npm test"
+    assert sg.implement_test_command(
+        {"implement_test_command": "none"}) == "none"
+    assert sg.implement_test_command(
+        {"implement_test_command": "skip"}) == "skip"
 
 
 # ==========================================================================
@@ -703,7 +785,7 @@ def test_load_config_falls_back_to_default_governance_when_no_shipped_file():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.7.0"
+        assert config["schema_version"] == "2.8.0"
         assert config["budget"]["per_day_tokens"] is None
         assert config["heartbeat"]["interval_minutes"] == 3
         assert config["backoff"]["threshold"] == 5
@@ -741,7 +823,7 @@ def test_load_config_unparsable_shipped_file_falls_back_to_defaults():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.7.0"
+        assert config["schema_version"] == "2.8.0"
 
 
 # ==========================================================================
