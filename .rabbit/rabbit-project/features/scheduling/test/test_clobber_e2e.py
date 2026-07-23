@@ -299,6 +299,18 @@ def test_clobber_skill_dispatches_no_subagent():
     assert "subagent_type" not in body, "clobber must dispatch no subagent"
 
 
+def test_clobber_skill_keys_stop_advice_on_loop_intent_not_disposition():
+    """The SKILL keys its /stop-first recommendation on the loop_intent_present
+    flag surfaced by clobber.py, NOT on disposition. It must reference the flag
+    AND must NOT carry the retired vague 'if the loop may be running' wording."""
+    body = _body(_SHIP_SKILL)
+    assert "loop_intent_present" in body, (
+        "SKILL must key /stop-first advice on the loop_intent_present flag")
+    assert "if the loop may be running" not in body.lower(), (
+        "the vague disposition-agnostic 'if the loop may be running' wording "
+        "must be removed in favor of the loop_intent_present flag")
+
+
 # ==========================================================================
 # Behaviour 8 — the machine-first summary carries a loop_intent_present bool,
 # read from heartbeat's durable loop-intent marker BEFORE deletion. The clobber
