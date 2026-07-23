@@ -3179,7 +3179,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     merged_count = len(merged_entries)
     integrate_skipped = len(integration_result.get("skipped", []))
     integrate_errored = len(integration_result.get("errors", []))
-    # auto_merge_enabled (#): PRs on which INTEGRATE enabled GitHub NATIVE
+    # auto_merge_enabled (count): PRs on which INTEGRATE enabled GitHub NATIVE
     # auto-merge this tick — a PENDING success (queued to merge once checks pass),
     # DISTINCT from integrate_errored. A route with no INTEGRATE (or an older
     # integration_result lacking the key) yields 0 via the .get default.
