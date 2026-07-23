@@ -62,14 +62,25 @@ def _make_target(tmp, name, run_body):
     return feature_dir
 
 
-def _run_gate(feature_dir, verdict_path):
+def _run_gate(feature_dir, verdict_path, extra=None):
     """Invoke the gate script as a subprocess exactly as the implementer
     subagent would: it runs the target's test/run.py and writes the verdict to
-    the named artifact path. Returns the gate process result."""
-    return subprocess.run(
-        [sys.executable, _GATE, feature_dir, "--verdict-out", verdict_path],
-        capture_output=True, text=True,
-    )
+    the named artifact path. `extra` appends further CLI args (e.g.
+    --project-dir / --test-command). Returns the gate process result."""
+    argv = [sys.executable, _GATE, feature_dir, "--verdict-out", verdict_path]
+    if extra:
+        argv.extend(extra)
+    return subprocess.run(argv, capture_output=True, text=True)
+
+
+def _make_config(tmp, value):
+    """Write ${tmp}/.auto-maintainer/config.json with implement_test_command set
+    to `value` and return the project_dir (tmp)."""
+    cfg_dir = os.path.join(tmp, ".auto-maintainer")
+    os.makedirs(cfg_dir, exist_ok=True)
+    with open(os.path.join(cfg_dir, "config.json"), "w") as f:
+        json.dump({"implement_test_command": value}, f)
+    return tmp
 
 
 # ==========================================================================
@@ -158,6 +169,206 @@ def test_gate_verdict_is_deterministic():
         with open(path_b) as f:
             b = json.load(f)
         assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+# ==========================================================================
+# E2E Behaviour: a configured implement_test_command (a shell command string)
+# is run INSTEAD of test/run.py — a passing command yields passed=True with the
+# command's final output line as the summary.
+# ==========================================================================
+
+def test_config_command_string_passing_is_run():
+    with tempfile.TemporaryDirectory() as tmp:
+        # A feature dir with NO test/run.py — the config command is what runs.
+        feature_dir = os.path.join(tmp, "features", "cfgfeat")
+        os.makedirs(feature_dir)
+        project_dir = _make_config(tmp, "echo custom-suite-ok")
+        verdict_path = os.path.join(tmp, "verdict.json")
+
+        proc = _run_gate(feature_dir, verdict_path,
+                         extra=["--project-dir", project_dir])
+
+        assert proc.returncode == 0, proc.stderr
+        with open(verdict_path) as f:
+            verdict = json.load(f)
+        assert verdict["feature"] == "cfgfeat"
+        assert verdict["passed"] is True
+        assert verdict["returncode"] == 0
+        assert verdict["summary"] == "custom-suite-ok"
+
+
+# ==========================================================================
+# E2E Behaviour: a configured command that FAILS (nonzero exit) yields
+# passed=False and a nonzero gate exit — the command is the source of truth.
+# ==========================================================================
+
+def test_config_command_string_failing_is_run():
+    with tempfile.TemporaryDirectory() as tmp:
+        feature_dir = os.path.join(tmp, "features", "cfgfeat")
+        os.makedirs(feature_dir)
+        project_dir = _make_config(tmp, "echo boom && exit 3")
+        verdict_path = os.path.join(tmp, "verdict.json")
+
+        proc = _run_gate(feature_dir, verdict_path,
+                         extra=["--project-dir", project_dir])
+
+        assert proc.returncode != 0
+        with open(verdict_path) as f:
+            verdict = json.load(f)
+        assert verdict["passed"] is False
+        assert verdict["returncode"] == 3
+        assert verdict["summary"] == "boom"
+
+
+# ==========================================================================
+# E2E Behaviour: the config command runs with cwd = the feature dir, so a
+# command referencing a file in the feature dir resolves against it.
+# ==========================================================================
+
+def test_config_command_runs_with_feature_dir_cwd():
+    with tempfile.TemporaryDirectory() as tmp:
+        feature_dir = os.path.join(tmp, "features", "cfgfeat")
+        os.makedirs(feature_dir)
+        with open(os.path.join(feature_dir, "marker.txt"), "w") as f:
+            f.write("hi")
+        project_dir = _make_config(tmp, "cat marker.txt")
+        verdict_path = os.path.join(tmp, "verdict.json")
+
+        proc = _run_gate(feature_dir, verdict_path,
+                         extra=["--project-dir", project_dir])
+
+        assert proc.returncode == 0, proc.stderr
+        with open(verdict_path) as f:
+            verdict = json.load(f)
+        assert verdict["passed"] is True
+        assert verdict["summary"] == "hi"
+
+
+# ==========================================================================
+# E2E Behaviour: the sentinel 'none' / 'skip' (case-insensitive) SKIPS the
+# gate — a passed=True no-op verdict that does NOT touch test/run.py even when
+# the feature has none.
+# ==========================================================================
+
+def test_config_none_skips_the_gate():
+    for sentinel in ("none", "skip", "NONE", "Skip"):
+        with tempfile.TemporaryDirectory() as tmp:
+            # No test/run.py at all: default mode would FAIL; skip must NOT.
+            feature_dir = os.path.join(tmp, "features", "norun")
+            os.makedirs(feature_dir)
+            project_dir = _make_config(tmp, sentinel)
+            verdict_path = os.path.join(tmp, "verdict.json")
+
+            proc = _run_gate(feature_dir, verdict_path,
+                             extra=["--project-dir", project_dir])
+
+            assert proc.returncode == 0, f"{sentinel}: {proc.stderr}"
+            with open(verdict_path) as f:
+                verdict = json.load(f)
+            assert verdict["passed"] is True, sentinel
+            assert verdict["returncode"] == 0
+            assert verdict["summary"] == (
+                "implement test-gate skipped (implement_test_command=none)")
+
+
+# ==========================================================================
+# E2E Behaviour: null/absent implement_test_command -> the historical run.py
+# default. An absent config file, an absent key, and an explicit null all fall
+# back to running test/run.py.
+# ==========================================================================
+
+def test_absent_config_file_uses_runpy_default():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = _make_target(tmp, "greenfeat", _PASSING_RUN)
+        verdict_path = os.path.join(tmp, "verdict.json")
+
+        # project_dir with NO .auto-maintainer/config.json.
+        proc = _run_gate(target, verdict_path, extra=["--project-dir", tmp])
+
+        assert proc.returncode == 0, proc.stderr
+        with open(verdict_path) as f:
+            verdict = json.load(f)
+        assert verdict["passed"] is True
+        assert verdict["summary"] == "1 passed, 0 failed"
+
+
+def test_absent_key_uses_runpy_default():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = _make_target(tmp, "greenfeat", _PASSING_RUN)
+        cfg_dir = os.path.join(tmp, ".auto-maintainer")
+        os.makedirs(cfg_dir)
+        with open(os.path.join(cfg_dir, "config.json"), "w") as f:
+            json.dump({"some_other_key": "x"}, f)
+        verdict_path = os.path.join(tmp, "verdict.json")
+
+        proc = _run_gate(target, verdict_path, extra=["--project-dir", tmp])
+
+        assert proc.returncode == 0, proc.stderr
+        with open(verdict_path) as f:
+            verdict = json.load(f)
+        assert verdict["passed"] is True
+        assert verdict["summary"] == "1 passed, 0 failed"
+
+
+def test_explicit_null_uses_runpy_default():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = _make_target(tmp, "greenfeat", _PASSING_RUN)
+        project_dir = _make_config(tmp, None)
+        verdict_path = os.path.join(tmp, "verdict.json")
+
+        proc = _run_gate(target, verdict_path,
+                         extra=["--project-dir", project_dir])
+
+        assert proc.returncode == 0, proc.stderr
+        with open(verdict_path) as f:
+            verdict = json.load(f)
+        assert verdict["passed"] is True
+
+
+# ==========================================================================
+# E2E Behaviour: an unreadable / malformed config.json is tolerated — it falls
+# back to the run.py default and never crashes the gate.
+# ==========================================================================
+
+def test_malformed_config_falls_back_to_runpy_default():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = _make_target(tmp, "greenfeat", _PASSING_RUN)
+        cfg_dir = os.path.join(tmp, ".auto-maintainer")
+        os.makedirs(cfg_dir)
+        with open(os.path.join(cfg_dir, "config.json"), "w") as f:
+            f.write("{ this is not valid json ")
+        verdict_path = os.path.join(tmp, "verdict.json")
+
+        proc = _run_gate(target, verdict_path, extra=["--project-dir", tmp])
+
+        assert proc.returncode == 0, proc.stderr
+        with open(verdict_path) as f:
+            verdict = json.load(f)
+        assert verdict["passed"] is True
+
+
+# ==========================================================================
+# E2E Behaviour: --test-command OVERRIDES the config value (the determinism
+# seam the tests drive) — the CLI wins over config.json.
+# ==========================================================================
+
+def test_test_command_cli_overrides_config():
+    with tempfile.TemporaryDirectory() as tmp:
+        feature_dir = os.path.join(tmp, "features", "cfgfeat")
+        os.makedirs(feature_dir)
+        # Config says fail; the CLI override says pass — override must win.
+        project_dir = _make_config(tmp, "exit 7")
+        verdict_path = os.path.join(tmp, "verdict.json")
+
+        proc = _run_gate(feature_dir, verdict_path, extra=[
+            "--project-dir", project_dir,
+            "--test-command", "echo overridden-ok"])
+
+        assert proc.returncode == 0, proc.stderr
+        with open(verdict_path) as f:
+            verdict = json.load(f)
+        assert verdict["passed"] is True
+        assert verdict["summary"] == "overridden-ok"
 
 
 # ==========================================================================
