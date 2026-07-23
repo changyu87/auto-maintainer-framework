@@ -3179,6 +3179,11 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     merged_count = len(merged_entries)
     integrate_skipped = len(integration_result.get("skipped", []))
     integrate_errored = len(integration_result.get("errors", []))
+    # auto_merge_enabled (#): PRs on which INTEGRATE enabled GitHub NATIVE
+    # auto-merge this tick — a PENDING success (queued to merge once checks pass),
+    # DISTINCT from integrate_errored. A route with no INTEGRATE (or an older
+    # integration_result lacking the key) yields 0 via the .get default.
+    auto_merge_enabled_count = len(integration_result.get("auto_merge_enabled", []))
     # Additive per-PR IDENTIFIERS for tick_end.detail: the full INTEGRATE result
     # ({merged: [{pr_ref, url}], skipped: [{pr_ref, reason}], errored: [{pr_ref,
     # reason}]}) enriching the count-only merged/integrate_skipped/
@@ -3192,6 +3197,11 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     merged_field = f"merged={merged_count}"
     if integrate_errored > 0:
         merged_field += f" integrate_errored={integrate_errored}"
+    # auto_merge_enabled=<n> is appended ONLY when >0 (a PENDING success must be
+    # visible, distinct from integrate_errored), mirroring the
+    # integrate_errored=<n>-when-positive convention.
+    if auto_merge_enabled_count > 0:
+        merged_field += f" auto_merge_enabled={auto_merge_enabled_count}"
     # Release-needed detection (#319): the auto-maintainer is not self-deployable,
     # but when THIS tick merged a shipped-src change in the framework's own
     # checkout a human release is owed to keep the plugin version 1:1 with the
@@ -3242,6 +3252,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "merged": merged_count,
         "integrate_skipped": integrate_skipped,
         "integrate_errored": integrate_errored,
+        "auto_merge_enabled": auto_merge_enabled_count,
         "merged_refs": merged_refs,
         "release_needed": release_needed,
         "refire": refire,
