@@ -288,10 +288,11 @@ def test_plugin_internal_readme_present_with_expected_content():
             name for name in os.listdir(skills_dir)
             if os.path.isdir(os.path.join(skills_dir, name))
         )
-        # sanity: the v0.3.0 configurables overhaul ships these seven commands.
+        # sanity: the shipped command set — the v0.3.0 configurables overhaul's
+        # seven commands plus the clobber loop-reset skill.
         assert set(shipped) == {
             "start", "stop", "status", "tick", "configure", "route",
-            "adapter-map",
+            "adapter-map", "clobber",
         }, f"unexpected shipped skill set: {shipped}"
         for name in shipped:
             assert f"`/auto-maintainer:{name}`" in body, \
@@ -391,17 +392,18 @@ def test_core_libs_copied_byte_identical():
 
 
 # ---------------------------------------------------------------------------
-# Slice 2 spec (re-ship #?, prioritize.py + implement.py): all TWELVE control
-# libs ship under lib/ — the four pure libs, scheduling's run_tick.py,
-# scheduling's script-backed status.py + stop.py, work-intake's work_intake.py
-# (the GitHub-Issues PULL adapter run_tick imports), scheduling's start.py (the
-# deterministic fresh-start starter the /auto-maintainer:start skill invokes for
-# tick #1), adapter-wiring's adapter_wiring.py (the route-as-data + adapter
-# wiring mechanism run_tick imports), AND prioritize.py + implement.py (the two
-# new deterministic adapter libs run_tick now imports so the installed plugin
-# runs the PRIORITIZE/IMPLEMENT adapters self-contained).
+# Slice 2 spec (re-ship #?, prioritize.py + implement.py; + clobber.py): all
+# THIRTEEN control libs ship under lib/ — the four pure libs, scheduling's
+# run_tick.py, scheduling's script-backed status.py + stop.py, work-intake's
+# work_intake.py (the GitHub-Issues PULL adapter run_tick imports), scheduling's
+# start.py (the deterministic fresh-start starter the /auto-maintainer:start skill
+# invokes for tick #1), adapter-wiring's adapter_wiring.py (the route-as-data +
+# adapter wiring mechanism run_tick imports), prioritize.py + implement.py (the
+# two deterministic adapter libs run_tick imports so the installed plugin runs
+# the PRIORITIZE/IMPLEMENT adapters self-contained), AND scheduling's clobber.py
+# (the loop-reset control lib the /auto-maintainer:clobber skill invokes).
 # ---------------------------------------------------------------------------
-def test_all_twelve_control_libs_present():
+def test_all_thirteen_control_libs_present():
     out_root = _build_into_temp()
     try:
         lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
@@ -418,6 +420,7 @@ def test_all_twelve_control_libs_present():
             "adapter_wiring.py",
             "prioritize.py",
             "implement.py",
+            "clobber.py",
         ):
             assert os.path.isfile(os.path.join(lib, fname)), \
                 f"lib/{fname} must ship in the plugin tree"
@@ -451,7 +454,8 @@ def test_shipped_control_libs_are_self_contained():
                           ("start", "start"),
                           ("adapter_wiring", "build_loop"),
                           ("prioritize", "PRIORITIZE_MANIFEST"),
-                          ("implement", "IMPLEMENT_MANIFEST")):
+                          ("implement", "IMPLEMENT_MANIFEST"),
+                          ("clobber", "clobber")):
             probe = (
                 "import sys; "
                 f"sys.path.insert(0, {lib!r}); "
@@ -517,7 +521,7 @@ def test_exactly_one_status_skill_and_control_skills_present():
         ]
         assert len(status_md) == 1, \
             f"exactly one status SKILL.md must ship, found {status_md}"
-        for name in ("start", "stop", "status"):
+        for name in ("start", "stop", "status", "clobber"):
             assert os.path.isfile(
                 os.path.join(skills, name, "SKILL.md")
             ), f"skills/{name}/SKILL.md must ship"
