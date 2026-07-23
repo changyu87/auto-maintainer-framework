@@ -153,6 +153,11 @@ _COMMAND_DESCRIPTIONS = {
         "REVIEW, INTEGRATE, CLEANUP, PERSIST, EXIT). Every edit is validated "
         "before it is saved."
     ),
+    "clobber": (
+        "Reset the loop for a clean start: clears runtime state (durable state, "
+        "disposition, events log, dispatch outputs) while preserving your "
+        "config; confirms before it deletes anything."
+    ),
 }
 
 # Pure core libs copied byte-for-byte: dest filename -> source path relative to
@@ -235,6 +240,16 @@ _NORMALIZED_LIBS = {
     ),
     "status.py": (
         os.path.join(_FEATURES_REL, "scheduling", "src", "status.py"),
+        "import run_tick as rt  # noqa: E402",
+        _SELF_PATH_BOOTSTRAP,
+    ),
+    # clobber is scheduling's loop-reset control lib (the /auto-maintainer:clobber
+    # skill's companion). Its FIRST sibling import is run_tick (the bootstrap
+    # anchor; it also imports lifecycle_dispositions + heartbeat), and it already
+    # imports os/sys at module top, so it takes the PLAIN self-path bootstrap —
+    # exactly like status.py — resolving its siblings from the co-located lib/.
+    "clobber.py": (
+        os.path.join(_FEATURES_REL, "scheduling", "src", "clobber.py"),
         "import run_tick as rt  # noqa: E402",
         _SELF_PATH_BOOTSTRAP,
     ),
