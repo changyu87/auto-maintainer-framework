@@ -151,8 +151,6 @@ def main(argv=None):
         "--yes", action="store_true",
         help="actually delete (without it, a DRY-RUN that deletes nothing)")
     parser.add_argument("--runtime-dir", dest="runtime_dir")
-    parser.add_argument("--state", dest="state")
-    parser.add_argument("--journal", dest="journal")
     parser.add_argument("--project-dir", dest="project_dir")
     args = parser.parse_args(argv)
 
