@@ -29,6 +29,7 @@ adapters resolve siblings).
 Owner: changyu87
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -81,14 +82,33 @@ def _verdict(number=1, ok=True, base=_DEFAULT_BRANCH, mergeable=True,
 
 
 def _recording_sink():
-    """A merge sink that records each pr_ref it was asked to merge and returns a
-    merged-entry dict, standing in for `gh pr merge --merge --delete-branch`."""
+    """A merge sink that records each pr_ref it was asked to merge and returns an
+    IMMEDIATE-merge entry (`auto_enabled=False`), standing in for the already-green
+    path of `gh pr merge --auto --merge --delete-branch` (merges now). Accepts the
+    `auto` kwarg INTEGRATE now passes in auto-merge mode."""
     calls = []
 
-    def sink(pr_ref, repo=None):  # noqa: ARG001
+    def sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
         calls.append(pr_ref)
         return {"pr_ref": pr_ref,
-                "url": f"https://github.com/acme/widget/pull/{pr_ref.split('#')[-1]}"}
+                "url": f"https://github.com/acme/widget/pull/{pr_ref.split('#')[-1]}",
+                "auto_enabled": False}
+
+    sink.calls = calls
+    return sink
+
+
+def _queued_sink():
+    """A merge sink standing in for the GitHub-auto-merge-QUEUED path: the PR is
+    not merged now (checks pending) but native auto-merge was enabled, so it
+    returns `auto_enabled=True` (a pending success, NOT an error)."""
+    calls = []
+
+    def sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
+        calls.append(pr_ref)
+        return {"pr_ref": pr_ref,
+                "url": f"https://github.com/acme/widget/pull/{pr_ref.split('#')[-1]}",
+                "auto_enabled": True}
 
     sink.calls = calls
     return sink
@@ -358,7 +378,7 @@ def test_integrate_e2e_guardrail_violation_skipped_sink_not_called():
 # ==========================================================================
 
 def test_integrate_e2e_merge_sink_raises_records_error():
-    def raising_sink(pr_ref, repo=None):  # noqa: ARG001
+    def raising_sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
         raise RuntimeError("gh merge failed: protected branch")
 
     integrate = vi.Integrate(mode="auto-merge", merge_sink=raising_sink,
@@ -426,6 +446,149 @@ def test_integrate_e2e_uses_real_safety_governance():
     _write_verdicts(ctx, [_verdict(number=8, ok=True)])
     integrate.run(ctx)
     assert sink.calls == ["acme/widget#8"]
+
+
+# ==========================================================================
+# Behaviour (auto-merge sink): INTEGRATION_RESULT_SCHEMA_VERSION bumps additively
+# to 1.2.0 for the new auto_merge_enabled field, and the field round-trips.
+# ==========================================================================
+
+def test_integration_result_schema_version_is_1_2_0():
+    assert vi.INTEGRATION_RESULT_SCHEMA_VERSION == "1.2.0"
+
+
+def test_integration_result_round_trip_carries_auto_merge_enabled():
+    entry = {"pr_ref": "acme/widget#1",
+             "url": "https://github.com/acme/widget/pull/1"}
+    r = vi.IntegrationResult(auto_merge_enabled=[entry])
+    d = r.to_dict()
+    assert d["schema_version"] == "1.2.0"
+    assert d["auto_merge_enabled"] == [entry]
+    assert vi.IntegrationResult.from_dict(d) == r
+
+
+def test_integration_result_empty_has_auto_merge_enabled_list():
+    d = vi.IntegrationResult().to_dict()
+    assert d["auto_merge_enabled"] == []
+
+
+# ==========================================================================
+# E2E Behaviour: at auto-merge, when the merge sink QUEUED GitHub native
+# auto-merge (checks pending) it returns auto_enabled=True — the PR is recorded
+# under the NEW auto_merge_enabled list (a pending success, NOT an error / NOT
+# merged). The sink was still called.
+# ==========================================================================
+
+def test_integrate_e2e_auto_merge_queued_records_auto_merge_enabled():
+    sink = _queued_sink()
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
+                             default_branch=_DEFAULT_BRANCH)
+    ctx = _fresh_ctx()
+    _write_verdicts(ctx, [_verdict(number=1, ok=True)])
+
+    res = ctx_run(integrate, ctx)
+    assert sink.calls == ["acme/widget#1"]
+    assert res["merged"] == []
+    assert res["errors"] == []
+    assert [e["pr_ref"] for e in res["auto_merge_enabled"]] == ["acme/widget#1"]
+    assert res["auto_merge_enabled"][0]["url"]
+
+
+# ==========================================================================
+# E2E Behaviour: at auto-merge, when the sink MERGED immediately (already green)
+# it returns auto_enabled=False — the PR is recorded under `merged` (as before),
+# and auto_merge_enabled stays empty.
+# ==========================================================================
+
+def test_integrate_e2e_auto_merge_immediate_green_records_merged():
+    sink = _recording_sink()
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=sink,
+                             default_branch=_DEFAULT_BRANCH)
+    ctx = _fresh_ctx()
+    _write_verdicts(ctx, [_verdict(number=1, ok=True)])
+
+    res = ctx_run(integrate, ctx)
+    assert [e["pr_ref"] for e in res["merged"]] == ["acme/widget#1"]
+    assert res["auto_merge_enabled"] == []
+    assert res["errors"] == []
+
+
+# ==========================================================================
+# E2E Behaviour: a merge sink that raises on BOTH paths (genuine merge fault) is
+# recorded under `errors` — never auto_merge_enabled, never merged.
+# ==========================================================================
+
+def test_integrate_e2e_auto_merge_both_paths_fail_records_error():
+    def both_fail_sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
+        raise RuntimeError("gh merge failed: --auto and immediate both failed")
+
+    integrate = vi.Integrate(mode="auto-merge", merge_sink=both_fail_sink,
+                             default_branch=_DEFAULT_BRANCH)
+    ctx = _fresh_ctx()
+    _write_verdicts(ctx, [_verdict(number=7, ok=True)])
+
+    res = ctx_run(integrate, ctx)
+    assert res["merged"] == []
+    assert res["auto_merge_enabled"] == []
+    assert len(res["errors"]) == 1
+    assert res["errors"][0]["pr_ref"] == "acme/widget#7"
+
+
+# ==========================================================================
+# Behaviour (auto-merge determinism seam): gh_pr_merge_sink with auto=True uses
+# the `--auto` argv, and the state probe classifies QUEUED (state!=MERGED ->
+# auto_enabled True) vs MERGED-now (state==MERGED -> auto_enabled False).
+# ==========================================================================
+
+def test_gh_pr_merge_sink_auto_uses_auto_argv_and_classifies_queued():
+    cmds = []
+
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        cmds.append(cmd)
+        if cmd[1:3] == ["pr", "view"]:
+            return _FakeCompleted(json.dumps({"state": "OPEN"}))
+        return _FakeCompleted("")
+
+    entry = vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
+                                runner=fake_runner, auto=True)
+    merge_cmd = cmds[0]
+    assert merge_cmd[:3] == ["gh", "pr", "merge"]
+    assert "--auto" in merge_cmd
+    assert "--merge" in merge_cmd
+    assert "--delete-branch" in merge_cmd
+    # the sink probed the PR state once via the same injectable runner.
+    assert any(c[1:3] == ["pr", "view"] for c in cmds)
+    assert entry["auto_enabled"] is True
+    assert entry["pr_ref"] == "acme/widget#9"
+
+
+def test_gh_pr_merge_sink_auto_classifies_merged_now():
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        if cmd[1:3] == ["pr", "view"]:
+            return _FakeCompleted(json.dumps({"state": "MERGED"}))
+        return _FakeCompleted("")
+
+    entry = vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
+                                runner=fake_runner, auto=True)
+    assert entry["auto_enabled"] is False
+
+
+def test_gh_pr_merge_sink_auto_falls_back_to_immediate_when_auto_raises():
+    cmds = []
+
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        cmds.append(cmd)
+        if "--auto" in cmd:
+            raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
+        return _FakeCompleted("")
+
+    entry = vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
+                                runner=fake_runner, auto=True)
+    # the immediate --merge fallback fired (a pr-merge cmd WITHOUT --auto).
+    assert any(c[1:3] == ["pr", "merge"] and "--auto" not in c for c in cmds)
+    # no state probe on the fallback path (immediate merge is terminal).
+    assert not any(c[1:3] == ["pr", "view"] for c in cmds)
+    assert entry["auto_enabled"] is False
 
 
 # ==========================================================================
