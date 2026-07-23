@@ -4,9 +4,10 @@
 A pure, deterministic decision library over a machine-first, versioned CENTRAL
 config (config.json). Decision surfaces plus one effectful halt helper:
 
-  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.7.0),
+  1. Central config + loader — GOVERNANCE_SCHEMA_VERSION (2.8.0),
      DEFAULT_GOVERNANCE, load_config(project_dir), work_own_filings(config),
-     regression_command(config), doc_check_features_root(config),
+     regression_command(config), implement_test_command(config),
+     doc_check_features_root(config),
      issue_filter(config) (a pure DNF-label + title_pattern normalizer). The
      config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
@@ -66,7 +67,7 @@ Budget-accounting contract (the evaluate/record split):
     record_spend on an allowed acting tick to persist the spend. It does NOT
     mutate its input state; it returns the new state to persist.
 
-Version: 0.2.0
+Version: 0.3.0
 Owner: changyu87
 Deprecation criterion: Superseded when trust-ladder / budget enforcement moves
   into a different layer than a project-local central config (config.json)
@@ -114,8 +115,13 @@ import lifecycle_dispositions as ld
 # null}) — the PULL-stage filter narrowing WHICH open GitHub issues work-intake
 # pulls (a disjunctive-normal-form label matcher + a post-fetch title regex); an
 # absent key backfills the no-filter default (pull all open issues), so the bump
-# is backward compatible.
-GOVERNANCE_SCHEMA_VERSION = "2.7.0"
+# is backward compatible. 2.8.0: additive `implement_test_command` knob (default
+# null = the IMPLEMENT-side per-work-order test-gate runs the touched feature's
+# <feature-dir>/test/run.py, today's behavior) — the raw value read by implement's
+# test_gate.py, which owns the three-way interpretation (null = run test/run.py;
+# a command string = run it; the sentinel 'none'/'skip' = skip the gate). An
+# absent key backfills null (run test/run.py), so the bump is backward compatible.
+GOVERNANCE_SCHEMA_VERSION = "2.8.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
 # config field. The loop's OWN defects route here ALWAYS, never the project
@@ -156,6 +162,7 @@ DEFAULT_GOVERNANCE = {
     "doc_check_features_root": None,
     "work_own_filings": True,
     "regression_command": None,
+    "implement_test_command": None,
     "issue_filter": {
         "labels": [],
         "title_pattern": None,
@@ -334,7 +341,12 @@ def _overlay(raw):
     explicit top-level `doc_check_features_root` (the repo-relative features root
     the GATE doc-surface load-bearing-token check uses) is surfaced, including an
     explicit null; absent keeps the default None (the doc check is OFF). An
-    explicit top-level `issue_filter` (the PULL-stage open-issue filter) is
+    explicit top-level `implement_test_command` (the IMPLEMENT-side per-work-order
+    test-gate command read by implement's test_gate.py) is surfaced RAW,
+    including an explicit null or the 'none'/'skip' sentinel; absent keeps the
+    default None (run the touched feature's test/run.py). This backfill does NOT
+    interpret it — the three-way interpretation lives in implement's test_gate.py.
+    An explicit top-level `issue_filter` (the PULL-stage open-issue filter) is
     surfaced raw here; absent keeps the no-filter default. The pure accessor
     issue_filter(config) does the DNF/title-pattern normalization + validation
     (this backfill only carries the key through). A
@@ -353,6 +365,8 @@ def _overlay(raw):
         config["work_own_filings"] = raw["work_own_filings"]
     if "regression_command" in raw:
         config["regression_command"] = raw["regression_command"]
+    if "implement_test_command" in raw:
+        config["implement_test_command"] = raw["implement_test_command"]
     if "issue_filter" in raw:
         config["issue_filter"] = raw["issue_filter"]
     budget = raw.get("budget", {})
@@ -480,6 +494,19 @@ def regression_command(config):
     against each REVIEW-passed PR (exit 0 = pass); a None command skips the gate.
     """
     return config.get("regression_command")
+
+
+def implement_test_command(config):
+    """The IMPLEMENT-side per-work-order test-gate command (raw), or None.
+
+    A pure config read returning the loaded config's `implement_test_command`
+    VERBATIM, defaulting to None when the key is absent. This feature stores +
+    PROVIDES the raw value; it does NOT interpret it. implement's test_gate.py
+    owns the three-way interpretation: None = run the touched feature's
+    <feature-dir>/test/run.py (today's behavior); a command string = run that
+    (exit 0 = pass); the sentinel 'none'/'skip' = SKIP the IMPLEMENT test-gate.
+    """
+    return config.get("implement_test_command")
 
 
 def doc_check_features_root(config):
