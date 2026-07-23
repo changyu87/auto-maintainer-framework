@@ -98,8 +98,10 @@ Public surface (slice 2 — INTEGRATE + CLEANUP):
   - INTEGRATION_RESULT_SLOT — the fsm-contracts slot registration descriptor.
   - INTEGRATE_MANIFEST / INTEGRATE_SIGNALS — INTEGRATE's manifest (reads ONLY
     verdicts — thin merge, no review coupling) + signal set.
-  - gh_pr_merge_sink(pr_ref, repo) — the production merge sink: shells
-    `gh pr merge <pr> --merge --delete-branch` (the determinism seam).
+  - gh_pr_merge_sink(pr_ref, repo, base_branch) — the production merge sink,
+    MERGE-QUEUE-AWARE: detects a merge queue on the base branch and shells
+    `gh pr merge <pr> --auto` (queue) or `gh pr merge <pr> --merge
+    --delete-branch` (no queue), capturing gh stderr (the determinism seam).
   - gh_pr_close_sink(pr_ref, repo) — the production orphan close sink: shells
     `gh pr close <pr> --delete-branch --comment <body>` (the determinism seam).
   - gh_closing_issue_state(pr_ref, repo) — the production orphan resolver: the
@@ -1515,64 +1517,126 @@ def gate_fail_comment_body(pr_ref, reason, failure_summary):
             f"this PR was NOT merged.\n\n{payload}\n")
 
 
-def _gh_pr_merge_immediate(number, pr_ref, url, repo, runner):
-    """Immediate merge: shell `gh pr merge <number> --merge --delete-branch`
-    (and `--repo` when given). Returns a {pr_ref, url, auto_enabled:False} entry.
-    check=True so a merge fault is loud and locatable at the merge boundary."""
+def _parse_owner_repo(pr_ref, repo):
+    """Resolve (owner, name) from an explicit `repo` ('owner/name') or, failing
+    that, from an `owner/name#number` pr_ref. Returns (None, None) when neither
+    yields an owner/name — the merge-queue probe then treats it as no-queue."""
+    if repo and "/" in repo:
+        owner, name = repo.split("/", 1)
+        return owner, name
+    base = pr_ref.split("#")[0]
+    if "/" in base:
+        owner, name = base.split("/", 1)
+        return owner, name
+    return None, None
+
+
+def _has_merge_queue(pr_ref, repo, base_branch, runner):
+    """Probe whether the PR's base branch is governed by a GitHub MERGE QUEUE via
+    GraphQL `repository.mergeQueue(branch)` (non-null => queue). TOLERANT by
+    design: no base branch, an unparseable owner/name, a non-zero gh exit, or any
+    parse error is treated as NO queue — the probe never fails the merge, it only
+    selects the correct merge command."""
+    if not base_branch:
+        return False
+    owner, name = _parse_owner_repo(pr_ref, repo)
+    if not owner or not name:
+        return False
+    query = (
+        "query($owner:String!,$name:String!,$branch:String!){"
+        "repository(owner:$owner,name:$name){"
+        "mergeQueue(branch:$branch){id}}}")
+    # All three are GraphQL String! variables; pass them with -f (always sends a
+    # string) NOT -F (which type-infers, e.g. coercing a numeric branch name to an
+    # int and breaking the String! binding -> a spurious no-queue verdict).
+    cmd = ["gh", "api", "graphql",
+           "-f", "query=" + query,
+           "-f", "owner=" + owner,
+           "-f", "name=" + name,
+           "-f", "branch=" + base_branch]
+    try:
+        proc = runner(cmd, capture_output=True, text=True)
+        if getattr(proc, "returncode", 0) != 0:
+            return False
+        data = json.loads(proc.stdout or "{}")
+        mq = (data.get("data", {}) or {}).get("repository", {}) or {}
+        return mq.get("mergeQueue") is not None
+    except Exception:  # noqa: BLE001 — tolerant probe: any error => no queue
+        return False
+
+
+def _run_gh_or_raise(cmd, runner):
+    """Run a gh command with CAPTURED stderr (NOT check=True) and, on a non-zero
+    exit, raise RuntimeError carrying the gh STDERR text so the fault is recorded
+    diagnosably (never a bare 'exit status 1'). Returns the completed proc."""
+    proc = runner(cmd, capture_output=True, text=True)
+    if getattr(proc, "returncode", 0) != 0:
+        stderr = (getattr(proc, "stderr", "") or "").strip()
+        raise RuntimeError(
+            stderr or ("gh " + " ".join(cmd[1:3]) +
+                       " failed (exit " + str(proc.returncode) + ")"))
+    return proc
+
+
+def _is_not_yet_mergeable(stderr):
+    """Heuristic: does gh's stderr say the PR is not YET mergeable (required
+    checks still pending) — the recoverable case where enabling native auto-merge
+    is correct — versus a hard failure (403/404/protected branch)?"""
+    s = (stderr or "").lower()
+    return ("not mergeable" in s or "not yet mergeable" in s
+            or "required status check" in s or "required check" in s
+            or "checks are still pending" in s or "checks still pending" in s
+            or "pending" in s and "check" in s)
+
+
+def gh_pr_merge_sink(pr_ref, repo=None, base_branch=None, runner=subprocess.run):
+    """Production merge sink — MERGE-QUEUE-AWARE. Returns a {pr_ref, url,
+    auto_enabled} entry whose `url` is derived from `pr_ref` via `_pr_url`
+    (observability: a real link, not url:''). `gh` carries its own auth. The PR
+    number is parsed off the `owner/repo#number` ref (gh accepts the bare number
+    when `--repo` scopes it). The subprocess `runner` is INJECTABLE (defaulting to
+    subprocess.run) so tests exercise every route with no network.
+
+    The sink first DETECTS a merge queue on the PR's base branch
+    (`_has_merge_queue`, GraphQL `repository.mergeQueue(branch)`):
+
+    - QUEUE PRESENT -> `gh pr merge <n> --auto` with NO method flag
+      (--merge/--squash/--rebase) and NO --delete-branch: a queue branch REJECTS a
+      method flag and the queue owns the method + branch deletion. Adds the PR to
+      the queue -> `auto_enabled=True` (a pending success).
+    - NO QUEUE -> the method-specified path: try an immediate
+      `gh pr merge <n> --merge --delete-branch`; on success -> `auto_enabled=False`
+      (merged now). If it fails because the PR is not YET mergeable (required
+      checks pending), enable native auto-merge with
+      `gh pr merge <n> --auto --merge --delete-branch` -> `auto_enabled=True`.
+
+    gh runs with CAPTURED stderr (never check=True); a non-zero exit RAISES
+    RuntimeError carrying the gh stderr text so INTEGRATE records a diagnosable
+    reason (403/404/queue-conflict), never a bare 'exit status 1'."""
+    number = pr_ref.split("#")[-1]
+    url = _pr_url(pr_ref, repo)
+    if _has_merge_queue(pr_ref, repo, base_branch, runner):
+        cmd = ["gh", "pr", "merge", number, "--auto"]
+        if repo:
+            cmd += ["--repo", repo]
+        _run_gh_or_raise(cmd, runner)
+        return {"pr_ref": pr_ref, "url": url, "auto_enabled": True}
+    # No queue: immediate method-specified merge, capturing stderr.
     cmd = ["gh", "pr", "merge", number, "--merge", "--delete-branch"]
     if repo:
         cmd += ["--repo", repo]
-    runner(cmd, capture_output=True, text=True, check=True)
-    return {"pr_ref": pr_ref, "url": url, "auto_enabled": False}
-
-
-def gh_pr_merge_sink(pr_ref, repo=None, runner=subprocess.run, auto=False):
-    """Production merge sink. Returns a {pr_ref, url, auto_enabled} entry whose
-    `url` is derived from `pr_ref` via `_pr_url` (observability: the entry carries
-    a real link, not url:''). `gh` carries its own auth. The PR number is parsed
-    off the `owner/repo#number` ref (gh accepts the bare number when `--repo`
-    scopes it). The subprocess `runner` is INJECTABLE (defaulting to
-    subprocess.run) so tests exercise both routes with no network — the failure
-    locatable to the merge boundary (mirror of gh_open_pr_source).
-
-    `auto=False` (propose/dry-run never reach this; used by the plain path):
-    immediate `gh pr merge <n> --merge --delete-branch`; returns
-    `auto_enabled=False`.
-
-    `auto=True` (auto-merge mode): enable GitHub NATIVE auto-merge via
-    `gh pr merge <n> --auto --merge --delete-branch` — GitHub merges the PR once
-    its required checks pass (immediately if already green). Because `gh pr merge
-    --auto` exits 0 both when it QUEUES and when it MERGES-now, after a successful
-    --auto call the PR state is probed once (`gh pr view <n> --json state`, via the
-    same injectable runner): state==MERGED -> merged now (auto_enabled=False);
-    else -> auto-merge queued (auto_enabled=True). If the --auto call RAISES (the
-    repo has auto-merge disabled), FALL BACK to an immediate `--merge`
-    (auto_enabled=False)."""
-    number = pr_ref.split("#")[-1]
-    url = _pr_url(pr_ref, repo)
-    if not auto:
-        return _gh_pr_merge_immediate(number, pr_ref, url, repo, runner)
-    cmd = ["gh", "pr", "merge", number, "--auto", "--merge", "--delete-branch"]
-    if repo:
-        cmd += ["--repo", repo]
-    try:
-        runner(cmd, capture_output=True, text=True, check=True)
-    except Exception:  # noqa: BLE001 — repo auto-merge disabled: fall back
-        return _gh_pr_merge_immediate(number, pr_ref, url, repo, runner)
-    merged_now = _gh_pr_is_merged(number, repo, runner)
-    return {"pr_ref": pr_ref, "url": url, "auto_enabled": not merged_now}
-
-
-def _gh_pr_is_merged(number, repo, runner):
-    """Probe the PR state once (`gh pr view <n> --json state`, via the injectable
-    runner) to classify a successful `gh pr merge --auto`: True when the PR is
-    already MERGED (was green, merged now), False otherwise (auto-merge queued)."""
-    cmd = ["gh", "pr", "view", number, "--json", "state"]
-    if repo:
-        cmd += ["--repo", repo]
-    completed = runner(cmd, capture_output=True, text=True, check=True)
-    data = json.loads(completed.stdout or "{}")
-    return data.get("state") == "MERGED"
+    proc = runner(cmd, capture_output=True, text=True)
+    if getattr(proc, "returncode", 0) == 0:
+        return {"pr_ref": pr_ref, "url": url, "auto_enabled": False}
+    stderr = (getattr(proc, "stderr", "") or "").strip()
+    if _is_not_yet_mergeable(stderr):
+        cmd = ["gh", "pr", "merge", number, "--auto", "--merge", "--delete-branch"]
+        if repo:
+            cmd += ["--repo", repo]
+        _run_gh_or_raise(cmd, runner)
+        return {"pr_ref": pr_ref, "url": url, "auto_enabled": True}
+    raise RuntimeError(
+        stderr or ("gh pr merge failed (exit " + str(proc.returncode) + ")"))
 
 
 # The machine+human explanation the orphan-close comment carries.
@@ -1705,12 +1769,15 @@ class Integrate:
                 })
                 continue
             # This branch is only reached when permits('merge', mode) is True
-            # (auto-merge mode), so the sink enables GitHub native auto-merge:
-            # already-green -> merges now (auto_enabled False -> merged); else ->
-            # auto-merge queued (auto_enabled True -> auto_merge_enabled, a pending
-            # success NOT an error). A genuine both-paths-fail sink fault -> errors.
+            # (auto-merge mode). The merge-queue-aware sink probes the PR's base
+            # branch: a queue -> `gh pr merge --auto` (auto_enabled True ->
+            # auto_merge_enabled, a pending success); no queue + already-green ->
+            # merged now (auto_enabled False -> merged); no queue + not-yet-
+            # mergeable -> native auto-merge (auto_enabled True). A gh fault raises
+            # with its stderr text -> errors (diagnosable, never a bare exit-1).
             try:
-                outcome = self._merge_sink(pr_ref, repo=self._repo, auto=True)
+                outcome = self._merge_sink(pr_ref, repo=self._repo,
+                                           base_branch=vd.get("base"))
             except Exception as exc:  # noqa: BLE001 — record any merge fault
                 result.errors.append({"pr_ref": pr_ref, "reason": str(exc)})
             else:

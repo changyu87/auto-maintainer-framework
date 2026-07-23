@@ -365,7 +365,7 @@ def test_integrate_auto_merge_closes_orphaned_pr():
 
     merged = []
 
-    def merge_sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
+    def merge_sink(pr_ref, repo=None, base_branch=None):  # noqa: ARG001
         merged.append(pr_ref)
         return {"pr_ref": pr_ref, "url": ""}
 
@@ -452,7 +452,7 @@ def test_integrate_non_orphaned_ok_verdict_still_merges():
     merged = []
     closed = []
 
-    def merge_sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
+    def merge_sink(pr_ref, repo=None, base_branch=None):  # noqa: ARG001
         merged.append(pr_ref)
         return {"pr_ref": pr_ref, "url": ""}
 
@@ -491,7 +491,7 @@ def test_integrate_mixed_orphaned_and_ok_batch():
     closed = []
     integrate = vi.Integrate(
         mode="auto-merge",
-        merge_sink=lambda pr_ref, repo=None, auto=False: (
+        merge_sink=lambda pr_ref, repo=None, base_branch=None: (
             merged.append(pr_ref) or {"pr_ref": pr_ref, "url": ""}),
         default_branch=_DEFAULT_BRANCH,
         close_sink=lambda pr_ref, repo=None: closed.append(pr_ref))
