@@ -74,6 +74,7 @@ Once installed, the plugin provides these slash commands:
 | Command | Description |
 | --- | --- |
 | `/auto-maintainer:adapter-map` | View and edit the loop's adapter map — which adapter implements each route port (GUARD, DRAIN, PULL, TRIAGE, PRIORITIZE, IMPLEMENT, VERIFY, REVIEW, INTEGRATE, CLEANUP, PERSIST, EXIT). Every edit is validated before it is saved. |
+| `/auto-maintainer:clobber` | Reset the loop for a clean start: clears runtime state (durable state, disposition, events log, dispatch outputs) while preserving your config; confirms before it deletes anything. |
 | `/auto-maintainer:configure` | Set the maintainer's trust mode (dry-run / propose / auto-merge), per-day token budget, heartbeat interval, and backoff threshold in the central config (.auto-maintainer/config.json). |
 | `/auto-maintainer:route` | View and edit the loop's route — the ordered state graph (GUARD -> DRAIN -> PULL -> ... -> PERSIST -> EXIT) the tick runner walks each tick. Every edit is validated before it is saved. |
 | `/auto-maintainer:start` | Start (or resume) the maintainer's in-session tick loop: runs the first tick now and schedules a recurring heartbeat that keeps ticking until stopped. |
