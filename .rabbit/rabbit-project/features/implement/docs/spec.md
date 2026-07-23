@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.8.0
+version: 0.9.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -277,6 +277,23 @@ the output path. Its rendered prompt is the complete handoff contract (the
   finds the loop's own open PRs by querying `gh pr list --label auto-maintainer
   --state open`. The label is the only coupling between IMPLEMENT and the
   VERIFY/INTEGRATE chain (no durable PR-ledger).
+- **PR closes its source issue on merge (`Closes #<n>` in the body).** The
+  accept-path `gh pr create` MUST include a `--body` that embeds the GitHub
+  closing keyword `Closes #<source-issue-number>` (the issue the work order
+  came from; the same `<number>` the reject path uses). This makes GitHub's
+  native machinery **auto-close the source issue when — and only when — the PR
+  merges**: in `propose` mode the PR is never merged so the issue correctly
+  stays open; in `auto-merge` mode INTEGRATE's merge closes it. This closes the
+  merged-issue lifecycle GAP (the loop otherwise NEVER closed a source issue on
+  the accept→merge path). It ALSO populates the PR's `closingIssuesReferences`,
+  which is the field the supersede-on-retry match (below) and
+  `verify-integrate`'s orphaned-PR detection both query — so writing the closing
+  keyword REPAIRS both of those, which were silent no-ops without it. The issue
+  number comes from the `## Inputs` work order (the ROBUSTNESS fetch already
+  recovers it when the envelope lacks it); if no source issue number is
+  resolvable, the body omits the keyword rather than guessing. The
+  `auto-maintainer` label and the `Closes #<n>` body are complementary: the
+  label is the loop→VERIFY coupling, the keyword is the PR→issue coupling.
 - **Isolation — the subagent manages its OWN worktree (v2.0.0,
   auto-maintainer-framework#143 follow-up).** It is dispatched WITHOUT the
   `isolation: "worktree"` adapter flag. That flag uses Claude Code's worktree
