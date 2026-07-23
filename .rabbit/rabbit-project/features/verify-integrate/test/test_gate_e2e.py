@@ -497,7 +497,7 @@ def test_gate_never_merges_to_main_or_calls_merge_sink():
 def _recording_sink():
     calls = []
 
-    def sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
+    def sink(pr_ref, repo=None, base_branch=None):  # noqa: ARG001
         calls.append(pr_ref)
         return {"pr_ref": pr_ref,
                 "url": f"https://github.com/acme/widget/pull/{pr_ref.split('#')[-1]}"}

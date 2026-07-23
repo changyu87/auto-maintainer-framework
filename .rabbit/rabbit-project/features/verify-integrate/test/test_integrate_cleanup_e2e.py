@@ -31,7 +31,6 @@ Owner: changyu87
 
 import json
 import os
-import subprocess
 import sys
 
 _FEATURE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -83,12 +82,12 @@ def _verdict(number=1, ok=True, base=_DEFAULT_BRANCH, mergeable=True,
 
 def _recording_sink():
     """A merge sink that records each pr_ref it was asked to merge and returns an
-    IMMEDIATE-merge entry (`auto_enabled=False`), standing in for the already-green
-    path of `gh pr merge --auto --merge --delete-branch` (merges now). Accepts the
-    `auto` kwarg INTEGRATE now passes in auto-merge mode."""
+    IMMEDIATE-merge entry (`auto_enabled=False`), standing in for the no-queue
+    immediate `gh pr merge --merge --delete-branch` path (merges now). Accepts the
+    `base_branch` kwarg INTEGRATE now passes so the sink can probe a merge queue."""
     calls = []
 
-    def sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
+    def sink(pr_ref, repo=None, base_branch=None):  # noqa: ARG001
         calls.append(pr_ref)
         return {"pr_ref": pr_ref,
                 "url": f"https://github.com/acme/widget/pull/{pr_ref.split('#')[-1]}",
@@ -99,12 +98,12 @@ def _recording_sink():
 
 
 def _queued_sink():
-    """A merge sink standing in for the GitHub-auto-merge-QUEUED path: the PR is
-    not merged now (checks pending) but native auto-merge was enabled, so it
-    returns `auto_enabled=True` (a pending success, NOT an error)."""
+    """A merge sink standing in for the QUEUED path (merge queue present, or native
+    auto-merge enabled while checks pend): the PR is not merged now but was queued,
+    so it returns `auto_enabled=True` (a pending success, NOT an error)."""
     calls = []
 
-    def sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
+    def sink(pr_ref, repo=None, base_branch=None):  # noqa: ARG001
         calls.append(pr_ref)
         return {"pr_ref": pr_ref,
                 "url": f"https://github.com/acme/widget/pull/{pr_ref.split('#')[-1]}",
@@ -378,7 +377,7 @@ def test_integrate_e2e_guardrail_violation_skipped_sink_not_called():
 # ==========================================================================
 
 def test_integrate_e2e_merge_sink_raises_records_error():
-    def raising_sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
+    def raising_sink(pr_ref, repo=None, base_branch=None):  # noqa: ARG001
         raise RuntimeError("gh merge failed: protected branch")
 
     integrate = vi.Integrate(mode="auto-merge", merge_sink=raising_sink,
@@ -519,7 +518,7 @@ def test_integrate_e2e_auto_merge_immediate_green_records_merged():
 # ==========================================================================
 
 def test_integrate_e2e_auto_merge_both_paths_fail_records_error():
-    def both_fail_sink(pr_ref, repo=None, auto=False):  # noqa: ARG001
+    def both_fail_sink(pr_ref, repo=None, base_branch=None):  # noqa: ARG001
         raise RuntimeError("gh merge failed: --auto and immediate both failed")
 
     integrate = vi.Integrate(mode="auto-merge", merge_sink=both_fail_sink,
@@ -535,59 +534,285 @@ def test_integrate_e2e_auto_merge_both_paths_fail_records_error():
 
 
 # ==========================================================================
-# Behaviour (auto-merge determinism seam): gh_pr_merge_sink with auto=True uses
-# the `--auto` argv, and the state probe classifies QUEUED (state!=MERGED ->
-# auto_enabled True) vs MERGED-now (state==MERGED -> auto_enabled False).
+# E2E Behaviour (merge-queue-aware, REAL sink through Integrate): INTEGRATE at
+# auto-merge drives the PRODUCTION gh_pr_merge_sink with an injected fake gh
+# runner (no network). This is the full path — verdict -> guardrails -> sink ->
+# GraphQL merge-queue probe on the PR base -> the queue-correct `gh pr merge`.
 # ==========================================================================
 
-def test_gh_pr_merge_sink_auto_uses_auto_argv_and_classifies_queued():
+def _real_sink_with_runner(runner):
+    """Bind the production gh_pr_merge_sink to a fake gh runner so Integrate drives
+    the real merge-queue-aware sink logic end-to-end (no network)."""
+    def sink(pr_ref, repo=None, base_branch=None):
+        return vi.gh_pr_merge_sink(pr_ref, repo=repo, base_branch=base_branch,
+                                   runner=runner)
+    return sink
+
+
+def _gh_router(has_queue, immediate_ok=True, not_yet_mergeable=False,
+               merge_stderr="", queue_returncode=0, queue_stderr=""):
+    """Build a fake gh runner + a cmds log. Routes the GraphQL merge-queue probe
+    and the `gh pr merge` calls per the scenario flags."""
+    cmds = []
+
+    def runner(cmd, **kwargs):  # noqa: ARG001
+        cmds.append(cmd)
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            mq = {"id": "MQ_1"} if has_queue else None
+            return _FakeCompleted(
+                json.dumps({"data": {"repository": {"mergeQueue": mq}}}))
+        # gh pr merge ...
+        if has_queue:
+            return _FakeCompleted("", returncode=queue_returncode,
+                                  stderr=queue_stderr)
+        if "--auto" in cmd:
+            return _FakeCompleted("")  # the not-yet-mergeable fallback succeeds
+        if immediate_ok:
+            return _FakeCompleted("")
+        return _FakeCompleted(
+            "", returncode=1,
+            stderr=(merge_stderr or
+                    ("Pull request is not mergeable: checks still pending"
+                     if not_yet_mergeable else "HTTP 404: Not Found")))
+
+    runner.cmds = cmds
+    return runner
+
+
+def test_integrate_e2e_real_sink_queue_present_records_auto_merge_enabled():
+    runner = _gh_router(has_queue=True)
+    integrate = vi.Integrate(mode="auto-merge",
+                             merge_sink=_real_sink_with_runner(runner),
+                             repo="acme/widget", default_branch=_DEFAULT_BRANCH)
+    ctx = _fresh_ctx()
+    _write_verdicts(ctx, [_verdict(number=1, ok=True)])
+
+    res = ctx_run(integrate, ctx)
+    assert res["merged"] == []
+    assert res["errors"] == []
+    assert [e["pr_ref"] for e in res["auto_merge_enabled"]] == ["acme/widget#1"]
+    merge_cmd = [c for c in runner.cmds if c[1:3] == ["pr", "merge"]][0]
+    assert "--auto" in merge_cmd
+    assert "--merge" not in merge_cmd
+    assert "--delete-branch" not in merge_cmd
+
+
+def test_integrate_e2e_real_sink_no_queue_immediate_green_merged():
+    runner = _gh_router(has_queue=False, immediate_ok=True)
+    integrate = vi.Integrate(mode="auto-merge",
+                             merge_sink=_real_sink_with_runner(runner),
+                             repo="acme/widget", default_branch=_DEFAULT_BRANCH)
+    ctx = _fresh_ctx()
+    _write_verdicts(ctx, [_verdict(number=2, ok=True)])
+
+    res = ctx_run(integrate, ctx)
+    assert [e["pr_ref"] for e in res["merged"]] == ["acme/widget#2"]
+    assert res["auto_merge_enabled"] == []
+    merge_cmd = [c for c in runner.cmds if c[1:3] == ["pr", "merge"]][0]
+    assert "--merge" in merge_cmd
+    assert "--delete-branch" in merge_cmd
+
+
+def test_integrate_e2e_real_sink_no_queue_not_yet_mergeable_auto_enabled():
+    runner = _gh_router(has_queue=False, immediate_ok=False,
+                        not_yet_mergeable=True)
+    integrate = vi.Integrate(mode="auto-merge",
+                             merge_sink=_real_sink_with_runner(runner),
+                             repo="acme/widget", default_branch=_DEFAULT_BRANCH)
+    ctx = _fresh_ctx()
+    _write_verdicts(ctx, [_verdict(number=3, ok=True)])
+
+    res = ctx_run(integrate, ctx)
+    assert res["merged"] == []
+    assert [e["pr_ref"] for e in res["auto_merge_enabled"]] == ["acme/widget#3"]
+
+
+def test_integrate_e2e_real_sink_captures_gh_stderr_into_errors():
+    runner = _gh_router(has_queue=True, queue_returncode=1,
+                        queue_stderr="HTTP 403: Resource not accessible")
+    integrate = vi.Integrate(mode="auto-merge",
+                             merge_sink=_real_sink_with_runner(runner),
+                             repo="acme/widget", default_branch=_DEFAULT_BRANCH)
+    ctx = _fresh_ctx()
+    _write_verdicts(ctx, [_verdict(number=4, ok=True)])
+
+    res = ctx_run(integrate, ctx)
+    assert res["merged"] == []
+    assert res["auto_merge_enabled"] == []
+    assert len(res["errors"]) == 1
+    assert res["errors"][0]["pr_ref"] == "acme/widget#4"
+    assert "403" in res["errors"][0]["reason"]
+    assert "exit status 1" not in res["errors"][0]["reason"]
+
+
+def test_integrate_e2e_real_sink_probe_uses_pr_base_branch():
+    runner = _gh_router(has_queue=False, immediate_ok=True)
+    integrate = vi.Integrate(mode="auto-merge",
+                             merge_sink=_real_sink_with_runner(runner),
+                             repo="acme/widget", default_branch=_DEFAULT_BRANCH)
+    ctx = _fresh_ctx()
+    # base is the default branch (so guardrails pass) — the probe must carry it.
+    _write_verdicts(ctx, [_verdict(number=5, ok=True, base=_DEFAULT_BRANCH)])
+
+    ctx_run(integrate, ctx)
+    graphql_cmd = [c for c in runner.cmds if c[:3] == ["gh", "api", "graphql"]][0]
+    assert any(_DEFAULT_BRANCH in str(part) for part in graphql_cmd)
+
+
+def test_integrate_e2e_real_sink_propose_and_dry_run_never_call_gh():
+    for mode in ("propose", "dry-run"):
+        runner = _gh_router(has_queue=True)
+        integrate = vi.Integrate(mode=mode,
+                                 merge_sink=_real_sink_with_runner(runner),
+                                 repo="acme/widget",
+                                 default_branch=_DEFAULT_BRANCH)
+        ctx = _fresh_ctx()
+        _write_verdicts(ctx, [_verdict(number=6, ok=True)])
+
+        res = ctx_run(integrate, ctx)
+        assert runner.cmds == [], f"{mode} must never shell gh"
+        assert res["merged"] == []
+        assert res["auto_merge_enabled"] == []
+        assert len(res["skipped"]) == 1
+
+
+# ==========================================================================
+# Behaviour (merge-queue-aware sink): helpers for a fake gh runner that answers
+# the GraphQL merge-queue probe (`gh api graphql`) and the `gh pr merge` calls.
+# A merge-queue branch REJECTS a method flag, so the sink must add the PR to the
+# queue with `gh pr merge <n> --auto` (no method, no --delete-branch).
+# ==========================================================================
+
+def _graphql_response(has_queue):
+    """A `gh api graphql` stdout for repository.mergeQueue(branch): non-null when
+    has_queue, null otherwise."""
+    mq = {"id": "MQ_1"} if has_queue else None
+    return json.dumps({"data": {"repository": {"mergeQueue": mq}}})
+
+
+def _is_graphql(cmd):
+    return cmd[:3] == ["gh", "api", "graphql"]
+
+
+def _is_pr_merge(cmd):
+    return cmd[1:3] == ["pr", "merge"]
+
+
+def test_gh_pr_merge_sink_queue_present_uses_auto_no_method():
     cmds = []
 
     def fake_runner(cmd, **kwargs):  # noqa: ARG001
         cmds.append(cmd)
-        if cmd[1:3] == ["pr", "view"]:
-            return _FakeCompleted(json.dumps({"state": "OPEN"}))
-        return _FakeCompleted("")
+        if _is_graphql(cmd):
+            return _FakeCompleted(_graphql_response(has_queue=True))
+        return _FakeCompleted("")  # gh pr merge --auto succeeds (queued)
 
     entry = vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
-                                runner=fake_runner, auto=True)
-    merge_cmd = cmds[0]
+                                base_branch="main", runner=fake_runner)
+    merge_cmd = [c for c in cmds if _is_pr_merge(c)][0]
     assert merge_cmd[:3] == ["gh", "pr", "merge"]
     assert "--auto" in merge_cmd
-    assert "--merge" in merge_cmd
-    assert "--delete-branch" in merge_cmd
-    # the sink probed the PR state once via the same injectable runner.
-    assert any(c[1:3] == ["pr", "view"] for c in cmds)
+    # a queue branch REJECTS a method flag and owns branch deletion.
+    assert "--merge" not in merge_cmd
+    assert "--squash" not in merge_cmd
+    assert "--rebase" not in merge_cmd
+    assert "--delete-branch" not in merge_cmd
     assert entry["auto_enabled"] is True
     assert entry["pr_ref"] == "acme/widget#9"
 
 
-def test_gh_pr_merge_sink_auto_classifies_merged_now():
-    def fake_runner(cmd, **kwargs):  # noqa: ARG001
-        if cmd[1:3] == ["pr", "view"]:
-            return _FakeCompleted(json.dumps({"state": "MERGED"}))
-        return _FakeCompleted("")
-
-    entry = vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
-                                runner=fake_runner, auto=True)
-    assert entry["auto_enabled"] is False
-
-
-def test_gh_pr_merge_sink_auto_falls_back_to_immediate_when_auto_raises():
+def test_gh_pr_merge_sink_probe_uses_pr_base_branch():
     cmds = []
 
     def fake_runner(cmd, **kwargs):  # noqa: ARG001
         cmds.append(cmd)
-        if "--auto" in cmd:
-            raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
+        if _is_graphql(cmd):
+            return _FakeCompleted(_graphql_response(has_queue=False))
+        return _FakeCompleted("")
+
+    vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
+                        base_branch="release-9.x", runner=fake_runner)
+    graphql_cmd = [c for c in cmds if _is_graphql(c)][0]
+    # the merge-queue probe carried the PR's base branch.
+    assert any("release-9.x" in str(part) for part in graphql_cmd)
+
+
+def test_gh_pr_merge_sink_no_queue_immediate_green_merges():
+    cmds = []
+
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        cmds.append(cmd)
+        if _is_graphql(cmd):
+            return _FakeCompleted(_graphql_response(has_queue=False))
+        return _FakeCompleted("")  # immediate --merge succeeds
+
+    entry = vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
+                                base_branch="main", runner=fake_runner)
+    merge_cmd = [c for c in cmds if _is_pr_merge(c)][0]
+    assert "--merge" in merge_cmd
+    assert "--delete-branch" in merge_cmd
+    assert "--auto" not in merge_cmd
+    assert entry["auto_enabled"] is False
+
+
+def test_gh_pr_merge_sink_no_queue_not_yet_mergeable_enables_auto():
+    cmds = []
+
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        cmds.append(cmd)
+        if _is_graphql(cmd):
+            return _FakeCompleted(_graphql_response(has_queue=False))
+        if _is_pr_merge(cmd) and "--auto" not in cmd:
+            # immediate merge refused: PR not yet mergeable (checks pending).
+            return _FakeCompleted(
+                "", returncode=1,
+                stderr="Pull request is not mergeable: required status checks "
+                       "are still pending")
+        return _FakeCompleted("")  # the --auto --merge fallback succeeds
+
+    entry = vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
+                                base_branch="main", runner=fake_runner)
+    fallback = [c for c in cmds if _is_pr_merge(c) and "--auto" in c][0]
+    assert "--auto" in fallback
+    assert "--merge" in fallback
+    assert entry["auto_enabled"] is True
+
+
+def test_gh_pr_merge_sink_captures_stderr_into_error():
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        if _is_graphql(cmd):
+            return _FakeCompleted(_graphql_response(has_queue=True))
+        # the queued `gh pr merge --auto` fails with a real gh message.
+        return _FakeCompleted(
+            "", returncode=1,
+            stderr="HTTP 403: Resource not accessible by integration")
+
+    raised = None
+    try:
+        vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
+                            base_branch="main", runner=fake_runner)
+    except Exception as exc:  # noqa: BLE001
+        raised = exc
+    assert raised is not None, "a non-zero gh must raise so INTEGRATE records it"
+    assert "403" in str(raised)
+    assert "exit status 1" not in str(raised)
+
+
+def test_gh_pr_merge_sink_probe_tolerant_of_graphql_error_treats_as_no_queue():
+    cmds = []
+
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        cmds.append(cmd)
+        if _is_graphql(cmd):
+            # a probe failure MUST be tolerated (treated as no-queue), not fatal.
+            return _FakeCompleted("", returncode=1, stderr="graphql boom")
         return _FakeCompleted("")
 
     entry = vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
-                                runner=fake_runner, auto=True)
-    # the immediate --merge fallback fired (a pr-merge cmd WITHOUT --auto).
-    assert any(c[1:3] == ["pr", "merge"] and "--auto" not in c for c in cmds)
-    # no state probe on the fallback path (immediate merge is terminal).
-    assert not any(c[1:3] == ["pr", "view"] for c in cmds)
+                                base_branch="main", runner=fake_runner)
+    merge_cmd = [c for c in cmds if _is_pr_merge(c)][0]
+    # tolerant -> no-queue path -> immediate --merge --delete-branch.
+    assert "--merge" in merge_cmd
     assert entry["auto_enabled"] is False
 
 
@@ -598,9 +823,10 @@ def test_gh_pr_merge_sink_auto_falls_back_to_immediate_when_auto_raises():
 # ==========================================================================
 
 class _FakeCompleted:
-    def __init__(self, stdout=""):
+    def __init__(self, stdout="", returncode=0, stderr=""):
         self.stdout = stdout
-        self.returncode = 0
+        self.returncode = returncode
+        self.stderr = stderr
 
 
 def test_gh_pr_merge_sink_assembles_command():
@@ -695,26 +921,29 @@ def test_gh_pr_merge_sink_url_empty_when_no_owner_repo_and_no_repo():
 
 
 # ==========================================================================
-# Behaviour (preserved invariant): the merge call keeps check=True, so a failed
-# `gh pr merge` raises CalledProcessError — the merge fault is loud and locatable
-# at the merge boundary, never silently swallowed by the URL-derivation change.
+# Behaviour (preserved invariant, new mechanism): a failed `gh pr merge` is loud
+# and locatable at the merge boundary. The sink no longer relies on check=True; it
+# runs with captured stderr and RAISES carrying the gh stderr text so the fault is
+# recorded diagnosably (never silently swallowed, never a bare "exit status 1").
 # ==========================================================================
 
-def test_gh_pr_merge_sink_preserves_check_true_on_failure():
-    captured = {}
+def test_gh_pr_merge_sink_no_queue_non_recoverable_failure_raises_with_stderr():
+    def fake_runner(cmd, **kwargs):  # noqa: ARG001
+        if _is_graphql(cmd):
+            return _FakeCompleted(_graphql_response(has_queue=False))
+        # immediate merge fails with a non-mergeability reason (e.g. access).
+        return _FakeCompleted(
+            "", returncode=1, stderr="HTTP 404: Not Found (protected branch)")
 
-    def failing_runner(cmd, **kwargs):
-        captured["kwargs"] = kwargs
-        raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
-
-    raised = False
+    raised = None
     try:
         vi.gh_pr_merge_sink("acme/widget#9", repo="acme/widget",
-                            runner=failing_runner)
-    except subprocess.CalledProcessError:
-        raised = True
-    assert raised, "a failed gh merge must propagate CalledProcessError"
-    assert captured["kwargs"].get("check") is True
+                            base_branch="main", runner=fake_runner)
+    except Exception as exc:  # noqa: BLE001
+        raised = exc
+    assert raised is not None, "a failed gh merge must raise at the boundary"
+    assert "404" in str(raised)
+    assert "exit status 1" not in str(raised)
 
 
 # ==========================================================================
