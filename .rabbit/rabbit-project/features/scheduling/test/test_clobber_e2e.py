@@ -299,6 +299,61 @@ def test_clobber_skill_dispatches_no_subagent():
     assert "subagent_type" not in body, "clobber must dispatch no subagent"
 
 
+# ==========================================================================
+# Behaviour 8 — the machine-first summary carries a loop_intent_present bool,
+# read from heartbeat's durable loop-intent marker BEFORE deletion. The clobber
+# SKILL keys its '/stop first' recommendation on this flag, NOT on disposition.
+# ==========================================================================
+
+def _summary_from_run(runtime_dir, root, yes):
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = _run(runtime_dir, root, yes=yes)
+    assert rc == 0, rc
+    out = buf.getvalue()
+    return json.loads(out[out.index("{"):out.rindex("}") + 1])
+
+
+def test_summary_carries_loop_intent_present_true_with_marker():
+    """A /start-armed runtime (durable loop-intent marker present) reports
+    loop_intent_present == True, on both the dry-run and the apply paths."""
+    root = tempfile.mkdtemp(prefix="sched-clobber-lip-true-")
+    runtime_dir = os.path.join(root, ".auto-maintainer")
+    os.makedirs(runtime_dir, exist_ok=True)
+    heartbeat.record_loop_intent(runtime_dir)
+    assert heartbeat.loop_intent_is_running(runtime_dir)
+    # Dry-run: flag present and True, deletes nothing.
+    summary = _summary_from_run(runtime_dir, root, yes=False)
+    assert "loop_intent_present" in summary, summary
+    assert summary["loop_intent_present"] is True, summary
+    assert heartbeat.loop_intent_is_running(runtime_dir), "dry-run deleted intent"
+    # Apply: flag read BEFORE deletion, so still reported True even though the
+    # marker is removed by this same run.
+    summary = _summary_from_run(runtime_dir, root, yes=True)
+    assert summary["loop_intent_present"] is True, summary
+    assert not heartbeat.loop_intent_is_running(runtime_dir), "intent not cleared"
+
+
+def test_summary_loop_intent_present_false_for_tick_only_session():
+    """A /tick-only / paused-tick runtime — disposition==RUNNING and a tick
+    checkpoint present, but NO durable loop-intent marker (never /start-ed) —
+    reports loop_intent_present == False. disposition==RUNNING must NOT flip the
+    flag; only the loop-intent marker does."""
+    root = tempfile.mkdtemp(prefix="sched-clobber-lip-tick-")
+    runtime_dir = os.path.join(root, ".auto-maintainer")
+    os.makedirs(runtime_dir, exist_ok=True)
+    # Simulate a tick mid-flight: RUNNING disposition + a durable checkpoint,
+    # but the human never /start-ed the loop (no loop-intent marker).
+    ld.write_disposition(runtime_dir, ld.Disposition.RUNNING)
+    _touch(os.path.join(runtime_dir, "durable-state.json"))
+    assert ld.read_disposition(runtime_dir) == ld.Disposition.RUNNING
+    assert not heartbeat.loop_intent_is_running(runtime_dir)
+    summary = _summary_from_run(runtime_dir, root, yes=True)
+    assert summary["loop_intent_present"] is False, summary
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
