@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.36.0
+version: 0.37.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -856,6 +856,18 @@ paths. It consumes `work_intake` (`DiscoveredIssue` / `file_discoveries` /
   `sg.permits("file", mode)`: at `dry-run` it does NOT file — it logs the intent
   (the would-file count) and leaves the ledger untouched so a later armed tick
   files them; at `propose`/`auto-merge` it files via `file_discoveries`.
+- **PULL-visibility labels for the loop's own filings.** The flush resolves
+  `sg.issue_filter_apply_labels(gov)` (the active `issue_filter`'s first AND-group
+  labels — the labels that make a filed issue match a later label-filtered PULL)
+  from the loaded governance config and passes it as `file_discoveries`'
+  `apply_labels`. `file_discoveries` stamps those labels ONLY on `project`-target
+  filings (a `maintainer-self` filing goes to the fixed `MAINTAINER_REPO` and gets
+  none). This closes the gap where a loop-filed discovery carried only
+  `filed-by:autonomous-maintainer` and was therefore INVISIBLE to a later
+  label-filtered PULL — so the loop can now pick up work it filed for itself. When
+  `issue_filter` has no labels the helper returns `[]` and filing is unchanged.
+  safety-governance + work-intake are consumed UNCHANGED (the edit is only the
+  resolve+thread in the flush).
 - **Injectable sink seam.** `DEFAULT_REPORT_SINK = work_intake.gh_issue_file_sink`
   (mirrors `DEFAULT_PULL_SOURCE`); tests override it with a stub so no network.
   The sink's destination repo is resolved per `DiscoveredIssue.target`:
