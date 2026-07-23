@@ -251,6 +251,40 @@ def test_shipped_implementer_body_still_supersedes_prior_pr():
     assert "gh pr close" in lower
 
 
+def test_shipped_implementer_body_pr_closes_source_issue_on_merge():
+    """PR closes its source issue on merge (`Closes #<n>` in the body). The
+    accept-path `gh pr create` MUST include a `--body` embedding the GitHub
+    closing keyword `Closes #<source-issue-number>` so GitHub auto-closes the
+    source issue on merge (propose = stays open, auto-merge = closes) and the
+    PR's closingIssuesReferences is populated (repairing supersede-on-retry +
+    verify-integrate orphan-detection). The label must still be present, and the
+    keyword is omitted only when no source issue number is resolvable.
+
+    This is an e2e assertion over the shipped agent definition's accept-path
+    PR-open instruction — the sole surface enacting this behaviour."""
+    body = _body()
+    lower = body.lower().replace("*", "")
+    # the closing keyword must be embedded in the PR body
+    assert "closes #" in lower, (
+        "accept-path PR body must embed the `Closes #<source-issue-number>` "
+        "closing keyword so GitHub auto-closes the issue on merge")
+    # it must be carried via the PR body, not merely mentioned
+    assert "--body" in body, (
+        "accept-path `gh pr create` must pass the closing keyword via --body")
+    # the provenance label must remain on the same accept-path PR-create
+    assert "--label auto-maintainer" in body, (
+        "accept-path PR must still be stamped with --label auto-maintainer")
+    # it must be tied to closing on MERGE and to populating closingIssuesReferences
+    assert "merge" in lower, (
+        "body must tie the closing keyword to closing the issue ON MERGE")
+    assert "closingissuesreferences" in lower, (
+        "body must note the keyword populates closingIssuesReferences")
+    # omit only when unresolvable (never guess a number)
+    assert "omit" in lower or "unresolvable" in lower, (
+        "body must state the keyword is omitted when no source issue number is "
+        "resolvable")
+
+
 def test_shipped_implementer_body_instructs_emitting_concerns():
     """v2.5.0 (auto-maintainer-framework#212): the implementer is the PRODUCER of
     the Handoff's `concerns[]` — residual doubts on an opened handoff for the
