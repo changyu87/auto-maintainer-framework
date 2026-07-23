@@ -852,6 +852,111 @@ def test_review_finding_matching_open_work_item_is_skipped():
     assert rt.persisted_report_ledger(state_path) == {}
 
 
+# ==========================================================================
+# Behaviour 12 — PULL-visibility labels: the flush resolves
+# sg.issue_filter_apply_labels(gov) and threads it as file_discoveries'
+# apply_labels, so a project-target loop-filed discovery carries the labels a
+# later label-filtered PULL matches. safety-governance + work-intake consumed
+# UNCHANGED — the edit is ONLY the resolve+thread in run_tick's flush.
+# ==========================================================================
+
+class _LabelRecordingSink:
+    """A stub REPORT sink that also captures the apply_labels forwarded to it
+    (the new signature work-intake's file_discoveries uses when apply_labels is
+    set), so a test can assert the PULL-visibility labels reached a filing."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, discovery, repo=None, apply_labels=None):
+        self.calls.append((discovery, repo, apply_labels))
+        n = len(self.calls)
+        return {"tracker_ref": f"acme/widget#{100 + n}",
+                "url": f"https://github.com/acme/widget/issues/{100 + n}"}
+
+
+def _handoff_with(discovered_work, status="opened", ref="PR#1"):
+    return {"work_order_id": "wo-1", "status": status,
+            "artifact": {"kind": "pr", "ref": ref},
+            "discovered_work": discovered_work, "blocked_reason": None}
+
+
+def test_flush_threads_issue_filter_apply_labels_to_project_filing():
+    root = tempfile.mkdtemp(prefix="sched-report-labels-")
+    state_path = os.path.join(root, "state.json")
+    gov = {"mode": "propose",
+           "issue_filter": {"labels": [["dci-team marketplace"]]}}
+    sink = _LabelRecordingSink()
+    filed, skipped, errored = rt._flush_report(
+        state_path, [_handoff_with([dict(_DISCOVERY)])], [], "propose", gov,
+        sink)
+    assert (filed, skipped, errored) == (1, 0, 0), (filed, skipped, errored)
+    assert len(sink.calls) == 1, sink.calls
+    _disc, repo, apply_labels = sink.calls[0]
+    # project target -> gh default repo (None) AND the PULL-visibility labels.
+    assert repo is None, repo
+    assert apply_labels == ["dci-team marketplace"], apply_labels
+
+
+def test_flush_no_issue_filter_apply_labels_empty_filing_unchanged():
+    """With no issue_filter, sg.issue_filter_apply_labels(gov) is [] -> the flush
+    invokes the sink EXACTLY as before (the old-style (discovery, repo=None)
+    sink still works — filing is byte-unchanged)."""
+    root = tempfile.mkdtemp(prefix="sched-report-nolabels-")
+    state_path = os.path.join(root, "state.json")
+    gov = {"mode": "propose"}
+    sink = _RecordingSink()  # old-style: (discovery, repo=None), no apply_labels
+    filed, skipped, errored = rt._flush_report(
+        state_path, [_handoff_with([dict(_DISCOVERY)])], [], "propose", gov,
+        sink)
+    assert (filed, skipped, errored) == (1, 0, 0), (filed, skipped, errored)
+    assert len(sink.calls) == 1, sink.calls
+
+
+def test_flush_maintainer_self_filing_gets_no_apply_labels():
+    """Even with issue_filter labels configured, a maintainer-self filing gets
+    apply_labels=[] (that per-target gate lives in work-intake's file_discoveries;
+    the flush just supplies the project labels)."""
+    root = tempfile.mkdtemp(prefix="sched-report-labels-ms-")
+    state_path = os.path.join(root, "state.json")
+    gov = {"mode": "propose",
+           "issue_filter": {"labels": [["dci-team marketplace"]]}}
+    disc = dict(_DISCOVERY)
+    disc["target"] = "maintainer-self"
+    sink = _LabelRecordingSink()
+    filed, skipped, errored = rt._flush_report(
+        state_path, [_handoff_with([disc])], [], "propose", gov, sink)
+    assert (filed, skipped, errored) == (1, 0, 0), (filed, skipped, errored)
+    _disc, repo, apply_labels = sink.calls[0]
+    assert repo == sg.MAINTAINER_REPO, (repo, sg.MAINTAINER_REPO)
+    assert apply_labels == [], apply_labels
+
+
+def test_run_tick_e2e_threads_apply_labels_to_project_filing():
+    """End-to-end through run_tick's pure-script route: a project-local config.json
+    carrying issue_filter labels -> the terminal REPORT flush stamps them on the
+    project-target filing (loop can re-pull work it filed for itself)."""
+    project_dir = tempfile.mkdtemp(prefix="sched-report-labels-e2e-")
+    cfg = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(cfg, exist_ok=True)
+    with open(os.path.join(cfg, "config.json"), "w") as f:
+        json.dump({"mode": "propose",
+                   "issue_filter": {"labels": [["dci-team marketplace"]]}}, f)
+    root = tempfile.mkdtemp(prefix="sched-report-labels-e2e-rt-")
+    runtime_dir = os.path.join(root, "runtime")
+    state_path = os.path.join(root, "state.json")
+    journal_path = os.path.join(root, "journal.jsonl")
+    sink = _LabelRecordingSink()
+    trace = _drive_pure_with_ctx_discovery(
+        project_dir, runtime_dir, state_path, journal_path, sink,
+        [dict(_DISCOVERY)])
+    assert "reported=1/0" in trace, trace
+    assert len(sink.calls) == 1, sink.calls
+    _disc, repo, apply_labels = sink.calls[0]
+    assert repo is None, repo
+    assert apply_labels == ["dci-team marketplace"], apply_labels
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
