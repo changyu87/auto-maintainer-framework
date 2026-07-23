@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.32.0
+version: 0.33.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -236,7 +236,7 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
    - `src/stop.py` — writes disposition `STOPPED` (via the lifecycle-dispositions
      API) using the same runtime-path resolution. Owns the state write.
    These own ALL state operations so the skills never hand-roll Python.
-4. **Shipped control skills** (`ship/skills/{start,stop,status}`):
+4. **Shipped control skills** (`ship/skills/{start,stop,status,tick,clobber}`):
    - `/auto-maintainer:start` (skill **v0.3.0**) — first invokes
      `start.py --clear-only` to perform ONLY the FRESH-start latch decision (clear
      a latched `STOPPED` → `IDLE`, or REFUSE on `ABORTED` and stop), then runs
@@ -275,6 +275,23 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      relays its rendered output: the emphasized plugin version, the disposition/
      awaiting/mode/budget/reported/read-product fields, and the active route
      listing (states + happy-path chain, shown even when default).
+   - `/auto-maintainer:clobber` — invokes `clobber.py` to RESET the loop to a
+     clean start: it deletes the RUNTIME-STATE artifacts under the runtime dir
+     while PRESERVING user config. **Cleared:** `durable-state.json` (ledgers +
+     budget window + read products + tick checkpoint + counters), the
+     `disposition` + `lock.json` markers, `events.jsonl`, `tick-journal.jsonl`,
+     the `dispatch-out/` dir, and the heartbeat markers (`loop-intent` +
+     `last-resume-session`). **Preserved (NEVER deleted):** `config.json`,
+     `route.json`, `adapter-map.json`, and any `*.bak` / `*.migrated` config
+     backups. It resolves the runtime dir via `run_tick.resolve_runtime_paths`
+     (never duplicating path logic), is idempotent (a missing artifact is a
+     no-op, never an error), and reports a machine-first summary of what it
+     removed vs preserved. It does NOT create the runtime dir. The `/clobber`
+     SKILL surfaces a **confirmation** before invoking the script (this is a
+     destructive reset) and reminds the user to `/stop` first if the loop is
+     running; a `--yes`/confirmed flag lets the script run non-interactively for
+     the confirmed path. `clobber.py` writes NOTHING except the deletions (no
+     model, no network).
    Only the heartbeat scheduling (CronCreate/CronDelete) is agent-mediated (no
    plugin-level cron API); every state operation is a script.
 5. **Scheduler detection (§3.3.1)** — slice 1 uses the in-session durable
@@ -756,6 +773,26 @@ kind outside the closed vocabulary):
   `merged=<n>` token (plus `integrate_errored=<n>` only when `> 0`). All existing
   detail keys + trace fields are preserved; a route with no INTEGRATE shows
   `merged=0`/`merged_refs=[]`.
+  - **Per-issue / per-PR IDENTIFIERS (additive, so the log alone answers "which
+    issues + which PRs").** In addition to the counts above, `tick_end.detail`
+    carries identifier lists sourced from the read products already in scope at
+    the terminal (no new plumbing):
+    - **`handoffs_detail`** — the tick's handoffs as
+      `[{work_order_id, status, ref}]` (from `persisted_handoffs`; `ref` is the
+      opened PR's `artifact.ref`, else `null`). This is the per-issue →
+      per-outcome/PR bridge (e.g. `#625 opened <PR-url>`, `#626 blocked null`).
+    - **`integrated`** — the INTEGRATE result as
+      `{merged: [{pr_ref, url}], skipped: [{pr_ref, reason}], errored: [{pr_ref, reason}]}`
+      (from `integration_result`), enriching the count-only `merged`/
+      `integrate_skipped`/`integrate_errored` and the ref-only `merged_refs`.
+    - **`reported_detail`** — the discoveries filed THIS tick as
+      `[{dedup_key, tracker_ref, url}]` (the new `report_ledger` entries), so the
+      log names the issues the loop itself filed.
+    These are BOUNDED by the tick's own work (one entry per work order / PR /
+    filing) and are purely additive — every pre-existing count + `merged_refs`
+    + trace field is unchanged, and a route producing none shows empty lists. The
+    `tick_end` detail shape is owned by `scheduling` (observability's `EVENT_KINDS`
+    envelope is unchanged; `detail` stays an opaque dict it does not inspect).
 
 Events are written in BOTH the pure-script done path and the agent-driver
 done/pause paths. The budget readiness gate, slot persistence, and the trace are
