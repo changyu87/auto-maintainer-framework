@@ -146,12 +146,13 @@ def _read_text(path):
 # prompt-cron heartbeat, consuming start.py --clear-only for the latch-clear.
 # --------------------------------------------------------------------------
 
-def test_ship_start_skill_exists_and_names_start_v030():
+def test_ship_start_skill_exists_and_names_start_v040():
     assert os.path.isfile(_START_SKILL), _START_SKILL
     fields = _parse_frontmatter(_START_SKILL)
     assert fields.get("name") == "start", fields
-    # v0.3.0: config-driven heartbeat interval via start.py --print-interval.
-    assert fields.get("version") == "0.3.0", fields
+    # v0.4.0: /start OWNS the drain-loop (tick #1 + each heartbeat fire /tick
+    # again on refire until non-refire, §3.3.3).
+    assert fields.get("version") == "0.4.0", fields
 
 
 def test_ship_start_skill_carries_lifecycle_metadata():
@@ -199,9 +200,9 @@ def test_ship_start_skill_heartbeat_interval_is_config_driven():
 # file; the skill marshals NO content.)
 # --------------------------------------------------------------------------
 
-def test_ship_tick_skill_version_is_0_6_0():
+def test_ship_tick_skill_version_is_0_7_0():
     fields = _parse_frontmatter(_TICK_SKILL)
-    assert fields.get("version") == "0.6.0", fields
+    assert fields.get("version") == "0.7.0", fields
 
 
 def test_ship_tick_skill_dispatches_by_prompt_path_file_reference():
