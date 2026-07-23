@@ -28,6 +28,8 @@
     "config.json",
     "2.1.0",
     "2.7.0",
+    "2.8.0",
+    "implement_test_command",
     "ABORTED",
     "IDLE",
     "DESIGN",
