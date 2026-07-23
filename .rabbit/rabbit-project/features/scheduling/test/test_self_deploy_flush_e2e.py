@@ -280,7 +280,7 @@ def _patch_vi_merge():
     vi.gh_open_pr_source = lambda repo=None, label=vi.LOOP_PR_LABEL: [dict(_OK_PR)]
     vi.gh_default_branch_source = lambda repo=None: "main"
     vi.gh_pr_merge_sink = (
-        lambda pr_ref, repo=None, auto=False: {"pr_ref": pr_ref,
+        lambda pr_ref, repo=None, base_branch=None: {"pr_ref": pr_ref,
                                                "url": vi._pr_url(pr_ref, repo),
                                                "auto_enabled": False})
 
