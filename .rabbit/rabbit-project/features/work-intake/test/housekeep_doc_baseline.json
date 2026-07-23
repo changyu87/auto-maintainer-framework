@@ -2,10 +2,10 @@
   "schema_version": "1.0.0",
   "owner": "changyu87",
   "deprecation_criterion": "Superseded by the next work-intake housekeep wave's baseline; a re-bloat regression guard for the post-#359 doc surfaces.",
-  "description": "Re-anchored for the issue_filter spec change: spec.md additively documents public-surface item 5 — PULL optionally narrows pulled issues by the canonical issue_filter (DNF labels applied server-side via per-AND-group gh --label union, title_pattern applied post-fetch), a legitimate new behaviour, not re-bloat. This baseline records the post-issue_filter doc line counts plus a one-line margin, so the housekeep gate continues as a re-bloat regression guard (current docs must stay STRICTLY smaller than this) while the load-bearing-token + cleanup gates remain intact.",
-  "baseline_commit": "post-issue-filter",
+  "description": "Re-anchored for the apply_labels spec change: the filing sink's REPORT bullet additively documents that gh_issue_file_sink stamps the PULL-visibility apply_labels (ensuring each exists first) alongside the provenance label, and file_discoveries forwards them only for project-target discoveries, a legitimate new behaviour, not re-bloat. This baseline records the post-apply_labels doc line counts plus a one-line margin, so the housekeep gate continues as a re-bloat regression guard (current docs must stay STRICTLY smaller than this) while the load-bearing-token + cleanup gates remain intact.",
+  "baseline_commit": "post-apply-labels",
   "docs": {
-    "docs/spec.md": 305,
+    "docs/spec.md": 326,
     "docs/contract.md": 49
   }
 }

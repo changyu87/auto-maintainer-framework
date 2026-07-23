@@ -1001,7 +1001,19 @@ class ReportResult:
     errors: List[dict] = field(default_factory=list)
 
 
-def gh_issue_file_sink(discovery, repo=None, runner=subprocess.run):
+def _ensure_label(label, repo, runner):
+    """ENSURE a label exists via an idempotent `gh label create`. check=False:
+    an "already exists" non-zero exit is TOLERATED, never raised (the label
+    simply already exists). Honors `--repo` and the injectable runner."""
+    label_cmd = ["gh", "label", "create", label,
+                 "--description", "filed by the autonomous maintainer"]
+    if repo:
+        label_cmd += ["--repo", repo]
+    runner(label_cmd, capture_output=True, text=True, check=False)
+
+
+def gh_issue_file_sink(discovery, repo=None, apply_labels=None,
+                       runner=subprocess.run):
     """Production filing sink: shell `gh issue create` for one DiscoveredIssue
     and return {tracker_ref, url}. `gh` carries its own auth.
 
@@ -1011,26 +1023,33 @@ def gh_issue_file_sink(discovery, repo=None, runner=subprocess.run):
     given it is passed via `--repo` (the caller chooses it from
     discovery.target); otherwise gh resolves the repo from the project default.
 
+    `apply_labels` are the PULL-visibility labels (the labels that make a filed
+    issue match the active `issue_filter` — safety-governance's
+    `issue_filter_apply_labels`) so the loop can RE-PULL work it filed for
+    itself. In addition to the provenance label, each apply label is ENSURED to
+    exist first (`gh label create <L>`, idempotent, same tolerate pattern) then
+    added to the `gh issue create --label` set. `apply_labels` None/[] leaves
+    behaviour unchanged (only the provenance label). The caller passes these
+    ONLY for `project`-target filings.
+
     The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so
     tests pass a fake — no network, the failure locatable to the file boundary.
     """
     body = discovery.body
     marker = _am_dedup_marker(discovery.dedup_key)
     body = f"{body}\n\n{marker}" if body else marker
-    # `gh issue create --label <L>` FAILS if label L is absent in the repo, and
-    # a fresh repo has no provenance label — so every filing errored (silently,
-    # since file_discoveries catches sink errors). ENSURE the label exists first
-    # via an idempotent `gh label create`. check=False: an "already exists"
-    # non-zero exit is TOLERATED, never raised (the label simply already exists).
-    label_cmd = ["gh", "label", "create", FILED_BY_LABEL,
-                 "--description", "filed by the autonomous maintainer"]
-    if repo:
-        label_cmd += ["--repo", repo]
-    runner(label_cmd, capture_output=True, text=True, check=False)
+    # The full label set: the provenance label plus each PULL-visibility
+    # apply label (skipping empties). `gh issue create --label <L>` FAILS if L
+    # is absent in the repo, so EACH label is ENSURED first via an idempotent
+    # `gh label create` (a fresh repo has none of them) before the issue create.
+    labels = [FILED_BY_LABEL] + [l for l in (apply_labels or []) if l]
+    for label in labels:
+        _ensure_label(label, repo, runner)
     cmd = ["gh", "issue", "create",
            "--title", discovery.title,
-           "--body", body,
-           "--label", FILED_BY_LABEL]
+           "--body", body]
+    for label in labels:
+        cmd += ["--label", label]
     if repo:
         cmd += ["--repo", repo]
     out = runner(cmd, capture_output=True, text=True, check=True)
@@ -1117,7 +1136,7 @@ def _match_open_issue(discovery, open_items):
 
 
 def file_discoveries(discoveries, sink=gh_issue_file_sink, known_dedup_keys=(),
-                     known_open=()):
+                     known_open=(), apply_labels=None):
     """Pure orchestration over a batch of DiscoveredIssues.
 
     For each discovery, in order:
@@ -1137,6 +1156,14 @@ def file_discoveries(discoveries, sink=gh_issue_file_sink, known_dedup_keys=(),
     set + open set; performs no I/O of its own. The trust-ladder GATE is NOT
     here — it lives in scheduling.run_tick, which only calls this when filing is
     permitted.
+
+    `apply_labels` (the active `issue_filter`'s PULL-visibility labels, from
+    scheduling) is forwarded to the sink ONLY for `project`-target discoveries
+    (so a project filing is re-pullable); a `maintainer-self` discovery is filed
+    with `apply_labels=[]` (the fixed MAINTAINER_REPO has its own/no filter).
+    `None`/`[]` ⇒ the sink is invoked exactly as before (every filing keeps just
+    the provenance label — unchanged), so a sink taking only
+    `(discovery, repo=None)` still works.
     """
     known = set(known_dedup_keys)
     open_items = list(known_open)
@@ -1153,7 +1180,15 @@ def file_discoveries(discoveries, sink=gh_issue_file_sink, known_dedup_keys=(),
             })
             continue
         try:
-            ref = sink(discovery)
+            if apply_labels:
+                # Forward PULL-visibility labels to the sink, but ONLY for
+                # project-target filings; maintainer-self gets [].
+                per_target = (list(apply_labels)
+                              if discovery.target == "project" else [])
+                ref = sink(discovery, apply_labels=per_target)
+            else:
+                # None/[] ⇒ unchanged: invoke the sink exactly as before.
+                ref = sink(discovery)
         except Exception as exc:  # noqa: BLE001 — locate failure to the sink
             result.errors.append({
                 "dedup_key": discovery.dedup_key,
