@@ -104,7 +104,7 @@ def test_clobber_removes_state_preserves_config():
 # Behaviour 2 — the summary is a machine-first {removed, preserved} JSON.
 # ==========================================================================
 
-def test_clobber_prints_machine_first_summary(capsys=None):
+def test_clobber_prints_machine_first_summary():
     import io
     import contextlib
     root = tempfile.mkdtemp(prefix="sched-clobber-sum-")
