@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.13.0
+version: 0.14.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -40,7 +40,8 @@ single central `userConfig` (§3.10.1); it **replaces** the former
   "implement_test_command": null,
   "issue_filter": {
     "labels": [],
-    "title_pattern": null
+    "title_pattern": null,
+    "exclude_labels": []
   },
   "budget": {
     "per_day_tokens": null,
@@ -128,7 +129,17 @@ single central `userConfig` (§3.10.1); it **replaces** the former
   - `title_pattern` — a regular-expression string an issue's title must match
     (applied post-fetch, since `gh` has no title query), or **`null` = no title
     filter**.
-  **Default `{"labels": [], "title_pattern": null}` = NO filter** — PULL pulls
+  - `exclude_labels` — a **flat** list of label strings; an open issue carrying
+    **ANY** of them is DROPPED (a NEGATIVE term, applied post-fetch by work-intake
+    PULL — `gh`'s per-AND-group union query cannot express negation). The canonical
+    empty form `[]` = **no exclusion**. This is how a disposed reject
+    (`auto-maintainer-rejected`, work-intake's `REJECTED_LABEL`) is kept out of
+    PULL: the shipped default-config (packaging-config) seeds `exclude_labels` with
+    that label. `exclude_labels` composes with `labels`/`title_pattern` as a final
+    AND (an issue must clear the labels DNF, match the title pattern, AND carry no
+    exclude label).
+  **Default `{"labels": [], "title_pattern": null, "exclude_labels": []}` = NO
+  filter** — PULL pulls
   every open issue, exactly as before (non-breaking, opt-in). Read + normalized
   through the pure accessor `issue_filter(config)`, which returns the canonical
   object. The **normalizer** accepts and canonicalizes user input:
@@ -137,6 +148,9 @@ single central `userConfig` (§3.10.1); it **replaces** the former
   is validated as-is. It **rejects** (raises `ValueError`, never a silent write)
   non-string label entries, empty-string labels, and empty inner groups; and
   `title_pattern` must be a string that **compiles** as a regex, or `null`.
+  `exclude_labels` is normalized to a flat `List[str]` (absent / `null` / `[]` ⇒
+  no exclusion), rejecting non-string or empty-string entries; it never accepts a
+  DNF (exclusion is a flat OR of forbidden labels, not an AND-of-ORs).
   Owned here; **`work-intake` PULL** consumes it to build the `gh` query (one
   `gh issue list --label …` query per AND-group, unioned + deduped, since `gh`
   cannot OR labels) plus the post-fetch title match, and
@@ -354,6 +368,10 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
     issue's title must match; `none`/`null`/`""` clears to `null`. It must
     **compile** as a regex (validated via the same `issue_filter` normalizer),
     else `ValueError`.
+  - `--issue-exclude-labels` — the `issue_filter.exclude_labels` flat list; an
+    open issue carrying ANY listed label is dropped by PULL. Comma-separated
+    (`"auto-maintainer-rejected,wontfix"`); `none`/`null`/`""` clears to `[]`.
+    Validated + canonicalized through the same `issue_filter` normalizer.
   - `--preflight` — a **read-only** environment check emitting machine-first JSON
     `{gh_authenticated: bool, gh_account: str|null, resolved_repo: str|null,
     config_exists: bool}` for the guided `--setup` onboarding: it shells
