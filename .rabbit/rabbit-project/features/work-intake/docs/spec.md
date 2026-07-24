@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.10.0
+version: 0.11.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -79,8 +79,16 @@ Greenfield. Code under `.../features/work-intake/src/`.
      non-`null` `title_pattern` is applied as a regex `search` over each fetched
      issue's title, dropping non-matches **before** the comment enrichment. A
      `null` pattern is a no-op.
-   The two narrowings **compose** (an issue must clear the labels DNF AND match
-   the title pattern). The default `issue_filter` (empty labels + `null` pattern)
+   - **Exclude labels (`exclude_labels`) — post-fetch NEGATIVE term.** `gh`'s
+     per-AND-group union query cannot express negation, so a non-empty
+     `exclude_labels` (a flat OR of forbidden labels, normalized by
+     safety-governance) is applied post-fetch: any fetched issue carrying ANY
+     listed label is DROPPED **before** the comment enrichment. An empty
+     `exclude_labels` `[]` is a no-op. This is how a disposed reject
+     (`REJECTED_LABEL`) is kept out of PULL.
+   The narrowings **compose** (an issue must clear the labels DNF AND match the
+   title pattern AND carry no `exclude_labels` label). The default `issue_filter`
+   (empty labels + `null` pattern + empty `exclude_labels`)
    is a no-op: PULL pulls every open issue exactly as before (non-breaking). The
    filter is threaded through the injectable source seam — the source contract is
    `source(repo, issue_filter=None) -> list[WorkItem]` — so tests drive it with a
@@ -154,9 +162,25 @@ NO build change, so the shipped file IS the deployed subagent definition.
 - **Read-only judgment, not action.** The triager produces `work_orders` each
   carrying `decision: accepted|rejected` + a `reason`; it never modifies the
   tracker or the repo. Its tools are the read-only `Read`/`Grep`/`Glob` plus
-  `Write` (to emit its output file). Enacting a decision — close a rejected
-  item, implement an accepted one — is the later IMPLEMENT acting state's job,
-  not the triager's.
+  `Write` (to emit its output file). Enacting a decision is NOT the triager's
+  job: an accepted order is implemented by IMPLEMENT; a rejected order's
+  disposition (comment + `rejected` label, NO close) is enacted DETERMINISTICALLY
+  at TRIAGE-time by scheduling's adapter (see "Reject disposition" below) — never
+  by the doer.
+- **Stamps `target_feature` from real analysis (issue #258, root-cause fix).**
+  The triager MUST analyze each accepted issue's problem — reading the issue body,
+  comments, and the affected code — and emit an authoritative `target_feature`
+  (the blast-radius scope at plugin+component granularity: the SORTED list of
+  normalized feature keys the change will touch). This is the AUTHORITATIVE source
+  PRIORITIZE reads to serialize same-feature orders; leaving it empty forces
+  PRIORITIZE onto the brittle title-parse fallback (`target_features_for`) and
+  lets same-scope orders fan out in parallel and collide. The deterministic
+  `target_features_for` remains ONLY as the fallback when the field is absent.
+- **Emits rejected orders too (for the deterministic reject disposition).** The
+  triager MUST include each rejected issue in `work_orders` with
+  `decision: rejected`, a concrete `reason`, and its source `work_item_id` / issue
+  ref, so scheduling can enact the reject disposition. PRIORITIZE already forwards
+  only `accepted` orders to IMPLEMENT, so a rejected order never reaches the doer.
 - **Protocol-free, prompt-contracted.** The subagent definition bakes in NO
   output schema, output_path, dispatch-result filename, or file-format detail.
   Those are carried by the invocation-envelope prompt that agent-dispatch
@@ -185,9 +209,11 @@ wanted.
   the deterministic **EXCLUSION** — it drops any work_item for which
   `work_intake.is_loop_filed(item)` is true, so loop-filed items never become
   `work_items` / `work_orders` and stay open for human triage. The exclusion is
-  deliberately NOT a TRIAGE reject — a reject would route to the doer's close
-  path and CLOSE the discovery. `is_loop_filed` lives in work-intake (next to the
-  label + `<!-- am-dedup: -->` body marker that `gh_issue_file_sink` writes).
+  deliberately NOT a TRIAGE reject — a reject would comment + apply the
+  `REJECTED_LABEL` (see "Reject disposition"), whereas a loop-filed discovery must
+  stay open AND un-labeled for human triage. `is_loop_filed` lives in work-intake
+  (next to the label + `<!-- am-dedup: -->` body marker that `gh_issue_file_sink`
+  writes).
 - **Park guard (Phase 2 convergence) — UNCONDITIONAL PULL EXCLUSION at the retry
   threshold.** An issue whose (bounded) comments record **>= `PARK_THRESHOLD`
   (hardcoded 5)** DISTINCT failed merge attempts — each attempt marked by the
@@ -200,7 +226,9 @@ wanted.
   gate-fail comments for a human to resolve on the tracker (the loop NEVER stops
   or escalates mid-run — this is how "never escalate" holds). Unlike the loopback
   guard this exclusion is UNCONDITIONAL (not gated on a config knob) and, like it,
-  is a PULL exclusion (NOT a TRIAGE reject, which would close the issue).
+  is a PULL exclusion (NOT a TRIAGE reject, which would label the issue
+  `REJECTED_LABEL` and exclude it); a parked issue stays open and un-labeled with
+  its gate-fail comments for a human.
 - **`is_parked` counts DISTINCT attempts, not raw marker occurrences.** Each
   retry is a distinct PR (the implementer supersedes its prior open PR before
   opening a new one), so `is_parked` parses the marker comment's JSON payload and
@@ -213,6 +241,41 @@ wanted.
   retried. A marker whose JSON payload is absent or unparseable (or carries no
   `pr_ref`) falls back to counting that comment as one distinct attempt (keyed by
   its position) so malformed markers never silently defeat the guard.
+
+## Reject disposition (deterministic, at TRIAGE — NOT at IMPLEMENT)
+
+A semantically-rejected issue (the triager's `decision: rejected` + `reason`) is
+disposed of DETERMINISTICALLY at TRIAGE-time — it is **commented and labeled,
+never closed by default** — so a human can see why and the loop stops re-pulling
+it. This replaces the retired model where a rejected order was closed by the
+IMPLEMENT doer (that reject→close branch is removed from the implementer). Only a
+SEMANTIC reject (the AI triager) is disposed here; STRUCTURAL exclusions
+(malformed/stale/not-open at the deterministic gate, loop-filed, parked) stay
+open and UN-labeled for human triage, exactly as before.
+
+- **`REJECTED_LABEL`** — the fixed label string `auto-maintainer-rejected` a
+  disposed reject carries. Owned here (work-intake owns tracker labels);
+  `safety-governance`/`packaging-config` reference the SAME literal to exclude it
+  from PULL (see below).
+- **`reject_dispositions(work_orders) -> [{work_item_id, issue_ref, reason}]`** —
+  a pure selector returning the disposition payload for every `decision: rejected`
+  order. Deterministic; no I/O.
+- **`gh_issue_reject_sink(issue_ref, repo, reason, label=REJECTED_LABEL) ->
+  None`** — a NEW injectable tracker sink (mirrors `gh_issue_file_sink`): it
+  ENSURES the label exists (`gh label create`, idempotent), posts ONE comment
+  carrying the `reason` behind a FIXED machine marker
+  (`<!-- auto-maintainer:rejected -->`), and applies the label
+  (`gh issue edit <n> --add-label`). It NEVER closes the issue. Idempotent: if the
+  item already carries `REJECTED_LABEL` it is a no-op (no duplicate comment).
+- **PULL exclusion of the reject label.** The default `issue_filter` (owned by
+  `safety-governance`, shipped by `packaging-config`) gains a NEGATIVE
+  (exclude-label) term for `REJECTED_LABEL`, so a disposed reject is not re-pulled;
+  a human removing the label re-admits it. This is the belt to the suspenders of
+  scheduling recording the item `rejected` in `triage_memory`.
+- **Enactment + `triage_memory` are scheduling's** — the make_triage adapter calls
+  `reject_dispositions` + `gh_issue_reject_sink` for each reject and records a
+  `rejected` status in `triage_memory` (landed in the consumers wave). Closing a
+  reject remains an explicit opt-in, never the default.
 
 ## Slice 3 — REPORT (outbound filing → DiscoveredIssue)
 
