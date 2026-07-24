@@ -1,8 +1,8 @@
 ---
 feature: verify-integrate
-version: 0.7.0
+version: 0.8.0
 owner: changyu87
-deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult schemas reach a breaking major version.
+deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
 
 # verify-integrate
@@ -305,6 +305,85 @@ loop PRs) + `regression_command` from the central config
   performs an idempotent release/tag if configured (create-if-not-exists).
   Emits `OK`. Deterministic, idempotent.
 
+## RECONCILE-support (cross-tick leftover-PR reconciliation, DESIGN §3.7 convergence)
+
+`Reconcile` is a deterministic, **script-tier** class (mirroring `Integrate`) that
+`scheduling`'s `make_reconcile` adapter wraps into a route state run BEFORE `PULL`.
+The state wiring, the `route.json`/`adapter-map.json` edit, and the durable
+acted-ledger read are `scheduling`/`packaging-config` concerns landed in a later
+wave — **NOT owned here**. This feature owns the reconcile LOGIC and the
+`ReconcileResult` schema.
+
+It reconciles the PREVIOUS tick's leftover PRs so a merged-but-open issue, or a
+loop PR left CONFLICTING after a sibling merged, never lingers. Reconcile is
+**ADVISORY**: its manifest emits ONLY `OK`; a fault on any single entry is
+recorded, never raised — RECONCILE never blocks the tick.
+
+Its issue-close and comment writes are an OWNED, trust-gated GitHub convergence
+write, extending INTEGRATE's existing issue-comment (gate-fail) and PR-close
+(orphaned) writes. It does NOT file NEW issues — outbound issue FILING remains
+REPORT/work-intake's (contract `never`).
+
+### Inputs (injected by scheduling)
+
+- an `acted_ledger` slot — the durable acted-ledger entries with recorded
+  `outcome == "opened"`, each carrying `{work_order_id, pr_ref, issue_ref, repo}`.
+  Scheduling loads the ledger from durable state and seeds this slot; Reconcile
+  never reads durable state itself.
+- the injectable seams below; ALL GitHub/git effects run behind them so the class
+  is unit-testable with fakes and touches no network in tests.
+
+### Injectable seams
+
+- `gh_pr_state_source(pr_ref, repo) -> {state, merged, mergeable}` — the EXISTING
+  PR-state read, extended to surface `mergeable` (MERGEABLE|CONFLICTING|UNKNOWN).
+- `gh_issue_state_source(issue_ref, repo) -> {state}` — the source issue's
+  open/closed state (reuse VERIFY's closing-issue resolver seam).
+- `gh_issue_close_sink(issue_ref, repo, comment) -> None` — NEW injectable sink:
+  closes an issue with a machine-readable comment naming the PR.
+- the EXISTING injectable PR-close sink and issue-comment sink, and the EXISTING
+  GATE integration-worktree helper (fetch a PR head, merge/rebase onto a fresh
+  base), reused for the tier-1 rebase.
+
+### (A) Merged-PR issue-close fallback
+
+For each `opened` ledger entry, query `gh_pr_state_source`. If the PR is
+**MERGED** and its source issue is **still OPEN** (`gh_issue_state_source`), close
+the issue via `gh_issue_close_sink` with a comment naming the merged PR — a
+deterministic FALLBACK for when the PR's `Closes #<n>` keyword did not fire or the
+project opts out of keyword-closing. NEVER touch a human-closed issue: ONLY a
+MERGED-PR-with-still-OPEN-issue is closed. Idempotent — each close is reported so
+scheduling records it in the ledger and a later tick never re-comments.
+
+### (B) Conflict-recovery ladder
+
+For each `opened` entry whose PR is OPEN and **CONFLICTING** (`mergeable ==
+CONFLICTING` — a sibling merged and invalidated it):
+
+- **TIER 1 — deterministic rebase (no model, ~zero tokens).** In a disposable
+  integration worktree (the GATE worktree helper), fetch the PR head and rebase it
+  onto fresh `origin/<default-branch>`. If it rebases CLEAN, force-push the rebased
+  branch so the PR is mergeable again and re-enters VERIFY/GATE/INTEGRATE next tick
+  with NO implementer run. Recorded in `reconcile_result.rebased`.
+- **TIER 2 — re-land fallback.** If the rebase hits a real textual conflict
+  (semantic resolution is the implementer's job, not determinism — spec-rules §1),
+  close the PR via the EXISTING PR-close sink and comment the source issue with the
+  PR ref via the EXISTING comment sink, so the acted-ledger re-entry gate re-lands
+  it next tick (PR CLOSED-and-not-merged + issue `updated_at` advanced by the
+  comment). Recorded in `reconcile_result.relanded`.
+
+**Trust-gated exactly like INTEGRATE.** The mutating acts (issue-close,
+force-push, PR-close) run ONLY at `permits("merge", mode)` (i.e. `auto-merge`); at
+`dry-run`/`propose` the would-act intent is recorded under `skipped` and a human
+acts. A single-entry fault is recorded under `errors` and never wedges the tick.
+
+### `ReconcileResult` slot (owned here, versioned, machine-first)
+
+`{ schema_version, closed_issues: [{issue_ref, pr_ref}], rebased: [{pr_ref}],
+relanded: [{pr_ref, issue_ref}], skipped: [{ref, reason}], errors: [{ref,
+reason}] }`. `RECONCILE_MANIFEST` reads `acted_ledger`, writes `reconcile_result`,
+emits only `OK`. `RECONCILE_RESULT_SCHEMA_VERSION` starts at `1.0.0`.
+
 ## Guardrails (consumed from safety-governance)
 
 - **Merge guardrails (§3.8.1)** — `safety_governance.merge_guardrails(pr_meta,
@@ -332,6 +411,13 @@ CLEANUP → PERSIST → EXIT`.
   release/tag is create-if-not-exists.
 - Cross-tick: the open-PR set is sourced LIVE from GitHub (the `auto-maintainer`
   label), never a durable ledger.
+- RECONCILE is advisory (emits only `OK`, never blocks the tick), deterministic
+  given its injected seams, idempotent (a merged-PR issue-close is reported so it
+  never re-comments), and mutates GitHub ONLY at `auto-merge` (trust-gated exactly
+  like INTEGRATE). It closes ONLY a MERGED-PR-with-still-OPEN issue — never a
+  human-closed one — and its tier-1 rebase force-pushes ONLY the loop's own PR
+  branch; a real textual conflict falls back to re-land (never a silent semantic
+  auto-merge).
 
 ## Deferred (NOT v1)
 
