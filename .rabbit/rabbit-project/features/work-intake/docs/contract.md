@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.9.0
+version: 0.10.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version). See spec.md / feature.json.
 ---
@@ -21,8 +21,8 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
       "normalize_cross_cutting_risk(annotation) -> CrossCuttingRisk: pure normalizer/validator (risk=true only on >=2 distinct features + non-empty reason; rejects malformed input)",
       "DiscoveredIssue slot schema (versioned, machine-first; the outbound discovery shape)",
       "ReportResult schema (machine-first; the {filed, skipped_existing, errors} filing-batch outcome)",
-      "file_discoveries(discoveries, sink, known_dedup_keys) -> ReportResult: pure REPORT orchestrator (out-of-band, not a routed state; scheduling.run_tick flushes through it)",
-      "gh_issue_file_sink(discovery, repo=None, runner=...) -> {tracker_ref, url}: the production GitHub filing sink (injectable runner)",
+      "file_discoveries(discoveries, sink, known_dedup_keys, known_open, apply_labels=None) -> ReportResult: pure REPORT orchestrator (out-of-band; scheduling.run_tick flushes through it). Forwards apply_labels (the active issue_filter PULL-visibility labels) to the sink ONLY for project-target discoveries; maintainer-self filings get []",
+      "gh_issue_file_sink(discovery, repo=None, apply_labels=None, runner=...) -> {tracker_ref, url}: the production GitHub filing sink (injectable runner). Stamps filed-by:autonomous-maintainer PLUS each label in apply_labels (the issue_filter PULL-visibility labels so a later PULL re-pulls the loop's own filing), ensuring each label exists first via idempotent gh label create; apply_labels None/[] = provenance label only (unchanged)",
       "is_loop_filed(item) -> bool: the §3.11.5 loopback/provenance recognizer (LOOP_FILED_LABEL or am-dedup body marker); PULL applies it as an EXCLUSION only under the work_own_filings=False opt-out (default True includes loop-filed items)"
     ],
     "scripts": [],
@@ -35,7 +35,7 @@ deprecation_criterion: Superseded when the tracker-read model changes incompatib
   "invokes": {
     "scripts": [],
     "agents": [],
-    "external": ["gh issue list --state open --json number,title,body,url,state,labels,author,createdAt,updatedAt [--repo <repo>] [--label <l> …] (one such query per issue_filter AND-group; results unioned + deduped by number)", "gh issue view <number> --json comments [--repo <repo>]", "gh issue create --title <title> --body <body> --label filed-by:autonomous-maintainer [--repo <repo>] (REPORT filing sink)", "gh label create filed-by:autonomous-maintainer --description <desc> [--repo <repo>] (REPORT idempotent label ensure; non-zero 'already exists' tolerated)"]
+    "external": ["gh issue list --state open --json number,title,body,url,state,labels,author,createdAt,updatedAt [--repo <repo>] [--label <l> …] (one such query per issue_filter AND-group; results unioned + deduped by number)", "gh issue view <number> --json comments [--repo <repo>]", "gh issue create --title <title> --body <body> --label filed-by:autonomous-maintainer [--label <apply_label> …] [--repo <repo>] (REPORT filing sink; apply_labels = the issue_filter PULL-visibility labels stamped on project-target filings)", "gh label create <filed-by:autonomous-maintainer | each apply_label> --description <desc> [--repo <repo>] (REPORT idempotent label ensure for the provenance label AND each apply_label; non-zero 'already exists' tolerated)"]
   },
   "never": [
     "performs dedup-vs-closed / 1-level decompose / dependency ordering / WHAT-generation seam (slice 3+)",

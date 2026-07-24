@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.9.0
+version: 0.10.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -236,7 +236,8 @@ idempotency live in scheduling).
   `skipped_open` records a discovery NOT filed because its subject already
   matches an OPEN tracker issue (dedup-vs-open), `matched` being that issue.
 - **Injectable filing sink (determinism seam, mirrors `gh_issue_source`).** The
-  production `gh_issue_file_sink(discovery, repo=None) -> {tracker_ref, url}`
+  production `gh_issue_file_sink(discovery, repo=None, apply_labels=None) ->
+  {tracker_ref, url}`
   shells `gh issue create` with the title/body, the provenance label
   `filed-by:autonomous-maintainer`, and a `<!-- am-dedup:<dedup_key> -->` marker
   appended to the body (so a later PULL/TRIAGE — and a dedup re-scan — can
@@ -250,7 +251,21 @@ idempotency live in scheduling).
     --description "filed by the autonomous maintainer"` (idempotent — a non-zero
     "already exists" exit is tolerated, NOT raised) before the issue create. Both
     `gh` calls honor `--repo` and the injectable `runner`.
-- **`file_discoveries(discoveries, sink, known_dedup_keys, known_open) ->
+  - **It ALSO stamps the PULL-visibility labels `apply_labels` (bug fix).** A
+    filed discovery that carries ONLY `filed-by:autonomous-maintainer` is
+    INVISIBLE to a later label-filtered PULL (which filters by the configured
+    `issue_filter` labels) — so the loop could never re-pull work it filed for
+    itself. The sink therefore accepts an `apply_labels` list (the labels that
+    make a filed issue match the active `issue_filter` — safety-governance's
+    `issue_filter_apply_labels(config)`, the first AND-group) and, for each,
+    ENSURES it exists first (`gh label create <L>`, idempotent, same tolerate
+    pattern as the provenance label) then adds it to the `gh issue create
+    --label` set alongside `filed-by:autonomous-maintainer`. `apply_labels` is
+    `None`/`[]` ⇒ unchanged (only the provenance label). The caller
+    (`scheduling` REPORT flush) passes the labels ONLY for `project`-target
+    filings (see Target routing); `maintainer-self` filings get `apply_labels=[]`.
+- **`file_discoveries(discoveries, sink, known_dedup_keys, known_open,
+  apply_labels=None) ->
   ReportResult`** — pure orchestration: for each `DiscoveredIssue`, if its
   `dedup_key` is in `known_dedup_keys` it goes to `skipped_existing` (no sink
   call); else if its subject matches an already-OPEN issue in `known_open`
@@ -263,6 +278,12 @@ idempotency live in scheduling).
   "is this already tracked?" check is the deferred robust v2. `known_open` are
   the tick's PULLed open tracker items (scheduling passes its `work_items`).
   Deterministic given the injected sink + known set + open set; no I/O of its own.
+  `apply_labels` (the active `issue_filter`'s PULL-visibility labels, from
+  `scheduling`) is forwarded to the sink **only for `project`-target
+  discoveries** (so a project filing is re-pullable); a `maintainer-self`
+  discovery is filed with `apply_labels=[]` (the fixed MAINTAINER_REPO has its
+  own/no filter). `None`/`[]` ⇒ every filing keeps just the provenance label
+  (unchanged).
 - **Target routing (§3.11.6).** `target: project` files into the repo PULL reads
   (the default); `target: maintainer-self` files into the **fixed upstream
   maintainer repo** (`safety_governance.MAINTAINER_REPO`, the dogfood case

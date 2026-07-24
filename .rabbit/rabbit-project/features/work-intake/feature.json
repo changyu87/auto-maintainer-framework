@@ -1,6 +1,6 @@
 {
   "name": "work-intake",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/work-intake/src/**",
@@ -9,6 +9,7 @@
   "created": "2026-06-11T07:47:37Z",
   "deprecation_criterion": "Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version).",
   "tdd_state": "test-green",
-  "updated": "2026-07-22",
-  "spec_change_reason": "Added public-surface item 5 (issue_filter): PULL optionally narrows pulled issues by the canonical normalized issue_filter — DNF labels applied server-side (per-AND-group gh --label union deduped by number), title_pattern applied post-fetch as a regex before comment enrichment; the two compose, default is a non-breaking no-op."
+  "updated": "2026-07-23",
+  "spec_change_reason": "Filing sink stamps issue_filter apply_labels for PULL visibility: gh_issue_file_sink stamps each apply_label (ensuring each exists first via idempotent gh label create) alongside the provenance label on gh issue create, and file_discoveries forwards apply_labels to the sink only for project-target discoveries (maintainer-self -> []); None/[] leaves behaviour unchanged.",
+  "spec_no_change_reason": "spec.md already committed this cycle (63b68ab) documenting the apply_labels filing-sink behaviour; no further working-tree spec diff"
 }

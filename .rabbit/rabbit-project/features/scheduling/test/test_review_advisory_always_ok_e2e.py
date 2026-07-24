@@ -136,7 +136,7 @@ def _patch_vi_seams(open_prs=None, merge_calls=None):
     def _branch(repo=None):
         return _DEFAULT_BRANCH
 
-    def _merge(pr_ref, repo=None, auto=False):
+    def _merge(pr_ref, repo=None, base_branch=None):
         if merge_calls is not None:
             merge_calls.append(pr_ref)
         return {"pr_ref": pr_ref, "url": "", "auto_enabled": False}

@@ -619,6 +619,44 @@ def test_issue_filter_accessor_rejects_non_string_label_in_group():
 
 
 # ==========================================================================
+# E2E Behaviour: issue_filter_apply_labels (the labels a loop-FILED discovery
+# issue must carry to be re-pullable by a later label-filtered PULL). Pure
+# helper returning the FIRST non-empty AND-group of the normalized
+# issue_filter.labels, or [] when issue_filter has no labels. Label dimension
+# only; reuses the existing issue_filter(config) normalizer.
+# ==========================================================================
+
+def test_issue_filter_apply_labels_no_filter_returns_empty():
+    """No label filter => nothing to stamp => [] (REPORT filing unchanged)."""
+    assert sg.issue_filter_apply_labels({}) == []
+    assert sg.issue_filter_apply_labels(sg.DEFAULT_GOVERNANCE) == []
+    assert sg.issue_filter_apply_labels(
+        {"issue_filter": {"labels": [], "title_pattern": None}}) == []
+
+
+def test_issue_filter_apply_labels_single_and_group():
+    """A single AND-group returns all of its labels."""
+    assert sg.issue_filter_apply_labels(
+        {"issue_filter": {"labels": [["A", "B"]],
+                          "title_pattern": None}}) == ["A", "B"]
+
+
+def test_issue_filter_apply_labels_dnf_returns_first_group():
+    """A DNF (OR-of-ANDs) returns the FIRST AND-group's labels — carrying one
+    full AND-group satisfies that group, hence the whole DNF."""
+    assert sg.issue_filter_apply_labels(
+        {"issue_filter": {"labels": [["A", "B"], ["C"]],
+                          "title_pattern": None}}) == ["A", "B"]
+
+
+def test_issue_filter_apply_labels_flat_sugar():
+    """A flat-list config (sugar for a single AND-group) returns its labels."""
+    assert sg.issue_filter_apply_labels(
+        {"issue_filter": {"labels": ["A", "B"],
+                          "title_pattern": None}}) == ["A", "B"]
+
+
+# ==========================================================================
 # E2E Behaviour: self_deploy is REMOVED (#324 removed the self_deploy ACTION, so
 # the knob is dead). DEFAULT_GOVERNANCE carries NO self_deploy; there is NO
 # self_deploy accessor; load_config does not surface it; and a config.json still

@@ -456,6 +456,120 @@ def test_file_discoveries_through_real_sink_assembly_stamps_provenance():
 
 
 # ==========================================================================
+# E2E Behaviour (apply_labels — PULL-visibility stamping): the sink stamps each
+# apply_label alongside the provenance label on `gh issue create`, ENSURING each
+# exists first via an idempotent `gh label create`. apply_labels None/[] leaves
+# behaviour unchanged (only the provenance label). Driven by an INJECTED fake
+# runner — NO network.
+# ==========================================================================
+
+def _label_flags(cmd):
+    """The values of every `--label` flag in a gh argv."""
+    return [cmd[i + 1] for i, v in enumerate(cmd) if v == "--label"]
+
+
+def test_gh_issue_file_sink_stamps_apply_labels_and_ensures_them():
+    calls = []
+
+    def fake_runner(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[:3] == ["gh", "label", "create"]:
+            return _FakeCompleted("")
+        return _FakeCompleted("https://github.com/acme/widget/issues/55\n")
+
+    out = wi.gh_issue_file_sink(
+        _discovery(dedup_key="am-al"), repo="acme/widget",
+        apply_labels=["dci-team marketplace"], runner=fake_runner)
+
+    # The issue create carries BOTH the provenance label AND the apply label.
+    create_cmd = next(c for c, _ in calls if c[:3] == ["gh", "issue", "create"])
+    flags = _label_flags(create_cmd)
+    assert "filed-by:autonomous-maintainer" in flags
+    assert "dci-team marketplace" in flags
+
+    # Each label was ENSURED first via an idempotent `gh label create` (the
+    # apply label AND the provenance label), check=False so a pre-existing
+    # label's non-zero exit is tolerated.
+    label_creates = [(c, k) for c, k in calls if c[:3] == ["gh", "label", "create"]]
+    ensured = [c[3] for c, _ in label_creates]
+    assert "filed-by:autonomous-maintainer" in ensured
+    assert "dci-team marketplace" in ensured
+    for _c, k in label_creates:
+        assert k.get("check") is False
+
+    assert out["tracker_ref"] == "acme/widget#55"
+
+
+def test_gh_issue_file_sink_apply_labels_none_or_empty_unchanged():
+    for apply_labels in (None, []):
+        calls = []
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["gh", "label", "create"]:
+                return _FakeCompleted("")
+            return _FakeCompleted("https://github.com/acme/widget/issues/1\n")
+
+        wi.gh_issue_file_sink(
+            _discovery(dedup_key="k"), repo="acme/widget",
+            apply_labels=apply_labels, runner=fake_runner)
+
+        # Only the provenance label is stamped, and only it is ensured.
+        create_cmd = next(c for c in calls if c[:3] == ["gh", "issue", "create"])
+        assert _label_flags(create_cmd) == ["filed-by:autonomous-maintainer"]
+        label_creates = [c for c in calls if c[:3] == ["gh", "label", "create"]]
+        assert [c[3] for c in label_creates] == ["filed-by:autonomous-maintainer"]
+
+
+# ==========================================================================
+# E2E Behaviour: file_discoveries forwards apply_labels to the sink ONLY for
+# project-target discoveries; a maintainer-self discovery is filed with
+# apply_labels=[] (the fixed MAINTAINER_REPO has its own/no filter).
+# ==========================================================================
+
+def _recording_apply_labels_sink():
+    """A stub sink recording the apply_labels it was invoked with per call."""
+    calls = []
+
+    def sink(discovery, apply_labels=None):
+        calls.append((discovery, apply_labels))
+        n = len(calls)
+        return {"tracker_ref": f"acme/widget#{n}",
+                "url": f"https://github.com/acme/widget/issues/{n}"}
+
+    sink.calls = calls
+    return sink
+
+
+def test_file_discoveries_forwards_apply_labels_for_project_only():
+    proj = _discovery(dedup_key="am-proj", target="project",
+                      title="Project target discovery here")
+    selfd = _discovery(dedup_key="am-self", target="maintainer-self",
+                       title="Maintainer self discovery here")
+    sink = _recording_apply_labels_sink()
+
+    result = wi.file_discoveries(
+        [proj, selfd], sink=sink, known_dedup_keys=(),
+        apply_labels=["dci-team marketplace"])
+
+    by_key = {d.dedup_key: al for d, al in sink.calls}
+    # project-target -> gets the apply labels; maintainer-self -> [].
+    assert by_key["am-proj"] == ["dci-team marketplace"]
+    assert by_key["am-self"] == []
+    assert {f["dedup_key"] for f in result.filed} == {"am-proj", "am-self"}
+
+
+def test_file_discoveries_default_apply_labels_unchanged():
+    # apply_labels defaults to None: the sink is invoked exactly as before
+    # (a stub taking only `(discovery, repo=None)` must still work).
+    discovery = _discovery(dedup_key="am-x", title="Anything at all here")
+    sink = _recording_sink()
+    result = wi.file_discoveries([discovery], sink=sink, known_dedup_keys=())
+    assert len(sink.calls) == 1
+    assert [f["dedup_key"] for f in result.filed] == ["am-x"]
+
+
+# ==========================================================================
 # Behaviour: the shipped triager .md is v1.3.0 and carries NO loopback reject
 # criterion — the §3.11.5 guard is enforced upstream at PULL by exclusion, so
 # the triager never sees loop-filed items.

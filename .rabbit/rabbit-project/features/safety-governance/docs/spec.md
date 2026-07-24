@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.12.0
+version: 0.13.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -142,6 +142,20 @@ single central `userConfig` (§3.10.1); it **replaces** the former
   cannot OR labels) plus the post-fetch title match, and
   **`scheduling`/`tick-orchestrator`** threads it from the loaded config into
   PULL (separate cycles).
+  - **`issue_filter_apply_labels(config)` — the labels a loop-FILED issue needs
+    to be re-pullable.** A pure helper returning the label set that, when stamped
+    on a newly-filed discovery issue, guarantees a future label-filtered PULL
+    matches it: the labels of the **FIRST non-empty AND-group** of the normalized
+    `issue_filter.labels` (carrying ALL labels of one AND-group satisfies that
+    group, hence the whole DNF). Returns `[]` when `issue_filter` has no labels
+    (no filter ⇒ nothing to stamp ⇒ REPORT filing unchanged). Owned here;
+    **`scheduling`** resolves it at the REPORT flush and threads it into
+    **`work-intake`**'s filing sink so the loop's own PROJECT-target discoveries
+    are visible to a later PULL (the loop can pick up work it filed for itself).
+    Deterministic, pure over the config (no I/O). NOTE: this addresses the
+    **label** dimension only; a configured `title_pattern` is NOT enforced on
+    filed-issue titles (the title is content-driven) — filings whose title does
+    not match a configured `title_pattern` remain a known, separate limitation.
 
 The runtime file stays **lean**: schema-definition metadata (`owner`,
 `deprecation_criterion`) lives in this spec, `safety_governance.py`'s module

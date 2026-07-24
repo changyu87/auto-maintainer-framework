@@ -2054,12 +2054,20 @@ def _flush_report(state_path, handoffs, discoveries_slot, mode, gov, sink,
             and wi._match_open_issue(d, work_items) is None])
         return 0, would_file, 0
 
-    def _routed_sink(discovery):
-        return sink(discovery, repo=_repo_for_target(discovery.target, gov))
+    def _routed_sink(discovery, apply_labels=None):
+        repo = _repo_for_target(discovery.target, gov)
+        if apply_labels is None:
+            return sink(discovery, repo=repo)
+        return sink(discovery, repo=repo, apply_labels=apply_labels)
 
+    # Thread the active issue_filter's PULL-visibility labels so a project-target
+    # loop-filed discovery carries the labels a later label-filtered PULL matches
+    # (file_discoveries stamps them ONLY on project-target filings; [] when the
+    # issue_filter has no labels -> filing unchanged).
+    apply_labels = sg.issue_filter_apply_labels(gov)
     result = wi.file_discoveries(
         normalized, sink=_routed_sink, known_dedup_keys=known,
-        known_open=work_items)
+        known_open=work_items, apply_labels=apply_labels)
 
     # Record each newly-filed discovery into the durable report-ledger
     # (load-modify-save ONLY REPORT_LEDGER_KEY, preserving every other key).

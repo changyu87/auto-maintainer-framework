@@ -618,6 +618,25 @@ def issue_filter(config):
     return {"labels": labels, "title_pattern": pattern}
 
 
+def issue_filter_apply_labels(config):
+    """The labels a loop-FILED discovery issue must carry to be re-pullable.
+
+    Returns the labels of the FIRST non-empty AND-group of the normalized
+    issue_filter.labels (a plain list[str]) — carrying ALL labels of one
+    AND-group satisfies that group, hence the whole DNF, so a later
+    label-filtered PULL matches the filed issue. Returns [] when issue_filter
+    has no labels (no filter => nothing to stamp => REPORT filing unchanged).
+    Pure over the config; reuses the issue_filter(config) normalizer; no I/O.
+    Label dimension only — a configured title_pattern is NOT enforced on filed
+    titles (a known, separate limitation). scheduling resolves this at the
+    REPORT flush and threads it into work-intake's filing sink.
+    """
+    for group in issue_filter(config)["labels"]:
+        if group:
+            return list(group)
+    return []
+
+
 # --------------------------------------------------------------------------
 # 2. Trust-ladder gate (§3.8.2, §2.3) — permits(effect_kind, mode).
 # --------------------------------------------------------------------------

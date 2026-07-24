@@ -99,7 +99,7 @@ def _patch_vi_seams(open_prs=None, merge_calls=None, raise_merge=False,
                     auto_enabled=False):
     """Override verify-integrate's gh seams so VERIFY/INTEGRATE touch no network.
     Returns a restore callable. The merge sink mirrors the production
-    `gh_pr_merge_sink(pr_ref, repo=None, auto=False)` signature and returns an
+    `gh_pr_merge_sink(pr_ref, repo=None, base_branch=None)` signature and returns an
     `auto_enabled` flag: when True the entry is recorded under
     integration_result.auto_merge_enabled (GitHub native auto-merge queued — a
     PENDING success), else under merged (merged now)."""
@@ -115,7 +115,7 @@ def _patch_vi_seams(open_prs=None, merge_calls=None, raise_merge=False,
     def _branch(repo=None):
         return _DEFAULT_BRANCH
 
-    def _merge(pr_ref, repo=None, auto=False):
+    def _merge(pr_ref, repo=None, base_branch=None):
         if merge_calls is not None:
             merge_calls.append(pr_ref)
         if raise_merge:
