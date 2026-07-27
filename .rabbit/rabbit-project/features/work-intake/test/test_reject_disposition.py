@@ -45,7 +45,7 @@ class _Result:
 
 
 def _order(work_item_id, decision, reason="", number=None, url=None):
-    number = number if number is not None else work_item_id
+    number = number if number is not None else work_item_id.split("#")[-1]
     url = url if url is not None else (
         f"https://github.com/acme/widget/issues/{number}")
     return wi.WorkOrder(
