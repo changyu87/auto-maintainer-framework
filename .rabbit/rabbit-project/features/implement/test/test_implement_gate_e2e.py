@@ -436,8 +436,10 @@ def test_opened_handoff_with_failing_verdict_is_invalid():
 
 def test_non_opened_handoff_does_not_require_a_verdict():
     """The verdict evidence is REQUIRED only for an `opened` handoff. A `planned`
-    (dry-run), `blocked`, or `closed` (reject-path) handoff carries no PR, so it
-    needs no test-verdict to be valid."""
+    (dry-run), `blocked`, or legacy `closed` handoff carries no PR, so it
+    needs no test-verdict to be valid. (The doer no longer emits `closed` —
+    reject disposition moved to TRIAGE — but validate_handoff stays tolerant of
+    a legacy closed handoff for backward compatibility.)"""
     for status in ("planned", "blocked", "closed"):
         handoff = {
             "schema_version": impl.HANDOFF_SCHEMA_VERSION,

@@ -197,17 +197,18 @@ def test_shipped_implementer_body_supersedes_prior_same_issue_pr():
         "body must constrain the close to the SAME issue only")
 
 
-def test_shipped_implementer_frontmatter_version_is_2_9_0():
-    """v2.9.0 bumps the shipped implementer for the never-planned / accepted-only
-    default / fetch-fallback behaviour."""
+def test_shipped_implementer_frontmatter_version_is_2_10_0():
+    """v2.10.0 removes the now-dead rejected->close branch: the doer only ever
+    sees an accepted order (reject disposition moved to TRIAGE), so it reports
+    only opened or blocked and never closes a source issue."""
     fm = _frontmatter()
-    assert fm["version"] == "2.9.0"
+    assert fm["version"] == "2.10.0"
 
 
 def test_shipped_implementer_body_never_reports_planned():
     """v2.9.0: `planned` is the DRY-RUN adapter's status, NOT the agent's. The
-    shipped implementer reports only `opened`, `closed`, or `blocked` — never
-    `planned`. The body must state it never reports `planned`."""
+    shipped implementer reports only `opened` or `blocked` — never `planned`
+    (and no longer `closed`). The body must state it never reports `planned`."""
     body = _body().lower().replace("*", "")
     assert "planned" in body, "body must name the planned status it must never use"
     assert "never" in body and "planned" in body
@@ -217,15 +218,42 @@ def test_shipped_implementer_body_never_reports_planned():
 
 
 def test_shipped_implementer_body_treats_orders_as_accepted_only():
-    """v2.9.0: PRIORITIZE fans out ACCEPTED-ONLY orders to IMPLEMENT, so the
-    default action is implement->open PR; the rejected->close branch is
-    defensive. The body must state IMPLEMENT receives accepted-only orders and
-    that implement is the default."""
+    """v2.10.0: PRIORITIZE fans out ACCEPTED-ONLY orders to IMPLEMENT, so the
+    doer only ever sees an accepted order and its action is implement->open PR.
+    The body must state IMPLEMENT receives accepted-only orders."""
     body = _body().lower().replace("*", "")
     assert "accepted-only" in body or "accepted only" in body, (
         "body must state IMPLEMENT receives accepted-only orders")
-    assert "defensive" in body, (
-        "body must note the rejected->close branch is defensive")
+
+
+def test_shipped_implementer_body_has_no_reject_close_branch():
+    """v2.10.0: the rejected->close branch is REMOVED. Reject disposition
+    (comment + rejected label, no close) is enacted DETERMINISTICALLY at TRIAGE
+    (work-intake gh_issue_reject_sink, wired by scheduling), never by the doer.
+    The doer never closes a source issue: the body must not instruct
+    `gh issue close`, must not emit a `status: closed` handoff, and must not
+    carry the removed `defensive` reject-branch note."""
+    body = _body()
+    lower = body.lower().replace("*", "")
+    assert "gh issue close" not in lower, (
+        "body must not instruct the implementer to close the source issue")
+    assert "status: closed" not in lower, (
+        "the doer no longer emits a closed handoff (reject moved to TRIAGE)")
+    assert "defensive" not in lower, (
+        "the defensive reject-branch note must be removed")
+    # the reject disposition now lives at TRIAGE, not here
+    assert "triage" in lower, (
+        "body must note reject disposition is enacted at TRIAGE, not the doer")
+
+
+def test_shipped_implementer_description_drops_reject_close():
+    """v2.10.0: the frontmatter description must no longer advertise a
+    rejected->close-the-source-issue capability — the doer only implements
+    accepted orders (open PR) or reports blocked."""
+    fm = _frontmatter()
+    desc = fm["description"].lower()
+    assert "gh issue close" not in desc
+    assert "close the source issue" not in desc
 
 
 def test_shipped_implementer_body_fetches_issue_when_envelope_underfilled():
