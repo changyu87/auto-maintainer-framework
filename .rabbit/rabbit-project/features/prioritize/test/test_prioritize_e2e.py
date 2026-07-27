@@ -575,3 +575,72 @@ def test_target_feature_field_is_case_normalized():
         _tf("wo-2", ["scheduling"]),
     ])
     assert plan["ordered"] == ["wo-1"]
+
+
+# ==========================================================================
+# Bracket-prefix title feature detection (defense-in-depth for the live
+# parallel-collision bug). A filing convention observed in the live pool titles
+# issues `[scope@team] ...` or `[scope] ...` (e.g.
+# `[dci-team-atlassian-sharepoint@dci-team] jira skill ...`). When TRIAGE fails
+# to stamp `target_feature` and the title carries no conventional-commit prefix,
+# PRIORITIZE FALLS BACK to the leading `[...]` token's scope part (before any
+# `@team`) as the feature key. The authoritative target_feature stays primary;
+# the bracket parse is fallback-only.
+# ==========================================================================
+
+def test_bracket_prefix_scope_at_team_is_feature_key():
+    # The leading [scope@team] token yields feature 'scope' (before the @team).
+    assert pr._title_feature(
+        "[dci-team-atlassian-sharepoint@dci-team] jira skill add"
+    ) == "dci-team-atlassian-sharepoint"
+
+
+def test_bracket_prefix_bare_scope_is_feature_key():
+    # A bare [scope] with no @team yields feature 'scope'.
+    assert pr._title_feature("[foo] bar") == "foo"
+
+
+def test_non_bracket_title_still_uses_conventional_path():
+    # A title with no bracket falls through to the conventional-commit path.
+    assert pr._title_feature("feat(scheduling): add a tick") == "scheduling"
+    assert pr._title_feature("scheduling: add retry backoff") == "scheduling"
+    # A bare conventional-commit type still names no feature.
+    assert pr._title_feature("fix: correct a typo") is None
+
+
+def test_bracket_prefix_scope_is_case_normalized():
+    # The bracket-derived key normalizes case like the other signals.
+    assert pr._title_feature("[Foo@team] bar") == "foo"
+
+
+def test_labelless_bracket_scope_orders_serialize_fifo_first_wins():
+    # E2E: two label-less, target_feature-less orders sharing a bracket scope
+    # serialize to one fanned-out id; the second defers.
+    plan = _plan([
+        _titled("wo-1",
+                "[dci-team-atlassian-sharepoint@dci-team] jira skill add"),
+        _titled("wo-2",
+                "[dci-team-atlassian-sharepoint@dci-team] jira skill fix"),
+    ])
+    assert plan["ordered"] == ["wo-1"]
+    assert plan["status"] == {"wo-1": "pending"}
+
+
+def test_labelless_cross_bracket_scope_orders_stay_parallel():
+    # Different bracket scopes stay parallel (the non-colliding case).
+    plan = _plan([
+        _titled("wo-1", "[foo@team] one"),
+        _titled("wo-2", "[bar@team] two"),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
+
+
+def test_authoritative_target_feature_ignores_title_bracket():
+    # An order WITH an authoritative target_feature ignores its title bracket:
+    # two orders whose brackets would collide but whose fields differ stay
+    # parallel.
+    plan = _plan([
+        _tf("wo-1", ["scheduling"], title="[shared@team] one"),
+        _tf("wo-2", ["prioritize"], title="[shared@team] two"),
+    ])
+    assert plan["ordered"] == ["wo-1", "wo-2"]
