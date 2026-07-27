@@ -1,8 +1,8 @@
 ---
 feature: verify-integrate
-version: 0.7.0
+version: 0.8.0
 owner: changyu87
-deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict schemas reach a breaking major version. See spec.md / feature.json.
+deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict / ReconcileResult schemas reach a breaking major version. See spec.md / feature.json.
 ---
 
 # verify-integrate — Contract
@@ -22,6 +22,9 @@ deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or
       "VERIFY state: run(TickContext) -> StateResult, reads the loop's open PRs via gh + the cross_cutting_risk slot, writes verdicts + cross_check, emits OK|EMPTY (read-only w.r.t. GitHub, deterministic; ok = mergeable AND base==default — CI recorded but OPTIONAL, no longer gating)",
       "INTEGRATE state: run(TickContext) -> StateResult, reads verdicts (thin — no review_verdicts coupling), writes integration_result, emits OK (merges only at auto-merge, guardrail-gated). At auto-merge the merge sink is MERGE-QUEUE-AWARE: it detects a merge queue on the PR base branch (GraphQL repository.mergeQueue(branch)) and, when a queue exists, runs `gh pr merge <pr> --auto` with NO method flag and NO --delete-branch (the queue owns the method + branch deletion; a method flag is REJECTED by a queue branch) -> auto_merge_enabled (pending, queued). With NO queue it tries an immediate `gh pr merge <pr> --merge --delete-branch`, falling back to `gh pr merge <pr> --auto --merge --delete-branch` when the PR is not yet mergeable -> merged / auto_merge_enabled. The sink captures gh STDERR and records it in errors (never a bare exit-1), so access/queue-conflict failures are diagnosable",
       "CLEANUP state: run(TickContext) -> StateResult, reads integration_result, emits OK (branch/release hygiene, idempotent)",
+      "ReconcileResult slot schema + RECONCILE_RESULT_SLOT (versioned: closed_issues[{issue_ref, pr_ref}], rebased[{pr_ref}], relanded[{pr_ref, issue_ref}], skipped[{ref, reason}], errors[{ref, reason}]): the RECONCILE state's output (DESIGN §3.7 convergence). RECONCILE_RESULT_SCHEMA_VERSION starts at 1.0.0",
+      "RECONCILE state (Reconcile class + RECONCILE_MANIFEST/RECONCILE_SIGNALS): run(TickContext) -> StateResult, reads the injected acted_ledger slot (the durable opened entries scheduling seeds: {work_order_id, pr_ref, issue_ref, repo}), writes reconcile_result, emits only OK. ADVISORY + deterministic: (A) a MERGED PR whose source issue is still OPEN has its issue CLOSED via gh_issue_close_sink with a comment naming the PR (never a human-closed issue); (B) an OPEN + CONFLICTING loop PR is recovered by a TIER-1 deterministic rebase (reconcile_rebase_worktree onto fresh origin/<default> + force-push) or, on a real textual conflict, a TIER-2 close-PR + comment-issue re-land. Trust-gated exactly like INTEGRATE (mutates ONLY at auto-merge; at dry-run/propose the would-act intent is recorded under skipped). A single-entry fault is recorded under errors and NEVER raised (never blocks the tick). The scheduling make_reconcile adapter + route/durable-ledger wiring is NOT owned here",
+      "gh_pr_state_source(pr_ref, repo) -> {state, merged, mergeable} + gh_issue_state_source(issue_ref, repo) -> {state} + gh_issue_close_sink(issue_ref, repo, comment) + reconcile_rebase_worktree(pr_ref, default_branch, repo): the injectable RECONCILE production seams (deterministic gh/git; faked in tests, no network)",
       "ship/agents/auto-maintainer-reviewer.md — the ADVISORY quality reviewer subagent (code-review + code-simplify lenses over the PR base..head diff; emits review_findings, never merges/approves)"
     ],
     "scripts": [],
@@ -33,7 +36,8 @@ deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or
       "safety_governance.merge_guardrails(pr_meta, default_branch) -> {ok, violations} — §3.8.1 declarative guardrails"
     ],
     "slots": [
-      "cross_cutting_risk — VERIFY reads work-intake's CrossCuttingRisk slot ({schema_version, risk, features, reason}) to decide the conditional cross-feature complement run (DESIGN §3.7.6); a contract-bound cross-feature READ conforming to work-intake's CrossCuttingRisk schema. The runtime seeding of this slot is owned by scheduling (FT-E)."
+      "cross_cutting_risk — VERIFY reads work-intake's CrossCuttingRisk slot ({schema_version, risk, features, reason}) to decide the conditional cross-feature complement run (DESIGN §3.7.6); a contract-bound cross-feature READ conforming to work-intake's CrossCuttingRisk schema. The runtime seeding of this slot is owned by scheduling (FT-E).",
+      "acted_ledger — RECONCILE reads the injected acted-ledger slot (the durable opened entries: {work_order_id, pr_ref, issue_ref, repo}) scheduling loads from durable state and seeds; RECONCILE never reads durable state itself."
     ],
     "external": [
       "gh CLI — pr list (the loop's open auto-maintainer-labelled PRs), pr checks (CI rollup), pr merge --merge --delete-branch"
@@ -45,7 +49,7 @@ deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or
     "merges anywhere except at trust mode auto-merge AND only a PR that is ok AND passes merge_guardrails (REVIEW is advisory — INTEGRATE does NOT gate merge on a review approval)",
     "merges a PR with a non-default base or a dirty/conflicting tree (CI is recorded but OPTIONAL — not a merge gate; the correctness gate lives in IMPLEMENT)",
     "maintains a durable PR-ledger (GitHub is the source of truth, queried live by label)",
-    "writes the tracker/issues (REPORT/work-intake owns outbound issue writes; REVIEW only PRODUCES review_findings records conforming to work-intake's DiscoveredIssue schema)",
+    "files NEW issues (outbound issue FILING remains REPORT/work-intake's; REVIEW only PRODUCES review_findings records conforming to work-intake's DiscoveredIssue schema). RECONCILE's issue-CLOSE + issue-COMMENT are an OWNED, trust-gated GitHub convergence write extending INTEGRATE's existing gate-fail issue-comment + orphaned PR-close — never the creation of a new tracker issue",
     "edits files in other features"
   ]
 }
