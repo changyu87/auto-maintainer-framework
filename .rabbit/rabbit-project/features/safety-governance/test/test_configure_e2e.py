@@ -787,6 +787,68 @@ def test_cli_issue_title_pattern_preserves_existing_labels():
 
 
 # ==========================================================================
+# E2E Behaviour: --issue-exclude-labels sets the issue_filter.exclude_labels
+# flat OR of forbidden labels (comma-separated); a clear sentinel
+# (none/null/"") resets it to []. Validated + canonicalized through this
+# feature's issue_filter normalizer (the writer owns no validation the reader
+# does not).
+# ==========================================================================
+
+def test_cli_issue_exclude_labels_set_then_clear():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--issue-exclude-labels", "auto-maintainer-rejected,wontfix"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["issue_filter"]["exclude_labels"]
+                == ["auto-maintainer-rejected", "wontfix"])
+
+        rc = configure.main(
+            ["--project-dir", project_dir, "--issue-exclude-labels", "none"])
+        assert rc == 0
+        assert _read_cfg(project_dir)["issue_filter"]["exclude_labels"] == []
+
+
+def test_cli_issue_exclude_labels_single():
+    with tempfile.TemporaryDirectory() as project_dir:
+        rc = configure.main(
+            ["--project-dir", project_dir,
+             "--issue-exclude-labels", "auto-maintainer-rejected"])
+        assert rc == 0
+        assert (_read_cfg(project_dir)["issue_filter"]["exclude_labels"]
+                == ["auto-maintainer-rejected"])
+
+
+def test_cli_issue_exclude_labels_preserves_labels_and_pattern():
+    """Setting ONLY --issue-exclude-labels preserves an existing labels DNF and
+    title_pattern (the writer preserves unmentioned issue_filter sub-keys)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-labels", "bug", "--issue-title-pattern", r"^\[x\]"]) == 0
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-exclude-labels", "wontfix"]) == 0
+        cfg = _read_cfg(project_dir)
+        assert cfg["issue_filter"]["labels"] == [["bug"]]
+        assert cfg["issue_filter"]["title_pattern"] == r"^\[x\]"
+        assert cfg["issue_filter"]["exclude_labels"] == ["wontfix"]
+
+
+def test_cli_issue_labels_preserves_existing_exclude_labels():
+    """Setting --issue-labels preserves a previously-set exclude_labels."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-exclude-labels", "wontfix"]) == 0
+        assert configure.main(
+            ["--project-dir", project_dir, "--issue-labels", "bug"]) == 0
+        cfg = _read_cfg(project_dir)
+        assert cfg["issue_filter"]["labels"] == [["bug"]]
+        assert cfg["issue_filter"]["exclude_labels"] == ["wontfix"]
+
+
+# ==========================================================================
 # Phase 2 E2E Behaviour: --describe entries carry a loop-'stage' field and the
 # catalog is ORDERED by loop stage:
 # PULL -> IMPLEMENT -> VERIFY -> GATE -> SCHEDULING -> SAFETY, with the new
