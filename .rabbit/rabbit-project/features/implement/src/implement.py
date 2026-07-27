@@ -165,8 +165,10 @@ def validate_handoff(handoff):
     `test_verdict` whose `passed` is True. The verdict is the SCRIPT-produced
     result recorded by test_gate.py — never the model's prose. An opened handoff
     with a missing or failing verdict is INVALID. A non-`opened` handoff
-    (`planned` dry-run, `blocked`, reject-path `closed`) opened no PR and so
-    requires no verdict to be valid.
+    (`planned` dry-run, `blocked`; legacy `closed`) opened no PR and so
+    requires no verdict to be valid. The doer no longer emits `closed` (reject
+    disposition moved to TRIAGE), but the predicate stays tolerant of a legacy
+    `closed` handoff for backward compatibility.
 
     Pure function of the handoff dict: same input -> same ValidationResult.
     """
