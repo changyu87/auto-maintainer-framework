@@ -201,6 +201,72 @@ def test_labels_and_title_compose():
 
 
 # ==========================================================================
+# (f) exclude_labels — post-fetch NEGATIVE term: drop any fetched issue carrying
+# ANY listed label, BEFORE comment enrichment. Empty exclude_labels is a no-op.
+# ==========================================================================
+
+def test_exclude_labels_drops_issues_carrying_a_forbidden_label():
+    runner = FakeRunner({
+        frozenset({"bug"}): [
+            _issue(7, "Keep me", ["bug"]),
+            _issue(9, "Drop me", ["bug", "auto-maintainer-rejected"]),
+        ],
+    })
+    items = wi.gh_issue_source(
+        issue_filter={"labels": [["bug"]], "title_pattern": None,
+                      "exclude_labels": ["auto-maintainer-rejected"]},
+        runner=runner)
+
+    # #9 carries the forbidden label => dropped; #7 survives.
+    assert [it.number for it in items] == [7]
+    # The dropped issue's comments were NEVER fetched (negative term runs BEFORE
+    # the per-issue comment enrichment).
+    assert runner.view_numbers == [7]
+
+
+def test_empty_exclude_labels_is_a_no_op():
+    runner = FakeRunner({
+        frozenset(): [_issue(7, "A", ["bug", "auto-maintainer-rejected"]),
+                      _issue(9, "B", [])],
+    })
+    items = wi.gh_issue_source(
+        issue_filter={"labels": [], "title_pattern": None,
+                      "exclude_labels": []},
+        runner=runner)
+    # Empty exclude_labels drops nothing — pull all open.
+    assert [it.number for it in items] == [7, 9]
+
+
+def test_missing_exclude_labels_key_is_a_no_op():
+    """A filter object without an exclude_labels key behaves exactly as before
+    (non-breaking for existing callers / the default filter)."""
+    runner = FakeRunner({
+        frozenset(): [_issue(7, "A", ["auto-maintainer-rejected"]),
+                      _issue(9, "B", [])],
+    })
+    items = wi.gh_issue_source(
+        issue_filter={"labels": [], "title_pattern": None}, runner=runner)
+    assert [it.number for it in items] == [7, 9]
+
+
+def test_exclude_labels_composes_with_labels_and_title():
+    runner = FakeRunner({
+        frozenset({"bug"}): [
+            _issue(7, "Crash here", ["bug"]),
+            _issue(9, "Crash too", ["bug", "auto-maintainer-rejected"]),
+            _issue(11, "Feature ask", ["bug"]),
+        ],
+    })
+    items = wi.gh_issue_source(
+        issue_filter={"labels": [["bug"]], "title_pattern": r"Crash",
+                      "exclude_labels": ["auto-maintainer-rejected"]},
+        runner=runner)
+
+    # #11 fails the title; #9 carries the forbidden label; only #7 clears all.
+    assert [it.number for it in items] == [7]
+
+
+# ==========================================================================
 # Pull-level: the source receives the issue_filter Pull was constructed with.
 # ==========================================================================
 

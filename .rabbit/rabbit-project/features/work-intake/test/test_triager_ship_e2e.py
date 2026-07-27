@@ -128,6 +128,32 @@ def test_triager_body_is_protocol_free():
 
 
 # ==========================================================================
+# Behaviour: the triager body INSTRUCTS stamping an authoritative target_feature
+# on accepted orders (issue #258 root-cause fix) and EMITTING rejected orders
+# (decision=rejected + reason + source work_item_id / issue ref) so their
+# deterministic disposition can be enacted downstream.
+# ==========================================================================
+
+def test_triager_body_instructs_target_feature_stamping():
+    with open(_SHIP_AGENT) as f:
+        _fm, body = _split_frontmatter(f.read())
+    lowered = body.lower()
+    assert "target_feature" in lowered, (
+        "triager must instruct stamping an authoritative target_feature (#258)")
+
+
+def test_triager_body_instructs_emitting_rejected_orders():
+    with open(_SHIP_AGENT) as f:
+        _fm, body = _split_frontmatter(f.read())
+    lowered = body.lower()
+    # It must tell the triager to include rejected items in its output with a
+    # decision + reason + a link back to the source work item / issue.
+    assert "work_item_id" in lowered, (
+        "triager must reference work_item_id on emitted (rejected) orders")
+    assert "rejected" in lowered
+
+
+# ==========================================================================
 # E2E Behaviour: the TRIAGE -> triager agent-adapter wiring VALIDATES.
 # build_loop loads + resolves + validates a route GUARD -> DRAIN -> PULL ->
 # TRIAGE -> PERSIST -> EXIT whose TRIAGE port is the triager agent entry. PULL
