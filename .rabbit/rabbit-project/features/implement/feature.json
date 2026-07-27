@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-12T06:10:37Z",
   "deprecation_criterion": "Superseded when the model-backed implement-then-PR doer (DESIGN \u00a73.6.2/\u00a73.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "updated": "2026-07-27",
   "spec_change_reason": "Removed the now-dead rejected->close branch from the shipped implementer agent (v2.9.0->v2.10.0). Rejected orders never reach IMPLEMENT (PRIORITIZE fans out ACCEPTED-ONLY orders) and reject disposition (comment + rejected label, no close) moved to TRIAGE (work-intake gh_issue_reject_sink, wired by scheduling), so the doer now assumes an accepted order: implement -> worktree -> test-gate -> open PR with Closes #<n>, and reports only opened or blocked (never planned, no longer closed). Dropped the '## What to do' rejected branch, the defensive-reject note, every 'gh issue close' instruction, and the description's rejected->close capability. Kept the accept-path Closes-# keyword, the supersede-on-retry prior-PR close (a PR close, not an issue close), and the test-gate. src/implement.py: validate_handoff stays tolerant of a legacy 'closed' status (docstring updated; no code branch changed). contract.md 0.6.0->0.7.0 drops the 'gh issue close (reject path)' invoke. Housekeep doc baseline re-anchored in-scope (spec.md 353->355). spec.md was authored/committed by the dispatcher spec-update phase at 4b7d511."
 }
