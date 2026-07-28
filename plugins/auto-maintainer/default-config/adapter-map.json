@@ -62,6 +62,7 @@
   "PERSIST": "run_tick:make_persist",
   "PRIORITIZE": "run_tick:make_prioritize",
   "PULL": "run_tick:make_pull",
+  "RECONCILE": "run_tick:make_reconcile",
   "REVIEW": {
     "dispatch": [
       {

@@ -30,6 +30,14 @@ Public surface (slice 2 — TRIAGE validity gate):
     WorkOrder's `target_feature` field so PRIORITIZE reads an authoritative
     field instead of re-scraping (issue #258).
 
+Reject disposition (deterministic, at TRIAGE):
+  - REJECTED_LABEL / REJECT_MARKER — the fixed label + comment-marker literals.
+  - reject_dispositions() — pure selector of the disposition payload for every
+    decision="rejected" WorkOrder.
+  - gh_issue_reject_sink() — injectable tracker sink: ensure label + one marked
+    comment carrying the reason + add-label; NEVER closes; idempotent no-op when
+    already labeled.
+
 The only non-deterministic edge — the live `gh` call — sits behind an
 INJECTABLE source (Pull(source=...)), so tests drive PULL with a stub over
 fixture issues with no network (spec-rules §1: the failure is locatable to the
@@ -370,8 +378,14 @@ def gh_issue_source(repo=None, runner=subprocess.run, issue_filter=None):
       - Title (`title_pattern`) — POST-FETCH. gh has no title query, so a
         non-null `title_pattern` is applied as a regex `search` over each
         fetched title, dropping non-matches BEFORE comment enrichment.
-    The two narrowings COMPOSE; the default filter (empty labels + null pattern)
-    is a no-op that pulls every open issue exactly as before.
+      - Exclude labels (`exclude_labels`) — POST-FETCH NEGATIVE term. gh's
+        per-AND-group union query cannot express negation, so a non-empty
+        `exclude_labels` (a flat OR of forbidden labels) drops any fetched issue
+        carrying ANY listed label, BEFORE comment enrichment. Empty is a no-op;
+        this keeps a disposed reject (REJECTED_LABEL) out of PULL.
+    The narrowings COMPOSE; the default filter (empty labels + null pattern +
+    empty exclude_labels) is a no-op that pulls every open issue exactly as
+    before.
 
     `gh issue list` does not return comments, so for each SURVIVING issue this
     also shells `gh issue view <number> --json comments` and attaches the
@@ -385,6 +399,7 @@ def gh_issue_source(repo=None, runner=subprocess.run, issue_filter=None):
     issue_filter = issue_filter or {}
     label_groups = issue_filter.get("labels") or []
     title_pattern = issue_filter.get("title_pattern")
+    exclude_labels = issue_filter.get("exclude_labels") or []
 
     # Labels (DNF) — server-side: one query per AND-group, unioned+deduped by
     # number (first-seen order preserved). Empty labels => single all-open query.
@@ -404,6 +419,17 @@ def gh_issue_source(repo=None, runner=subprocess.run, issue_filter=None):
     if title_pattern is not None:
         pattern = re.compile(title_pattern)
         items = [item for item in items if pattern.search(item.title)]
+
+    # Exclude labels — post-fetch NEGATIVE term: gh's per-AND-group union query
+    # cannot express negation, so a non-empty exclude_labels (a flat OR of
+    # forbidden labels, normalized by safety-governance) drops any fetched issue
+    # carrying ANY listed label, applied BEFORE comment enrichment so dropped
+    # issues never incur a comment fetch. Empty exclude_labels is a no-op. This is
+    # how a disposed reject (REJECTED_LABEL) is kept out of PULL.
+    if exclude_labels:
+        forbidden = set(exclude_labels)
+        items = [item for item in items
+                 if not (forbidden & set(item.labels))]
 
     for item in items:
         item.comments = _fetch_issue_comments(item.number, repo, runner)
@@ -1007,12 +1033,13 @@ class ReportResult:
     errors: List[dict] = field(default_factory=list)
 
 
-def _ensure_label(label, repo, runner):
+def _ensure_label(label, repo, runner,
+                  description="filed by the autonomous maintainer"):
     """ENSURE a label exists via an idempotent `gh label create`. check=False:
     an "already exists" non-zero exit is TOLERATED, never raised (the label
     simply already exists). Honors `--repo` and the injectable runner."""
     label_cmd = ["gh", "label", "create", label,
-                 "--description", "filed by the autonomous maintainer"]
+                 "--description", description]
     if repo:
         label_cmd += ["--repo", repo]
     runner(label_cmd, capture_output=True, text=True, check=False)
@@ -1207,3 +1234,95 @@ def file_discoveries(discoveries, sink=gh_issue_file_sink, known_dedup_keys=(),
             "url": ref["url"],
         })
     return result
+
+
+# ==========================================================================
+# Reject disposition (deterministic, at TRIAGE — NOT at IMPLEMENT).
+# ==========================================================================
+#
+# A SEMANTICALLY-rejected issue (the AI triager's decision="rejected" + reason)
+# is disposed of DETERMINISTICALLY at TRIAGE-time — COMMENTED and LABELED, never
+# CLOSED by default — so a human can see why and the loop stops re-pulling it.
+# work-intake owns tracker labels + tracker I/O, so it owns these primitives; the
+# ENACTMENT (calling them per reject) + the triage_memory recording are
+# scheduling's. Only a SEMANTIC reject is disposed here; STRUCTURAL exclusions
+# (the deterministic gate, loop-filed, parked) stay open and UN-labeled.
+
+# The fixed label a disposed reject carries. safety-governance / packaging-config
+# reference this SAME literal to exclude it from PULL (the issue_filter negative
+# exclude_labels term). A human removing the label re-admits the issue.
+REJECTED_LABEL = "auto-maintainer-rejected"
+
+# The FIXED machine marker prefixing the one reject-disposition comment, so the
+# comment (and its reason) is machine-recognizable and de-duplicable.
+REJECT_MARKER = "<!-- auto-maintainer:rejected -->"
+
+
+def _order_field(order, name, default=""):
+    """Read a field from a WorkOrder object OR its machine-first dict form."""
+    if isinstance(order, dict):
+        return order.get(name, default)
+    return getattr(order, name, default)
+
+
+def reject_dispositions(work_orders):
+    """Pure selector: return the disposition payload for every decision="rejected"
+    order as a list of {work_item_id, issue_ref, reason}. Accepted orders are
+    dropped (PRIORITIZE forwards only accepted to IMPLEMENT anyway). `issue_ref`
+    is a gh-actionable reference — the order's issue `url`, falling back to its
+    `work_item_id` when no url is present. Accepts WorkOrder objects OR their
+    machine-first dicts (scheduling reads the work_orders slot, which is dicts).
+    Deterministic; performs no I/O."""
+    out = []
+    for order in work_orders:
+        if _order_field(order, "decision") != "rejected":
+            continue
+        work_item_id = _order_field(order, "work_item_id")
+        issue_ref = _order_field(order, "url") or work_item_id
+        out.append({
+            "work_item_id": work_item_id,
+            "issue_ref": issue_ref,
+            "reason": _order_field(order, "reason"),
+        })
+    return out
+
+
+def gh_issue_reject_sink(issue_ref, repo=None, reason="", label=REJECTED_LABEL,
+                         runner=subprocess.run):
+    """Enact the reject disposition on ONE issue (mirrors gh_issue_file_sink).
+
+    It ENSURES the label exists (idempotent `gh label create`), posts ONE comment
+    carrying the `reason` behind the FIXED REJECT_MARKER, and applies the label
+    (`gh issue edit <ref> --add-label`). It NEVER closes the issue.
+
+    Idempotent: it first reads the issue's current labels (`gh issue view <ref>
+    --json labels`); if the item ALREADY carries `label` it is a NO-OP (no
+    duplicate comment, no re-edit). `issue_ref` is any gh-actionable reference
+    (issue number or URL). When `repo` is given it is passed via `--repo`. The
+    subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so tests
+    pass a fake — no network, the failure locatable to the sink boundary.
+    """
+    view_cmd = ["gh", "issue", "view", str(issue_ref), "--json", "labels"]
+    if repo:
+        view_cmd += ["--repo", repo]
+    out = runner(view_cmd, capture_output=True, text=True, check=True)
+    existing = {lbl.get("name", "")
+                for lbl in (json.loads(out.stdout).get("labels") or [])}
+    if label in existing:
+        # Already disposed — idempotent no-op (no duplicate comment / re-edit).
+        return
+
+    # ENSURE the label exists first (`gh issue edit --add-label` fails on a
+    # missing label in a fresh repo), tolerating a pre-existing label's non-zero
+    # exit (check=False), then COMMENT the reason behind the marker, then LABEL.
+    _ensure_label(label, repo, runner,
+                  description="disposed as rejected by the autonomous maintainer")
+    comment_cmd = ["gh", "issue", "comment", str(issue_ref),
+                   "--body", f"{REJECT_MARKER}\n{reason}"]
+    if repo:
+        comment_cmd += ["--repo", repo]
+    runner(comment_cmd, capture_output=True, text=True, check=True)
+    edit_cmd = ["gh", "issue", "edit", str(issue_ref), "--add-label", label]
+    if repo:
+        edit_cmd += ["--repo", repo]
+    runner(edit_cmd, capture_output=True, text=True, check=True)

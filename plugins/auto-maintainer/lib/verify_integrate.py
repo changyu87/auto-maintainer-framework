@@ -1844,3 +1844,369 @@ class Cleanup:
     def run(self, ctx):
         ctx.read("integration_result")
         return fc.StateResult(signal="OK")
+
+
+# ==========================================================================
+# RECONCILE-support (cross-tick leftover-PR reconciliation, DESIGN §3.7
+# convergence). A deterministic, SCRIPT-TIER class (mirroring Integrate) that
+# scheduling's make_reconcile adapter wraps into a route state run BEFORE PULL.
+# The state wiring / route edit / durable acted-ledger read are scheduling +
+# packaging-config concerns landed in a LATER wave — NOT owned here. This feature
+# owns the reconcile LOGIC and the ReconcileResult schema.
+#
+# It reconciles the PREVIOUS tick's leftover PRs so a merged-but-open issue, or a
+# loop PR left CONFLICTING after a sibling merged, never lingers. RECONCILE is
+# ADVISORY: its manifest emits ONLY OK; a fault on any single entry is recorded
+# under `errors`, never raised — RECONCILE never blocks the tick. Its issue-close
+# and comment writes are an OWNED, trust-gated GitHub convergence write, extending
+# INTEGRATE's existing issue-comment (gate-fail) and PR-close (orphaned) writes.
+# It does NOT file NEW issues (outbound issue FILING remains REPORT/work-intake's).
+#
+# Everything external — the PR/issue state reads, the issue-close/PR-close/comment
+# sinks, and the tier-1 rebase worktree helper — is behind an INJECTABLE seam with
+# a production default, so the logic is unit-tested with fakes (no network, no real
+# git).
+# ==========================================================================
+
+# The versioned ReconcileResult schema (machine-first; bumped on a breaking
+# field-set change). Distinct from the feature version.
+RECONCILE_RESULT_SCHEMA_VERSION = "1.0.0"
+
+
+@dataclass(eq=True)
+class ReconcileResult:
+    """The outcome of a RECONCILE run (DESIGN §3.7 convergence).
+
+    Partitions each reconciled `opened` ledger entry into one of these lists:
+      - `closed_issues` — [{issue_ref, pr_ref}] issues CLOSED because their PR
+        MERGED but the issue stayed OPEN (the Closes-keyword fallback, branch A).
+      - `rebased` — [{pr_ref}] CONFLICTING loop PRs recovered by a TIER-1
+        deterministic rebase onto fresh origin/<default> + force-push (branch B).
+      - `relanded` — [{pr_ref, issue_ref}] CONFLICTING loop PRs whose rebase hit a
+        real textual conflict, so the PR was CLOSED and its issue COMMENTED to
+        re-land next tick (TIER-2 fallback, branch B).
+      - `skipped` — [{ref, reason}] would-act intents recorded at a mode that does
+        not permit merge (dry-run/propose): a human acts.
+      - `errors` — [{ref, reason}] single-entry faults (never raised; RECONCILE is
+        advisory and never blocks the tick).
+
+    Idempotent: a merged-PR issue-close is REPORTED so scheduling records it in the
+    ledger and a later tick never re-comments. `to_dict`/`from_dict` give the
+    machine-first, versioned representation for the `reconcile_result` slot.
+    """
+
+    closed_issues: List[dict] = field(default_factory=list)
+    rebased: List[dict] = field(default_factory=list)
+    relanded: List[dict] = field(default_factory=list)
+    skipped: List[dict] = field(default_factory=list)
+    errors: List[dict] = field(default_factory=list)
+
+    def to_dict(self):
+        return {
+            "schema_version": RECONCILE_RESULT_SCHEMA_VERSION,
+            "closed_issues": [dict(e) for e in self.closed_issues],
+            "rebased": [dict(e) for e in self.rebased],
+            "relanded": [dict(e) for e in self.relanded],
+            "skipped": [dict(e) for e in self.skipped],
+            "errors": [dict(e) for e in self.errors],
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            closed_issues=[dict(e) for e in d.get("closed_issues", [])],
+            rebased=[dict(e) for e in d.get("rebased", [])],
+            relanded=[dict(e) for e in d.get("relanded", [])],
+            skipped=[dict(e) for e in d.get("skipped", [])],
+            errors=[dict(e) for e in d.get("errors", [])],
+        )
+
+
+# The fsm-contracts slot descriptor. `reconcile_result` is an object slot (a
+# single ReconcileResult dict); the slot version tracks the schema version.
+RECONCILE_RESULT_SLOT = {
+    "name": "reconcile_result",
+    "schema": {"type": "object"},
+    "version": RECONCILE_RESULT_SCHEMA_VERSION,
+}
+
+# Closed signal set RECONCILE emits: always OK (advisory — it never blocks the
+# tick; a single-entry fault is recorded under `errors`, never signalled).
+RECONCILE_SIGNALS = ["OK"]
+
+# Per-state manifest (bounded-scope): reads the injected `acted_ledger` slot (the
+# durable opened-entries scheduling seeds), writes the `reconcile_result` slot,
+# emits OK.
+RECONCILE_MANIFEST = fc.StateManifest(reads=["acted_ledger"],
+                                      writes=["reconcile_result"],
+                                      emits=RECONCILE_SIGNALS)
+
+
+def gh_pr_state_source(pr_ref, repo=None, runner=subprocess.run):
+    """Production PR-state read: shell `gh pr view <n> --json state,mergedAt,
+    mergeable` and return `{state, merged, mergeable}` — `merged` is True when the
+    PR has a `mergedAt` timestamp; `mergeable` is gh's MERGEABLE|CONFLICTING|
+    UNKNOWN string. Injectable `runner` for deterministic tests (no network),
+    mirroring the sibling gh resolvers/sinks."""
+    number = pr_ref.split("#")[-1]
+    cmd = ["gh", "pr", "view", number, "--json", "state,mergedAt,mergeable"]
+    if repo:
+        cmd += ["--repo", repo]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    data = json.loads(out.stdout or "{}")
+    return {
+        "state": data.get("state"),
+        "merged": data.get("mergedAt") is not None,
+        "mergeable": data.get("mergeable"),
+    }
+
+
+def gh_issue_state_source(issue_ref, repo=None, runner=subprocess.run):
+    """Production issue-state read: shell `gh issue view <n> --json state` and
+    return `{state}` ('OPEN'/'CLOSED'). Injectable `runner` for deterministic
+    tests (no network)."""
+    number = issue_ref.split("#")[-1]
+    cmd = ["gh", "issue", "view", number, "--json", "state", "-q", ".state"]
+    if repo:
+        cmd += ["--repo", repo]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    return {"state": (out.stdout or "").strip()}
+
+
+def gh_issue_close_sink(issue_ref, repo=None, comment=None,
+                        runner=subprocess.run):
+    """Production issue-close sink: shell `gh issue close <n> --comment <comment>`
+    (and `--repo` when given) to CLOSE the source issue of a MERGED PR whose
+    Closes-keyword did not fire. `gh` carries its own auth; check=True so a failed
+    close is loud and locatable at the close boundary. Injectable `runner` for
+    deterministic tests (no network), mirroring gh_pr_close_sink /
+    gh_issue_comment_sink. Returns None."""
+    number = issue_ref.split("#")[-1]
+    cmd = ["gh", "issue", "close", number]
+    if comment:
+        cmd += ["--comment", comment]
+    if repo:
+        cmd += ["--repo", repo]
+    runner(cmd, capture_output=True, text=True, check=True)
+
+
+def reconcile_issue_close_comment(pr_ref):
+    """The machine+human comment the merged-PR issue-close fallback posts, naming
+    the merged PR so the close is attributable. Pure."""
+    return (f"Closed by auto-maintainer: the linked PR {pr_ref} has MERGED; "
+            f"closing this issue as resolved (deterministic fallback for a "
+            f"Closes-keyword that did not fire).")
+
+
+def reconcile_reland_comment(pr_ref):
+    """The comment the TIER-2 re-land fallback posts on the source issue: the
+    CONFLICTING loop PR could not be rebased cleanly, so it was closed and the
+    issue is re-opened for a fresh implementer run next tick. Pure."""
+    return (f"auto-maintainer: loop PR {pr_ref} could not be rebased cleanly "
+            f"(a real textual conflict needs an implementer); it was closed so "
+            f"this issue re-lands on a later tick.")
+
+
+# The fixed disposable worktree path the tier-1 rebase uses (mirrors GATE's fixed
+# path; a crashed prior tick can leave it behind, so the helper clears it first).
+_RECONCILE_WORKTREE_DIR = os.path.join("/tmp", "am-reconcile-integration")
+
+
+def _gh_pr_head_ref(pr_ref, repo=None, runner=subprocess.run):
+    """The PR's head branch name (`gh pr view <n> --json headRefName`), needed to
+    force-push a rebased branch back onto the PR. None when unresolvable."""
+    number = pr_ref.split("#")[-1]
+    cmd = ["gh", "pr", "view", number, "--json", "headRefName",
+           "-q", ".headRefName"]
+    if repo:
+        cmd += ["--repo", repo]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    return (out.stdout or "").strip() or None
+
+
+def reconcile_rebase_worktree(pr_ref, default_branch, repo=None,
+                              runner=subprocess.run, worktree_dir=None):
+    """Production TIER-1 rebase helper (DESIGN §3.7 convergence): in a DISPOSABLE
+    integration worktree, fetch the CONFLICTING loop PR's head, rebase it onto
+    fresh `origin/<default_branch>`, and — on a CLEAN rebase — force-push the
+    rebased branch back onto the PR so it is mergeable again next tick. Returns
+    `{rebased: bool, summary}`: `rebased=True` on a clean rebase + force-push (the
+    PR re-enters VERIFY/GATE/INTEGRATE with NO implementer run); `rebased=False`
+    on a real textual conflict (the caller falls back to TIER-2 re-land). A setup
+    or push fault RAISES so the caller records it under `errors` (never a false
+    tier-2 close on an unrelated fault). The subprocess `runner` is INJECTABLE so
+    the whole ladder is unit-tested with a fake (no real git)."""
+    number = _pr_number(pr_ref)
+    worktree = worktree_dir or _RECONCILE_WORKTREE_DIR
+
+    # Best-effort clear a stale leftover from a crashed prior tick (ignore rc).
+    runner(["git", "worktree", "remove", "--force", worktree],
+           capture_output=True, text=True)
+    runner(["git", "worktree", "prune"], capture_output=True, text=True)
+
+    fetch_base = runner(["git", "fetch", "origin", default_branch],
+                        capture_output=True, text=True)
+    if getattr(fetch_base, "returncode", 0) != 0:
+        raise RuntimeError((getattr(fetch_base, "stderr", "") or "").strip()
+                           or "git fetch origin <default> failed")
+    add = runner(["git", "worktree", "add", "--detach", worktree,
+                  f"origin/{default_branch}"], capture_output=True, text=True)
+    if getattr(add, "returncode", 0) != 0:
+        raise RuntimeError((getattr(add, "stderr", "") or "").strip()
+                           or "git worktree add failed")
+    try:
+        fetch = runner(["git", "-C", worktree, "fetch", "origin",
+                        f"pull/{number}/head"], capture_output=True, text=True)
+        if getattr(fetch, "returncode", 0) != 0:
+            raise RuntimeError((getattr(fetch, "stderr", "") or "").strip()
+                               or "git fetch pr head failed")
+        runner(["git", "-C", worktree, "checkout", "-B",
+                f"reconcile-{number}", "FETCH_HEAD"],
+               capture_output=True, text=True)
+        rebase = runner(["git", "-C", worktree, "rebase",
+                         f"origin/{default_branch}"],
+                        capture_output=True, text=True)
+        if getattr(rebase, "returncode", 0) != 0:
+            runner(["git", "-C", worktree, "rebase", "--abort"],
+                   capture_output=True, text=True)
+            return {"rebased": False,
+                    "summary": _bounded_tail(
+                        getattr(rebase, "stdout", "")
+                        or getattr(rebase, "stderr", ""))}
+        head_ref = _gh_pr_head_ref(pr_ref, repo=repo, runner=runner)
+        if not head_ref:
+            raise RuntimeError("could not resolve PR head branch for force-push")
+        push = runner(["git", "-C", worktree, "push", "--force", "origin",
+                       f"HEAD:{head_ref}"], capture_output=True, text=True)
+        if getattr(push, "returncode", 0) != 0:
+            raise RuntimeError((getattr(push, "stderr", "") or "").strip()
+                               or "git push --force failed")
+        return {"rebased": True, "summary": ""}
+    finally:
+        runner(["git", "worktree", "remove", "--force", worktree],
+               capture_output=True, text=True)
+
+
+class Reconcile:
+    """The RECONCILE state (DESIGN §3.7 convergence) — an ADVISORY, deterministic
+    reconciler of the PREVIOUS tick's leftover loop PRs (mirrors Integrate).
+
+    Reads the injected `acted_ledger` slot (the durable `opened` entries scheduling
+    seeds: `{work_order_id, pr_ref, issue_ref, repo}`) and, for each entry, reads
+    the PR's live state via the injectable `pr_state_source`:
+
+      - (A) MERGED-PR issue-close fallback — a MERGED PR whose source issue is
+        still OPEN (`issue_state_source`) has its issue CLOSED via
+        `issue_close_sink` with a comment naming the merged PR; recorded under
+        `closed_issues`. NEVER touches a human-closed issue: only a
+        MERGED-PR-with-still-OPEN issue is closed.
+      - (B) conflict-recovery ladder — an OPEN + CONFLICTING PR (a sibling merged
+        and invalidated it) is recovered by TIER-1 `worktree_helper` (rebase onto
+        fresh origin/<default> + force-push); a clean rebase is recorded under
+        `rebased`. If the rebase hits a real textual conflict (worktree_helper
+        returns rebased=False), TIER-2 CLOSES the PR (`pr_close_sink`) and COMMENTS
+        the source issue (`comment_sink`) so the acted-ledger re-entry gate re-lands
+        it next tick; recorded under `relanded`.
+
+    Trust-gated exactly like INTEGRATE: the mutating acts (issue-close, force-push,
+    PR-close) run ONLY at permits('merge', mode) (auto-merge); at dry-run/propose
+    the would-act intent is recorded under `skipped` and a human acts. A
+    single-entry fault is recorded under `errors` and NEVER raised — RECONCILE is
+    advisory and never blocks the tick. Writes `reconcile_result`, emits OK.
+    """
+
+    def __init__(self, mode, pr_state_source=gh_pr_state_source,
+                 issue_state_source=gh_issue_state_source,
+                 issue_close_sink=gh_issue_close_sink,
+                 pr_close_sink=gh_pr_close_sink,
+                 comment_sink=gh_issue_comment_sink,
+                 worktree_helper=reconcile_rebase_worktree,
+                 permits_fn=sg.permits, default_branch=None, repo=None):
+        self._mode = mode
+        self._pr_state_source = pr_state_source
+        self._issue_state_source = issue_state_source
+        self._issue_close_sink = issue_close_sink
+        self._pr_close_sink = pr_close_sink
+        self._comment_sink = comment_sink
+        self._worktree_helper = worktree_helper
+        self._permits_fn = permits_fn
+        self._default_branch = default_branch
+        self._repo = repo
+
+    def _resolve_default_branch(self):
+        if self._default_branch is not None:
+            return self._default_branch
+        return gh_default_branch_source(self._repo)
+
+    def run(self, ctx):
+        ledger = ctx.read("acted_ledger") or []
+        permitted = self._permits_fn("merge", self._mode)
+        result = ReconcileResult()
+
+        for entry in ledger:
+            pr_ref = entry.get("pr_ref")
+            issue_ref = entry.get("issue_ref")
+            repo = entry.get("repo") or self._repo
+            try:
+                self._reconcile_one(result, pr_ref, issue_ref, repo, permitted)
+            except Exception as exc:  # noqa: BLE001 — advisory: record, never raise
+                result.errors.append({"ref": pr_ref or issue_ref,
+                                      "reason": str(exc)})
+
+        return fc.StateResult(
+            signal="OK",
+            writes={"reconcile_result": result.to_dict()})
+
+    def _reconcile_one(self, result, pr_ref, issue_ref, repo, permitted):
+        """Reconcile one `opened` ledger entry into `result` (branch A or B)."""
+        pr_state = self._pr_state_source(pr_ref, repo=repo)
+
+        # (A) MERGED-PR issue-close fallback: close a still-OPEN source issue of a
+        # MERGED PR (never a human-closed one). Idempotent — reported so a later
+        # tick never re-comments.
+        if pr_state.get("merged"):
+            if not issue_ref:
+                return
+            issue_state = self._issue_state_source(issue_ref, repo=repo)
+            if (issue_state or {}).get("state") != "OPEN":
+                return  # already closed / human-closed — never touch it.
+            if not permitted:
+                result.skipped.append({
+                    "ref": issue_ref,
+                    "reason": ("merged PR with open issue — would close at "
+                               "auto-merge"),
+                })
+                return
+            self._issue_close_sink(
+                issue_ref, repo=repo,
+                comment=reconcile_issue_close_comment(pr_ref))
+            result.closed_issues.append({"issue_ref": issue_ref,
+                                         "pr_ref": pr_ref})
+            return
+
+        # (B) conflict-recovery ladder: an OPEN + CONFLICTING PR (a sibling merged
+        # and invalidated it).
+        if (pr_state.get("state") == "OPEN"
+                and pr_state.get("mergeable") == "CONFLICTING"):
+            if not permitted:
+                result.skipped.append({
+                    "ref": pr_ref,
+                    "reason": ("conflicting loop PR — would recover at "
+                               "auto-merge"),
+                })
+                return
+            outcome = self._worktree_helper(
+                pr_ref, self._resolve_default_branch(), repo=repo)
+            if outcome.get("rebased"):
+                # TIER-1: clean rebase + force-push — the PR is mergeable again.
+                result.rebased.append({"pr_ref": pr_ref})
+                return
+            # TIER-2: a real textual conflict — close the PR and comment the issue
+            # so the acted-ledger re-entry gate re-lands it next tick.
+            self._pr_close_sink(pr_ref, repo=repo)
+            if issue_ref:
+                self._comment_sink(issue_ref, reconcile_reland_comment(pr_ref),
+                                   repo=repo)
+            result.relanded.append({"pr_ref": pr_ref, "issue_ref": issue_ref})
+        # else: an OPEN mergeable PR, or any other state — left alone (nothing to
+        # reconcile this tick).

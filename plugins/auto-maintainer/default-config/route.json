@@ -3,6 +3,7 @@
   "states": [
     "GUARD",
     "DRAIN",
+    "RECONCILE",
     "PULL",
     "TRIAGE",
     "PRIORITIZE",
@@ -35,6 +36,11 @@
     },
     {
       "state": "DRAIN",
+      "signal": "OK",
+      "next": "RECONCILE"
+    },
+    {
+      "state": "RECONCILE",
       "signal": "OK",
       "next": "PULL"
     },

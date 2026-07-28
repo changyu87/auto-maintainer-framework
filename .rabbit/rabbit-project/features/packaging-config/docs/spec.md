@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.14
+version: 0.7.15
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -88,6 +88,22 @@ auto-maintainer-framework/
 
 The built `plugins/auto-maintainer/` tree is **committed** (so a GitHub clone
 includes it — required by the install flow below).
+
+**Shipped default-config wiring for RECONCILE + reject exclusion (Wave-2 consumers).**
+The shipped `default-config/` data files carry the RECONCILE state + reject-label
+exclusion out of the box:
+- `route.json` — the shipped acting route inserts `RECONCILE` between `DRAIN` and
+  `PULL` (`… GUARD → DRAIN → RECONCILE → PULL → TRIAGE → …`): the `DRAIN → PULL`
+  edge is repointed to `DRAIN → RECONCILE`, with a new `RECONCILE → PULL` (`OK`)
+  edge, and `RECONCILE` added to the `states` list. Routing stays pure data — no
+  state names another (fsm-contracts).
+- `adapter-map.json` — adds `"RECONCILE": "run_tick:make_reconcile"`.
+- `config.json` — the default `issue_filter` seeds
+  `"exclude_labels": ["auto-maintainer-rejected"]` (work-intake's `REJECTED_LABEL`)
+  so a disposed reject is excluded from PULL out of the box; `labels` /
+  `title_pattern` defaults are unchanged (empty / null = pull-all otherwise).
+  The config `schema_version` bumps additively (2.7.0 → 2.8.0) in step with
+  safety-governance's normalizer.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 

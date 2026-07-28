@@ -570,7 +570,7 @@ def test_ship_collection_start_stop_skills_present():
 # verify_integrate.py lib, so the committed plugin tree is regenerated and the
 # version bumped so the marketplace serves the new content to existing installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_22_0_and_consistent():
+def test_version_bumped_to_0_23_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -582,10 +582,10 @@ def test_version_bumped_to_0_22_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.22.0", \
-            f"plugin.json version must be 0.22.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.22.0", \
-            "marketplace.json plugin entry version must be 0.22.0"
+        assert pdata.get("version") == "0.23.0", \
+            f"plugin.json version must be 0.23.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.23.0", \
+            "marketplace.json plugin entry version must be 0.23.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2838,7 +2838,7 @@ def test_shipped_run_tick_carries_pool_refire_and_merged_refs():
 # 2.2.0 (matching safety-governance's GOVERNANCE_SCHEMA_VERSION), and that the
 # pre-existing keys (mode/features_root/budget/heartbeat/backoff) are unchanged.
 # ---------------------------------------------------------------------------
-def test_default_config_surfaces_work_own_filings_at_schema_2_2_0():
+def test_default_config_surfaces_work_own_filings_at_schema_2_8_0():
     out_root = _build_into_temp()
     try:
         dc = os.path.join(
@@ -2846,12 +2846,25 @@ def test_default_config_surfaces_work_own_filings_at_schema_2_2_0():
         )
         with open(os.path.join(dc, "config.json"), encoding="utf-8") as fh:
             cfg = json.load(fh)
-        assert cfg.get("schema_version") == "2.2.0", \
-            f"seed config schema_version must be 2.2.0, got " \
+        # schema_version bumps additively (2.7.0 -> 2.8.0) in step with
+        # safety-governance's normalizer (GOVERNANCE_SCHEMA_VERSION 2.8.0), which
+        # carries the issue_filter.exclude_labels term.
+        assert cfg.get("schema_version") == "2.8.0", \
+            f"seed config schema_version must be 2.8.0, got " \
             f"{cfg.get('schema_version')!r}"
         assert cfg.get("work_own_filings") is True, \
             "seed config must surface the §3.11.5 work_own_filings opt-out " \
             "(default-on true) so users can find the knob"
+        # The default issue_filter seeds exclude_labels with work-intake's
+        # REJECTED_LABEL so a disposed reject is excluded from PULL out of the
+        # box; labels/title_pattern defaults stay pull-all (empty / null).
+        assert cfg["issue_filter"]["exclude_labels"] == [
+            "auto-maintainer-rejected"], \
+            "seed issue_filter.exclude_labels must seed the reject label"
+        assert cfg["issue_filter"]["labels"] == [], \
+            "seed issue_filter.labels must stay empty (pull-all)"
+        assert cfg["issue_filter"]["title_pattern"] is None, \
+            "seed issue_filter.title_pattern must stay null (pull-all)"
         # the pre-existing keys must remain unchanged.
         assert cfg["mode"] == "auto-merge"
         assert cfg["features_root"] is None
@@ -2878,10 +2891,13 @@ def test_committed_default_config_surfaces_work_own_filings():
         "committed default-config/config.json must ship in the plugin tree"
     with open(committed, encoding="utf-8") as fh:
         cfg = json.load(fh)
-    assert cfg.get("schema_version") == "2.2.0", \
-        "committed seed config schema_version must be 2.2.0"
+    assert cfg.get("schema_version") == "2.8.0", \
+        "committed seed config schema_version must be 2.8.0"
     assert cfg.get("work_own_filings") is True, \
         "committed seed config must surface the work_own_filings opt-out"
+    assert cfg["issue_filter"]["exclude_labels"] == [
+        "auto-maintainer-rejected"], \
+        "committed seed issue_filter.exclude_labels must seed the reject label"
 
 
 # ---------------------------------------------------------------------------
@@ -3329,3 +3345,116 @@ def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
             f"build_loop did not complete cleanly: {proc.stdout}"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Wave-2 (RECONCILE + reject exclusion): the shipped default-config route inserts
+# RECONCILE between DRAIN and PULL as pure data — the DRAIN -> PULL edge is
+# repointed to DRAIN -> RECONCILE, a new RECONCILE -> PULL (OK) edge is added,
+# and RECONCILE joins the states list. The adapter-map maps RECONCILE to the
+# scheduling make_reconcile factory. route.json validates against the
+# fsm-contracts route shape (validate_route, imported from the plugin's own
+# lib/), and adapter_wiring.build_loop resolves the shipped route with RECONCILE
+# wired to a real factory (RECONCILE reads acted_ledger, data-readiness holds).
+# Asserted on the FRESH build so a src edit that broke the wiring fails here.
+# ---------------------------------------------------------------------------
+def test_default_config_wires_reconcile_between_drain_and_pull():
+    import subprocess
+
+    out_root = _build_into_temp()
+    try:
+        plugin = os.path.join(out_root, "plugins", "auto-maintainer")
+        lib = os.path.join(plugin, "lib")
+        dc = os.path.join(plugin, "default-config")
+
+        with open(os.path.join(dc, "route.json"), encoding="utf-8") as fh:
+            route = json.load(fh)
+        with open(os.path.join(dc, "adapter-map.json"), encoding="utf-8") as fh:
+            amap = json.load(fh)
+
+        # RECONCILE is a state, inserted between DRAIN and PULL.
+        assert "RECONCILE" in route["states"], \
+            "default route must include the RECONCILE state"
+        edge = {(e["state"], e["signal"]): e["next"] for e in route["edges"]}
+        assert edge[("DRAIN", "OK")] == "RECONCILE", \
+            "DRAIN OK must repoint to RECONCILE (not straight to PULL)"
+        assert edge[("RECONCILE", "OK")] == "PULL", \
+            "RECONCILE OK must route to PULL"
+        # the old DRAIN -> PULL edge must be gone (repointed, not duplicated).
+        assert edge.get(("DRAIN", "OK")) != "PULL", \
+            "the DRAIN -> PULL edge must be repointed, not left in place"
+
+        # adapter-map wires RECONCILE to the scheduling make_reconcile factory.
+        assert amap.get("RECONCILE") == "run_tick:make_reconcile", \
+            "default adapter-map must wire RECONCILE to run_tick:make_reconcile"
+
+        # route.json validates against the fsm-contracts route SHAPE, using the
+        # validator shipped in the plugin's own lib/ (self-contained).
+        script = (
+            "import sys, json\n"
+            f"sys.path.insert(0, {lib!r})\n"
+            "import fsm_contracts as fc\n"
+            f"route = json.load(open({os.path.join(dc, 'route.json')!r}))\n"
+            "res = fc.validate_route(route)\n"
+            "assert res.passed, res.messages\n"
+            # E2E: resolve the shipped route + adapter-map through build_loop, so
+            # RECONCILE -> make_reconcile resolves to a real factory with the
+            # data-readiness of its read slot satisfied.
+            "import os, tempfile, shutil\n"
+            "import adapter_wiring as aw, run_tick as rt\n"
+            "proj = tempfile.mkdtemp(prefix='pkgcfg-reconcile-')\n"
+            "amdir = os.path.join(proj, '.auto-maintainer')\n"
+            "os.makedirs(amdir, exist_ok=True)\n"
+            f"shutil.copy({os.path.join(dc, 'route.json')!r}, "
+            "os.path.join(amdir, 'route.json'))\n"
+            f"shutil.copy({os.path.join(dc, 'adapter-map.json')!r}, "
+            "os.path.join(amdir, 'adapter-map.json'))\n"
+            "runtime = {'project_dir': proj, 'runtime_dir': amdir, "
+            "'source': None, 'now': None, 'governance': {'mode': 'dry-run'}}\n"
+            "try:\n"
+            "    _route, states = aw.build_loop(rt.DEFAULT_ROUTE, "
+            "rt.DEFAULT_ADAPTER_MAP, runtime, 'GUARD', rt._INITIAL_SLOTS)\n"
+            "finally:\n"
+            "    shutil.rmtree(proj, ignore_errors=True)\n"
+            "assert 'RECONCILE' in states, 'RECONCILE must resolve'\n"
+            "print('RECONCILE_OK')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, (
+            "shipped default-config route+adapter-map with RECONCILE failed "
+            f"validation / build_loop:\nstdout={proc.stdout}\n"
+            f"stderr={proc.stderr}"
+        )
+        assert "RECONCILE_OK" in proc.stdout, \
+            f"RECONCILE wiring did not resolve cleanly: {proc.stdout}"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Wave-2 (RECONCILE + reject exclusion), COMMITTED-tree deploy confirmation: the
+# committed default-config — the seed bytes a GitHub clone installs — must carry
+# the RECONCILE route wiring and the RECONCILE adapter-map entry, so the install
+# flow (which depends on the committed tree) ships the new state. Guards against
+# a src edit that never reached the committed tree.
+# ---------------------------------------------------------------------------
+def test_committed_default_config_wires_reconcile():
+    dc = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "default-config",
+    )
+    with open(os.path.join(dc, "route.json"), encoding="utf-8") as fh:
+        route = json.load(fh)
+    with open(os.path.join(dc, "adapter-map.json"), encoding="utf-8") as fh:
+        amap = json.load(fh)
+    assert "RECONCILE" in route["states"], \
+        "committed default route must include the RECONCILE state"
+    edge = {(e["state"], e["signal"]): e["next"] for e in route["edges"]}
+    assert edge[("DRAIN", "OK")] == "RECONCILE", \
+        "committed route DRAIN OK must repoint to RECONCILE"
+    assert edge[("RECONCILE", "OK")] == "PULL", \
+        "committed route RECONCILE OK must route to PULL"
+    assert amap.get("RECONCILE") == "run_tick:make_reconcile", \
+        "committed adapter-map must wire RECONCILE to run_tick:make_reconcile"
