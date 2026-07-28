@@ -1,0 +1,3 @@
+{
+  "test/test_build_plugin.py::test_committed_plugin_tree_matches_fresh_build": true
+}
