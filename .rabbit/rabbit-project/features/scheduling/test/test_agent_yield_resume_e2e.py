@@ -743,3 +743,126 @@ def test_paused_dispatch_crash_safety_still_works_via_checkpoint():
     with open(first["dispatches"][0]["prompt_path"]) as _f:
         first_rendered = _f.read()
     assert again_rendered == first_rendered, (first_rendered, again_rendered)
+
+
+# ==========================================================================
+# PER-DISPATCH invalid_output / crash-safety re-emit (the duplicate-PR fix).
+#
+# When resume finds ONE of N pending dispatches missing/invalid, the re-emitted
+# PAUSE must re-dispatch ONLY the not-yet-valid dispatch(es) — a dispatch whose
+# output_path already holds a schema-valid output is PRESERVED (not deleted, not
+# re-run). The prior all-or-nothing re-emit re-ran already-validated implementers
+# that had already opened a PR -> duplicate PRs. IMPLEMENT is per_item over the
+# 2-order execution_plan, so it fans out to 2 dispatches — the ideal repro.
+# ==========================================================================
+
+def _advance_to_implement_pause(project_dir, runtime_dir, state_path,
+                                journal_path):
+    """Step to the TRIAGE pause, write the canned work_orders, resume, and return
+    the IMPLEMENT PAUSE (2 per_item dispatches)."""
+    paused1 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source())
+    assert paused1["state"] == "TRIAGE", paused1
+    _write_outputs(paused1, [_CANNED_WORK_ORDERS])
+    paused2 = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                          state_path=state_path, journal_path=journal_path,
+                          source=_stub_source(), resume=True)
+    assert paused2["state"] == "IMPLEMENT", paused2
+    assert len(paused2["dispatches"]) == 2, paused2
+    return paused2
+
+
+def test_per_dispatch_reemit_only_redispatches_missing_output():
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    paused2 = _advance_to_implement_pause(
+        project_dir, runtime_dir, state_path, journal_path)
+    d0, d1 = paused2["dispatches"]
+    # The subagent for dispatch #0 wrote a VALID handoff (and, in production, has
+    # already OPENED its PR); dispatch #1's output is MISSING.
+    with open(d0["output_path"], "w") as f:
+        f.write(_canned_handoff(d0["item"]))
+    # Resume: #1 missing -> invalid_output (resume applies all-or-nothing). The
+    # reason names the missing output; the checkpoint is intact (re-dispatchable).
+    inv = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                      state_path=state_path, journal_path=journal_path,
+                      source=_stub_source(), resume=True)
+    assert inv["status"] == "invalid_output", inv
+    assert inv["state"] == "IMPLEMENT", inv
+    assert d1["output_path"] in inv.get("reason", ""), inv
+    # The already-VALID dispatch #0 output was NOT deleted by the failed resume.
+    assert os.path.isfile(d0["output_path"]), d0["output_path"]
+    # The executor re-emits via a fresh --step (checkpoint present, no resume):
+    # the PER-DISPATCH re-emit carries ONLY the still-missing dispatch #1.
+    reemit = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                         state_path=state_path, journal_path=journal_path,
+                         source=_stub_source())
+    assert reemit["status"] == "paused", reemit
+    assert reemit["state"] == "IMPLEMENT", reemit
+    assert len(reemit["dispatches"]) == 1, reemit
+    assert reemit["dispatches"][0]["output_path"] == d1["output_path"], reemit
+    # The preserved-valid #0 output must NOT be deleted by the narrowed re-emit
+    # (deleting it would force a re-run and, in production, a DUPLICATE PR).
+    assert os.path.isfile(d0["output_path"]), d0["output_path"]
+    # Now the re-dispatched subagent writes #1; resume collects BOTH handoffs
+    # (preserved #0 + fresh #1) into the slot and drives to DONE.
+    with open(d1["output_path"], "w") as f:
+        f.write(_canned_handoff(d1["item"]))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        signal = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                             state_path=state_path, journal_path=journal_path,
+                             source=_stub_source(), resume=True)
+    assert signal == "idle", signal
+    assert rt.persisted_handoffs_count(state_path) == 2, \
+        rt.persisted_handoffs_count(state_path)
+    doc = ds.DurableState(state_path).load()
+    assert rt.TICK_CHECKPOINT_KEY not in doc or doc[rt.TICK_CHECKPOINT_KEY] in (
+        None, {}), doc
+
+
+def test_per_dispatch_reemit_preserves_valid_output_bytes():
+    """The preserved-valid dispatch's output file is left BYTE-IDENTICAL by the
+    narrowed re-emit (not rewritten, not deleted)."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    paused2 = _advance_to_implement_pause(
+        project_dir, runtime_dir, state_path, journal_path)
+    d0, d1 = paused2["dispatches"]
+    with open(d0["output_path"], "w") as f:
+        f.write(_canned_handoff(d0["item"]))
+    with open(d0["output_path"]) as f:
+        before = f.read()
+    # Failed resume (missing #1) then a re-emit --step: #0 must be untouched.
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source(), resume=True)
+    rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                state_path=state_path, journal_path=journal_path,
+                source=_stub_source())
+    with open(d0["output_path"]) as f:
+        after = f.read()
+    assert after == before, (before, after)
+
+
+def test_all_valid_crash_reemit_applies_without_redispatch():
+    """A crash-safety re-emit (fresh --step, checkpoint present) whose dispatches
+    are ALL already valid APPLIES the slot with NO re-dispatch and drives to the
+    terminal — it does NOT emit an (empty) pause."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
+    paused2 = _advance_to_implement_pause(
+        project_dir, runtime_dir, state_path, journal_path)
+    # BOTH subagents wrote valid handoffs, then a crash before the resume ran.
+    _write_outputs(paused2, [_canned_handoff(d["item"])
+                             for d in paused2["dispatches"]])
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                             state_path=state_path, journal_path=journal_path,
+                             source=_stub_source())
+    # NOT a paused dict — the all-valid re-emit applied + drove to DONE (idle).
+    assert result == "idle", result
+    assert rt.persisted_handoffs_count(state_path) == 2, \
+        rt.persisted_handoffs_count(state_path)
+    doc = ds.DurableState(state_path).load()
+    assert rt.TICK_CHECKPOINT_KEY not in doc or doc[rt.TICK_CHECKPOINT_KEY] in (
+        None, {}), doc
