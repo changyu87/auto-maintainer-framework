@@ -144,6 +144,7 @@ class _Captures:
         self.pr_closes = []
         self.comments = []
         self.worktree = []
+        self.open_pr_closing = []
 
 
 def _patch_reconcile_seams(pr_state, issue_state=None, worktree=None,
@@ -159,10 +160,18 @@ def _patch_reconcile_seams(pr_state, issue_state=None, worktree=None,
         "pr_close": vi.gh_pr_close_sink,
         "comment": vi.gh_issue_comment_sink,
         "worktree": vi.reconcile_rebase_worktree,
+        "open_pr_closing": vi.gh_open_pr_closing_issue_source,
     }
 
     def _branch(repo=None):
         return "main"
+
+    def _open_pr_closing(repo=None):
+        # The (C) same-issue dedup source. make_reconcile now threads it as an
+        # injectable seam; stub it (no live open loop-PR set) so the dedup pass is
+        # a hermetic no-op and never shells to the real `gh pr list`.
+        caps.open_pr_closing.append(repo)
+        return []
 
     def _pr_state(pr_ref, repo=None):
         caps.pr_state.append((pr_ref, repo))
@@ -194,6 +203,7 @@ def _patch_reconcile_seams(pr_state, issue_state=None, worktree=None,
     vi.gh_pr_close_sink = _pr_close
     vi.gh_issue_comment_sink = _comment
     vi.reconcile_rebase_worktree = _worktree
+    vi.gh_open_pr_closing_issue_source = _open_pr_closing
 
     def restore():
         vi.gh_default_branch_source = saved["branch"]
@@ -203,6 +213,7 @@ def _patch_reconcile_seams(pr_state, issue_state=None, worktree=None,
         vi.gh_pr_close_sink = saved["pr_close"]
         vi.gh_issue_comment_sink = saved["comment"]
         vi.reconcile_rebase_worktree = saved["worktree"]
+        vi.gh_open_pr_closing_issue_source = saved["open_pr_closing"]
     return restore, caps
 
 

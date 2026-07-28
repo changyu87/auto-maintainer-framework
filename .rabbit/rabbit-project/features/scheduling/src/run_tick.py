@@ -734,6 +734,7 @@ def make_reconcile(runtime):
         pr_close_sink=vi.gh_pr_close_sink,
         comment_sink=vi.gh_issue_comment_sink,
         worktree_helper=vi.reconcile_rebase_worktree,
+        open_pr_closing_issue_source=vi.gh_open_pr_closing_issue_source,
         permits_fn=sg.permits,
         default_branch=default_branch,
         repo=runtime.get("repo"))
