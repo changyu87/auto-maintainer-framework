@@ -778,3 +778,157 @@ def test_src_has_no_source_tree_path_substrings():
         "shipped lib must not reference the rabbit-project source-tree path"
     assert ".rabbit" not in text, \
         "shipped lib must not reference the .rabbit source-tree path"
+
+
+# ==========================================================================
+# CHANGE 1 — VERIFY transient-UNKNOWN mergeability resolution (bounded poll).
+#
+# GitHub computes a PR's mergeability ASYNCHRONOUSLY, so a PR opened this tick is
+# almost always reported mergeable=UNKNOWN when VERIFY lists it — indistinguishable
+# at the raw-string level from a real CONFLICTING. The open-PR source RESOLVES a
+# transient UNKNOWN via a BOUNDED poll (re-query gh pr view mergeable, both runner
+# and sleep INJECTABLE) before the dicts reach derive_verdict; a still-UNKNOWN
+# result yields a DEFERRED verdict (ok=False, transient reason) DISTINCT from the
+# permanent CONFLICTING failure.
+# ==========================================================================
+
+def test_mergeability_poll_constants_are_small_and_bounded():
+    assert isinstance(vi.MERGEABILITY_POLL_ATTEMPTS, int)
+    assert vi.MERGEABILITY_POLL_ATTEMPTS >= 1
+    # bounded: a small constant, never an unbounded loop.
+    assert vi.MERGEABILITY_POLL_ATTEMPTS <= 10
+    assert vi.MERGEABILITY_POLL_INTERVAL_S >= 0
+
+
+def test_poll_mergeability_unknown_then_mergeable_resolves():
+    responses = iter(["UNKNOWN", "MERGEABLE"])
+    calls = {"runner": 0, "sleep": 0}
+    captured = {}
+
+    def runner(cmd, **kwargs):
+        calls["runner"] += 1
+        captured["cmd"] = cmd
+        return _FakeCompleted(next(responses) + "\n")
+
+    def noop_sleep(_seconds):
+        calls["sleep"] += 1
+
+    result = vi.poll_mergeability(8, repo="acme/widget", runner=runner,
+                                  sleep=noop_sleep)
+    assert result == "MERGEABLE"
+    # stopped EARLY once it settled: two queries, one sleep between them.
+    assert calls["runner"] == 2
+    assert calls["sleep"] == 1
+    # the query is the bounded mergeability re-check for the PR number.
+    cmd = captured["cmd"]
+    assert cmd[:3] == ["gh", "pr", "view"]
+    assert "mergeable" in cmd
+    assert "--repo" in cmd and cmd[cmd.index("--repo") + 1] == "acme/widget"
+
+
+def test_poll_mergeability_unknown_then_conflicting_settles_conflicting():
+    responses = iter(["UNKNOWN", "CONFLICTING"])
+
+    def runner(cmd, **kwargs):  # noqa: ARG001
+        return _FakeCompleted(next(responses) + "\n")
+
+    result = vi.poll_mergeability(9, runner=runner, sleep=lambda _s: None)
+    assert result == "CONFLICTING"
+
+
+def test_poll_mergeability_stays_unknown_is_bounded_never_realtime():
+    calls = {"runner": 0, "slept": []}
+
+    def runner(cmd, **kwargs):  # noqa: ARG001
+        calls["runner"] += 1
+        return _FakeCompleted("UNKNOWN\n")
+
+    def noop_sleep(seconds):
+        calls["slept"].append(seconds)
+
+    result = vi.poll_mergeability(10, runner=runner, sleep=noop_sleep)
+    assert result == "UNKNOWN"
+    # BOUNDED: exactly MERGEABILITY_POLL_ATTEMPTS queries, no more.
+    assert calls["runner"] == vi.MERGEABILITY_POLL_ATTEMPTS
+    # slept only between attempts (attempts - 1), each the configured interval —
+    # via the INJECTED no-op sleep, so no real wall-clock cost in tests.
+    assert len(calls["slept"]) == vi.MERGEABILITY_POLL_ATTEMPTS - 1
+    assert all(s == vi.MERGEABILITY_POLL_INTERVAL_S for s in calls["slept"])
+
+
+def test_derive_verdict_unknown_gives_deferred_reason_distinct():
+    v = vi.derive_verdict(_pr(mergeable="UNKNOWN"), _DEFAULT_BRANCH)
+    assert v.ok is False
+    assert v.mergeable is False
+    joined = " ".join(v.reasons)
+    # the EXACT transient deferred reason (distinct from a hard CONFLICTING fail).
+    assert ("mergeability not yet determined (mergeable=UNKNOWN) "
+            "— deferred to a later tick") in v.reasons
+    assert "CONFLICTING" not in joined
+    assert "not mergeable (mergeable=" not in joined
+
+
+def test_derive_verdict_conflicting_gives_hard_reason_distinct():
+    v = vi.derive_verdict(_pr(mergeable="CONFLICTING"), _DEFAULT_BRANCH)
+    assert v.ok is False
+    assert v.mergeable is False
+    assert "not mergeable (mergeable=CONFLICTING)" in v.reasons
+    assert not any("deferred" in r.lower() for r in v.reasons)
+
+
+def test_gh_open_pr_source_resolves_transient_unknown_to_mergeable():
+    list_payload = (
+        '[{"number": 12, "url": "https://github.com/acme/widget/pull/12",'
+        ' "headRefName": "auto-maintainer/x", "baseRefName": "main",'
+        ' "mergeable": "UNKNOWN", "statusCheckRollup": []}]'
+    )
+
+    def runner(cmd, **kwargs):  # noqa: ARG001
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCompleted(list_payload)
+        # the bounded poll's re-query: mergeability has settled to MERGEABLE.
+        return _FakeCompleted("MERGEABLE\n")
+
+    prs = vi.gh_open_pr_source(runner=runner, sleep=lambda _s: None)
+    assert len(prs) == 1
+    # the transient UNKNOWN was overwritten with the polled settled value BEFORE
+    # the dict reaches derive_verdict.
+    assert prs[0]["mergeable"] == "MERGEABLE"
+    v = vi.derive_verdict(prs[0], _DEFAULT_BRANCH)
+    assert v.ok is True
+
+
+def test_gh_open_pr_source_still_unknown_becomes_deferred_verdict():
+    list_payload = (
+        '[{"number": 13, "url": "https://github.com/acme/widget/pull/13",'
+        ' "headRefName": "auto-maintainer/y", "baseRefName": "main",'
+        ' "mergeable": "UNKNOWN", "statusCheckRollup": []}]'
+    )
+
+    def runner(cmd, **kwargs):  # noqa: ARG001
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCompleted(list_payload)
+        return _FakeCompleted("UNKNOWN\n")  # never settles
+
+    prs = vi.gh_open_pr_source(runner=runner, sleep=lambda _s: None)
+    assert prs[0]["mergeable"] == "UNKNOWN"
+    v = vi.derive_verdict(prs[0], _DEFAULT_BRANCH)
+    assert v.ok is False
+    assert ("mergeability not yet determined (mergeable=UNKNOWN) "
+            "— deferred to a later tick") in v.reasons
+
+
+def test_gh_open_pr_source_mergeable_pr_never_polls():
+    payload = (
+        '[{"number": 14, "url": "https://github.com/acme/widget/pull/14",'
+        ' "headRefName": "auto-maintainer/z", "baseRefName": "main",'
+        ' "mergeable": "MERGEABLE", "statusCheckRollup": []}]'
+    )
+
+    def runner(cmd, **kwargs):  # noqa: ARG001
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCompleted(payload)
+        raise AssertionError("a MERGEABLE PR must not trigger the poll")
+
+    prs = vi.gh_open_pr_source(runner=runner, sleep=lambda _s: None)
+    assert prs[0]["mergeable"] == "MERGEABLE"

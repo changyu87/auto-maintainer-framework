@@ -130,6 +130,20 @@ def _recording_comment_sink():
     return sink
 
 
+def _open_pr_closing_issue_source(entries=()):
+    """A gh_open_pr_closing_issue_source over a list of {pr_ref, url, issue_ref}
+    entries (the LIVE open loop-PR set with each PR's first closing-issue ref).
+    Records calls. Defaults to the EMPTY set (no same-issue duplicates)."""
+    calls = []
+
+    def source(repo=None):  # noqa: ARG001
+        calls.append(repo)
+        return [dict(e) for e in entries]
+
+    source.calls = calls
+    return source
+
+
 def _worktree_helper(rebased_by_ref):
     """A tier-1 rebase worktree helper over a {pr_ref: bool} map (True = clean
     rebase + force-push; False = real conflict). Records calls."""
@@ -183,6 +197,10 @@ def _auto_reconcile(**kw):
     injected seams the individual test overrides."""
     kw.setdefault("default_branch", _DEFAULT_BRANCH)
     kw.setdefault("repo", _REPO)
+    # Default the (C) same-issue dedup source to the EMPTY set so tests that do
+    # not exercise dedup drive no gh call and see no dedup effect.
+    kw.setdefault("open_pr_closing_issue_source",
+                  _open_pr_closing_issue_source())
     return vi.Reconcile(mode="auto-merge", **kw)
 
 
@@ -216,11 +234,24 @@ def test_reconcile_result_empty_round_trip():
     assert d["relanded"] == []
     assert d["skipped"] == []
     assert d["errors"] == []
+    assert d["deduped"] == []
     assert vi.ReconcileResult.from_dict(d) == r
 
 
-def test_reconcile_result_schema_version_is_1_0_0():
-    assert vi.RECONCILE_RESULT_SCHEMA_VERSION == "1.0.0"
+def test_reconcile_result_deduped_round_trips():
+    r = vi.ReconcileResult(
+        deduped=[{"pr_ref": "acme/widget#7", "issue_ref": "acme/widget#3",
+                  "kept_pr_ref": "acme/widget#9"}])
+    d = r.to_dict()
+    assert d["deduped"] == [{"pr_ref": "acme/widget#7",
+                             "issue_ref": "acme/widget#3",
+                             "kept_pr_ref": "acme/widget#9"}]
+    assert vi.ReconcileResult.from_dict(d) == r
+
+
+def test_reconcile_result_schema_version_is_1_1_0():
+    # Additive bump: the `deduped` list was added to the 1.0.0 shape (C).
+    assert vi.RECONCILE_RESULT_SCHEMA_VERSION == "1.1.0"
 
 
 def test_reconcile_result_slot_descriptor_is_versioned():
@@ -375,7 +406,8 @@ def test_reconcile_e2e_dry_run_all_skipped_no_effects():
         mode="dry-run", pr_state_source=pr, issue_state_source=iss,
         issue_close_sink=close, pr_close_sink=prclose, comment_sink=comment,
         worktree_helper=_never_helper(), default_branch=_DEFAULT_BRANCH,
-        repo=_REPO)
+        repo=_REPO,
+        open_pr_closing_issue_source=_open_pr_closing_issue_source())
 
     res = _run(reconcile, [_entry(number=7, issue=5), _entry(number=9, issue=3)])
 
@@ -397,7 +429,8 @@ def test_reconcile_e2e_propose_conflicting_skipped():
         mode="propose", pr_state_source=pr,
         issue_state_source=_issue_state_source({}),
         worktree_helper=_never_helper(), default_branch=_DEFAULT_BRANCH,
-        repo=_REPO)
+        repo=_REPO,
+        open_pr_closing_issue_source=_open_pr_closing_issue_source())
 
     res = _run(reconcile, [_entry(number=9, issue=3)])
 
@@ -481,7 +514,7 @@ def test_reconcile_e2e_empty_ledger_is_ok_all_empty():
     assert res == {
         "schema_version": vi.RECONCILE_RESULT_SCHEMA_VERSION,
         "closed_issues": [], "rebased": [], "relanded": [],
-        "skipped": [], "errors": [],
+        "skipped": [], "errors": [], "deduped": [],
     }
 
 
@@ -626,3 +659,173 @@ def test_reconcile_rebase_worktree_conflict_returns_false_no_push():
     # a real conflict aborts the rebase and NEVER force-pushes.
     assert any(c[-1] == "--abort" for c in runner.seen if "rebase" in c)
     assert not any("push" in c and "--force" in c for c in runner.seen)
+
+
+# ==========================================================================
+# (C) Same-issue open-PR dedup (deterministic supersede backstop).
+#
+# Two open auto-maintainer PRs closing the SAME still-open issue -> KEEP the
+# highest-numbered PR (the newest re-land), CLOSE the rest via the existing
+# PR-close sink, record under `deduped`. NEVER touch the sole PR for an issue,
+# NEVER a group whose issue is closed, NEVER cross issues. Trust-gated exactly
+# like INTEGRATE; a close fault lands under `errors`.
+# ==========================================================================
+
+def _dedup_entry(number, issue):
+    return {"pr_ref": f"{_REPO}#{number}",
+            "url": f"https://github.com/{_REPO}/pull/{number}",
+            "issue_ref": f"{_REPO}#{issue}"}
+
+
+def test_reconcile_e2e_dedup_keeps_highest_closes_the_rest():
+    dedup = _open_pr_closing_issue_source([
+        _dedup_entry(7, 3), _dedup_entry(9, 3)])  # same open issue #3
+    iss = _issue_state_source({"acme/widget#3": {"state": "OPEN"}})
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    reconcile = _auto_reconcile(pr_state_source=_pr_state_source({}),
+                                issue_state_source=iss,
+                                worktree_helper=_never_helper(),
+                                pr_close_sink=prclose, comment_sink=comment,
+                                open_pr_closing_issue_source=dedup)
+
+    res = _run(reconcile, [])  # no ledger entries — pure (C) dedup.
+
+    # highest number (#9) kept; the lower (#7) closed + recorded in deduped.
+    assert res["deduped"] == [{"pr_ref": "acme/widget#7",
+                               "issue_ref": "acme/widget#3",
+                               "kept_pr_ref": "acme/widget#9"}]
+    assert prclose.calls == [{"pr_ref": "acme/widget#7", "repo": _REPO}]
+    # a comment names the KEPT PR as the superseding same-issue re-land.
+    assert len(comment.calls) == 1
+    assert comment.calls[0]["issue_ref"] == "acme/widget#3"
+    assert "acme/widget#9" in comment.calls[0]["body"]
+    assert res["closed_issues"] == []
+    assert res["rebased"] == []
+    assert res["relanded"] == []
+
+
+def test_reconcile_e2e_dedup_sole_pr_untouched():
+    dedup = _open_pr_closing_issue_source([_dedup_entry(7, 3)])  # sole PR
+    iss = _issue_state_source({"acme/widget#3": {"state": "OPEN"}})
+    prclose = _recording_pr_close_sink()
+    reconcile = _auto_reconcile(pr_state_source=_pr_state_source({}),
+                                issue_state_source=iss,
+                                worktree_helper=_never_helper(),
+                                pr_close_sink=prclose,
+                                open_pr_closing_issue_source=dedup)
+
+    res = _run(reconcile, [])
+
+    assert res["deduped"] == []
+    assert prclose.calls == []
+
+
+def test_reconcile_e2e_dedup_closed_issue_group_untouched():
+    # More than one open PR for issue #3, but the issue is CLOSED -> NEVER touch
+    # (an orphaned duplicate whose issue closed is INTEGRATE's/orphan concern).
+    dedup = _open_pr_closing_issue_source([
+        _dedup_entry(7, 3), _dedup_entry(9, 3)])
+    iss = _issue_state_source({"acme/widget#3": {"state": "CLOSED"}})
+    prclose = _recording_pr_close_sink()
+    reconcile = _auto_reconcile(pr_state_source=_pr_state_source({}),
+                                issue_state_source=iss,
+                                worktree_helper=_never_helper(),
+                                pr_close_sink=prclose,
+                                open_pr_closing_issue_source=dedup)
+
+    res = _run(reconcile, [])
+
+    assert res["deduped"] == []
+    assert prclose.calls == []
+
+
+def test_reconcile_e2e_dedup_never_crosses_issues():
+    # Two PRs, but for DIFFERENT issues -> each is the sole PR for its issue,
+    # nothing is deduped.
+    dedup = _open_pr_closing_issue_source([
+        _dedup_entry(7, 3), _dedup_entry(9, 4)])
+    iss = _issue_state_source({"acme/widget#3": {"state": "OPEN"},
+                               "acme/widget#4": {"state": "OPEN"}})
+    prclose = _recording_pr_close_sink()
+    reconcile = _auto_reconcile(pr_state_source=_pr_state_source({}),
+                                issue_state_source=iss,
+                                worktree_helper=_never_helper(),
+                                pr_close_sink=prclose,
+                                open_pr_closing_issue_source=dedup)
+
+    res = _run(reconcile, [])
+
+    assert res["deduped"] == []
+    assert prclose.calls == []
+
+
+def test_reconcile_e2e_dedup_dry_run_records_skipped_no_effects():
+    dedup = _open_pr_closing_issue_source([
+        _dedup_entry(7, 3), _dedup_entry(9, 3)])
+    iss = _issue_state_source({"acme/widget#3": {"state": "OPEN"}})
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    reconcile = vi.Reconcile(
+        mode="propose", pr_state_source=_pr_state_source({}),
+        issue_state_source=iss, worktree_helper=_never_helper(),
+        pr_close_sink=prclose, comment_sink=comment,
+        default_branch=_DEFAULT_BRANCH, repo=_REPO,
+        open_pr_closing_issue_source=dedup)
+
+    res = _run(reconcile, [])
+
+    # the would-close intent is recorded under skipped; NO sink fires.
+    assert res["deduped"] == []
+    assert [s["ref"] for s in res["skipped"]] == ["acme/widget#7"]
+    assert prclose.calls == []
+    assert comment.calls == []
+
+
+def test_reconcile_e2e_dedup_close_fault_recorded_in_errors():
+    def raising_close(pr_ref, repo=None):  # noqa: ARG001
+        raise RuntimeError("gh pr close 403")
+
+    dedup = _open_pr_closing_issue_source([
+        _dedup_entry(7, 3), _dedup_entry(9, 3)])
+    iss = _issue_state_source({"acme/widget#3": {"state": "OPEN"}})
+    reconcile = _auto_reconcile(pr_state_source=_pr_state_source({}),
+                                issue_state_source=iss,
+                                worktree_helper=_never_helper(),
+                                pr_close_sink=raising_close,
+                                open_pr_closing_issue_source=dedup)
+
+    res = _run(reconcile, [])
+
+    # the fault is recorded, never raised; deduped stays empty for the faulting PR.
+    assert res["deduped"] == []
+    assert [e["ref"] for e in res["errors"]] == ["acme/widget#7"]
+    assert "gh pr close 403" in res["errors"][0]["reason"]
+
+
+def test_gh_open_pr_closing_issue_source_shape():
+    payload = json.dumps([
+        {"number": 7, "url": "https://github.com/acme/widget/pull/7",
+         "closingIssuesReferences": [{"number": 3}, {"number": 99}]},
+        {"number": 9, "url": "https://github.com/acme/widget/pull/9",
+         "closingIssuesReferences": []},  # no closing issue -> skipped
+    ])
+    seen = []
+
+    def runner(cmd, capture_output=None, text=None, check=None):  # noqa: ARG001
+        seen.append(cmd)
+        return _proc(stdout=payload)
+
+    out = vi.gh_open_pr_closing_issue_source(repo="acme/widget", runner=runner)
+    # only the PR WITH a closing issue is returned, mapped to its FIRST ref.
+    assert out == [{"pr_ref": "acme/widget#7",
+                    "url": "https://github.com/acme/widget/pull/7",
+                    "issue_ref": "acme/widget#3"}]
+    cmd = seen[0]
+    assert cmd[:3] == ["gh", "pr", "list"]
+    assert "--label" in cmd and cmd[cmd.index("--label") + 1] == "auto-maintainer"
+    assert "--state" in cmd and cmd[cmd.index("--state") + 1] == "open"
+    json_fields = cmd[cmd.index("--json") + 1]
+    for f in ("number", "url", "closingIssuesReferences"):
+        assert f in json_fields
+    assert "--repo" in cmd and cmd[cmd.index("--repo") + 1] == "acme/widget"
