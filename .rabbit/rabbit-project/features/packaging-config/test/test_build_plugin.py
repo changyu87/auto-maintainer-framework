@@ -560,17 +560,16 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.12.1, GATE #392 base-anchoring re-land): version bumped to 0.12.1
-# in BOTH plugin.json and marketplace.json, and the two are consistent. v0.12.1
-# re-lands the #392 pre-merge-base anchoring of the GATE doc-surface
-# load-bearing-token survival check atop v0.12.0's word-boundary survival (#406),
-# so GATE reads each feature's BASE (pre-merge) declared token set rather than the
-# PR's own post-merge copy — a PR can no longer bypass the gate by dropping a
-# token AND its declaration together. The change touches the shipped
-# verify_integrate.py lib, so the committed plugin tree is regenerated and the
-# version bumped so the marketplace serves the new content to existing installs.
+# Release (v0.24.0, clobber UX rebuild): version bumped to 0.24.0 in BOTH
+# plugin.json and marketplace.json, and the two are consistent. v0.24.0 rebuilds
+# the committed plugin tree so it ships the new clobber preview/apply UX (the
+# scheduling clobber SKILL v0.3.0 + clobber.py preview + --no-dry-run + verbatim
+# `yes` surface) merged into main. The change touches the shipped skills/clobber
+# SKILL.md (and the RECONCILE lib already on 0.23.0), so the committed plugin tree
+# is regenerated and the version bumped so the marketplace serves the new content
+# to existing installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_23_0_and_consistent():
+def test_version_bumped_to_0_24_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -582,14 +581,57 @@ def test_version_bumped_to_0_23_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.23.0", \
-            f"plugin.json version must be 0.23.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.23.0", \
-            "marketplace.json plugin entry version must be 0.23.0"
+        assert pdata.get("version") == "0.24.0", \
+            f"plugin.json version must be 0.24.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.24.0", \
+            "marketplace.json plugin entry version must be 0.24.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release (v0.24.0, clobber UX rebuild): the whole point of this release is that
+# the installed plugin ships the new clobber preview/apply UX. The shipped
+# skills/clobber/SKILL.md (scheduling's ship/skills/clobber/, collected via the
+# ship/ convention) must be v0.3.0 and carry the preview-then-verbatim-`yes`
+# surface: it shows a WOULD-DELETE preview by default, asks the user to type the
+# verbatim word `yes`, and takes --no-dry-run to delete immediately. The old
+# throwaway --yes flag is gone. Assert BOTH the freshly built tree and the
+# COMMITTED tree ship the v0.3.0 surface (deploy confirmation).
+# ---------------------------------------------------------------------------
+def test_shipped_clobber_skill_is_v0_3_0_preview_apply_surface():
+    def _assert_clobber_surface(sk):
+        assert os.path.isfile(sk), f"skills/clobber/SKILL.md must ship at {sk}"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "\nversion: 0.3.0\n" in body, \
+            "shipped clobber skill frontmatter version must be 0.3.0"
+        assert "--no-dry-run" in body, \
+            "shipped clobber skill must document the --no-dry-run apply flag"
+        assert "preview" in body, \
+            "shipped clobber skill must document the WOULD-DELETE preview"
+        assert "verbatim" in body and "yes" in body, \
+            "shipped clobber skill must require the verbatim `yes` confirmation"
+        assert "--yes" not in body, \
+            "shipped clobber skill must NOT carry the old --yes flag"
+
+    # freshly built tree
+    out_root = _build_into_temp()
+    try:
+        _assert_clobber_surface(os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "skills", "clobber", "SKILL.md",
+        ))
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+    # committed tree (deploy confirmation — the bytes a GitHub clone installs)
+    _assert_clobber_surface(os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer",
+        "skills", "clobber", "SKILL.md",
+    ))
 
 
 # ---------------------------------------------------------------------------
