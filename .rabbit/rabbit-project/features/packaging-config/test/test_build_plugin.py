@@ -560,16 +560,16 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.24.0, clobber UX rebuild): version bumped to 0.24.0 in BOTH
-# plugin.json and marketplace.json, and the two are consistent. v0.24.0 rebuilds
-# the committed plugin tree so it ships the new clobber preview/apply UX (the
-# scheduling clobber SKILL v0.3.0 + clobber.py preview + --no-dry-run + verbatim
-# `yes` surface) merged into main. The change touches the shipped skills/clobber
-# SKILL.md (and the RECONCILE lib already on 0.23.0), so the committed plugin tree
-# is regenerated and the version bumped so the marketplace serves the new content
-# to existing installs.
+# Release (v0.25.0, RECONCILE/auto-merge/dedup rebuild): version bumped to
+# 0.25.0 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.25.0 rebuilds the committed plugin tree so it ships the merged
+# verify-integrate 0.12.0 + scheduling 0.40.0 fixes (the shipped lib/
+# verify_integrate.py and lib/run_tick.py now carry the Wave-1/Wave-2
+# RECONCILE/auto-merge/dedup fixes), so the committed plugin tree is regenerated
+# and the version bumped so the marketplace serves the new content to existing
+# installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_24_0_and_consistent():
+def test_version_bumped_to_0_25_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -581,10 +581,10 @@ def test_version_bumped_to_0_24_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.24.0", \
-            f"plugin.json version must be 0.24.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.24.0", \
-            "marketplace.json plugin entry version must be 0.24.0"
+        assert pdata.get("version") == "0.25.0", \
+            f"plugin.json version must be 0.25.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.25.0", \
+            "marketplace.json plugin entry version must be 0.25.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
