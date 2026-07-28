@@ -2,6 +2,37 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.9.0 — 2026-07-24
+
+Two auto-merge reliability + convergence fixes surfaced by the live test.
+
+- **VERIFY resolves transient `mergeable=UNKNOWN` (auto-merge in-tick).** GitHub
+  computes mergeability asynchronously, so a freshly-opened PR is reported
+  `mergeable=UNKNOWN` the tick it is opened and `derive_verdict` previously folded
+  `UNKNOWN` into the same hard `not mergeable` failure as `CONFLICTING` — so the
+  loop could never auto-merge a PR in the tick it created it (live: 10/11 fresh PRs
+  skipped `not mergeable (mergeable=UNKNOWN)` despite green CI). VERIFY's open-PR
+  source now RESOLVES a transient `UNKNOWN` with a BOUNDED poll
+  (`MERGEABILITY_POLL_ATTEMPTS` re-queries of `gh pr view <n> --json mergeable`,
+  `MERGEABILITY_POLL_INTERVAL_S` apart; both the subprocess runner AND the sleep
+  are injectable — no network/wall-clock in tests) until it settles to
+  `MERGEABLE`/`CONFLICTING`. A still-`UNKNOWN` result is a DEFERRED verdict
+  (`ok=False`, reason `mergeability not yet determined (mergeable=UNKNOWN) —
+  deferred to a later tick`), DISTINCT from the permanent
+  `not mergeable (mergeable=CONFLICTING)` failure.
+- **RECONCILE same-issue open-PR dedup (C).** When the implementer's prompt-tier
+  supersede is denied by the session permission classifier, two open
+  `auto-maintainer` PRs can close the SAME still-open issue (live: issue #650 with
+  both #744 and #754). RECONCILE now sources the LIVE open loop-PR set
+  (`gh_open_pr_closing_issue_source` → `gh pr list --json
+  closingIssuesReferences`), groups by closing-issue ref, and for each group with
+  >1 open PR whose issue is still OPEN keeps the highest-numbered PR and CLOSES the
+  rest via the existing PR-close sink — the deterministic backstop that runs inside
+  `run_tick`'s already-approved subprocess. Recorded in the new
+  `ReconcileResult.deduped` (`RECONCILE_RESULT_SCHEMA_VERSION` → `1.1.0`,
+  additive). Never closes the sole PR for an issue, a closed-issue group, or across
+  issues; trust-gated at `auto-merge`.
+
 ## 0.7.1 — 2026-06-21
 
 Observability fix: a merged `IntegrationResult` entry now carries the PR's web

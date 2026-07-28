@@ -1,4 +1,0 @@
-{
-  "test_build_plugin.py::test_shipped_verify_integrate_no_source_tree_leak": true,
-  "test_build_plugin.py::test_committed_plugin_tree_matches_fresh_build": true
-}
