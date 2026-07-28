@@ -39,7 +39,10 @@ Public surface (slice 1):
   - CROSS_CHECK_SLOT  — the fsm-contracts slot registration descriptor.
   - VERIFY_MANIFEST   — the VERIFY state's {reads, writes, emits} manifest.
   - VERIFY_SIGNALS    — the closed signal set VERIFY may emit (OK | EMPTY).
-  - gh_open_pr_source()       — the production source: shells the gh CLI.
+  - gh_open_pr_source()       — the production source: shells the gh CLI; resolves
+    a transient mergeable=UNKNOWN via the bounded poll before returning.
+  - poll_mergeability(...)     — the bounded, injectable-runner + injectable-sleep
+    re-query that settles a transient mergeable=UNKNOWN to MERGEABLE/CONFLICTING.
   - gh_default_branch_source() — the production default-branch resolver.
   - feature_run_py_path(feature, features_root) — the deterministic resolver of a
     named feature's test/run.py (the complement-runner's locator seam).
@@ -124,6 +127,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import List
 
@@ -505,23 +509,73 @@ _GH_JSON_FIELDS = (
 # The label every loop-opened PR carries (stamped by the IMPLEMENT doer).
 LOOP_PR_LABEL = "auto-maintainer"
 
+# Transient-UNKNOWN mergeability resolution (bounded poll). GitHub computes a
+# PR's mergeability ASYNCHRONOUSLY, so a PR opened this tick is almost always
+# reported mergeable=UNKNOWN the moment VERIFY lists it — indistinguishable at
+# the raw-string level from a real CONFLICTING. The open-PR source re-queries a
+# transient UNKNOWN up to MERGEABILITY_POLL_ATTEMPTS times, sleeping
+# MERGEABILITY_POLL_INTERVAL_S seconds between attempts, until it settles to
+# MERGEABLE or CONFLICTING. Small + short by design: mergeability settles in
+# seconds and the poll must never dominate a tick.
+MERGEABILITY_POLL_ATTEMPTS = 3
+MERGEABILITY_POLL_INTERVAL_S = 2
 
-def gh_open_pr_source(repo=None, label=LOOP_PR_LABEL, runner=subprocess.run):
+
+def poll_mergeability(pr_number, repo=None, runner=subprocess.run,
+                      sleep=time.sleep):
+    """Resolve a transient `mergeable=UNKNOWN` via a BOUNDED poll: re-query gh
+    (`gh pr view <n> --json mergeable -q .mergeable`, adding `--repo` when set) up
+    to MERGEABILITY_POLL_ATTEMPTS times, sleeping MERGEABILITY_POLL_INTERVAL_S
+    between attempts, and return the settled mergeability string. Stops EARLY once
+    the value is MERGEABLE or CONFLICTING; returns the last (possibly still
+    UNKNOWN) value once attempts are exhausted. Both the subprocess `runner` AND
+    the `sleep` fn are INJECTABLE so tests drive the poll deterministically with
+    no network and no wall-clock wait. Bounded: never loops unboundedly."""
+    cmd = ["gh", "pr", "view", str(pr_number), "--json", "mergeable",
+           "-q", ".mergeable"]
+    if repo:
+        cmd += ["--repo", repo]
+    result = "UNKNOWN"
+    for attempt in range(MERGEABILITY_POLL_ATTEMPTS):
+        out = runner(cmd, capture_output=True, text=True, check=True)
+        result = (out.stdout or "").strip().upper()
+        if result in ("MERGEABLE", "CONFLICTING"):
+            return result
+        if attempt < MERGEABILITY_POLL_ATTEMPTS - 1:
+            sleep(MERGEABILITY_POLL_INTERVAL_S)
+    return result
+
+
+def gh_open_pr_source(repo=None, label=LOOP_PR_LABEL, runner=subprocess.run,
+                      sleep=time.sleep):
     """Production open-PR source: shell the deterministic `gh` CLI for the loop's
     OPEN PRs (filtered by the `auto-maintainer` label) and return the parsed gh
     JSON list. `gh` carries its own auth. When `repo` is given it is passed via
     `--repo`; otherwise gh resolves the repo from the project default.
 
-    The subprocess `runner` is INJECTABLE (defaulting to subprocess.run) so
-    tests assemble/parse the command with a fake — no network, the failure
-    locatable to the fetch boundary (mirror of work_intake.gh_issue_source).
+    A transient `mergeable=UNKNOWN` (a PR whose mergeability GitHub has not yet
+    computed) is RESOLVED before the dict is returned: for any listed PR reported
+    UNKNOWN, `poll_mergeability` re-queries gh with a bounded retry and overwrites
+    that PR dict's `mergeable` with the settled value, so `derive_verdict` sees a
+    MERGEABLE/CONFLICTING result the same tick the PR was opened (a still-UNKNOWN
+    result becomes a DEFERRED verdict, distinct from a hard CONFLICTING failure).
+
+    The subprocess `runner` and the `sleep` fn are INJECTABLE (defaulting to the
+    production impls) so tests assemble/parse the command AND drive the poll with a
+    fake — no network, no wall-clock wait, the failure locatable to the fetch
+    boundary (mirror of work_intake.gh_issue_source).
     """
     cmd = ["gh", "pr", "list", "--label", label, "--state", "open",
            "--json", _GH_JSON_FIELDS]
     if repo:
         cmd += ["--repo", repo]
     out = runner(cmd, capture_output=True, text=True, check=True)
-    return json.loads(out.stdout)
+    prs = json.loads(out.stdout)
+    for pr in prs:
+        if (pr.get("mergeable") or "").upper() == "UNKNOWN":
+            pr["mergeable"] = poll_mergeability(
+                pr["number"], repo=repo, runner=runner, sleep=sleep)
+    return prs
 
 
 def gh_default_branch_source(repo=None, runner=subprocess.run):
@@ -647,6 +701,15 @@ def _ci_state(rollup):
     return "pending" if any_pending else "passing"
 
 
+# The transient reason a verdict carries when its mergeability is STILL UNKNOWN
+# after VERIFY's bounded poll — a DEFERRED verdict (ok=False) the next tick's
+# refire re-evaluates, DISTINCT from the permanent CONFLICTING hard failure. The
+# exact string is contract-bound (TRIAGE / observers read it), so keep it verbatim.
+_DEFERRED_MERGEABILITY_REASON = (
+    "mergeability not yet determined (mergeable=UNKNOWN) — deferred to a later "
+    "tick")
+
+
 def derive_verdict(pr_dict, default_branch):
     """Pure derivation of a Verdict from a gh-shaped open-PR dict.
 
@@ -656,18 +719,30 @@ def derive_verdict(pr_dict, default_branch):
     conservative AND of the BLOCKING conditions ONLY: mergeable AND
     base == default_branch (DESIGN §3.7.1/§3.7.2 — CI is recorded but no longer
     gates ok). `reasons` lists each failing BLOCKING condition for a non-ok
-    verdict; a non-passing CI does NOT contribute a reason. Deterministic; no I/O.
+    verdict; a non-passing CI does NOT contribute a reason.
+
+    The non-mergeable reason is SPLIT so a transient DEFERRED mergeability is
+    distinguishable from a real conflict: a raw `mergeable=UNKNOWN` (still
+    unresolved after VERIFY's bounded poll) carries the transient
+    `_DEFERRED_MERGEABILITY_REASON` (the next tick's refire re-evaluates it), while
+    any other non-MERGEABLE value (CONFLICTING) keeps the permanent
+    `not mergeable (mergeable=<X>)` hard-failure reason. `ok` stays False in both
+    non-MERGEABLE cases. Deterministic; no I/O.
     """
     number = pr_dict["number"]
     url = pr_dict.get("url", "")
     base = pr_dict.get("baseRefName", "")
     ci_state = _ci_state(pr_dict.get("statusCheckRollup") or [])
-    mergeable = (pr_dict.get("mergeable") or "").upper() == "MERGEABLE"
+    mergeable_raw = (pr_dict.get("mergeable") or "")
+    mergeable = mergeable_raw.upper() == "MERGEABLE"
 
     reasons = []
     if not mergeable:
-        reasons.append(
-            f"not mergeable (mergeable={pr_dict.get('mergeable')})")
+        if mergeable_raw.upper() == "UNKNOWN":
+            reasons.append(_DEFERRED_MERGEABILITY_REASON)
+        else:
+            reasons.append(
+                f"not mergeable (mergeable={pr_dict.get('mergeable')})")
     if base != default_branch:
         reasons.append(
             f"base {base!r} is not the default branch {default_branch!r}")
@@ -1863,8 +1938,9 @@ class Cleanup:
 # ==========================================================================
 
 # The versioned ReconcileResult schema (machine-first; bumped on a breaking
-# field-set change). Distinct from the feature version.
-RECONCILE_RESULT_SCHEMA_VERSION = "1.0.0"
+# field-set change). Distinct from the feature version. `1.1.0` is ADDITIVE: the
+# `deduped` list (same-issue open-PR dedup, C) was added to the `1.0.0` shape.
+RECONCILE_RESULT_SCHEMA_VERSION = "1.1.0"
 
 
 @dataclass(eq=True)
@@ -1879,6 +1955,10 @@ class ReconcileResult:
       - `relanded` — [{pr_ref, issue_ref}] CONFLICTING loop PRs whose rebase hit a
         real textual conflict, so the PR was CLOSED and its issue COMMENTED to
         re-land next tick (TIER-2 fallback, branch B).
+      - `deduped` — [{pr_ref, issue_ref, kept_pr_ref}] duplicate loop PRs CLOSED
+        because MORE THAN ONE open auto-maintainer PR closed the SAME still-OPEN
+        issue (branch C); the highest-numbered PR (`kept_pr_ref`) is kept and each
+        lower one is closed. Kept SEPARATE from closed_issues/rebased/relanded.
       - `skipped` — [{ref, reason}] would-act intents recorded at a mode that does
         not permit merge (dry-run/propose): a human acts.
       - `errors` — [{ref, reason}] single-entry faults (never raised; RECONCILE is
@@ -1892,6 +1972,7 @@ class ReconcileResult:
     closed_issues: List[dict] = field(default_factory=list)
     rebased: List[dict] = field(default_factory=list)
     relanded: List[dict] = field(default_factory=list)
+    deduped: List[dict] = field(default_factory=list)
     skipped: List[dict] = field(default_factory=list)
     errors: List[dict] = field(default_factory=list)
 
@@ -1901,6 +1982,7 @@ class ReconcileResult:
             "closed_issues": [dict(e) for e in self.closed_issues],
             "rebased": [dict(e) for e in self.rebased],
             "relanded": [dict(e) for e in self.relanded],
+            "deduped": [dict(e) for e in self.deduped],
             "skipped": [dict(e) for e in self.skipped],
             "errors": [dict(e) for e in self.errors],
         }
@@ -1911,6 +1993,7 @@ class ReconcileResult:
             closed_issues=[dict(e) for e in d.get("closed_issues", [])],
             rebased=[dict(e) for e in d.get("rebased", [])],
             relanded=[dict(e) for e in d.get("relanded", [])],
+            deduped=[dict(e) for e in d.get("deduped", [])],
             skipped=[dict(e) for e in d.get("skipped", [])],
             errors=[dict(e) for e in d.get("errors", [])],
         )
@@ -1982,6 +2065,46 @@ def gh_issue_close_sink(issue_ref, repo=None, comment=None,
     if repo:
         cmd += ["--repo", repo]
     runner(cmd, capture_output=True, text=True, check=True)
+
+
+def gh_open_pr_closing_issue_source(repo=None, runner=subprocess.run):
+    """Production same-issue-dedup source (C): shell `gh pr list --label
+    auto-maintainer --state open --json number,url,closingIssuesReferences` and
+    return the LIVE open loop-PR set as `[{pr_ref, url, issue_ref}]`, each PR
+    mapped to its FIRST closing-issue ref (`owner/repo#number` when `repo` is
+    given, else `#number`). A PR that closes NO issue is EXCLUDED (it cannot be a
+    same-issue duplicate). Injectable `runner` for deterministic tests (no
+    network), mirroring the sibling gh sources."""
+    cmd = ["gh", "pr", "list", "--label", LOOP_PR_LABEL, "--state", "open",
+           "--json", "number,url,closingIssuesReferences"]
+    if repo:
+        cmd += ["--repo", repo]
+    out = runner(cmd, capture_output=True, text=True, check=True)
+    prs = json.loads(out.stdout or "[]")
+    entries = []
+    for pr in prs:
+        refs = pr.get("closingIssuesReferences") or []
+        if not refs:
+            continue
+        issue_number = refs[0].get("number")
+        if issue_number is None:
+            continue
+        issue_ref = f"{repo}#{issue_number}" if repo else f"#{issue_number}"
+        entries.append({
+            "pr_ref": _derive_pr_ref(pr.get("url", ""), pr["number"]),
+            "url": pr.get("url", ""),
+            "issue_ref": issue_ref,
+        })
+    return entries
+
+
+def reconcile_dedup_comment(closed_pr_ref, kept_pr_ref):
+    """The machine+human comment the (C) same-issue dedup posts on the source
+    issue, naming the KEPT PR as the superseding same-issue re-land so the close
+    is attributable. Pure."""
+    return (f"auto-maintainer: loop PR {closed_pr_ref} is a duplicate open PR "
+            f"for this issue; closing it — {kept_pr_ref} supersedes it as the "
+            f"same-issue re-land.")
 
 
 def reconcile_issue_close_comment(pr_ref):
@@ -2115,6 +2238,7 @@ class Reconcile:
                  pr_close_sink=gh_pr_close_sink,
                  comment_sink=gh_issue_comment_sink,
                  worktree_helper=reconcile_rebase_worktree,
+                 open_pr_closing_issue_source=gh_open_pr_closing_issue_source,
                  permits_fn=sg.permits, default_branch=None, repo=None):
         self._mode = mode
         self._pr_state_source = pr_state_source
@@ -2123,6 +2247,7 @@ class Reconcile:
         self._pr_close_sink = pr_close_sink
         self._comment_sink = comment_sink
         self._worktree_helper = worktree_helper
+        self._open_pr_closing_issue_source = open_pr_closing_issue_source
         self._permits_fn = permits_fn
         self._default_branch = default_branch
         self._repo = repo
@@ -2147,9 +2272,62 @@ class Reconcile:
                 result.errors.append({"ref": pr_ref or issue_ref,
                                       "reason": str(exc)})
 
+        # (C) Same-issue open-PR dedup — the deterministic supersede backstop, run
+        # AFTER (A)/(B). Sources the LIVE open loop-PR set (NOT the acted_ledger,
+        # which would miss a re-dispatch's orphaned first-run PR).
+        self._dedup_same_issue(result, permitted)
+
         return fc.StateResult(
             signal="OK",
             writes={"reconcile_result": result.to_dict()})
+
+    def _dedup_same_issue(self, result, permitted):
+        """(C) Close duplicate open loop PRs that close the SAME still-OPEN issue.
+
+        Groups the live open loop-PR set by closing-issue ref; for each group with
+        MORE THAN ONE PR whose issue is still OPEN, KEEPS the highest-numbered PR
+        (the newest re-land) and CLOSES every other via the EXISTING PR-close sink,
+        commenting the issue with the kept PR as the superseding same-issue re-land.
+        NEVER closes the sole PR for an issue, NEVER touches a group whose issue is
+        CLOSED, NEVER crosses issues. Trust-gated: at dry-run/propose the
+        would-close intent is recorded under `skipped`. Each close is wrapped in a
+        per-entry try/except that records faults under `errors` and never raises."""
+        entries = self._open_pr_closing_issue_source(repo=self._repo)
+        groups = {}
+        for e in entries:
+            groups.setdefault(e["issue_ref"], []).append(e)
+
+        for issue_ref, group in groups.items():
+            if len(group) <= 1:
+                continue  # sole PR for the issue — never touched.
+            issue_state = self._issue_state_source(issue_ref, repo=self._repo)
+            if (issue_state or {}).get("state") != "OPEN":
+                continue  # closed-issue group — never touched (not (C)'s concern).
+            ordered = sorted(group, key=lambda e: _pr_number(e["pr_ref"]),
+                             reverse=True)
+            kept = ordered[0]
+            for dup in ordered[1:]:
+                dup_ref = dup["pr_ref"]
+                if not permitted:
+                    result.skipped.append({
+                        "ref": dup_ref,
+                        "reason": ("duplicate same-issue loop PR — would close "
+                                   "at auto-merge"),
+                    })
+                    continue
+                try:
+                    self._pr_close_sink(dup_ref, repo=self._repo)
+                    self._comment_sink(
+                        issue_ref,
+                        reconcile_dedup_comment(dup_ref, kept["pr_ref"]),
+                        repo=self._repo)
+                    result.deduped.append({
+                        "pr_ref": dup_ref,
+                        "issue_ref": issue_ref,
+                        "kept_pr_ref": kept["pr_ref"],
+                    })
+                except Exception as exc:  # noqa: BLE001 — record, never raise
+                    result.errors.append({"ref": dup_ref, "reason": str(exc)})
 
     def _reconcile_one(self, result, pr_ref, issue_ref, repo, permitted):
         """Reconcile one `opened` ledger entry into `result` (branch A or B)."""

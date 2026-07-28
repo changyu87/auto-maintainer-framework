@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.8.0
+version: 0.9.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
@@ -60,7 +60,13 @@ The acting pipeline runs `… VERIFY → REVIEW → GATE → INTEGRATE → CLEAN
   `ok` is the conservative AND of the BLOCKING conditions: mergeable AND
   base == default branch. CI is RECORDED (`ci_state`) but is OPTIONAL — it no
   longer gates `ok` (DESIGN §3.7.1/§3.7.2: the correctness gate lives in
-  IMPLEMENT). `reasons` explains a non-ok verdict. `orphaned` is True when the
+  IMPLEMENT). `reasons` explains a non-ok verdict, and DISTINGUISHES a transient
+  DEFERRED mergeability (`mergeable=UNKNOWN` still unresolved after VERIFY's
+  bounded poll — see below) from a real CONFLICTING conflict: a deferred verdict
+  carries the reason `mergeability not yet determined (mergeable=UNKNOWN) —
+  deferred to a later tick` (still `ok=False`, so INTEGRATE skips it, but it reads
+  as a transient defer the next tick's refire re-evaluates, NOT the permanent
+  `not mergeable (mergeable=CONFLICTING)` failure). `orphaned` is True when the
   loop PR's **closing issue is CLOSED** — the driver work is resolved or
   abandoned, so the PR will never merge and must be CLOSED (not merged, not left
   to linger); an orphaned verdict is forced `ok=False` so GATE skips it and
@@ -123,6 +129,26 @@ backlog issues by the downstream REPORT port and fixed on a later tick.
   --label auto-maintainer --state open --json number,url,headRefName,baseRefName,
   mergeable,statusCheckRollup`; tests pass a stub — the determinism seam, mirror
   of `work_intake.gh_issue_source`).
+- **Transient-`UNKNOWN` mergeability resolution (bounded poll).** GitHub computes
+  a PR's mergeability ASYNCHRONOUSLY, so a PR opened this tick is almost always
+  reported `mergeable=UNKNOWN` the moment VERIFY lists it — indistinguishable, at
+  the raw-string level, from a real `CONFLICTING`. Treating `UNKNOWN` as a hard
+  not-mergeable failure means the loop can NEVER auto-merge a PR in the tick it was
+  opened (observed live: 10/11 fresh PRs skipped `not mergeable (mergeable=UNKNOWN)`
+  despite passing CI). So BEFORE deriving a verdict, the open-PR source RESOLVES a
+  transient `UNKNOWN`: for any PR whose `mergeable` is `UNKNOWN`, it re-queries gh
+  (`gh pr view <n> --json mergeable`) with a BOUNDED retry — `MERGEABILITY_POLL_ATTEMPTS`
+  attempts (default a small constant, e.g. 3) with `MERGEABILITY_POLL_INTERVAL_S`
+  seconds between attempts (default a short constant, e.g. 2) — until it settles to
+  `MERGEABLE` or `CONFLICTING`. BOTH the subprocess `runner` AND the `sleep`
+  function are INJECTABLE so tests drive the poll deterministically with no network
+  and no wall-clock wait. A `MERGEABLE`/`CONFLICTING` result derives the verdict as
+  today. If it is STILL `UNKNOWN` after the bounded retries, the verdict is
+  DEFERRED — `ok=False` with the transient `mergeability not yet determined
+  (mergeable=UNKNOWN) — deferred to a later tick` reason (distinct from the
+  permanent CONFLICTING failure), so INTEGRATE skips it and the tick's refire
+  re-evaluates it next tick. This is orthogonal to the CI cross-tick model above:
+  mergeability settles in seconds (polled here); CI stays async across ticks.
 - For each PR derives a `Verdict`: `ci_state` from the status-check rollup
   (all SUCCESS → passing; any FAILURE → failing; any PENDING → pending; none →
   unknown), `mergeable` from gh's `mergeable` field, `base` from `baseRefName`;
@@ -341,6 +367,11 @@ REPORT/work-intake's (contract `never`).
   open/closed state (reuse VERIFY's closing-issue resolver seam).
 - `gh_issue_close_sink(issue_ref, repo, comment) -> None` — NEW injectable sink:
   closes an issue with a machine-readable comment naming the PR.
+- `gh_open_pr_closing_issue_source(repo) -> [{pr_ref, url, issue_ref}]` — NEW
+  injectable source for same-issue dedup (C): the LIVE open loop-PR set with each
+  PR's first closing-issue ref (production: `gh pr list --label auto-maintainer
+  --state open --json number,url,closingIssuesReferences`). Runner injectable; no
+  network in tests.
 - the EXISTING injectable PR-close sink and issue-comment sink, and the EXISTING
   GATE integration-worktree helper (fetch a PR head, merge/rebase onto a fresh
   base), reused for the tier-1 rebase.
@@ -372,17 +403,49 @@ CONFLICTING` — a sibling merged and invalidated it):
   it next tick (PR CLOSED-and-not-merged + issue `updated_at` advanced by the
   comment). Recorded in `reconcile_result.relanded`.
 
+### (C) Same-issue open-PR dedup (deterministic supersede backstop)
+
+The `implement` doer's subagent has a best-effort, PROMPT-tier "supersede a prior
+same-issue PR" step (`gh pr close`), but it can be DENIED by the maintainer
+session's per-command permission classifier — as it was in the live test, leaving
+TWO open `auto-maintainer`-labelled PRs closing the SAME still-open issue (e.g.
+issue #650 open with both #744 and #754). Left alone, both could auto-merge for one
+issue. RECONCILE runs before PULL INSIDE `run_tick`'s already-approved subprocess,
+so a close it performs bypasses that per-command classifier — the deterministic
+backstop (spec-rules §1: script > prompt) the prompt-tier supersede cannot
+guarantee.
+
+Dedup sources the LIVE open loop-PR set (NOT the `acted_ledger`, which holds only
+the latest `opened` entry per work order and would miss a re-dispatch's orphaned
+first-run PR) via an INJECTABLE source (production: `gh pr list --label
+auto-maintainer --state open --json number,url,closingIssuesReferences`, each PR
+mapped to its FIRST closing-issue ref; a PR that closes no issue is excluded from
+dedup). It GROUPS the open PRs by closing-issue ref and, for each group with **more
+than one** open PR whose **source issue is still OPEN** (`gh_issue_state_source`),
+KEEPS exactly one — the **highest PR number** (the loop-tracked / newest re-land) —
+and CLOSES every other PR in the group via the EXISTING PR-close sink (`gh pr close
+<n> --delete-branch` + a machine-readable comment naming the kept PR as the
+superseding same-issue re-land). Recorded in `reconcile_result.deduped`. Dedup NEVER
+touches the sole PR for an issue, NEVER touches a group whose issue is CLOSED (an
+orphaned duplicate whose issue closed is INTEGRATE's/orphan path's concern, and a
+merged-issue is (A)'s), and NEVER touches PRs across different issues.
+
 **Trust-gated exactly like INTEGRATE.** The mutating acts (issue-close,
-force-push, PR-close) run ONLY at `permits("merge", mode)` (i.e. `auto-merge`); at
-`dry-run`/`propose` the would-act intent is recorded under `skipped` and a human
-acts. A single-entry fault is recorded under `errors` and never wedges the tick.
+force-push, PR-close, same-issue dedup PR-close) run ONLY at `permits("merge",
+mode)` (i.e. `auto-merge`); at `dry-run`/`propose` the would-act intent is recorded
+under `skipped` and a human acts. A single-entry fault is recorded under `errors`
+and never wedges the tick.
 
 ### `ReconcileResult` slot (owned here, versioned, machine-first)
 
 `{ schema_version, closed_issues: [{issue_ref, pr_ref}], rebased: [{pr_ref}],
-relanded: [{pr_ref, issue_ref}], skipped: [{ref, reason}], errors: [{ref,
-reason}] }`. `RECONCILE_MANIFEST` reads `acted_ledger`, writes `reconcile_result`,
-emits only `OK`. `RECONCILE_RESULT_SCHEMA_VERSION` starts at `1.0.0`.
+relanded: [{pr_ref, issue_ref}], deduped: [{pr_ref, issue_ref, kept_pr_ref}],
+skipped: [{ref, reason}], errors: [{ref, reason}] }`. `deduped` records the
+same-issue duplicate PRs (C) closed this tick — each entry names the closed
+`pr_ref`, its `issue_ref`, and the `kept_pr_ref` that superseded it — kept SEPARATE
+from `closed_issues`/`rebased`/`relanded`. `RECONCILE_MANIFEST` reads `acted_ledger`,
+writes `reconcile_result`, emits only `OK`. `RECONCILE_RESULT_SCHEMA_VERSION` is
+`1.1.0` (additive: the `deduped` list was added to the `1.0.0` shape).
 
 ## Guardrails (consumed from safety-governance)
 
@@ -405,6 +468,11 @@ CLEANUP → PERSIST → EXIT`.
   `auto-merge` and ONLY a PR that is `ok` AND passes guardrails.
 - VERIFY's `ok` is mergeable+base only (CI recorded, not gating); a failing
   cross-feature complement flips every verdict `ok=False`.
+- VERIFY resolves a transient `mergeable=UNKNOWN` via a BOUNDED, injectable-runner
+  + injectable-sleep poll before deriving the verdict; a still-`UNKNOWN` result is
+  a DEFERRED verdict (`ok=False`, transient reason) DISTINCT from a permanent
+  `CONFLICTING` failure — a real `CONFLICTING` stays a hard failure. The poll is
+  bounded (never loops unboundedly) and adds no network/wall-clock cost in tests.
 - Deterministic given the injected `gh` + complement-runner seams; no model, no
   wall-clock beyond gh.
 - Idempotent: a merged PR leaves the open set, so re-running never double-merges;
@@ -418,6 +486,12 @@ CLEANUP → PERSIST → EXIT`.
   human-closed one — and its tier-1 rebase force-pushes ONLY the loop's own PR
   branch; a real textual conflict falls back to re-land (never a silent semantic
   auto-merge).
+- RECONCILE same-issue dedup (C) closes a duplicate loop PR ONLY when MORE THAN
+  ONE open `auto-maintainer` PR closes the SAME still-OPEN issue; it keeps the
+  highest-numbered PR and closes the rest via the existing PR-close sink. It NEVER
+  closes the sole PR for an issue, NEVER touches a group whose issue is closed, and
+  NEVER crosses issues; it is trust-gated (`auto-merge` only) and records closures
+  in `reconcile_result.deduped`.
 
 ## Deferred (NOT v1)
 

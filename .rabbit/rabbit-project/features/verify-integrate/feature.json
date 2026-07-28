@@ -1,6 +1,6 @@
 {
   "name": "verify-integrate",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/verify-integrate/src/**"
@@ -8,7 +8,7 @@
   "created": "2026-06-14T16:35:52Z",
   "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict / ReconcileResult schemas reach a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-07-27",
-  "spec_change_reason": "RECONCILE-support: add the deterministic Reconcile class + ReconcileResult schema (closed_issues/rebased/relanded/skipped/errors) + the injectable gh_pr_state_source/gh_issue_state_source/gh_issue_close_sink/reconcile_rebase_worktree seams. Reads the injected acted_ledger slot; (A) closes a merged-PR's still-open issue, (B) recovers a CONFLICTING loop PR via tier-1 rebase / tier-2 re-land. Advisory (emits only OK, never blocks the tick), trust-gated exactly like INTEGRATE.",
-  "spec_no_change_reason": "spec.md already carries the RECONCILE-support section (committed on this branch as the spec-update step); this cycle implements it in src + tests + contract and re-anchors the housekeep doc baseline"
+  "updated": "2026-07-28",
+  "spec_change_reason": "Two convergence fixes making auto-merge reliable the tick a PR is opened. CHANGE 1 (VERIFY): resolve a transient gh mergeable=UNKNOWN via a BOUNDED, injectable-runner + injectable-sleep poll (MERGEABILITY_POLL_ATTEMPTS/MERGEABILITY_POLL_INTERVAL_S) in gh_open_pr_source before deriving the verdict; a still-UNKNOWN result becomes a DEFERRED verdict (ok=False, transient reason) DISTINCT from the permanent CONFLICTING hard failure (derive_verdict now splits the non-mergeable reason). CHANGE 2 (RECONCILE): add same-issue open-PR dedup (C) \u2014 the new gh_open_pr_closing_issue_source seam sources the live open loop-PR set, groups by closing issue, and for each group with >1 open PR whose issue is still OPEN keeps the highest-numbered PR and closes the rest via the existing PR-close sink; ReconcileResult gains an additive `deduped` list and RECONCILE_RESULT_SCHEMA_VERSION -> 1.1.0. Trust-gated exactly like INTEGRATE.",
+  "spec_no_change_reason": "spec.md already carries the transient-UNKNOWN mergeability poll + RECONCILE (C) same-issue dedup sections (committed on this branch as the spec-update step 49ee5a9); this cycle implements them in src + tests + re-anchors the housekeep doc baseline."
 }
