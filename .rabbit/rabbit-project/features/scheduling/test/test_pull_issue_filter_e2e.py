@@ -117,7 +117,8 @@ def test_make_pull_default_config_binds_no_filter():
     _manifest, run = rt.make_pull(runtime)
     pull = run.__self__  # the Pull instance whose bound method is `run`
     assert pull._issue_filter == _NO_FILTER, pull._issue_filter
-    assert pull._issue_filter == {"labels": [], "title_pattern": None}
+    assert pull._issue_filter == {"labels": [], "title_pattern": None,
+                                  "exclude_labels": []}
 
 
 def test_make_pull_configured_binds_normalized_filter():
@@ -129,7 +130,8 @@ def test_make_pull_configured_binds_normalized_filter():
     pull = run.__self__
     assert pull._issue_filter == _NORMALIZED, pull._issue_filter
     assert pull._issue_filter == {"labels": [["A", "B"]],
-                                  "title_pattern": "^\\[bot\\]"}
+                                  "title_pattern": "^\\[bot\\]",
+                                  "exclude_labels": []}
 
 
 def test_make_pull_keeps_work_own_filings_and_source():
@@ -177,4 +179,5 @@ def test_run_tick_default_config_passes_no_filter_to_source():
                 journal_path=journal_path, project_dir=project_dir,
                 source=src)
     assert src.seen["issue_filter"] == _NO_FILTER, src.seen
-    assert src.seen["issue_filter"] == {"labels": [], "title_pattern": None}
+    assert src.seen["issue_filter"] == {"labels": [], "title_pattern": None,
+                                        "exclude_labels": []}
