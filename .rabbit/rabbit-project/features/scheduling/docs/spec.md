@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.39.0
+version: 0.40.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -453,10 +453,13 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   dispatch that declares both a file-based handoff and harness
   `isolation: "worktree"`. Non-isolated dispatches (e.g. TRIAGE) likewise run
   with cwd = the main workspace.
-- **At pause: delete any stale output file.** Before returning the PAUSE,
-  `run_tick` DELETES any pre-existing file at each dispatch's `output_path`. A
+- **At pause: delete any stale output file (only for dispatches being
+  (re-)dispatched).** Before returning the PAUSE, `run_tick` DELETES any
+  pre-existing file at the `output_path` of each dispatch it is dispatching. A
   stale file from a prior tick must never be misread on resume — a missing fresh
-  write surfaces as `invalid_output`, never a stale read.
+  write surfaces as `invalid_output`, never a stale read. On a per-dispatch re-emit
+  (see below) this stale-delete applies ONLY to the not-yet-valid dispatches being
+  re-dispatched; a preserved already-valid output is NOT deleted.
 - **Durable checkpoint** under `TICK_CHECKPOINT_KEY = "tick_checkpoint"`:
   `{next_state, slots (a full snapshot of the live TickContext slot values),
   path, signals, output_dir, pending: {state, writes, signal_rule, cardinality,
@@ -485,6 +488,25 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   pause or the terminal. There is NO orchestrator-marshalled
   `dispatch-result.json` / `resume_dispatch` list input — it is superseded by
   file-reading.
+- **PER-DISPATCH `invalid_output` re-emit (never re-run a dispatch that already
+  produced a valid output).** When resume finds ONE pending dispatch missing or
+  invalid, the returned `invalid_output` re-emit MUST re-dispatch ONLY the
+  not-yet-valid dispatches — a dispatch whose `output_path` already holds a
+  schema-valid output is PRESERVED and NOT re-run. The prior all-or-nothing
+  behaviour (any single missing/invalid output re-dispatches EVERY pending
+  dispatch of the state) is the duplicate-PR root cause: for `IMPLEMENT` it re-ran
+  implementers that had already written a valid handoff and already OPENED a PR, so
+  each re-run opened a DUPLICATE PR (observed live: one `invalid_output` re-emit
+  re-ran 5 already-validated implementers → 5 duplicate PRs). Concretely, the
+  `invalid_output` return partitions the checkpoint's `pending.dispatches` by
+  reading each `output_path`: the schema-valid ones are recorded as already-satisfied
+  (their byte-identical `output_path` files are left on disk, NOT deleted), and the
+  re-emitted PAUSE carries ONLY the missing/invalid dispatches for re-dispatch.
+  When the state finally has EVERY dispatch's output present and valid, resume
+  reads and `collect_outputs`-assembles ALL of them (preserved-valid +
+  freshly-re-run) into the writes slot exactly as today. Determinism/idempotency is
+  preserved: a crash-safety re-emit of an all-valid state applies the slot with NO
+  re-dispatch, and a fresh tick is unchanged.
 - **Terminal.** On reaching DONE it clears `TICK_CHECKPOINT_KEY`, persists the
   per-tick ephemeral read products (#64 — only what the route produced, never a
   stale carry-forward), prints the existing one-line trace stitched across all
@@ -492,9 +514,13 @@ routes behave EXACTLY as before — byte-for-byte the same trace, same return.
   budget/route), and returns the disposition signal (a string), exactly as a
   pure-script tick does.
 - **Crash-safety.** A fresh `run_tick` invocation that finds an existing
-  `tick_checkpoint` (and no `resume`) re-emits the SAME PAUSED dispatch request
+  `tick_checkpoint` (and no `resume`) re-emits the PAUSED dispatch request
   (byte-identical `output_path`) from the checkpoint (idempotent — the checkpoint
-  is the truth).
+  is the truth). This re-emit is subject to the SAME per-dispatch narrowing as the
+  `invalid_output` re-emit above: a dispatch whose `output_path` already holds a
+  schema-valid output is PRESERVED (not re-deleted, not re-dispatched); only the
+  not-yet-valid dispatches are re-emitted, so a crash after some subagents already
+  opened their PRs never re-runs them into duplicates.
 - The budget readiness gate (safety-governance) is evaluated at FRESH tick start
   only, NOT on resume. Read products stay #64 per-tick ephemeral; the budget
   stays a durable cross-tick fact.
@@ -819,13 +845,18 @@ kind outside the closed vocabulary):
   count (PRs on which INTEGRATE enabled GitHub native auto-merge this tick — a
   PENDING success, distinct from `integrate_errored`, from the
   `integration_result` read product), and `merged_refs` — the
-  list of merged `pr_ref`s, from the `integration_result` read product), and a
+  list of merged `pr_ref`s, from the `integration_result` read product), the
+  RECONCILE `deduped` count (`len(reconcile_result.deduped)` — the same-issue
+  duplicate loop PRs RECONCILE closed this tick, from the `reconcile_result` read
+  product; `0` when the route has no RECONCILE state or `reconcile_result` is
+  absent), and a
   `refire` boolean disambiguating idle-because-no-work (`false`) from
   refire-because-work-remains (`true`). The one-line trace also gains a compact
-  `merged=<n>` token (plus `integrate_errored=<n>` and `auto_merge_enabled=<n>`
-  each shown only when `> 0`). All existing
+  `merged=<n>` token (plus `integrate_errored=<n>`, `auto_merge_enabled=<n>`, and
+  `deduped=<n>` each shown only when `> 0`). All existing
   detail keys + trace fields are preserved; a route with no INTEGRATE shows
-  `merged=0`/`merged_refs=[]`/`auto_merge_enabled=0`.
+  `merged=0`/`merged_refs=[]`/`auto_merge_enabled=0`, and a route with no
+  RECONCILE (or an empty dedup) shows `deduped=0` in detail with no trace token.
   - **Per-issue / per-PR IDENTIFIERS (additive, so the log alone answers "which
     issues + which PRs").** In addition to the counts above, `tick_end.detail`
     carries identifier lists sourced from the read products already in scope at
