@@ -1,7 +1,7 @@
 ---
 name: rabbit-feature-touch
 description: Use when any write, edit, delete, or add operation targets a feature directory, or when a new feature is being created. Not for read-only queries, and NOT for metadata-only writes (filing a rabbit-managed issue, such as a bug or enhancement). Ensures the formal TDD state machine is advanced via tdd-step.py on every feature touch.
-version: 3.13.0
+version: 3.14.0
 owner: rabbit-feature
 deprecation_criterion: when feature-touch orchestration is natively handled by the rabbit CLI or by Claude Code workflow primitives
 ---
@@ -201,6 +201,24 @@ marker is `.rabbit-tdd-autonomous`.
 
 One subagent per feature. Dispatch all in parallel if multiple features.
 
+**Precondition — verify the design handoff, ONCE PER FEATURE.** Before
+assembling any dispatch, run the companion `verify-impl-suggestion` subcommand
+for EVERY scoped feature (not just the first). It asserts a fresh
+`.rabbit/impl-suggestion-<feature-name>.json` exists and is not older than the
+feature's spec — the deterministic, locatable guard (`spec-rules.md` §1) that a
+feature actually went through `Skill(rabbit-spec-update)` in Step 3 rather than
+a raw `docs/spec.md` edit that silently skips the design step and the
+machine-first handoff. If it exits non-zero for any feature, STOP: re-run
+rabbit-spec-update for that feature (Step 3) before dispatching. The check is a
+computed, mode-aware step owned by the companion script (§4 Script-Backed
+Orchestration), so it is invoked, not reimplemented inline:
+
+<!-- example: invocation synopsis of the verify-impl-suggestion precondition -->
+```bash
+.claude/features/rabbit-feature/skills/rabbit-feature-touch/scripts/feature-touch.py \
+  verify-impl-suggestion <feature-name>
+```
+
 Shell (assemble the prompt — deterministic). Both the spec-path resolution and
 the worktree-aware `dispatch-tdd-subagent.py` argv assembly are computed,
 mode-aware steps (§4 Script-Backed Orchestration), so they are delegated to the
@@ -285,6 +303,16 @@ sections for the binding wording.
   resolved feature `spec.md` (flat `docs/spec.md` preferred, then
   `docs/spec/spec.md`) under the
   scope-guard path-pattern allowlist invoked during Step 3.
+- Main session uses raw Write or Edit on a feature `docs/spec.md` instead of
+  `Skill(rabbit-spec-update)` → STOP. Spec authoring must go through
+  rabbit-spec-update (Step 3), which runs the design step AND writes the
+  machine-first `.rabbit/impl-suggestion-<feature-name>.json` handoff. A raw
+  edit silently skips both, so later wave features reach dispatch with a stale
+  or absent impl-suggestion (the approval gate has nothing to show, the subagent
+  loses its `key_invariants`/`approach`). Invoke the Skill **once per feature** —
+  never replay the loaded procedure by hand for subsequent features in a
+  multi-feature wave. The Step-5 `verify-impl-suggestion` precondition is the
+  deterministic backstop that catches this per feature before dispatch.
 - Main session creates `.rabbit-scope-active` (global) or
   `.rabbit-scope-active-<feature>` (per-feature) scope markers at the repo
   root → STOP. Scope markers are exclusively the TDD subagent's responsibility,
