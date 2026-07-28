@@ -1,6 +1,6 @@
 {
   "name": "rabbit-housekeep",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "owner": "rabbit-workflow team",
   "tdd_state": "test-green",
   "housekeeping_clean": true,
@@ -43,6 +43,6 @@
   "runtime": {},
   "configuration": [],
   "prompts": [],
-  "updated": "2026-07-08",
-  "spec_no_change_reason": "spec v0.11.0 already committed on this branch in f5bd62a9 by the dispatcher; implementation cycle adds the script/skill/tests"
+  "updated": "2026-07-27",
+  "spec_no_change_reason": "Bug fix in measure-reduction.py UTF-8 text-sniff heuristic; behavior already covered by Invariant 5 count semantics, no spec surface change warranted."
 }

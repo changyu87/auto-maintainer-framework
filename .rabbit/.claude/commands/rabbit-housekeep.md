@@ -1,7 +1,7 @@
 ---
 name: "rabbit-housekeep"
 description: "Run a measured verify-or-flag housekeeping wave over the CONSUMING PROJECT's declared features. Default DOC dimension; --code adds the code dimension ON TOP of docs (additive: docs AND code); --docs-only for doc-only waves."
-version: 0.11.0
+version: 0.11.1
 owner: "rabbit-workflow team"
 deprecation_criterion: "when housekeeping is provided natively by the rabbit CLI as a first-class measured-reduction subcommand"
 template_version: 1.0.0
