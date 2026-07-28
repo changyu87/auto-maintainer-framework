@@ -21,10 +21,11 @@ rest to a later tick. The target feature(s) are read from the order's
 AUTHORITATIVE `target_feature` field, which TRIAGE stamps from the blast-radius
 signals (issue #258); for orders lacking that field (older slots / direct
 construction) PRIORITIZE FALLS BACK to re-deriving it from the same authoritative
-signals — `feature:`/`component:`-prefixed labels, a `Component:` body line, and
-a conventional title prefix (`name:` / `type(scope):`, for label-less issues) —
-never generic labels nor a bare conventional-commit type; orders with no
-provable feature stay parallel.
+signals — `feature:`/`component:`-prefixed labels, a `Component:` body line, a
+conventional title prefix (`name:` / `type(scope):`, for label-less issues), and
+a `[scope@team]` / `[scope]` bracket-prefix title (a live-pool filing
+convention) — never generic labels nor a bare conventional-commit type; orders
+with no provable feature stay parallel.
 
 Public surface:
   - ExecutionPlan slot schema — `EXECUTION_PLAN_SCHEMA_VERSION` +
@@ -36,7 +37,7 @@ Public surface:
   - factory(runtime) -> (StateManifest, run_callable) — the adapter-wiring
     factory convention; scheduling.run_tick maps PRIORITIZE through it.
 
-Version: 0.4.0
+Version: 0.5.0
 Owner: changyu87
 Deprecation criterion: Superseded when ordering ceases to be deterministic
   (e.g. a model-backed prioritizer adapter replaces the default), or when the
@@ -95,6 +96,14 @@ _COMPONENT_LINE_RE = re.compile(
 # (issue #214 guidance item 3); a real multi-feature radius uses punctuation.
 _FEATURE_SPLIT_RE = re.compile(r"[+,&/]")
 
+# The bracket-prefix title convention observed in the live pool, e.g.
+# `[dci-team-atlassian-sharepoint@dci-team] jira skill ...` or `[foo] bar`. The
+# leading `[...]` token's `scope` part (before any `@team`) is the feature key.
+# This is defense-in-depth for the case TRIAGE fails to stamp `target_feature`
+# and the title carries no conventional-commit prefix (the exact live miss where
+# six same-scope orders fanned out in parallel and collided).
+_BRACKET_PREFIX_RE = re.compile(r"^\s*\[([^\]]+)\]")
+
 # The conventional title-prefix convention that names a work order's target
 # feature for LABEL-LESS issues (issue #257), matching `name: ...` (the bare
 # prefix, e.g. `scheduling: ...`) and `type(scope): ...` (a conventional-commit
@@ -123,16 +132,27 @@ def _normalize_feature(token):
 
 
 def _title_feature(title):
-    """Derive the target feature from a conventional title prefix, or None.
+    """Derive the target feature from a title prefix, or None.
 
-    Recognizes `name: ...` (take `name`, e.g. `scheduling: ...`) and
-    `type(scope): ...` (take `scope`, e.g. `feat(scheduling): ...` /
-    `fix(work-intake): ...`). A bare conventional-commit type used WITHOUT a
-    scope (`fix: x`, `docs: y`) names NO feature, so unrelated `fix:`/`docs:`
-    orders are not falsely grouped (the #216 over-serialization regression); a
-    scoped header is unaffected because the scope, not the type, is the key.
+    Tries the bracket-prefix convention FIRST — `[scope@team] ...` or
+    `[scope] ...` (a live-pool filing convention, e.g.
+    `[dci-team-atlassian-sharepoint@dci-team] jira ...`) yields the inner
+    token's `scope` part (before any `@team`) as the feature key. Then falls
+    through to the conventional-commit convention: `name: ...` (take `name`,
+    e.g. `scheduling: ...`) and `type(scope): ...` (take `scope`, e.g.
+    `feat(scheduling): ...` / `fix(work-intake): ...`). A bare
+    conventional-commit type used WITHOUT a scope (`fix: x`, `docs: y`) names NO
+    feature, so unrelated `fix:`/`docs:` orders are not falsely grouped (the #216
+    over-serialization regression); a scoped header is unaffected because the
+    scope, not the type, is the key.
     """
-    match = _TITLE_PREFIX_RE.match(title or "")
+    title = title or ""
+    bracket = _BRACKET_PREFIX_RE.match(title)
+    if bracket:
+        # `[scope@team]` -> scope is the part before the first `@`.
+        scope = bracket.group(1).split("@", 1)[0]
+        return _normalize_feature(scope)
+    match = _TITLE_PREFIX_RE.match(title)
     if not match:
         return None
     name, scope = match.group(1), match.group(2)
@@ -158,9 +178,11 @@ def _features_for(order):
        convention) — generic labels are ignored.
     2. a `Component:`/`Feature:` line in the issue body, split on +,&/, into one
        or more feature names (never on the word "and").
-    3. a conventional title prefix — `name:` or `type(scope):` — which covers
-       LABEL-LESS issues (issue #257) that carry no feature label or body line;
-       a bare conventional-commit type (`fix:`, `docs:`) names no feature.
+    3. a title prefix — a `[scope@team]` / `[scope]` bracket prefix (a live-pool
+       filing convention) or a conventional `name:` / `type(scope):` prefix —
+       which covers LABEL-LESS issues (issue #257) that carry no feature label or
+       body line; a bare conventional-commit type (`fix:`, `docs:`) names no
+       feature.
 
     Returns an EMPTY set when no feature is provable. An order with no provable
     feature is never serialized against any other order (it stays parallel),

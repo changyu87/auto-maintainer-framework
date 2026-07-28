@@ -1,6 +1,6 @@
 {
   "name": "prioritize",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/prioritize/src/**"
@@ -8,5 +8,6 @@
   "created": "2026-06-12T06:02:16Z",
   "deprecation_criterion": "Superseded when ordering ceases to be deterministic (e.g. a model-backed prioritizer adapter replaces the default), or when the ExecutionPlan schema reaches a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-06-27"
+  "updated": "2026-07-27",
+  "spec_no_change_reason": "spec.md bumped to 0.5.0 with the bracket-prefix fallback bullet was pre-committed by the dispatcher in commit 1bac3a5 before this TDD cycle was dispatched; no uncommitted spec diff remains in the working tree"
 }

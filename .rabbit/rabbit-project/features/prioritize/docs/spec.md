@@ -1,6 +1,6 @@
 ---
 feature: prioritize
-version: 0.4.0
+version: 0.5.0
 owner: changyu87
 deprecation_criterion: Superseded when ordering ceases to be deterministic (e.g. a model-backed prioritizer adapter replaces the default), or when the ExecutionPlan schema reaches a breaking major version.
 ---
@@ -109,6 +109,14 @@ generic labels:
   `docs`, `chore`, `refactor`, `test`, `perf`, `build`, `ci`, `style`) names
   **no** feature, so `fix: x` and `docs: y` are not grouped (the #216
   over-serialization regression); a `type(scope):` header keys on the scope.
+- a **bracket-prefix** title — `[scope@team] ...` or `[scope] ...` (a filing
+  convention observed in the live pool, e.g.
+  `[dci-team-atlassian-sharepoint@dci-team] jira skill ...`): the leading
+  `[...]` token's `scope` part (before any `@team`) is taken as the feature key.
+  This is defense-in-depth for the case TRIAGE fails to stamp `target_feature`
+  and the title uses this convention (the exact live miss where six same-scope
+  orders fanned out in parallel and collided); the authoritative
+  `target_feature` stays the primary source and this remains fallback-only.
 
 An order with **no provable feature** carries no shared blast radius and stays
 parallel — serialization rests on a *proven* shared feature, never a guess.

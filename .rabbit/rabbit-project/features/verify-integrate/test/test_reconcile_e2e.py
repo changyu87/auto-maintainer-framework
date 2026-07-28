@@ -1,0 +1,628 @@
+#!/usr/bin/env python3
+"""End-to-end + unit tests for the verify-integrate RECONCILE-support surface.
+
+RECONCILE is a deterministic, SCRIPT-TIER, ADVISORY reconciler of the PREVIOUS
+tick's leftover loop PRs (DESIGN §3.7 convergence; mirrors Integrate). Scheduling's
+make_reconcile wraps it into a route state run BEFORE PULL — the wiring is NOT owned
+here; this feature owns the reconcile LOGIC + the ReconcileResult schema.
+
+It reads an injected `acted_ledger` slot (the durable `opened` entries) and, per
+entry, reads the PR's live state via injectable seams:
+  - (A) a MERGED PR whose source issue is still OPEN has its issue CLOSED (the
+    Closes-keyword fallback) — never a human-closed issue.
+  - (B) an OPEN + CONFLICTING PR is recovered by a TIER-1 rebase (worktree helper +
+    force-push); a real textual conflict falls back to TIER-2 close-PR + comment-
+    issue re-land.
+
+Every mutating act is trust-gated by permits('merge', mode) (auto-merge only); at
+dry-run/propose the would-act intent is recorded under `skipped`. RECONCILE is
+ADVISORY: a single-entry fault is recorded under `errors`, never raised, and the
+tick still emits OK.
+
+The e2e tests drive RECONCILE exactly as scheduling will — building a real
+fsm-contracts TickContext, registering the slots, running the state, and committing
+its StateResult through `fc.apply_result` under the manifest + signal vocabulary.
+Every GitHub/git effect is behind an injected FAKE — no network, no real git.
+
+Owner: changyu87
+"""
+
+import json
+import os
+import sys
+import types
+
+_FEATURE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SRC = os.path.join(_FEATURE_DIR, "src")
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+
+_FEATURES_DIR = os.path.dirname(_FEATURE_DIR)
+_FSM_SRC = os.path.join(_FEATURES_DIR, "fsm-contracts", "src")
+if _FSM_SRC not in sys.path:
+    sys.path.insert(0, _FSM_SRC)
+
+# safety-governance is a sibling consumed UNCHANGED (permits); put its src/ on the
+# path so RECONCILE resolves it by module name, mirroring the other adapters.
+_SG_SRC = os.path.join(_FEATURES_DIR, "safety-governance", "src")
+if _SG_SRC not in sys.path:
+    sys.path.insert(0, _SG_SRC)
+_LD_SRC = os.path.join(_FEATURES_DIR, "lifecycle-dispositions", "src")
+if _LD_SRC not in sys.path:
+    sys.path.insert(0, _LD_SRC)
+
+import fsm_contracts as fc  # noqa: E402
+import safety_governance as sg  # noqa: E402
+import verify_integrate as vi  # noqa: E402
+
+
+_DEFAULT_BRANCH = "main"
+_REPO = "acme/widget"
+
+
+# --------------------------------------------------------------------------
+# Fixtures — ledger entry builder, fake sources/sinks/helper, fresh ctx.
+# --------------------------------------------------------------------------
+
+def _entry(number=1, issue=None, repo=_REPO, work_order_id=None):
+    """An `opened` acted-ledger entry (the shape scheduling seeds)."""
+    pr_ref = f"{repo}#{number}"
+    return {
+        "work_order_id": work_order_id or f"wo-{number}",
+        "pr_ref": pr_ref,
+        "issue_ref": (f"{repo}#{issue}" if issue is not None else None),
+        "repo": repo,
+    }
+
+
+def _pr_state_source(states):
+    """A pr_state_source over a {pr_ref: {state, merged, mergeable}} map. Records
+    the pr_refs it was queried for."""
+    calls = []
+
+    def source(pr_ref, repo=None):  # noqa: ARG001
+        calls.append(pr_ref)
+        return dict(states[pr_ref])
+
+    source.calls = calls
+    return source
+
+
+def _issue_state_source(states):
+    """An issue_state_source over a {issue_ref: {state}} map. Records queries."""
+    calls = []
+
+    def source(issue_ref, repo=None):  # noqa: ARG001
+        calls.append(issue_ref)
+        return dict(states.get(issue_ref, {"state": "OPEN"}))
+
+    source.calls = calls
+    return source
+
+
+def _recording_issue_close_sink():
+    calls = []
+
+    def sink(issue_ref, repo=None, comment=None):
+        calls.append({"issue_ref": issue_ref, "repo": repo, "comment": comment})
+
+    sink.calls = calls
+    return sink
+
+
+def _recording_pr_close_sink():
+    calls = []
+
+    def sink(pr_ref, repo=None):
+        calls.append({"pr_ref": pr_ref, "repo": repo})
+
+    sink.calls = calls
+    return sink
+
+
+def _recording_comment_sink():
+    calls = []
+
+    def sink(issue_ref, body, repo=None):
+        calls.append({"issue_ref": issue_ref, "body": body, "repo": repo})
+
+    sink.calls = calls
+    return sink
+
+
+def _worktree_helper(rebased_by_ref):
+    """A tier-1 rebase worktree helper over a {pr_ref: bool} map (True = clean
+    rebase + force-push; False = real conflict). Records calls."""
+    calls = []
+
+    def helper(pr_ref, default_branch, repo=None):
+        calls.append({"pr_ref": pr_ref, "default_branch": default_branch,
+                      "repo": repo})
+        return {"rebased": rebased_by_ref[pr_ref]}
+
+    helper.calls = calls
+    return helper
+
+
+def _never_helper():
+    """A worktree helper that fails the test if called (the not-permitted paths
+    and the branch-A path must NEVER invoke it)."""
+    def helper(pr_ref, default_branch, repo=None):  # noqa: ARG001
+        raise AssertionError("worktree_helper must not be called here")
+    return helper
+
+
+def _fresh_ctx():
+    """A TickContext with the slots RECONCILE touches: the injected acted_ledger
+    (scheduling-seeded, registered here as a generic array) and reconcile_result."""
+    ctx = fc.TickContext()
+    ctx.register_slot("acted_ledger", {"type": "array"}, version="1.0.0")
+    ctx.register_slot(
+        vi.RECONCILE_RESULT_SLOT["name"],
+        vi.RECONCILE_RESULT_SLOT["schema"],
+        version=vi.RECONCILE_RESULT_SLOT["version"],
+    )
+    return ctx
+
+
+def _run(reconcile, ledger):
+    """Drive RECONCILE end-to-end: seed the ledger, run, commit through
+    fc.apply_result under the manifest + signal vocab, return reconcile_result."""
+    ctx = _fresh_ctx()
+    ctx.write("acted_ledger", ledger)
+    result = reconcile.run(ctx)
+    assert fc.validate_state_result(result).passed is True
+    assert result.signal == "OK"
+    vocab = fc.SignalVocabulary(vi.RECONCILE_SIGNALS)
+    fc.apply_result(ctx, vi.RECONCILE_MANIFEST, result, vocab)
+    return ctx.read("reconcile_result")
+
+
+def _auto_reconcile(**kw):
+    """A Reconcile at auto-merge mode with the REAL sg.permits, defaulting the
+    injected seams the individual test overrides."""
+    kw.setdefault("default_branch", _DEFAULT_BRANCH)
+    kw.setdefault("repo", _REPO)
+    return vi.Reconcile(mode="auto-merge", **kw)
+
+
+# ==========================================================================
+# Schema: ReconcileResult is typed, machine-first, versioned, round-trips.
+# ==========================================================================
+
+def test_reconcile_result_round_trip():
+    r = vi.ReconcileResult(
+        closed_issues=[{"issue_ref": "acme/widget#5", "pr_ref": "acme/widget#7"}],
+        rebased=[{"pr_ref": "acme/widget#8"}],
+        relanded=[{"pr_ref": "acme/widget#9", "issue_ref": "acme/widget#3"}],
+        skipped=[{"ref": "acme/widget#10", "reason": "would recover"}],
+        errors=[{"ref": "acme/widget#11", "reason": "boom"}],
+    )
+    d = r.to_dict()
+    assert d["schema_version"] == vi.RECONCILE_RESULT_SCHEMA_VERSION
+    assert d["closed_issues"] == [{"issue_ref": "acme/widget#5",
+                                   "pr_ref": "acme/widget#7"}]
+    assert d["rebased"] == [{"pr_ref": "acme/widget#8"}]
+    assert d["relanded"] == [{"pr_ref": "acme/widget#9",
+                              "issue_ref": "acme/widget#3"}]
+    assert vi.ReconcileResult.from_dict(d) == r
+
+
+def test_reconcile_result_empty_round_trip():
+    r = vi.ReconcileResult()
+    d = r.to_dict()
+    assert d["closed_issues"] == []
+    assert d["rebased"] == []
+    assert d["relanded"] == []
+    assert d["skipped"] == []
+    assert d["errors"] == []
+    assert vi.ReconcileResult.from_dict(d) == r
+
+
+def test_reconcile_result_schema_version_is_1_0_0():
+    assert vi.RECONCILE_RESULT_SCHEMA_VERSION == "1.0.0"
+
+
+def test_reconcile_result_slot_descriptor_is_versioned():
+    slot = vi.RECONCILE_RESULT_SLOT
+    assert slot["name"] == "reconcile_result"
+    assert slot["schema"] == {"type": "object"}
+    assert slot["version"] == vi.RECONCILE_RESULT_SCHEMA_VERSION
+
+
+def test_reconcile_manifest_declares_reads_writes_emits():
+    m = vi.RECONCILE_MANIFEST
+    assert list(m.reads) == ["acted_ledger"]
+    assert list(m.writes) == ["reconcile_result"]
+    assert list(m.emits) == ["OK"]
+
+
+def test_reconcile_signal_vocabulary_is_closed():
+    assert vi.RECONCILE_SIGNALS == ["OK"]
+    vocab = fc.SignalVocabulary(vi.RECONCILE_SIGNALS)
+    assert vocab.is_member("OK")
+    assert not vocab.is_member("EMPTY")
+
+
+# ==========================================================================
+# (A) Merged-PR issue-close fallback.
+# ==========================================================================
+
+def test_reconcile_e2e_merged_pr_open_issue_closes_issue():
+    pr = _pr_state_source({
+        "acme/widget#7": {"state": "MERGED", "merged": True,
+                          "mergeable": "UNKNOWN"}})
+    iss = _issue_state_source({"acme/widget#5": {"state": "OPEN"}})
+    close = _recording_issue_close_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr, issue_state_source=iss,
+                                issue_close_sink=close,
+                                worktree_helper=_never_helper())
+
+    res = _run(reconcile, [_entry(number=7, issue=5)])
+
+    assert res["closed_issues"] == [{"issue_ref": "acme/widget#5",
+                                     "pr_ref": "acme/widget#7"}]
+    assert res["rebased"] == []
+    assert res["relanded"] == []
+    assert len(close.calls) == 1
+    assert close.calls[0]["issue_ref"] == "acme/widget#5"
+    # the close comment NAMES the merged PR (attributable convergence write).
+    assert "acme/widget#7" in close.calls[0]["comment"]
+
+
+def test_reconcile_e2e_merged_pr_closed_issue_untouched():
+    # A MERGED PR whose issue is already CLOSED (e.g. human-closed) is NEVER
+    # touched — only a MERGED-PR-with-still-OPEN issue is closed.
+    pr = _pr_state_source({
+        "acme/widget#7": {"state": "MERGED", "merged": True,
+                          "mergeable": "UNKNOWN"}})
+    iss = _issue_state_source({"acme/widget#5": {"state": "CLOSED"}})
+    close = _recording_issue_close_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr, issue_state_source=iss,
+                                issue_close_sink=close,
+                                worktree_helper=_never_helper())
+
+    res = _run(reconcile, [_entry(number=7, issue=5)])
+
+    assert res["closed_issues"] == []
+    assert close.calls == []
+
+
+def test_reconcile_e2e_merged_pr_no_issue_ref_is_noop():
+    pr = _pr_state_source({
+        "acme/widget#7": {"state": "MERGED", "merged": True,
+                          "mergeable": "UNKNOWN"}})
+    close = _recording_issue_close_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                issue_close_sink=close,
+                                worktree_helper=_never_helper())
+
+    res = _run(reconcile, [_entry(number=7, issue=None)])
+
+    assert res["closed_issues"] == []
+    assert close.calls == []
+
+
+# ==========================================================================
+# (B) Conflict-recovery ladder — tier 1 rebase / tier 2 re-land.
+# ==========================================================================
+
+def test_reconcile_e2e_conflicting_clean_rebase_records_rebased():
+    pr = _pr_state_source({
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "CONFLICTING"}})
+    helper = _worktree_helper({"acme/widget#8": True})
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=helper,
+                                pr_close_sink=prclose, comment_sink=comment)
+
+    res = _run(reconcile, [_entry(number=8, issue=3)])
+
+    assert res["rebased"] == [{"pr_ref": "acme/widget#8"}]
+    assert res["relanded"] == []
+    # tier-1 rebase ran (the helper force-pushes internally); no PR was closed.
+    assert len(helper.calls) == 1
+    assert helper.calls[0]["pr_ref"] == "acme/widget#8"
+    assert helper.calls[0]["default_branch"] == _DEFAULT_BRANCH
+    assert prclose.calls == []
+    assert comment.calls == []
+
+
+def test_reconcile_e2e_conflicting_dirty_relands():
+    pr = _pr_state_source({
+        "acme/widget#9": {"state": "OPEN", "merged": False,
+                          "mergeable": "CONFLICTING"}})
+    helper = _worktree_helper({"acme/widget#9": False})  # real conflict
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=helper,
+                                pr_close_sink=prclose, comment_sink=comment)
+
+    res = _run(reconcile, [_entry(number=9, issue=3)])
+
+    assert res["relanded"] == [{"pr_ref": "acme/widget#9",
+                                "issue_ref": "acme/widget#3"}]
+    assert res["rebased"] == []
+    # tier-2: the PR was CLOSED and its issue COMMENTED to re-land next tick.
+    assert prclose.calls == [{"pr_ref": "acme/widget#9", "repo": _REPO}]
+    assert len(comment.calls) == 1
+    assert comment.calls[0]["issue_ref"] == "acme/widget#3"
+    assert "acme/widget#9" in comment.calls[0]["body"]
+
+
+# ==========================================================================
+# Trust gating — at dry-run/propose the would-act intent is recorded under
+# skipped and NO sink/helper is ever called.
+# ==========================================================================
+
+def test_reconcile_e2e_dry_run_all_skipped_no_effects():
+    pr = _pr_state_source({
+        "acme/widget#7": {"state": "MERGED", "merged": True,
+                          "mergeable": "UNKNOWN"},
+        "acme/widget#9": {"state": "OPEN", "merged": False,
+                          "mergeable": "CONFLICTING"}})
+    iss = _issue_state_source({"acme/widget#5": {"state": "OPEN"}})
+    close = _recording_issue_close_sink()
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    reconcile = vi.Reconcile(
+        mode="dry-run", pr_state_source=pr, issue_state_source=iss,
+        issue_close_sink=close, pr_close_sink=prclose, comment_sink=comment,
+        worktree_helper=_never_helper(), default_branch=_DEFAULT_BRANCH,
+        repo=_REPO)
+
+    res = _run(reconcile, [_entry(number=7, issue=5), _entry(number=9, issue=3)])
+
+    assert res["closed_issues"] == []
+    assert res["rebased"] == []
+    assert res["relanded"] == []
+    assert {s["ref"] for s in res["skipped"]} == {"acme/widget#5",
+                                                  "acme/widget#9"}
+    assert close.calls == []
+    assert prclose.calls == []
+    assert comment.calls == []
+
+
+def test_reconcile_e2e_propose_conflicting_skipped():
+    pr = _pr_state_source({
+        "acme/widget#9": {"state": "OPEN", "merged": False,
+                          "mergeable": "CONFLICTING"}})
+    reconcile = vi.Reconcile(
+        mode="propose", pr_state_source=pr,
+        issue_state_source=_issue_state_source({}),
+        worktree_helper=_never_helper(), default_branch=_DEFAULT_BRANCH,
+        repo=_REPO)
+
+    res = _run(reconcile, [_entry(number=9, issue=3)])
+
+    assert res["rebased"] == []
+    assert res["relanded"] == []
+    assert [s["ref"] for s in res["skipped"]] == ["acme/widget#9"]
+
+
+def test_reconcile_uses_real_safety_governance_permits():
+    # Sanity: the real gate permits merge only at auto-merge.
+    assert sg.permits("merge", "auto-merge") is True
+    assert sg.permits("merge", "propose") is False
+
+
+# ==========================================================================
+# Advisory: an OPEN mergeable PR is left alone; a single-entry fault is
+# recorded under errors and the tick still emits OK.
+# ==========================================================================
+
+def test_reconcile_e2e_open_mergeable_pr_left_alone():
+    pr = _pr_state_source({
+        "acme/widget#4": {"state": "OPEN", "merged": False,
+                          "mergeable": "MERGEABLE"}})
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=_never_helper())
+
+    res = _run(reconcile, [_entry(number=4, issue=3)])
+
+    assert res["closed_issues"] == []
+    assert res["rebased"] == []
+    assert res["relanded"] == []
+    assert res["skipped"] == []
+    assert res["errors"] == []
+
+
+def test_reconcile_e2e_single_entry_fault_recorded_tick_ok():
+    def boom_pr_state(pr_ref, repo=None):  # noqa: ARG001
+        if pr_ref == "acme/widget#7":
+            raise RuntimeError("gh pr view exploded")
+        return {"state": "MERGED", "merged": True, "mergeable": "UNKNOWN"}
+
+    iss = _issue_state_source({"acme/widget#6": {"state": "OPEN"}})
+    close = _recording_issue_close_sink()
+    reconcile = _auto_reconcile(pr_state_source=boom_pr_state,
+                                issue_state_source=iss, issue_close_sink=close,
+                                worktree_helper=_never_helper())
+
+    res = _run(reconcile, [_entry(number=7, issue=5), _entry(number=8, issue=6)])
+
+    # the faulting entry is recorded under errors, the OTHER entry still processed.
+    assert [e["ref"] for e in res["errors"]] == ["acme/widget#7"]
+    assert "gh pr view exploded" in res["errors"][0]["reason"]
+    assert res["closed_issues"] == [{"issue_ref": "acme/widget#6",
+                                     "pr_ref": "acme/widget#8"}]
+
+
+def test_reconcile_e2e_close_sink_fault_recorded_never_raises():
+    def raising_close(issue_ref, repo=None, comment=None):  # noqa: ARG001
+        raise RuntimeError("gh issue close 403")
+
+    pr = _pr_state_source({
+        "acme/widget#7": {"state": "MERGED", "merged": True,
+                          "mergeable": "UNKNOWN"}})
+    iss = _issue_state_source({"acme/widget#5": {"state": "OPEN"}})
+    reconcile = _auto_reconcile(pr_state_source=pr, issue_state_source=iss,
+                                issue_close_sink=raising_close,
+                                worktree_helper=_never_helper())
+
+    res = _run(reconcile, [_entry(number=7, issue=5)])
+
+    assert res["closed_issues"] == []
+    assert [e["ref"] for e in res["errors"]] == ["acme/widget#7"]
+
+
+def test_reconcile_e2e_empty_ledger_is_ok_all_empty():
+    reconcile = _auto_reconcile(pr_state_source=_pr_state_source({}),
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=_never_helper())
+    res = _run(reconcile, [])
+    assert res == {
+        "schema_version": vi.RECONCILE_RESULT_SCHEMA_VERSION,
+        "closed_issues": [], "rebased": [], "relanded": [],
+        "skipped": [], "errors": [],
+    }
+
+
+def test_reconcile_e2e_mixed_batch_partitions():
+    pr = _pr_state_source({
+        "acme/widget#7": {"state": "MERGED", "merged": True,
+                          "mergeable": "UNKNOWN"},   # A -> closed_issues
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "CONFLICTING"},  # B tier1 -> rebased
+        "acme/widget#9": {"state": "OPEN", "merged": False,
+                          "mergeable": "CONFLICTING"},  # B tier2 -> relanded
+        "acme/widget#4": {"state": "OPEN", "merged": False,
+                          "mergeable": "MERGEABLE"}})   # ignored
+    iss = _issue_state_source({"acme/widget#5": {"state": "OPEN"}})
+    helper = _worktree_helper({"acme/widget#8": True, "acme/widget#9": False})
+    close = _recording_issue_close_sink()
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr, issue_state_source=iss,
+                                issue_close_sink=close, worktree_helper=helper,
+                                pr_close_sink=prclose, comment_sink=comment)
+
+    res = _run(reconcile, [
+        _entry(number=7, issue=5),
+        _entry(number=8, issue=1),
+        _entry(number=9, issue=2),
+        _entry(number=4, issue=3),
+    ])
+
+    assert res["closed_issues"] == [{"issue_ref": "acme/widget#5",
+                                     "pr_ref": "acme/widget#7"}]
+    assert res["rebased"] == [{"pr_ref": "acme/widget#8"}]
+    assert res["relanded"] == [{"pr_ref": "acme/widget#9",
+                                "issue_ref": "acme/widget#2"}]
+    assert res["skipped"] == []
+    assert res["errors"] == []
+
+
+# ==========================================================================
+# Production seams (deterministic, exercised with a FAKE runner — no network).
+# ==========================================================================
+
+def _proc(stdout="", stderr="", returncode=0):
+    return types.SimpleNamespace(stdout=stdout, stderr=stderr,
+                                 returncode=returncode)
+
+
+def test_gh_pr_state_source_shape_merged():
+    seen = []
+
+    def runner(cmd, capture_output=None, text=None, check=None):  # noqa: ARG001
+        seen.append(cmd)
+        return _proc(stdout=json.dumps({
+            "state": "MERGED", "mergedAt": "2026-07-24T00:00:00Z",
+            "mergeable": "UNKNOWN"}))
+
+    out = vi.gh_pr_state_source("acme/widget#7", repo="acme/widget", runner=runner)
+    assert out == {"state": "MERGED", "merged": True, "mergeable": "UNKNOWN"}
+    assert seen[0][:3] == ["gh", "pr", "view"]
+    assert "acme/widget" in seen[0]
+
+
+def test_gh_pr_state_source_shape_open_not_merged():
+    def runner(cmd, capture_output=None, text=None, check=None):  # noqa: ARG001
+        return _proc(stdout=json.dumps({
+            "state": "OPEN", "mergedAt": None, "mergeable": "CONFLICTING"}))
+
+    out = vi.gh_pr_state_source("acme/widget#9", runner=runner)
+    assert out == {"state": "OPEN", "merged": False, "mergeable": "CONFLICTING"}
+
+
+def test_gh_issue_state_source_shape():
+    def runner(cmd, capture_output=None, text=None, check=None):  # noqa: ARG001
+        assert cmd[:3] == ["gh", "issue", "view"]
+        return _proc(stdout="OPEN\n")
+
+    assert vi.gh_issue_state_source("acme/widget#5", runner=runner) == {
+        "state": "OPEN"}
+
+
+def test_gh_issue_close_sink_command():
+    seen = []
+
+    def runner(cmd, capture_output=None, text=None, check=None):  # noqa: ARG001
+        seen.append(cmd)
+        return _proc()
+
+    vi.gh_issue_close_sink("acme/widget#5", repo="acme/widget",
+                           comment="done", runner=runner)
+    cmd = seen[0]
+    assert cmd[:3] == ["gh", "issue", "close"]
+    assert "5" in cmd
+    assert "--comment" in cmd and "done" in cmd
+    assert "--repo" in cmd and "acme/widget" in cmd
+
+
+# --------------------------------------------------------------------------
+# reconcile_rebase_worktree: the production TIER-1 helper, exercised with a
+# scripted fake runner (no real git). Clean rebase -> force-push + rebased True;
+# a real conflict -> rebase --abort + rebased False (no push).
+# --------------------------------------------------------------------------
+
+def _scripted_git_runner(rebase_rc):
+    """A fake runner that scripts the git/gh commands the tier-1 helper issues,
+    with the `git rebase` return code configurable. Records every command."""
+    seen = []
+
+    def runner(cmd, capture_output=None, text=None, check=None):  # noqa: ARG001
+        seen.append(cmd)
+        # _gh_pr_head_ref
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _proc(stdout="feature-branch\n")
+        # git rebase origin/<default> (not the --abort form)
+        if len(cmd) >= 5 and cmd[3] == "rebase" and "--abort" not in cmd:
+            return _proc(returncode=rebase_rc, stdout="CONFLICT" if rebase_rc
+                         else "")
+        return _proc(returncode=0)
+
+    runner.seen = seen
+    return runner
+
+
+def test_reconcile_rebase_worktree_clean_force_pushes():
+    runner = _scripted_git_runner(rebase_rc=0)
+    out = vi.reconcile_rebase_worktree(
+        "acme/widget#8", _DEFAULT_BRANCH, repo="acme/widget", runner=runner,
+        worktree_dir="/tmp/am-reconcile-test")
+    assert out["rebased"] is True
+    # a clean rebase force-pushes the rebased branch back onto the PR head.
+    pushes = [c for c in runner.seen
+              if "push" in c and "--force" in c]
+    assert len(pushes) == 1
+    assert "HEAD:feature-branch" in pushes[0]
+
+
+def test_reconcile_rebase_worktree_conflict_returns_false_no_push():
+    runner = _scripted_git_runner(rebase_rc=1)
+    out = vi.reconcile_rebase_worktree(
+        "acme/widget#9", _DEFAULT_BRANCH, repo="acme/widget", runner=runner,
+        worktree_dir="/tmp/am-reconcile-test")
+    assert out["rebased"] is False
+    # a real conflict aborts the rebase and NEVER force-pushes.
+    assert any(c[-1] == "--abort" for c in runner.seen if "rebase" in c)
+    assert not any("push" in c and "--force" in c for c in runner.seen)

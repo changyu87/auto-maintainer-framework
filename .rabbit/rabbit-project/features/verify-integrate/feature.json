@@ -1,14 +1,14 @@
 {
   "name": "verify-integrate",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/verify-integrate/src/**"
   ],
   "created": "2026-06-14T16:35:52Z",
-  "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict schemas reach a breaking major version.",
+  "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict / ReconcileResult schemas reach a breaking major version.",
   "tdd_state": "test-green",
-  "updated": "2026-07-23",
-  "spec_change_reason": "INTEGRATE merge sink is MERGE-QUEUE-AWARE: detect repository.mergeQueue(branch) and, when a queue exists, run `gh pr merge <pr> --auto` with NO method flag and NO --delete-branch (a queue branch REJECTS a method flag); no-queue keeps immediate `--merge --delete-branch` with `--auto --merge` fallback; capture gh stderr into errors (never a bare exit-1)",
-  "spec_no_change_reason": "spec+contract merge-queue-aware changes already committed on this branch (commit 3d86f4a); no further uncommitted spec diff this step"
+  "updated": "2026-07-27",
+  "spec_change_reason": "RECONCILE-support: add the deterministic Reconcile class + ReconcileResult schema (closed_issues/rebased/relanded/skipped/errors) + the injectable gh_pr_state_source/gh_issue_state_source/gh_issue_close_sink/reconcile_rebase_worktree seams. Reads the injected acted_ledger slot; (A) closes a merged-PR's still-open issue, (B) recovers a CONFLICTING loop PR via tier-1 rebase / tier-2 re-land. Advisory (emits only OK, never blocks the tick), trust-gated exactly like INTEGRATE.",
+  "spec_no_change_reason": "spec.md already carries the RECONCILE-support section (committed on this branch as the spec-update step); this cycle implements it in src + tests + contract and re-anchors the housekeep doc baseline"
 }

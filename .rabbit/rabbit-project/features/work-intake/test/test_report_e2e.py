@@ -12,7 +12,7 @@ sits behind the injectable sink, so these tests pass a stub (or a fake
 subprocess runner) with NO network (spec-rules §1: the failure is locatable to
 the file boundary). `file_discoveries` performs no I/O of its own.
 
-The shipped triager guard test asserts the v1.3.0 subagent definition no longer
+The shipped triager guard test asserts the v1.4.0 subagent definition no longer
 rejects loop-filed items: the §3.11.5 loopback guard is enforced UPSTREAM at PULL
 by exclusion (work_intake.is_loop_filed), so the triager never sees them.
 
@@ -570,7 +570,7 @@ def test_file_discoveries_default_apply_labels_unchanged():
 
 
 # ==========================================================================
-# Behaviour: the shipped triager .md is v1.3.0 and carries NO loopback reject
+# Behaviour: the shipped triager .md is v1.4.0 and carries NO loopback reject
 # criterion — the §3.11.5 guard is enforced upstream at PULL by exclusion, so
 # the triager never sees loop-filed items.
 # ==========================================================================
@@ -593,10 +593,10 @@ def _frontmatter_value(fm_text, key):
     raise KeyError(key)
 
 
-def test_shipped_triager_is_v1_3_0():
+def test_shipped_triager_is_v1_4_0():
     with open(_SHIP_AGENT) as f:
         fm, _body = _split_frontmatter(f.read())
-    assert _frontmatter_value(fm, "version") == "1.3.0"
+    assert _frontmatter_value(fm, "version") == "1.4.0"
 
 
 def test_shipped_triager_body_has_no_loopback_reject_instruction():

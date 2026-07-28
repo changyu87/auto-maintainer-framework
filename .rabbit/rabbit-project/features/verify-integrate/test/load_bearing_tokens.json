@@ -41,6 +41,12 @@
     "safety",
     "fsm-contracts",
     "scheduling",
-    "tick-orchestrator"
+    "tick-orchestrator",
+    "ReconcileResult",
+    "reconcile_result",
+    "closed_issues",
+    "rebased",
+    "relanded",
+    "acted_ledger"
   ]
 }

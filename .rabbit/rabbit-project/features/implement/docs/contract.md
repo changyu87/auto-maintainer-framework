@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.6.0
+version: 0.7.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version. See spec.md / feature.json.
 ---
@@ -21,7 +21,7 @@ deprecation_criterion: Superseded when the model-backed implement-then-PR doer (
     "skills": []
   },
   "reads": {"files": ["<target-feature>/test/run.py or the configured implement_test_command (gate subprocess)", "${CLAUDE_PROJECT_DIR}/.auto-maintainer/config.json — the implement_test_command key ONLY, via a direct stdlib json.load (the key owned by safety-governance's schema; NOT via a safety-governance import, to keep the gate self-contained)"], "external": []},
-  "invokes": {"scripts": ["src/test_gate.py (by the shipped implementer subagent on the accept path)"], "agents": [], "external": ["gh pr create (accept path): the shipped implementer opens the PR stamped with the auto-maintainer label AND a body embedding Closes #<source-issue-number> so GitHub auto-closes the source issue on merge (and populates closingIssuesReferences, which supersede-on-retry + verify-integrate orphan-detection query)", "gh issue close (reject path): closes the source issue with the triager reason"]},
+  "invokes": {"scripts": ["src/test_gate.py (by the shipped implementer subagent on the accept path)"], "agents": [], "external": ["gh pr create (accept path): the shipped implementer opens the PR stamped with the auto-maintainer label AND a body embedding Closes #<source-issue-number> so GitHub auto-closes the source issue on merge (and populates closingIssuesReferences, which supersede-on-retry + verify-integrate orphan-detection query)"]},
   "never": [
     "calls a model (the dry-run rung is deterministic; the model-backed doer is a separate deferred adapter)",
     "creates a branch, commit, PR, or any VCS artifact",

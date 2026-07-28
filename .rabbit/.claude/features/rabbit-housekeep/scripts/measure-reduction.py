@@ -56,7 +56,7 @@ Exit:
   0 success
   2 invocation error (bad args, unreadable snapshot)
 
-Version: 0.3.0
+Version: 0.3.1
 Owner: rabbit-workflow team
 Deprecation criterion: when line-accounting is provided natively by the
     rabbit CLI as a housekeeping subcommand.
@@ -64,6 +64,7 @@ Deprecation criterion: when line-accounting is provided natively by the
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import sys
@@ -71,7 +72,13 @@ import sys
 
 def _is_probably_text(path: str) -> bool:
     """Heuristic: a file is text if its first 4 KiB contain no NUL byte and
-    decodes as UTF-8. Binary artifacts are excluded from line accounting."""
+    decodes as UTF-8. Binary artifacts are excluded from line accounting.
+
+    The UTF-8 check uses an INCREMENTAL decoder with `final=False` so a valid
+    multibyte character straddling the fixed 4 KiB sniff boundary is buffered
+    (a no-op) rather than raising: text detection is independent of where the
+    boundary falls. A genuinely invalid byte still raises UnicodeDecodeError,
+    so binary files are still classified non-text."""
     try:
         with open(path, "rb") as f:
             chunk = f.read(4096)
@@ -80,7 +87,7 @@ def _is_probably_text(path: str) -> bool:
     if b"\x00" in chunk:
         return False
     try:
-        chunk.decode("utf-8")
+        codecs.getincrementaldecoder("utf-8")().decode(chunk, final=False)
     except UnicodeDecodeError:
         return False
     return True

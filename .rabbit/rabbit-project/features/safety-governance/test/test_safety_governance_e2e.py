@@ -103,8 +103,10 @@ def test_schema_version_and_defaults():
     # historical behavior); schema 2.7.0 -> 2.8.0.
     assert d["implement_test_command"] is None
     # issue_filter (the PULL-stage open-issue filter) defaults the no-filter
-    # object {labels: [], title_pattern: null}; schema 2.6.0 -> 2.7.0.
-    assert d["issue_filter"] == {"labels": [], "title_pattern": None}
+    # object {labels: [], title_pattern: null, exclude_labels: []}; schema
+    # 2.6.0 -> 2.7.0; exclude_labels added additively (still 2.8.0).
+    assert d["issue_filter"] == {
+        "labels": [], "title_pattern": None, "exclude_labels": []}
     # self_deploy (#309) is REMOVED from the schema (the self_deploy ACTION was
     # removed in #324, so the knob is dead; schema 2.3.0 -> 2.4.0).
     assert "self_deploy" not in d
@@ -138,7 +140,8 @@ def test_load_config_defaults_when_absent():
         config = sg.load_config(project_dir)
         assert config["schema_version"] == "2.8.0"
         assert config["mode"] == "propose"
-        assert config["issue_filter"] == {"labels": [], "title_pattern": None}
+        assert config["issue_filter"] == {
+            "labels": [], "title_pattern": None, "exclude_labels": []}
         assert "self_deploy" not in config
         assert config["budget"]["per_day_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
@@ -482,15 +485,18 @@ def test_default_issue_filter_is_no_filter():
     """issue_filter defaults the no-filter canonical object — PULL pulls every
     open issue, exactly as before (non-breaking opt-in)."""
     assert sg.DEFAULT_GOVERNANCE["issue_filter"] == {
-        "labels": [], "title_pattern": None}
+        "labels": [], "title_pattern": None, "exclude_labels": []}
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["issue_filter"] == {"labels": [], "title_pattern": None}
+        assert config["issue_filter"] == {
+            "labels": [], "title_pattern": None, "exclude_labels": []}
 
 
 def test_load_config_reads_issue_filter_override():
     """An explicit top-level issue_filter in config.json is surfaced on the
-    loaded config (already-canonical DNF list-of-lists passthrough)."""
+    loaded config (already-canonical DNF list-of-lists passthrough). The #357
+    field-merge adopts the newly-added exclude_labels default ([]) that the
+    override lacks (the unfreeze)."""
     with tempfile.TemporaryDirectory() as project_dir:
         _write_json(_config_path(project_dir),
                     {"issue_filter": {"labels": [["bug", "P1"], ["security"]],
@@ -498,7 +504,8 @@ def test_load_config_reads_issue_filter_override():
         config = sg.load_config(project_dir)
         assert config["issue_filter"] == {
             "labels": [["bug", "P1"], ["security"]],
-            "title_pattern": "^\\[fix\\]"}
+            "title_pattern": "^\\[fix\\]",
+            "exclude_labels": []}
 
 
 def test_load_config_backfills_issue_filter_when_absent():
@@ -507,34 +514,36 @@ def test_load_config_backfills_issue_filter_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         _write_json(_config_path(project_dir), {"mode": "propose"})
         config = sg.load_config(project_dir)
-        assert config["issue_filter"] == {"labels": [], "title_pattern": None}
+        assert config["issue_filter"] == {
+            "labels": [], "title_pattern": None, "exclude_labels": []}
 
 
 def test_issue_filter_accessor_default_no_filter():
     """The pure accessor returns the no-filter canonical object by default
     (absent key on a bare config, and on DEFAULT_GOVERNANCE)."""
-    assert sg.issue_filter({}) == {"labels": [], "title_pattern": None}
+    assert sg.issue_filter({}) == {
+        "labels": [], "title_pattern": None, "exclude_labels": []}
     assert sg.issue_filter(sg.DEFAULT_GOVERNANCE) == {
-        "labels": [], "title_pattern": None}
+        "labels": [], "title_pattern": None, "exclude_labels": []}
 
 
 def test_issue_filter_accessor_normalizes_null_and_empty_to_no_filter():
     """absent / null / [] all canonicalize to the no-filter default."""
     assert sg.issue_filter({"issue_filter": None}) == {
-        "labels": [], "title_pattern": None}
+        "labels": [], "title_pattern": None, "exclude_labels": []}
     assert sg.issue_filter({"issue_filter": {"labels": None,
                                              "title_pattern": None}}) == {
-        "labels": [], "title_pattern": None}
+        "labels": [], "title_pattern": None, "exclude_labels": []}
     assert sg.issue_filter({"issue_filter": {"labels": [],
                                              "title_pattern": None}}) == {
-        "labels": [], "title_pattern": None}
+        "labels": [], "title_pattern": None, "exclude_labels": []}
 
 
 def test_issue_filter_accessor_expands_flat_list_to_single_and_group():
     """A flat list of non-empty strings is sugar for a single AND-group."""
     assert sg.issue_filter(
         {"issue_filter": {"labels": ["bug", "P1"], "title_pattern": None}}) == {
-        "labels": [["bug", "P1"]], "title_pattern": None}
+        "labels": [["bug", "P1"]], "title_pattern": None, "exclude_labels": []}
 
 
 def test_issue_filter_accessor_passes_through_dnf_list_of_lists():
@@ -542,14 +551,15 @@ def test_issue_filter_accessor_passes_through_dnf_list_of_lists():
     assert sg.issue_filter(
         {"issue_filter": {"labels": [["bug", "P1"], ["security"]],
                           "title_pattern": None}}) == {
-        "labels": [["bug", "P1"], ["security"]], "title_pattern": None}
+        "labels": [["bug", "P1"], ["security"]], "title_pattern": None,
+        "exclude_labels": []}
 
 
 def test_issue_filter_accessor_accepts_compilable_title_pattern():
     """A title_pattern that compiles as a regex is preserved unchanged."""
     assert sg.issue_filter(
         {"issue_filter": {"labels": [], "title_pattern": "^\\[bug\\].*"}}) == {
-        "labels": [], "title_pattern": "^\\[bug\\].*"}
+        "labels": [], "title_pattern": "^\\[bug\\].*", "exclude_labels": []}
 
 
 def test_issue_filter_accessor_rejects_non_compilable_title_pattern():
@@ -616,6 +626,110 @@ def test_issue_filter_accessor_rejects_non_string_label_in_group():
         pass
     else:
         raise AssertionError("expected ValueError on non-string label in group")
+
+
+# ==========================================================================
+# E2E Behaviour: issue_filter.exclude_labels — a flat OR of forbidden labels.
+# An open issue carrying ANY listed label is DROPPED by work-intake PULL
+# (post-fetch negation, since gh's union query cannot express it). The
+# normalizer canonicalizes it to a flat List[str] (absent / null / [] => the
+# no-exclusion default []), rejects non-string / empty-string entries with
+# ValueError, and NEVER accepts a DNF (exclusion is a flat OR of forbidden
+# labels, not an AND-of-ORs). It composes as a final AND with labels /
+# title_pattern. Default ([] exclude_labels) preserves the pull-all behavior.
+# ==========================================================================
+
+def test_default_exclude_labels_is_empty():
+    """exclude_labels defaults [] — no exclusion (non-breaking, pull-all)."""
+    assert sg.DEFAULT_GOVERNANCE["issue_filter"]["exclude_labels"] == []
+    with tempfile.TemporaryDirectory() as project_dir:
+        config = sg.load_config(project_dir)
+        assert config["issue_filter"]["exclude_labels"] == []
+
+
+def test_issue_filter_accessor_canonicalizes_flat_exclude_labels():
+    """A flat list of non-empty strings is returned as a flat List[str]
+    (order preserved)."""
+    assert sg.issue_filter(
+        {"issue_filter": {"labels": [], "title_pattern": None,
+                          "exclude_labels": ["A", "B"]}}) == {
+        "labels": [], "title_pattern": None, "exclude_labels": ["A", "B"]}
+
+
+def test_issue_filter_accessor_normalizes_absent_null_empty_exclude_labels():
+    """absent / null / [] all canonicalize to the no-exclusion default []."""
+    assert sg.issue_filter(
+        {"issue_filter": {"labels": [], "title_pattern": None}})[
+            "exclude_labels"] == []
+    assert sg.issue_filter(
+        {"issue_filter": {"labels": [], "title_pattern": None,
+                          "exclude_labels": None}})["exclude_labels"] == []
+    assert sg.issue_filter(
+        {"issue_filter": {"labels": [], "title_pattern": None,
+                          "exclude_labels": []}})["exclude_labels"] == []
+
+
+def test_issue_filter_accessor_full_object_roundtrip():
+    """labels + title_pattern + exclude_labels all normalize together into the
+    canonical 3-key object (labels/title_pattern behavior byte-identical)."""
+    assert sg.issue_filter(
+        {"issue_filter": {"labels": ["bug", "P1"],
+                          "title_pattern": "^\\[fix\\]",
+                          "exclude_labels": ["wontfix", "duplicate"]}}) == {
+        "labels": [["bug", "P1"]], "title_pattern": "^\\[fix\\]",
+        "exclude_labels": ["wontfix", "duplicate"]}
+
+
+def test_issue_filter_accessor_rejects_non_string_exclude_label():
+    """A non-string exclude_labels entry raises ValueError (never a silent
+    write)."""
+    try:
+        sg.issue_filter(
+            {"issue_filter": {"labels": [], "title_pattern": None,
+                              "exclude_labels": ["ok", 7]}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on non-string exclude label")
+
+
+def test_issue_filter_accessor_rejects_empty_string_exclude_label():
+    """An empty-string exclude_labels entry raises ValueError."""
+    try:
+        sg.issue_filter(
+            {"issue_filter": {"labels": [], "title_pattern": None,
+                              "exclude_labels": ["ok", ""]}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on empty-string exclude label")
+
+
+def test_issue_filter_accessor_rejects_dnf_exclude_labels():
+    """exclude_labels is a FLAT OR of forbidden labels, never a DNF — a nested
+    list entry (non-string) raises ValueError."""
+    try:
+        sg.issue_filter(
+            {"issue_filter": {"labels": [], "title_pattern": None,
+                              "exclude_labels": [["A", "B"]]}})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError on DNF exclude_labels")
+
+
+def test_load_config_reads_issue_filter_exclude_labels_override():
+    """An explicit top-level issue_filter carrying exclude_labels in config.json
+    is surfaced on the loaded config (raw passthrough)."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"issue_filter": {
+                        "labels": [["bug"]],
+                        "title_pattern": None,
+                        "exclude_labels": ["auto-maintainer-rejected"]}})
+        config = sg.load_config(project_dir)
+        assert config["issue_filter"]["exclude_labels"] == [
+            "auto-maintainer-rejected"]
 
 
 # ==========================================================================

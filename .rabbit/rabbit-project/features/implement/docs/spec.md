@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.9.0
+version: 0.10.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -147,8 +147,10 @@ validity predicate `validate_handoff(handoff) -> ValidationResult(valid, reason)
 - An `opened` handoff (an `accepted` order that opened a PR) is VALID **only**
   when it carries a `test_verdict` whose `passed` is `True`. An opened handoff
   with a missing or failing verdict is INVALID.
-- A non-`opened` handoff (`planned` dry-run, `blocked`, reject-path `closed`)
-  opened no PR and so requires no verdict to be valid.
+- A non-`opened` handoff (`planned` dry-run, `blocked`; legacy `closed`)
+  opened no PR and so requires no verdict to be valid. (The doer no longer emits
+  `closed` — reject disposition moved to TRIAGE — but `validate_handoff` stays
+  tolerant of a legacy `closed` handoff for backward compatibility.)
 
 The pass embedded in an opened handoff is the SCRIPT's recorded result, never
 the model's claim — a fabricated "passed" cannot survive the gate because the
@@ -187,18 +189,19 @@ It is **protocol-free**: it holds no built-in knowledge of the Handoff schema or
 the output path. Its rendered prompt is the complete handoff contract (the
 `## Task` / `## Inputs` / `## Handoff` envelope produced by agent-dispatch).
 
-- **Role.** Given exactly ONE work order in its prompt, it *enacts that work
-  order's triage decision*: `rejected` → close the source issue with a
-  justification comment, no code change; `accepted` → implement the change
-  (it owns the WHAT, DESIGN §2.1), run the project's checks, and **open a PR
-  against the default branch — never merge**. If it cannot complete an accepted
-  order it reports `status: blocked` and leaves no open PR.
+- **Role.** Given exactly ONE work order in its prompt, it implements the
+  ACCEPTED order (it owns the WHAT, DESIGN §2.1), runs the project's checks, and
+  **opens a PR against the default branch — never merges**. If it cannot complete
+  the order it reports `status: blocked` and leaves no open PR. It does NOT close
+  issues: a rejected order's disposition (comment + `rejected` label) is enacted
+  DETERMINISTICALLY at TRIAGE (work-intake `gh_issue_reject_sink`, wired by
+  scheduling), never by the doer.
 - **Never reports `planned`; enacts accepted-only orders (v2.9.0).** `planned` is
   the DRY-RUN adapter's status, NOT the agent's — the shipped implementer reports
-  only `opened`, `closed`, or `blocked`, never `planned`. PRIORITIZE fans out
-  ACCEPTED-ONLY orders to IMPLEMENT, so the default action is implement→PR (the
-  `rejected`→close branch is defensive — rejected orders do not normally reach
-  IMPLEMENT). ROBUSTNESS: if the `## Inputs` work order lacks the source issue's
+  only `opened` or `blocked`, never `planned` (and no longer `closed` — the
+  reject→close branch is removed). PRIORITIZE fans out ACCEPTED-ONLY orders to
+  IMPLEMENT, so the doer only ever sees an accepted order; a rejected order never
+  reaches it. ROBUSTNESS: if the `## Inputs` work order lacks the source issue's
   title/body (an under-filled envelope), the agent FETCHES it from the work
   order's ref/url (`gh issue view <number> --repo <owner/repo> --json
   title,body,comments`) before enacting rather than bailing — an under-informed
@@ -280,7 +283,7 @@ the output path. Its rendered prompt is the complete handoff contract (the
 - **PR closes its source issue on merge (`Closes #<n>` in the body).** The
   accept-path `gh pr create` MUST include a `--body` that embeds the GitHub
   closing keyword `Closes #<source-issue-number>` (the issue the work order
-  came from; the same `<number>` the reject path uses). This makes GitHub's
+  came from). This makes GitHub's
   native machinery **auto-close the source issue when — and only when — the PR
   merges**: in `propose` mode the PR is never merged so the issue correctly
   stays open; in `auto-merge` mode INTEGRATE's merge closes it. This closes the
@@ -299,12 +302,11 @@ the output path. Its rendered prompt is the complete handoff contract (the
   `isolation: "worktree"` adapter flag. That flag uses Claude Code's worktree
   isolation, which **sandboxes the subagent's file writes to the worktree** — so
   the subagent's Handoff file could not reach the shared main-workspace
-  `dispatch-out/` (and for the reject path the worktree auto-cleans, deleting the
-  file), breaking the file-based handoff. Instead, on the accept path the
+  `dispatch-out/`, breaking the file-based handoff. Instead, the
   subagent (a coding agent with `Bash`) creates its OWN git worktree off the
   default branch OUTSIDE the repo tree (`git worktree add`), does all editing /
   committing there, opens the PR, then removes the worktree (DESIGN §3.6.2: the
-  doer owns its workspace). The reject path needs no worktree. Because the
+  doer owns its workspace). Because the
   subagent is NOT Claude-sandboxed, it CAN write its Handoff to the absolute
   `output_path`. The main checkout's branch/index/uncommitted state is never
   disturbed; `git status` on the main tree stays clean.
