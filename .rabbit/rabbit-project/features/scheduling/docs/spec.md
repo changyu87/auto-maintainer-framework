@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.38.0
+version: 0.39.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -297,6 +297,33 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      no-op, never an error), and reports a machine-first summary of what it
      removed vs preserved. It does NOT create the runtime dir. `clobber.py`
      writes NOTHING except the deletions (no model, no network).
+     - **UX: dry-run-preview-then-verbatim-`yes` by default; `--no-dry-run` to
+       skip the gate.** The old `--yes` flag is REPLACED. `clobber.py` still
+       computes deletions in the script (spec-rules §1/§4) and emits a
+       **machine-first structured preview/result** the SKILL renders as a clear
+       LIST/TABLE. Two modes:
+       - **DEFAULT (no flag) — dry-run preview + conversational confirm.**
+         `clobber.py` (invoked with no apply flag) deletes NOTHING and emits the
+         structured preview: for each runtime artifact
+         (`durable-state.json`, `disposition`, `lock.json`, `events.jsonl`,
+         `tick-journal.jsonl`, `dispatch-out/`, the heartbeat markers) whether it
+         **exists** and would be removed, plus the **preserved** set
+         (`config.json` / `route.json` / `adapter-map.json` + `*.bak` /
+         `*.migrated`). The SKILL renders this as a WOULD-DELETE / PRESERVED
+         table and then asks the user to confirm by typing the verbatim word
+         `yes` (NOT a `--yes` flag). ONLY on a verbatim `yes` does the SKILL
+         invoke `clobber.py` a second time with the apply flag to perform the
+         deletion; any other reply aborts (nothing deleted).
+       - **`--no-dry-run` — immediate delete, no gate.** `clobber.py` performs
+         the deletion straight away (no confirmation) and emits the structured
+         result; the SKILL renders a DELETED / PRESERVED table of what was
+         ACTUALLY removed. This is the non-interactive path for a user who
+         already knows what clobber does.
+       The internal apply flag `clobber.py` consumes to actually delete is a
+       script-level detail (renamed off the user-facing `--yes`); the
+       user-facing surface is exactly "default = preview + type `yes`" and
+       "`--no-dry-run` = do it now". The verbatim-`yes` gate is a conversational
+       confirmation owned by the SKILL, not a CLI flag.
      - **`/stop`-first advice is keyed on the durable `loop-intent` marker, NOT
        on `disposition`.** A `disposition` of `RUNNING` merely means a tick is
        mid-flight (GUARD sets `RUNNING` at the start of ANY tick, including a
@@ -311,9 +338,9 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
        (no loop-intent) is reset directly — no `/stop` needed, since `/stop`
        would only latch a `STOPPED` that clobber wipes anyway, and clobber
        already deletes the checkpoint/disposition/lock/heartbeat markers. The
-       SKILL still surfaces a **confirmation** before the destructive reset in
-       every case; a `--yes`/confirmed flag runs the script non-interactively for
-       the confirmed path.
+       SKILL still surfaces the dry-run preview + verbatim-`yes` confirmation
+       before the destructive reset in the default path (see the UX bullet
+       above); `--no-dry-run` is the explicit opt-out of that gate.
    Only the heartbeat scheduling (CronCreate/CronDelete) is agent-mediated (no
    plugin-level cron API); every state operation is a script.
 5. **Scheduler detection (§3.3.1)** — slice 1 uses the in-session durable
