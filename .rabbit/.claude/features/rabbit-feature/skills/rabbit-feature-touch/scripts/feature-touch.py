@@ -82,6 +82,24 @@ Subcommands:
       honest RED->GREEN cycle. Prints the written impl-suggestion path on
       stdout so the SKILL body can thread it into `dispatch-prompt`.
 
+  verify-impl-suggestion <feature-name>
+      Precondition asserting a fresh design handoff exists before Step-5 TDD
+      dispatch (#1224). Spec authoring in a feature-touch is meant to run
+      main-session-inline via Skill(rabbit-spec-update), which edits the spec
+      AND writes `.rabbit/impl-suggestion-<feature-name>.json`. Nothing
+      structurally stops the orchestrator from RAW-editing `docs/spec.md`
+      directly (scope-guard's spec-artifact carve-out cannot see the caller),
+      which silently skips the design step and the machine-first handoff and
+      leaves later features in a multi-feature wave with a stale/absent
+      impl-suggestion. This check fails LOUDLY and LOCATABLY (spec-rules.md §1)
+      when the impl-suggestion file is missing, or when the resolved spec is
+      strictly NEWER than the impl-suggestion (the raw-edit signature — the
+      sanctioned rabbit-spec-update writes the spec BEFORE the impl-suggestion,
+      so a fresh handoff is never older than its spec). Exits 0 on a fresh
+      handoff; 1 (naming the feature + both paths) otherwise. Covers a single
+      feature, so the SKILL body invokes it once PER scoped feature before
+      dispatch.
+
   commit-spec <feature-name> <summary>
       Stage and commit the feature's spec change (if any) BEFORE the TDD
       subagent is dispatched (Step 5). Mode-aware:
@@ -118,7 +136,7 @@ All paths are resolved relative to the repo root, which the script derives
 by walking up from the cwd to the nearest ancestor containing a `.git`
 entry (file or directory, so git worktrees are handled).
 
-Version: 0.11.0
+Version: 0.12.0
 Owner: rabbit-workflow team
 Deprecation criterion: when feature-touch orchestration is natively handled
 by the rabbit CLI or by Claude Code's native workflow mechanism.
@@ -469,6 +487,50 @@ def cmd_commit_spec(feature: str, summary: str) -> int:
     return 0
 
 
+def cmd_verify_impl_suggestion(feature: str) -> int:
+    """Assert a fresh impl-suggestion exists before Step-5 dispatch (#1224).
+
+    Deterministic, locatable precondition (spec-rules.md §1): the sanctioned
+    Skill(rabbit-spec-update) writes the spec (Step 4) THEN the impl-suggestion
+    (Step 5), so a legit handoff is never older than its spec. A raw Edit of
+    docs/spec.md bypasses rabbit-spec-update, leaving the impl-suggestion
+    absent or stale (older than the freshly-edited spec). Fail loudly + name
+    the feature, the expected impl-suggestion path, and the resolved spec path.
+    """
+    repo_root = _repo_root(Path.cwd())
+    mode = _mode(repo_root)
+    feature_dir = _feature_dir(repo_root, feature, mode)
+    spec = _spec_path(feature_dir)
+    impl = repo_root / ".rabbit" / f"impl-suggestion-{feature}.json"
+
+    if not impl.is_file():
+        sys.stderr.write(
+            f"ERROR: feature {feature!r} has no impl-suggestion at {impl} — "
+            "spec authoring must go through Skill(rabbit-spec-update) (which "
+            "writes it), not a raw Edit of docs/spec.md. Invoke "
+            "rabbit-spec-update for this feature before Step-5 dispatch "
+            "(#1224).\n"
+        )
+        return 1
+
+    # A missing spec is a different (upstream) problem; there is nothing to
+    # compare against, so the raw-edit mtime check is vacuous — the impl exists,
+    # so pass.
+    if spec.is_file() and spec.stat().st_mtime > impl.stat().st_mtime:
+        sys.stderr.write(
+            f"ERROR: feature {feature!r} spec {spec} is NEWER than its "
+            f"impl-suggestion {impl} — this is the signature of a raw "
+            "docs/spec.md edit that bypassed Skill(rabbit-spec-update) (which "
+            "writes the spec before the impl-suggestion). Re-run "
+            "rabbit-spec-update for this feature so a fresh design handoff is "
+            "written before Step-5 dispatch (#1224).\n"
+        )
+        return 1
+
+    print(f"OK: fresh impl-suggestion for {feature} at {impl}")
+    return 0
+
+
 # The housekeep reduction-wave signal rabbit-housekeep passes to feature-touch
 # (rabbit-housekeep SKILL.md dispatches the per-feature reduction unit with the
 # request "<name> housekeep: measured reduction wave"). Matching the
@@ -563,13 +625,15 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(
             "usage: feature-touch.py "
             "{create-branch|resolve-spec-path|resolve-contract-path"
-            "|is-reduction-wave|persist-intent|commit-spec|dispatch-prompt} "
+            "|is-reduction-wave|persist-intent|verify-impl-suggestion"
+            "|commit-spec|dispatch-prompt} "
             "...\n"
             "  create-branch [--multi] <feature-name> <request>\n"
             "  resolve-spec-path <feature-name>\n"
             "  resolve-contract-path <feature-name>\n"
             "  is-reduction-wave <request>\n"
             "  persist-intent <feature-name>  (intent JSON on stdin)\n"
+            "  verify-impl-suggestion <feature-name>\n"
             "  commit-spec <feature-name> <summary>\n"
             "  dispatch-prompt <feature-name> --spec <path> "
             "[--impl-suggestion <path>] [--worktree <path>]\n"
@@ -618,6 +682,14 @@ def main(argv: list[str]) -> int:
             )
             return 2
         return cmd_persist_intent(argv[2])
+    if sub == "verify-impl-suggestion":
+        if len(argv) != 3:
+            sys.stderr.write(
+                "usage: feature-touch.py verify-impl-suggestion "
+                "<feature-name>\n"
+            )
+            return 2
+        return cmd_verify_impl_suggestion(argv[2])
     if sub == "commit-spec":
         if len(argv) != 4:
             sys.stderr.write(
