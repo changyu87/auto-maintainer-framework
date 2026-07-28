@@ -2,10 +2,10 @@
   "schema_version": "1.0.0",
   "owner": "changyu87",
   "deprecation_criterion": "Superseded by the next verify-integrate housekeep wave's baseline; single-use measured-reduction reference, re-captured whenever a feature wave legitimately extends the doc surface with load-bearing content.",
-  "description": "Line counts of verify-integrate doc surfaces. Re-anchored after the RECONCILE-support wave legitimately extended the doc surface with load-bearing content: docs/spec.md gained the 'RECONCILE-support (cross-tick leftover-PR reconciliation)' section + a convergence invariant (the Reconcile class, the ReconcileResult schema, the acted_ledger read, the (A) merged-PR issue-close fallback + (B) tier-1 rebase / tier-2 re-land conflict-recovery ladder, and its trust-gating), setting spec.md to 441; docs/contract.md gained the ReconcileResult provides + Reconcile state + gh_issue_close_sink/gh_pr_state_source/gh_issue_state_source/reconcile_rebase_worktree seams + the acted_ledger read + a refined never block, setting contract.md to 56. The housekeep e2e test asserts the current docs are NOT LARGER than these baselines (a reduced|no-op verdict) and that the load-bearing tokens survived.",
+  "description": "Line counts of verify-integrate doc surfaces. Re-anchored after the transient-UNKNOWN-mergeability + same-issue-dedup wave legitimately extended the doc surface with load-bearing content: docs/spec.md gained the VERIFY transient-mergeable=UNKNOWN bounded-poll paragraph (MERGEABILITY_POLL_ATTEMPTS/MERGEABILITY_POLL_INTERVAL_S + the deferred-vs-CONFLICTING distinction), the RECONCILE (C) same-issue open-PR dedup section + the gh_open_pr_closing_issue_source seam + the `deduped` ReconcileResult field + two convergence invariants, setting spec.md to 515; docs/contract.md is unchanged at 56. The housekeep e2e test asserts the current docs are NOT LARGER than these baselines (a reduced|no-op verdict) and that the load-bearing tokens survived.",
   "baseline_commit": "HEAD",
   "docs": {
-    "docs/spec.md": 441,
+    "docs/spec.md": 515,
     "docs/contract.md": 56
   }
 }
