@@ -121,6 +121,12 @@ import lifecycle_dispositions as ld
 # test_gate.py, which owns the three-way interpretation (null = run test/run.py;
 # a command string = run it; the sentinel 'none'/'skip' = skip the gate). An
 # absent key backfills null (run test/run.py), so the bump is backward compatible.
+# Additive within 2.8.0: issue_filter gains an `exclude_labels` term (default []
+# = no exclusion) — a FLAT OR of forbidden labels (an open issue carrying ANY is
+# dropped post-fetch by work-intake PULL), composed as a final AND with
+# labels/title_pattern; an absent key backfills [] (pull-all preserved), so it is
+# backward compatible. schema_version gates nothing at runtime (purely
+# informational), so the additive term rides the same 2.8.0 stamp.
 GOVERNANCE_SCHEMA_VERSION = "2.8.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
@@ -166,6 +172,7 @@ DEFAULT_GOVERNANCE = {
     "issue_filter": {
         "labels": [],
         "title_pattern": None,
+        "exclude_labels": [],
     },
     "budget": {
         "per_day_tokens": None,
@@ -225,6 +232,8 @@ def _copy_defaults():
     d["issue_filter"] = {
         "labels": list(DEFAULT_GOVERNANCE["issue_filter"]["labels"]),
         "title_pattern": DEFAULT_GOVERNANCE["issue_filter"]["title_pattern"],
+        "exclude_labels": list(
+            DEFAULT_GOVERNANCE["issue_filter"]["exclude_labels"]),
     }
     return d
 
@@ -577,24 +586,58 @@ def _validate_group(group):
     return out
 
 
+def _normalize_exclude_labels(exclude):
+    """Canonicalize the `exclude_labels` term to a flat List[str].
+
+    Accepts: None/[] => [] (no exclusion); a FLAT list of non-empty strings =>
+    that list (order preserved). Raises ValueError (never a silent write) on a
+    non-string entry or an empty-string entry. It NEVER accepts a DNF —
+    exclusion is a flat OR of forbidden labels (an issue carrying ANY is
+    dropped), not an AND-of-ORs — so a nested-list entry is a non-string and
+    rejected.
+    """
+    if exclude is None or exclude == []:
+        return []
+    if not isinstance(exclude, list):
+        raise ValueError(
+            f"issue_filter.exclude_labels must be a list, got "
+            f"{type(exclude).__name__}")
+    out = []
+    for label in exclude:
+        if not isinstance(label, str):
+            raise ValueError(
+                f"issue_filter.exclude_labels entry must be a string, got "
+                f"{label!r}")
+        if label == "":
+            raise ValueError(
+                "issue_filter.exclude_labels entry must be a non-empty string")
+        out.append(label)
+    return out
+
+
 def issue_filter(config):
     """The PULL-stage open-issue filter, normalized to its canonical form.
 
     A pure normalizer + validator over the loaded config's `issue_filter`
     (§work-intake PULL). Returns {"labels": List[List[str]], "title_pattern":
-    str|None}. Canonicalizes user input: absent / null / [] => the no-filter
-    default (pull all open issues); a FLAT list of non-empty strings is sugar for
-    a single AND-group; an already-canonical List[List[str]] is validated as-is.
+    str|None, "exclude_labels": List[str]}. Canonicalizes user input:
+    absent / null / [] => the no-filter default (pull all open issues); a FLAT
+    list of non-empty strings for `labels` is sugar for a single AND-group; an
+    already-canonical List[List[str]] is validated as-is; `exclude_labels` is a
+    FLAT OR of forbidden labels (an issue carrying ANY is dropped post-fetch by
+    work-intake PULL), canonicalized to a flat List[str] (absent/null/[] => []).
     Raises ValueError (never a silent/partial write) on a non-string label, an
-    empty-string label, an empty inner AND-group, or a title_pattern that is
-    neither null nor a compilable regex. The default (empty labels + null
-    pattern) preserves the pull-all behavior. work-intake PULL consumes this to
-    build the gh query + post-fetch title match; scheduling threads it from the
-    loaded config.
+    empty-string label, an empty inner AND-group, a non-string/empty-string
+    exclude label, or a title_pattern that is neither null nor a compilable
+    regex. The default (empty labels + null pattern + empty exclude_labels)
+    preserves the pull-all behavior. exclude_labels composes as a final AND with
+    labels/title_pattern. work-intake PULL consumes this to build the gh query +
+    post-fetch title match + exclusion; scheduling threads it from the loaded
+    config.
     """
     raw = config.get("issue_filter")
     if raw is None or raw == []:
-        return {"labels": [], "title_pattern": None}
+        return {"labels": [], "title_pattern": None, "exclude_labels": []}
     if not isinstance(raw, dict):
         raise ValueError(
             f"issue_filter must be an object or null, got "
@@ -615,7 +658,10 @@ def issue_filter(config):
                 f"issue_filter.title_pattern {pattern!r} is not a compilable "
                 f"regex: {exc}")
 
-    return {"labels": labels, "title_pattern": pattern}
+    exclude_labels = _normalize_exclude_labels(raw.get("exclude_labels"))
+
+    return {"labels": labels, "title_pattern": pattern,
+            "exclude_labels": exclude_labels}
 
 
 def issue_filter_apply_labels(config):

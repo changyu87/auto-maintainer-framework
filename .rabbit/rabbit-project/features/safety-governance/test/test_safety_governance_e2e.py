@@ -494,7 +494,9 @@ def test_default_issue_filter_is_no_filter():
 
 def test_load_config_reads_issue_filter_override():
     """An explicit top-level issue_filter in config.json is surfaced on the
-    loaded config (already-canonical DNF list-of-lists passthrough)."""
+    loaded config (already-canonical DNF list-of-lists passthrough). The #357
+    field-merge adopts the newly-added exclude_labels default ([]) that the
+    override lacks (the unfreeze)."""
     with tempfile.TemporaryDirectory() as project_dir:
         _write_json(_config_path(project_dir),
                     {"issue_filter": {"labels": [["bug", "P1"], ["security"]],
@@ -502,7 +504,8 @@ def test_load_config_reads_issue_filter_override():
         config = sg.load_config(project_dir)
         assert config["issue_filter"] == {
             "labels": [["bug", "P1"], ["security"]],
-            "title_pattern": "^\\[fix\\]"}
+            "title_pattern": "^\\[fix\\]",
+            "exclude_labels": []}
 
 
 def test_load_config_backfills_issue_filter_when_absent():
