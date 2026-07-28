@@ -1,0 +1,4 @@
+{
+  "test_route_as_data_e2e.py::test_config_override_inserts_triage_and_persists_work_orders": true,
+  "test_scheduling_housekeep_e2e.py::test_spec_measured_against_reanchored_baseline_by_measure_tool": true
+}

@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.37.0
+version: 0.38.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -31,7 +31,8 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
 - Built-in adapters are wired via the factory convention
   (`factory(runtime) -> (manifest, run)`): scheduling provides factories for
   `GUARD`/`EXIT` (lifecycle-dispositions), `DRAIN`/`PERSIST` (durable-state),
-  `PULL`/`TRIAGE` (work-intake), `PRIORITIZE` (prioritize), `IMPLEMENT`
+  `RECONCILE`/`PULL`/`TRIAGE` (RECONCILE wraps verify-integrate's `Reconcile`;
+  `PULL`/`TRIAGE` work-intake), `PRIORITIZE` (prioritize), `IMPLEMENT`
   (implement), and `VERIFY`/`GATE`/`INTEGRATE`/`CLEANUP` (verify-integrate). The
   **default adapter-map** maps every known port (incl. `TRIAGE`, `PRIORITIZE`,
   `IMPLEMENT`, `VERIFY`, `GATE`, `INTEGRATE`, `CLEANUP`) to its factory, even
@@ -969,14 +970,16 @@ the loop only re-triages NEW or CHANGED issues. Edits live ONLY in scheduling
 
 - **Triage memory (durable, keyed on `work_item_id`).** `TRIAGE_MEMORY_KEY =
   "triage_memory"` maps `{work_item_id: {updated_at, status}}`, where `status` is
-  `done` (the doer opened/closed it) or `deferred` (backoff). It is recorded at
+  `done` (the doer opened/closed it), `deferred` (backoff), or `rejected` (the
+  triager judged the issue invalid — see reject enactment below). It is recorded at
   the acting-state resume, alongside the acted/backoff ledgers, from the same
   `work_order_id → work_item_id` mapping + the item's current issue `updated_at`
-  (looked up from the tick's `work_items`).
+  (looked up from the tick's `work_items`); the `rejected` status is recorded at
+  the TRIAGE resume instead, from the rejected work orders.
 - **Filter at TRIAGE dispatch.** When `run_tick` builds the dispatch for an
   agent-state whose read slots include `work_items` (i.e. TRIAGE), it FILTERS the
   `work_items` fed to the subagent: an item is dropped iff
-  `triage_memory[work_item_id].status ∈ {done, deferred}` AND its current
+  `triage_memory[work_item_id].status ∈ {done, deferred, rejected}` AND its current
   `updated_at` EQUALS the remembered `updated_at` (handled + unchanged). NEW
   items (not in memory), CHANGED items (advanced `updated_at`), and `active`
   items (accepted but not yet done — still being worked) are ALWAYS re-triaged,
@@ -988,6 +991,42 @@ the loop only re-triages NEW or CHANGED issues. Edits live ONLY in scheduling
 - **Unchanged.** With an empty triage memory (first run) nothing is skipped —
   byte-identical to today. Pure-script routes and non-`work_items` agent-states
   are unaffected.
+
+## RECONCILE state + reject-disposition enactment (Wave-2 consumers)
+
+scheduling wires two new consumer behaviours over the verify-integrate and
+work-intake seams landed in the providers wave. Both are deterministic, live in
+`run_tick.py`, and are trust-gated consistently with the existing effects.
+
+- **`make_reconcile(runtime)` factory + RECONCILE state.** A new built-in factory
+  wraps verify-integrate's `Reconcile` class (mirroring `make_integrate` over
+  `Integrate`) and registers at `run_tick:make_reconcile` in
+  `DEFAULT_ADAPTER_MAP`. RECONCILE runs BEFORE PULL (route
+  `GUARD → DRAIN → RECONCILE → PULL → …`). scheduling SEEDS `Reconcile`'s
+  `acted_ledger` slot from durable state: it loads `ACTED_LEDGER_KEY` and passes
+  the `opened`-outcome entries (each `{work_order_id, pr_ref, issue_ref, repo}`),
+  and injects the production seams (`gh_pr_state_source`, `gh_issue_state_source`,
+  `gh_issue_close_sink`, PR-close + comment sinks, `reconcile_rebase_worktree`)
+  plus the resolved `mode` (so `permits('merge', mode)` gates the mutating tiers)
+  and default branch. After RECONCILE, scheduling PERSISTS the outcome: a
+  merged-PR issue-close recorded in `reconcile_result.closed_issues` is stamped
+  back into the acted-ledger entry (idempotency — a later tick never re-comments),
+  and a tier-2 re-land's PR-close clears/updates the entry so the existing §3.8.5
+  acted-ledger re-entry gate re-lands it next tick. RECONCILE is advisory (emits
+  only `OK`); a fault never blocks the tick. Tests inject fakes for every seam +
+  a fake durable state — no network.
+- **Reject-disposition enactment at TRIAGE.** At the TRIAGE resume, after the
+  triager writes `work_orders`, scheduling enacts the disposition of every
+  `decision: rejected` order deterministically: it calls
+  `work_intake.reject_dispositions(work_orders)` and, for each, invokes
+  `work_intake.gh_issue_reject_sink(issue_ref, repo, reason)` (comment + apply
+  `REJECTED_LABEL`, NEVER close), then records
+  `triage_memory[work_item_id] = {updated_at, status: "rejected"}` so the item is
+  skipped from re-triage while unchanged (a human removing the label or touching
+  the issue re-admits it). The enactment is trust-gated by
+  `permits('file', mode)` (same rung as REPORT filing — at `dry-run` the intent
+  is logged, not written) and idempotent (the sink no-ops when the label is
+  already present). Closing a reject stays an explicit opt-in, never the default.
 
 ## Wiring config CLIs (route + adapter-map) — §3.4.3 / §3.10.2
 
