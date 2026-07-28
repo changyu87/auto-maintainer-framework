@@ -54,6 +54,7 @@ import durable_state as ds  # noqa: E402
 import work_intake as wi  # noqa: E402
 import verify_integrate as vi  # noqa: E402
 import observability as ob  # noqa: E402
+import fsm_contracts as fc  # noqa: E402
 import run_tick as rt  # noqa: E402
 
 
@@ -399,6 +400,132 @@ def test_no_auto_merge_enabled_shows_zero_and_omits_trace_token():
     detail = _tick_end(cfg)["detail"]
     assert detail.get("auto_merge_enabled") == 0, detail
     assert "auto_merge_enabled=" not in trace, trace
+
+
+# ==========================================================================
+# Behaviour F — RECONCILE's `deduped` count (same-issue duplicate loop PRs
+# RECONCILE closed this tick) is surfaced in the tick_end detail (always) + the
+# one-line trace (only when >0), mirroring auto_merge_enabled. verify-integrate's
+# ReconcileResult.deduped is consumed UNCHANGED.
+# ==========================================================================
+
+# A RECONCILE route (pure-script): RECONCILE runs BEFORE PULL.
+_RECONCILE_ROUTE = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "RECONCILE", "PULL", "PERSIST", "EXIT",
+               "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "RECONCILE"},
+        {"state": "RECONCILE", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "PERSIST"},
+        {"state": "PULL", "signal": "EMPTY", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+
+class _DedupReconcile:
+    """A fake vi.Reconcile whose run writes a reconcile_result carrying a
+    non-empty `deduped` list (one duplicate same-issue loop PR closed). Replaces
+    vi.Reconcile so make_reconcile constructs it at factory-call time — no
+    network, no git, no dependence on the def-time dedup source default."""
+
+    _DEDUPED = [{"pr_ref": "acme/widget#43", "issue_ref": "acme/widget#7",
+                 "kept_pr_ref": "acme/widget#44"}]
+
+    def __init__(self, *a, **k):
+        pass
+
+    def run(self, ctx):
+        return fc.StateResult(signal="OK", writes={"reconcile_result": {
+            "schema_version": vi.RECONCILE_RESULT_SCHEMA_VERSION,
+            "closed_issues": [], "rebased": [], "relanded": [],
+            "deduped": [dict(e) for e in self._DEDUPED],
+            "skipped": [], "errors": [],
+        }})
+
+
+def _patch_reconcile_dedup():
+    saved = {"R": vi.Reconcile, "branch": vi.gh_default_branch_source}
+    vi.Reconcile = _DedupReconcile
+    vi.gh_default_branch_source = lambda repo=None: "main"
+
+    def restore():
+        vi.Reconcile = saved["R"]
+        vi.gh_default_branch_source = saved["branch"]
+    return restore
+
+
+def test_reconcile_deduped_surfaced_in_tick_end_and_trace():
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "auto-merge", route=_RECONCILE_ROUTE)
+    restore = _patch_reconcile_dedup()
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            signal = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                                 state_path=state_path,
+                                 journal_path=journal_path,
+                                 source=_stub_source())
+        trace = buf.getvalue()
+    finally:
+        restore()
+    assert signal == "idle", signal
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("deduped") == 1, detail
+    # The trace shows the deduped token when >0.
+    assert "deduped=1" in trace, trace
+
+
+def test_route_without_reconcile_shows_deduped_zero_no_trace_token():
+    """A route with no RECONCILE state shows deduped=0 in the tick_end detail and
+    omits the trace token (mirroring integrate_errored/auto_merge_enabled)."""
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "propose", route=rt.DEFAULT_ROUTE)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                    state_path=state_path, journal_path=journal_path,
+                    source=_stub_source())
+    trace = buf.getvalue()
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("deduped") == 0, detail
+    assert "deduped=" not in trace, trace
+
+
+def test_reconcile_empty_dedup_shows_deduped_zero_no_trace_token():
+    """A RECONCILE route that dedups NOTHING shows deduped=0 and omits the token
+    (the count is len(reconcile_result.deduped), 0 for an empty list)."""
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "auto-merge", route=_RECONCILE_ROUTE)
+
+    class _NoDedup(_DedupReconcile):
+        _DEDUPED = []
+
+    saved = {"R": vi.Reconcile, "branch": vi.gh_default_branch_source}
+    vi.Reconcile = _NoDedup
+    vi.gh_default_branch_source = lambda repo=None: "main"
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                        state_path=state_path, journal_path=journal_path,
+                        source=_stub_source())
+        trace = buf.getvalue()
+    finally:
+        vi.Reconcile = saved["R"]
+        vi.gh_default_branch_source = saved["branch"]
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("deduped") == 0, detail
+    assert "deduped=" not in trace, trace
 
 
 if __name__ == "__main__":

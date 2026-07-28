@@ -1,5 +1,25 @@
 # scheduling — Changelog
 
+## feature 0.40.0 — 2026-07-24
+
+Two changes surfaced by the v0.24.0 live test (Wave 2, consumer of
+verify-integrate v0.12.0).
+
+- **Per-dispatch `invalid_output` re-emit (duplicate-PR root-cause fix).**
+  `_resume_agent_state`'s re-emit was ALL-OR-NOTHING: one missing/invalid pending
+  output re-dispatched EVERY pending dispatch, re-running implementers that had
+  already written a valid handoff and already opened a PR (live: one re-emit re-ran
+  5 already-validated implementers → 5 duplicate PRs). The re-emit now re-dispatches
+  ONLY the not-yet-valid dispatches; a dispatch whose `output_path` already holds a
+  schema-valid output is preserved (not deleted, not re-run). The stale-delete at
+  pause and the crash-safety re-emit are scoped to the (re-)dispatched set the same
+  way. When all outputs are finally present+valid they are `collect_outputs`-assembled
+  exactly as before; determinism/idempotency unchanged.
+- **`tick_end` surfaces the RECONCILE `deduped` count.** `len(reconcile_result.deduped)`
+  is added to `tick_end.detail` and appended to the one-line trace as `deduped=<n>`
+  only when `> 0` (mirroring `auto_merge_enabled`). Purely additive observability;
+  a route with no RECONCILE shows `deduped=0` and no trace token.
+
 ## feature 0.29.0 — 2026-06-21
 
 - **Remove the self-deploy ACTION; keep the `release_needed` DETECTION.** The
