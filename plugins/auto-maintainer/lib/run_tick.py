@@ -301,8 +301,11 @@ TRIAGE_MEMORY_KEY = "triage_memory"
 # The triage-memory statuses that, when the issue updated_at is UNCHANGED, cause a
 # work_item to be filtered OUT of the TRIAGE dispatch (already handled — no need to
 # re-judge). An `active` (accepted-not-done) item is NOT in this set, so it is
-# always re-triaged (never starved).
-_TRIAGE_SKIP_STATUSES = ("done", "deferred")
+# always re-triaged (never starved). `rejected` (the triager judged the issue
+# invalid, enacted via the reject-disposition sink) is skipped-while-unchanged
+# too: a human removing the label / touching the issue advances its updated_at and
+# re-admits it.
+_TRIAGE_SKIP_STATUSES = ("done", "deferred", "rejected")
 
 # The production escalation sink: observability's live `gh issue comment` adapter
 # (mirrors DEFAULT_PULL_SOURCE / DEFAULT_REPORT_SINK). When a work_item reaches
@@ -310,6 +313,14 @@ _TRIAGE_SKIP_STATUSES = ("done", "deferred")
 # the human through this sink. Tests inject a stub so the suite touches no
 # network; the shipped run_tick (no injected sink) comments via `gh`.
 DEFAULT_ESCALATE_SINK = ob.gh_comment_sink
+
+# The production reject-disposition sink: work-intake's live `gh` reject sink
+# (mirrors DEFAULT_PULL_SOURCE / DEFAULT_REPORT_SINK / DEFAULT_ESCALATE_SINK).
+# At the TRIAGE resume the reject enactment invokes it per rejected work order
+# (comment carrying the reason + apply REJECTED_LABEL, NEVER close). Tests inject
+# a stub so the suite touches no network; the shipped run_tick (no injected sink)
+# enacts via `gh`.
+DEFAULT_REJECT_SINK = wi.gh_issue_reject_sink
 
 # The durable-state document key under which the REPORT-LEDGER is persisted: a
 # durable CROSS-TICK fact (like BUDGET_KEY / ACTED_LEDGER_KEY, NOT a per-tick #64
@@ -638,6 +649,111 @@ def make_cleanup(runtime):  # noqa: ARG001 - CLEANUP binds no runtime config
     return vi.CLEANUP_MANIFEST, cleanup.run
 
 
+def _reconcile_ledger_seed(ledger):
+    """Shape the durable acted-ledger's `opened` entries into the list Reconcile's
+    `acted_ledger` slot expects: `[{work_order_id, pr_ref, issue_ref, repo}...]`.
+
+    The acted-ledger is keyed by work_order_id (`wo-<work_item_id>`) with value
+    `{outcome, ref, acted_at_updated_at}`; `ref` is the opened PR ref. The source
+    issue ref is the work_item_id (the work order id with the `wo-` prefix
+    stripped, e.g. `wo-acme/widget#7` -> `acme/widget#7`) and the repo is the
+    `owner/repo` portion of that ref. Only `opened` entries are seeded — a
+    `closed`/other outcome has nothing left to reconcile. Pure; no I/O."""
+    seed = []
+    for wo_id, entry in (ledger or {}).items():
+        if entry.get("outcome") != "opened":
+            continue
+        issue_ref = wo_id[3:] if wo_id.startswith("wo-") else wo_id
+        repo = issue_ref.split("#")[0] if "#" in issue_ref else None
+        seed.append({
+            "work_order_id": wo_id,
+            "pr_ref": entry.get("ref"),
+            "issue_ref": issue_ref,
+            "repo": repo,
+        })
+    return seed
+
+
+def _persist_reconcile_outcome(state_path, seed, recon):
+    """Persist a RECONCILE outcome back into the durable acted-ledger.
+
+    `seed` is the shaped opened-entry list (from `_reconcile_ledger_seed`), used
+    to map a reconciled `pr_ref` back to its `work_order_id`. `recon` is the
+    ReconcileResult:
+      - each `closed_issues` entry (a MERGED PR whose issue RECONCILE closed) has
+        its ledger entry STAMPED outcome='closed' so a later tick's opened-only
+        seed excludes it (idempotency — never re-comment).
+      - each `relanded` entry (a conflicting PR RECONCILE closed for a re-land) has
+        its ledger entry CLEARED so the §3.8.5 acted-ledger re-entry gate
+        re-dispatches it next tick.
+    Load-modify-save of ONLY ACTED_LEDGER_KEY, preserving every other durable
+    key. `rebased`/`skipped`/`errors` entries leave the ledger untouched."""
+    pr_to_wo = {e["pr_ref"]: e["work_order_id"]
+                for e in seed if e.get("pr_ref")}
+    doc = ds.DurableState(state_path).load()
+    ledger = dict(doc.get(ACTED_LEDGER_KEY, {}))
+    changed = False
+    for c in recon.closed_issues:
+        wo_id = pr_to_wo.get(c.get("pr_ref"))
+        if wo_id and wo_id in ledger:
+            entry = dict(ledger[wo_id])
+            entry["outcome"] = "closed"
+            ledger[wo_id] = entry
+            changed = True
+    for r in recon.relanded:
+        wo_id = pr_to_wo.get(r.get("pr_ref"))
+        if wo_id and ledger.pop(wo_id, None) is not None:
+            changed = True
+    if changed:
+        doc[ACTED_LEDGER_KEY] = ledger
+        ds.DurableState(state_path).save(doc)
+
+
+def make_reconcile(runtime):
+    """RECONCILE adapter (verify-integrate): the ADVISORY reconciler of the
+    PREVIOUS tick's leftover loop PRs (DESIGN §3.7 convergence), mirroring
+    make_integrate over Integrate. It runs BEFORE PULL.
+
+    Wraps vi.Reconcile, binding the loaded governance `mode` so the mutating tiers
+    (merged-PR issue-close, tier-1 force-push, tier-2 PR-close) run ONLY at
+    permits('merge', mode) (auto-merge); at dry-run/propose the would-act intent is
+    recorded under `skipped`. The gh seams are referenced at factory-call time (not
+    the def-time defaults) so an injected/overridden seam is honored, matching
+    make_integrate.
+
+    The bound run wrapper SEEDS Reconcile's `acted_ledger` slot from the durable
+    ACTED_LEDGER_KEY `opened` entries (shaped by _reconcile_ledger_seed), delegates
+    to Reconcile.run, then PERSISTS the outcome back into the acted-ledger
+    (_persist_reconcile_outcome): a merged-PR issue-close is stamped outcome=closed
+    (idempotency) and a tier-2 re-land clears the entry for the §3.8.5 re-entry
+    gate. RECONCILE is advisory (emits only OK); a single-entry fault is recorded
+    under `errors` and never blocks the tick. Returns (RECONCILE_MANIFEST, run)."""
+    mode = runtime["governance"].get("mode", "")
+    default_branch = vi.gh_default_branch_source(runtime.get("repo"))
+    reconcile = vi.Reconcile(
+        mode=mode,
+        pr_state_source=vi.gh_pr_state_source,
+        issue_state_source=vi.gh_issue_state_source,
+        issue_close_sink=vi.gh_issue_close_sink,
+        pr_close_sink=vi.gh_pr_close_sink,
+        comment_sink=vi.gh_issue_comment_sink,
+        worktree_helper=vi.reconcile_rebase_worktree,
+        permits_fn=sg.permits,
+        default_branch=default_branch,
+        repo=runtime.get("repo"))
+
+    def run(ctx):
+        state_path = ctx.read("state_path")
+        seed = _reconcile_ledger_seed(persisted_acted_ledger(state_path))
+        ctx.write("acted_ledger", seed)
+        result = reconcile.run(ctx)
+        recon = vi.ReconcileResult.from_dict(result.writes["reconcile_result"])
+        _persist_reconcile_outcome(state_path, seed, recon)
+        return result
+
+    return vi.RECONCILE_MANIFEST, run
+
+
 # --------------------------------------------------------------------------
 # The shipped DEFAULT_ROUTE + DEFAULT_ADAPTER_MAP (route-as-data).
 #
@@ -676,6 +792,7 @@ DEFAULT_ROUTE = {
 DEFAULT_ADAPTER_MAP = {
     "GUARD": "run_tick:make_guard",
     "DRAIN": "run_tick:make_drain",
+    "RECONCILE": "run_tick:make_reconcile",
     "PULL": "run_tick:make_pull",
     "TRIAGE": "run_tick:make_triage",
     "PRIORITIZE": "run_tick:make_prioritize",
@@ -728,8 +845,13 @@ _VOCAB = fc.SignalVocabulary([
 # the `initial` set: PULL writes it and PULL precedes EXIT on every routed path,
 # so data-readiness is already satisfied — AND keeping it OUT of `initial`
 # preserves the read-before-write rejection of a bad TRIAGE-before-PULL override.
+# acted_ledger (verify-integrate RECONCILE, Wave-2) is in the `initial` set
+# because RECONCILE READS it and RECONCILE runs BEFORE PULL (nothing produces it
+# on the route). make_reconcile SEEDS the slot from the durable ACTED_LEDGER_KEY
+# opened entries at run time; _seed_context registers + seeds it empty only when
+# RECONCILE is routed, so a route without RECONCILE never reads it.
 _INITIAL_SLOTS = ["state_path", "journal_path", "counter", "tick_outcome",
-                  "cross_cutting_risk"]
+                  "cross_cutting_risk", "acted_ledger"]
 
 
 def _seed_context(state_path, journal_path, route):
@@ -840,6 +962,19 @@ def _seed_context(state_path, journal_path, route):
             "skipped": [],
             "errors": [],
         })
+    # acted_ledger + reconcile_result (verify-integrate RECONCILE, Wave-2): the
+    # acted_ledger slot is READ by RECONCILE (make_reconcile SEEDS it from the
+    # durable ACTED_LEDGER_KEY opened entries at run time), and reconcile_result
+    # is RECONCILE's write product. Both are registered + seeded EMPTY only when
+    # RECONCILE is routed, so a route omitting RECONCILE never carries them.
+    if "RECONCILE" in route["states"]:
+        ctx.register_slot("acted_ledger", {"type": "array"}, version="1.0.0")
+        ctx.write("acted_ledger", [])
+        ctx.register_slot(
+            vi.RECONCILE_RESULT_SLOT["name"], vi.RECONCILE_RESULT_SLOT["schema"],
+            version=vi.RECONCILE_RESULT_SLOT["version"])
+        ctx.write(vi.RECONCILE_RESULT_SLOT["name"],
+                  vi.ReconcileResult().to_dict())
     ctx.write("state_path", state_path)
     ctx.write("journal_path", journal_path)
     ctx.write("counter", ds.DurableState(state_path).load()["counter"])
@@ -1873,6 +2008,41 @@ def _record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at):
         ds.DurableState(state_path).save(doc)
 
 
+def _enact_rejects(state_path, work_orders, work_items, mode, reject_sink):
+    """Enact the disposition of every `decision: rejected` work order at the TRIAGE
+    resume (Wave-2 consumer). For each rejected order (wi.reject_dispositions):
+    invoke `reject_sink(issue_ref, repo, reason)` (comment carrying the reason +
+    apply REJECTED_LABEL, NEVER close) and record
+    triage_memory[work_item_id] = {updated_at, status: 'rejected'} so the item is
+    skipped from re-triage while unchanged.
+
+    Trust-gated by sg.permits('file', mode) (same rung as the REPORT filing flush):
+    at dry-run the intent is NOT written — no sink call, no triage_memory record.
+    The reject destination repo is resolved via _repo_for_target('project', gov)
+    (project issues -> the gh default repo). Load-modify-save of ONLY
+    TRIAGE_MEMORY_KEY, preserving every other durable key. A tick with no rejected
+    orders is a no-op."""
+    rejected = wi.reject_dispositions(work_orders or [])
+    if not rejected:
+        return
+    if not sg.permits("file", mode):
+        return  # dry-run: intent logged, not written (mirrors REPORT flush)
+    wi_updated_at = _work_items_updated_at(work_items or [])
+    doc = ds.DurableState(state_path).load()
+    memory = dict(doc.get(TRIAGE_MEMORY_KEY, {}))
+    for r in rejected:
+        issue_ref = r["issue_ref"]
+        wi_id = r["work_item_id"]
+        # project issues -> gh default repo (None); the sink is idempotent (a
+        # no-op when the label is already present).
+        reject_sink(issue_ref, repo=_repo_for_target("project", {}),
+                    reason=r["reason"])
+        memory[wi_id] = {"updated_at": wi_updated_at.get(wi_id, ""),
+                         "status": "rejected"}
+    doc[TRIAGE_MEMORY_KEY] = memory
+    ds.DurableState(state_path).save(doc)
+
+
 def _record_last_triaged(state_path, judged, pulled):
     """Persist the last tick's TRIAGE filter outcome {judged, pulled} under
     LAST_TRIAGED_KEY so the terminal trace can surface triaged=<judged>/<pulled>
@@ -2638,7 +2808,7 @@ def _resume_agent_state(route, states, ctx, checkpoint, agentstates):
 def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
                     resume, mode, output_dir, gov, budget_clock, tick_id,
                     events=None, route_src=None, escalate_sink=None,
-                    escalate_now=None, pr_state_source=None):
+                    escalate_now=None, pr_state_source=None, reject_sink=None):
     """Drive a tick over a route that contains agent-states (DESIGN §2.8, §3.4.6).
 
     Three cases, all keyed off the durable checkpoint (the source of truth):
@@ -2745,6 +2915,18 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
                 # AFTER the backoff ledger so just-deferred items are visible.
                 _record_triage_memory(
                     state_path, handoffs, wo_to_wi, wi_updated_at)
+        # Reject-disposition enactment at the TRIAGE resume (Wave-2 consumer): the
+        # triager (a NON-acting agent-state writing the work_orders slot) has just
+        # written work_orders; enact every `decision: rejected` order via the
+        # reject sink + record a triage_memory `rejected` status, trust-gated by
+        # permits('file', mode). Keyed on the resumed state writing work_orders, so
+        # an acting (handoffs-writing) resume never triggers it.
+        elif checkpoint["pending"]["writes"] == wi.WORK_ORDERS_SLOT["name"]:
+            _enact_rejects(
+                state_path,
+                _read_slot_or(ctx, wi.WORK_ORDERS_SLOT["name"], []),
+                _read_slot_or(ctx, wi.WORK_ITEMS_SLOT["name"], []),
+                mode, reject_sink or DEFAULT_REJECT_SINK)
         path = list(checkpoint["path"]) + [next_state]
         signals = list(checkpoint["signals"])
         return _drive_agent_tick(
@@ -2779,7 +2961,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              project_dir=None, source=None, now=None, tick_spend=0,
              return_run_result=False, resume=False, spent=0,
              report_sink=None, discoveries=None, escalate_sink=None,
-             pr_state_source=None, pr_files_source=None):
+             pr_state_source=None, pr_files_source=None, reject_sink=None):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -3007,7 +3189,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
             route_src=route_src,
             escalate_sink=escalate_sink or DEFAULT_ESCALATE_SINK,
             escalate_now=event_now,
-            pr_state_source=pr_state_source or DEFAULT_PR_STATE_SOURCE)
+            pr_state_source=pr_state_source or DEFAULT_PR_STATE_SOURCE,
+            reject_sink=reject_sink or DEFAULT_REJECT_SINK)
         if agent_outcome[0] is not None:
             # PAUSED or invalid_output: return the structured dict directly. The
             # executor re-invokes run_tick(resume=True) to continue after the

@@ -50,6 +50,10 @@ Knobs:
   - ``--issue-title-pattern`` is the ``issue_filter.title_pattern`` regex; one
     of {none, null, ""} clears it to null. It must compile as a regex
     (validated via the same ``issue_filter`` normalizer).
+  - ``--issue-exclude-labels`` is the ``issue_filter.exclude_labels`` flat OR of
+    forbidden labels (comma-separated; an open issue carrying ANY is dropped by
+    PULL); one of {none, null, ""} clears it to ``[]``. Validated +
+    canonicalized through the same ``issue_filter`` normalizer.
   - ``--describe`` emits the machine-first field catalog as JSON (read-only);
     each entry carries a loop-``stage`` and the catalog is ORDERED by loop
     stage (PULL -> IMPLEMENT -> VERIFY -> GATE -> SCHEDULING -> SAFETY).
@@ -221,6 +225,22 @@ def _parse_issue_title_pattern(raw):
     return s
 
 
+def _parse_issue_exclude_labels(raw):
+    """Parse a --issue-exclude-labels CLI value -> a flat List[str] candidate.
+
+    Comma-separated (e.g. "auto-maintainer-rejected,wontfix" ->
+    ["auto-maintainer-rejected","wontfix"]). The clear sentinels none/null/""
+    (case-insensitive) map to [] (no exclusion). Each label is whitespace-
+    trimmed and stray-delimiter empties are dropped. exclude_labels is a FLAT OR
+    of forbidden labels, never a DNF; the value is validated + canonicalized by
+    the issue_filter normalizer at write time (the writer owns no validation the
+    reader does not)."""
+    s = str(raw).strip()
+    if s.lower() in ("none", "null", ""):
+        return []
+    return [lbl.strip() for lbl in s.split(",") if lbl.strip()]
+
+
 def _preflight(project_dir, runner=None):
     """READ-ONLY environment probe for the guided --setup onboarding.
 
@@ -283,7 +303,8 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
               regression_command=_UNSET, implement_test_command=_UNSET,
               doc_check_features_root=_UNSET,
               features_root=_UNSET, work_own_filings=_UNSET,
-              issue_labels=_UNSET, issue_title_pattern=_UNSET):
+              issue_labels=_UNSET, issue_title_pattern=_UNSET,
+              issue_exclude_labels=_UNSET):
     """Apply the requested changes to config.json and return the new config.
 
     Loads the current (backfilled, migrated) config, applies only the mentioned
@@ -327,7 +348,8 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
     if work_own_filings is not _UNSET:
         cfg["work_own_filings"] = work_own_filings
 
-    if issue_labels is not _UNSET or issue_title_pattern is not _UNSET:
+    if (issue_labels is not _UNSET or issue_title_pattern is not _UNSET
+            or issue_exclude_labels is not _UNSET):
         # Preserve unmentioned issue_filter sub-keys: start from the current
         # (backfilled) issue_filter and override only what was mentioned.
         existing = cfg.get("issue_filter") or {}
@@ -336,12 +358,17 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
         candidate_pattern = (issue_title_pattern
                             if issue_title_pattern is not _UNSET
                             else existing.get("title_pattern"))
+        candidate_exclude = (issue_exclude_labels
+                            if issue_exclude_labels is not _UNSET
+                            else existing.get("exclude_labels", []))
         # Validate + canonicalize THROUGH this feature's reader normalizer (the
         # writer owns no validation the reader does not); a bad label/group/
-        # pattern raises ValueError -> non-zero exit, no partial write.
+        # pattern/exclude label raises ValueError -> non-zero exit, no partial
+        # write.
         cfg["issue_filter"] = sg.issue_filter(
             {"issue_filter": {"labels": candidate_labels,
-                              "title_pattern": candidate_pattern}})
+                              "title_pattern": candidate_pattern,
+                              "exclude_labels": candidate_exclude}})
 
     path = _config_path(project_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -574,6 +601,13 @@ def main(argv=None):
              "must match, or none/null to clear",
     )
     parser.add_argument(
+        "--issue-exclude-labels",
+        default=None,
+        help="issue_filter.exclude_labels: a flat comma-separated list of "
+             "forbidden labels (an issue carrying ANY is dropped by PULL), or "
+             "none/null to clear",
+    )
+    parser.add_argument(
         "--describe",
         action="store_true",
         help="emit the machine-first field catalog as JSON (read-only)",
@@ -612,6 +646,7 @@ def main(argv=None):
         or args.work_own_filings is not None
         or args.issue_labels is not None
         or args.issue_title_pattern is not None
+        or args.issue_exclude_labels is not None
     )
 
     # --show, or no mutating flags at all: print the current config and stop.
@@ -642,6 +677,9 @@ def main(argv=None):
                   if args.issue_labels is not None else _UNSET)
         title_pattern = (_parse_issue_title_pattern(args.issue_title_pattern)
                          if args.issue_title_pattern is not None else _UNSET)
+        exclude_labels = (
+            _parse_issue_exclude_labels(args.issue_exclude_labels)
+            if args.issue_exclude_labels is not None else _UNSET)
         cfg = configure(
             project_dir,
             mode=args.mode,
@@ -655,6 +693,7 @@ def main(argv=None):
             work_own_filings=work_own,
             issue_labels=labels,
             issue_title_pattern=title_pattern,
+            issue_exclude_labels=exclude_labels,
         )
     except ValueError as exc:
         print(f"configure: error: {exc}", file=sys.stderr)
