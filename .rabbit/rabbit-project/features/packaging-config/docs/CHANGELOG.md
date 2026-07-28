@@ -1,5 +1,23 @@
 # Changelog — packaging-config
 
+## 0.25.0 — regen release: ship the RECONCILE/auto-merge/dedup fixes
+
+- Operator release step for the plugin: bump `_PLUGIN_VERSION` 0.24.0 -> 0.25.0
+  (the single source of truth; #355 monotonicity requires strictly-greater) and
+  regenerate the committed `plugins/auto-maintainer/` tree so the shipped libs
+  carry the merged `verify-integrate` 0.12.0 + `scheduling` 0.40.0 Wave-1/Wave-2
+  fixes.
+- Only the version stamps (`plugin.json` + `marketplace.json` -> 0.25.0) and the
+  naturally-changed `lib/verify_integrate.py` + `lib/run_tick.py` bytes move;
+  every other shipped byte is unchanged.
+- Re-anchor `test/release_lib_baseline.json` (version + lib_digest) so the
+  build-drift and #355 monotonicity guards stay green.
+- No spec surface change: `docs/spec.md` is byte-identical; the release version
+  is the `build_plugin.py` `_PLUGIN_VERSION` constant.
+- Invariant: version 0.25.0 is consistent across `plugin.json` +
+  `marketplace.json`; the committed tree matches a fresh build with no
+  source-tree leak.
+
 ## 0.11.0 — convergence hardening for the GATE loop
 
 - Regen release: cleans the build-drift left by two merged src PRs after the

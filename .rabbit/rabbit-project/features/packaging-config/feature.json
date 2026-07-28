@@ -1,12 +1,12 @@
 {
   "name": "packaging-config",
-  "version": "0.7.16",
+  "version": "0.7.17",
   "owner": "changyu87",
   "paths": [],
   "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-07-28",
-  "spec_change_reason": "Register the new /auto-maintainer:clobber control skill + its clobber.py lib in build_plugin so it ships end-to-end: clobber.py added to _NORMALIZED_LIBS (normalized like status.py \u2014 it self-bootstraps sys.path and imports flat siblings run_tick/lifecycle_dispositions/heartbeat) so it lands at plugins/auto-maintainer/lib/clobber.py, and a curated 'clobber' entry added to _COMMAND_DESCRIPTIONS (a shipped skill with no curated description fails the README-generation gate). The shipped-control-lib count test (twelve -> thirteen incl. clobber.py), the self-containment enumeration, the control-skill-set test, and the README shipped-skill set advanced in lockstep. Plugin _PLUGIN_VERSION deliberately NOT bumped (the tree regen + version bump is the separate operator release step, coupled to the #355 monotonicity invariant). spec.md Shipped-control-skills bullet documents the new-control-skill registration rule (housekeep doc baseline re-anchored 327 -> 334 for the appended bullet).",
+  "spec_change_reason": "Cut release v0.25.0: bump _PLUGIN_VERSION 0.24.0 -> 0.25.0 (the single-source-of-truth release constant; #355 monotonicity requires strictly-greater) and regenerate the committed plugin tree so the shipped libs carry the merged verify-integrate 0.12.0 + scheduling 0.40.0 RECONCILE/auto-merge/dedup fixes. The regenerated tree updates only the version stamps (plugin.json + marketplace.json -> 0.25.0) and the naturally-changed lib/verify_integrate.py + lib/run_tick.py bytes; every other shipped byte is unchanged. The version-assertion test advanced to 0.25.0 and test/release_lib_baseline.json re-anchored (version + lib_digest) so the drift + #355 monotonicity guards stay green.",
   "spec_no_change_reason": "release rebuild; version is the build_plugin.py _PLUGIN_VERSION constant, no spec surface change"
 }

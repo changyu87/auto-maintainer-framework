@@ -738,6 +738,7 @@ def make_reconcile(runtime):
         pr_close_sink=vi.gh_pr_close_sink,
         comment_sink=vi.gh_issue_comment_sink,
         worktree_helper=vi.reconcile_rebase_worktree,
+        open_pr_closing_issue_source=vi.gh_open_pr_closing_issue_source,
         permits_fn=sg.permits,
         default_branch=default_branch,
         repo=runtime.get("repo"))
@@ -2522,7 +2523,39 @@ def _checkpoint_compatible(checkpoint, ctx):
     return writes in ctx.registered_slots()
 
 
-def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
+def _partition_pending_dispatches(checkpoint):
+    """Partition a PAUSED checkpoint's pending dispatches by reading each
+    output_path (the PER-DISPATCH invalid_output / crash-safety re-emit narrowing
+    that stops duplicate PRs).
+
+    For each dispatch in `checkpoint['pending']['dispatches']`, its output_path
+    file is read and validated against the dispatch `schema` (`ad.validate_output`)
+    exactly as a resume validates it. A dispatch whose file EXISTS and is
+    schema-VALID is SATISFIED (already acted — e.g. an IMPLEMENT that already wrote
+    a valid handoff and opened its PR); the rest are pending-again. Returns
+    `(all_valid, valid_output_paths, pending_dispatches)` where
+    `pending_dispatches` is the sublist of the checkpoint's dispatches that must
+    be (re-)dispatched. The checkpoint's `pending.dispatches` list is the SOURCE
+    OF TRUTH and is NEVER mutated — the narrowing is applied only at emit time, so
+    resume still reads + `collect_outputs` ALL dispatches once every one is valid.
+    Pure I/O over the durable checkpoint; no wall clock, no network."""
+    pending = []
+    valid_output_paths = set()
+    for d in checkpoint["pending"]["dispatches"]:
+        output_path = d["output_path"]
+        if os.path.isfile(output_path):
+            with open(output_path) as f:
+                content = f.read()
+            ok, _parsed = ad.validate_output(content, d["schema"])
+            if ok:
+                valid_output_paths.add(output_path)
+                continue
+        pending.append(d)
+    return (not pending, valid_output_paths, pending)
+
+
+def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode,
+                                preserve_valid=False):
     """Build the PAUSED result by RE-LOADING the just-written checkpoint and
     rendering from its restored slot snapshot, then DELETE any pre-existing file
     at each dispatch's output_path.
@@ -2535,7 +2568,15 @@ def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
 
     Deleting any stale output file at the output_path is part of the PAUSE: a
     stale prior-tick file must never be misread on resume — a missing fresh write
-    must surface as invalid_output, never a stale read."""
+    must surface as invalid_output, never a stale read.
+
+    `preserve_valid` selects the PER-DISPATCH re-emit narrowing (duplicate-PR fix,
+    used by the invalid_output / crash-safety re-emit paths): when True, a dispatch
+    whose output_path ALREADY holds a schema-valid output is PRESERVED — it is
+    dropped from the re-emitted PAUSE and its file is left on disk (never re-run,
+    never deleted), so only the not-yet-valid dispatches are re-dispatched. When
+    False (the FRESH first pause) EVERY dispatch is emitted and every stale file
+    deleted, exactly as before."""
     checkpoint = persisted_tick_checkpoint(state_path)
     name = checkpoint["pending"]["state"]
     agentstate = agentstates[name]
@@ -2548,9 +2589,21 @@ def _emit_pause_from_checkpoint(state_path, agentstates, tick_id, mode):
     triage_memory = persisted_triage_memory(state_path)
     paused = _pause_result(name, agentstate, slot_values, tick_id, mode,
                            output_dir, triage_memory=triage_memory)
+    if preserve_valid:
+        # Re-dispatch ONLY the not-yet-valid dispatches; a dispatch whose
+        # output_path already holds a schema-valid output is PRESERVED (dropped
+        # from the re-emit, file left on disk). The checkpoint's pending.dispatches
+        # stays intact so a later resume still collect_outputs ALL of them.
+        _all_valid, valid_paths, _pending = _partition_pending_dispatches(
+            checkpoint)
+        paused["dispatches"] = [d for d in paused["dispatches"]
+                                if d["output_path"] not in valid_paths]
     for d in paused["dispatches"]:
-        # Stale-file safety: remove any pre-existing output file so a missing
-        # fresh write cannot be misread as a valid (stale) output on resume.
+        # Stale-file safety, scoped to the dispatches being (re-)dispatched: a
+        # preserved already-valid output is NEVER deleted (deleting it would force
+        # a re-run and, in production, a duplicate PR). Remove any pre-existing
+        # output file so a missing fresh write cannot be misread as a valid (stale)
+        # output on resume.
         if os.path.isfile(d["output_path"]):
             os.remove(d["output_path"])
     return paused
@@ -2869,10 +2922,20 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
             agentstates, ["GUARD"], [], output_dir, gov, budget_clock,
             events=events, pr_state_source=pr_state_source) + (ctx,)
 
-    if resume:
-        # RESUME: the checkpoint must exist (a resume without a prior PAUSE is a
-        # caller error). Restore the blackboard, then READ + validate + apply the
-        # subagent-written output files.
+    # A crash-safety re-emit (checkpoint present, no resume) whose dispatches are
+    # ALL already valid must APPLY the collected slot with NO re-dispatch — exactly
+    # like a resume — rather than re-emit an (empty) PAUSE. This preserves
+    # determinism/idempotency: an all-valid re-emit never re-runs a subagent (the
+    # per-dispatch narrowing below would otherwise leave zero dispatches to emit).
+    crash_all_valid = False
+    if checkpoint and not resume:
+        crash_all_valid, _vp, _pd = _partition_pending_dispatches(checkpoint)
+
+    if resume or crash_all_valid:
+        # RESUME (or an all-valid crash-safety re-emit): the checkpoint must exist
+        # (a resume without a prior PAUSE is a caller error). Restore the
+        # blackboard, then READ + validate + apply the subagent-written output
+        # files.
         ctx = ctx_seed()
         _restore_slots(ctx, checkpoint["slots"])
         resumed_name = checkpoint["pending"]["state"]
@@ -2936,12 +2999,17 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
             pr_state_source=pr_state_source) + (ctx,)
 
     if checkpoint:
-        # CRASH-SAFETY RE-EMIT: re-issue the SAME PAUSED dispatch idempotently
-        # from the durable checkpoint (the source of truth). A crash-safety
-        # re-emit is NOT a fresh tick — no tick_start; the pause/dispatch were
-        # already logged on the original PAUSE.
+        # CRASH-SAFETY / invalid_output RE-EMIT with >=1 not-yet-valid dispatch:
+        # re-issue the PAUSED dispatch idempotently from the durable checkpoint
+        # (the source of truth), NARROWED per-dispatch — re-emit ONLY the
+        # missing/invalid dispatches; a dispatch whose output_path already holds a
+        # schema-valid output is PRESERVED (not re-deleted, not re-dispatched), so
+        # a crash after some subagents already opened their PRs never re-runs them
+        # into duplicates. A crash-safety re-emit is NOT a fresh tick — no
+        # tick_start; the pause/dispatch were already logged on the original PAUSE.
         return _emit_pause_from_checkpoint(
-            state_path, agentstates, tick_id, mode), None, None
+            state_path, agentstates, tick_id, mode,
+            preserve_valid=True), None, None
 
     # FRESH: drive from GUARD. Log tick_start (route source + mode) before the
     # walk. Reset the ephemeral read products up-front (#356) so a tick that
@@ -3379,6 +3447,15 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # DISTINCT from integrate_errored. A route with no INTEGRATE (or an older
     # integration_result lacking the key) yields 0 via the .get default.
     auto_merge_enabled_count = len(integration_result.get("auto_merge_enabled", []))
+    # The RECONCILE surface (#69-style observability): deduped=<n> = the same-issue
+    # duplicate loop PRs RECONCILE closed this tick (len(reconcile_result.deduped),
+    # verify-integrate v0.12.0). Read the reconcile_result #64 read product from
+    # ctx when RECONCILE is routed (None otherwise); 0 when absent/empty. Purely
+    # additive — no merge/reconcile behavior change.
+    reconcile_result = (
+        ctx.read(vi.RECONCILE_RESULT_SLOT["name"])
+        if "RECONCILE" in route["states"] else None)
+    deduped_count = len((reconcile_result or {}).get("deduped", []))
     # Additive per-PR IDENTIFIERS for tick_end.detail: the full INTEGRATE result
     # ({merged: [{pr_ref, url}], skipped: [{pr_ref, reason}], errored: [{pr_ref,
     # reason}]}) enriching the count-only merged/integrate_skipped/
@@ -3410,6 +3487,10 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     else:
         release_needed = False
     release_field = " release_needed" if release_needed else ""
+    # deduped=<n> is appended to the trace ONLY when >0 (mirroring the
+    # integrate_errored/auto_merge_enabled-when-positive convention); the tick_end
+    # detail always carries the count (0 when no RECONCILE / empty dedup).
+    deduped_field = f" deduped={deduped_count}" if deduped_count > 0 else ""
     # The refire decision (legible idle-vs-refire): the EXIT signal already carries
     # it; surface a boolean in the tick_end detail disambiguating
     # idle-because-no-work (False) from refire-because-work-remains (True).
@@ -3428,7 +3509,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         f"disposition={disposition} "
         f"signal={signal} route={route_src} default_src={default_src} "
         f"{gov_fields} {reported_field} "
-        f"{triaged_field} {merged_field}{release_field}\n")
+        f"{triaged_field} {merged_field}{deduped_field}{release_field}\n")
 
     # Terminal events (observability §3.9.1): the resulting disposition, then the
     # tick_end carrying the final signal + the four read-product counts, the REPORT
@@ -3448,6 +3529,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "integrate_skipped": integrate_skipped,
         "integrate_errored": integrate_errored,
         "auto_merge_enabled": auto_merge_enabled_count,
+        "deduped": deduped_count,
         "merged_refs": merged_refs,
         "release_needed": release_needed,
         "refire": refire,
