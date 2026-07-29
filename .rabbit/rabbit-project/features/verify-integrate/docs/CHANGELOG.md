@@ -2,6 +2,23 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.9.3 — 2026-07-24
+
+REVIEW noise suppression: the advisory reviewer no longer files merge-conflict /
+cross-PR-collision issues.
+
+- **Reviewer scope narrowed to the PR's own diff.** In the live loop the
+  `auto-maintainer-reviewer` filed backlog issues like "PR #780 version bump 0.3.4
+  collides with sibling PR #779 (same shared files)" — a MERGE-STATE / cross-PR
+  collision that RECONCILE (conflict-recovery) and the VERIFY/INTEGRATE merge gates
+  already own. That's duplicate noise racing RECONCILE. `ship/agents/auto-maintainer-reviewer.md`
+  now carries an explicit EXCLUSION: emit findings ONLY about the logical/functional
+  quality of the code in THIS PR's own `base..head` diff (correctness, security,
+  error handling, missing tests, code-quality defects), judged from the diff alone —
+  NEVER about merge conflicts, mergeability, or version-bump/shared-file collisions
+  with sibling PRs. REVIEW stays advisory + non-gating; the `review_findings` schema,
+  dispatch wiring, and severity floor are unchanged.
+
 ## 0.9.2 — 2026-07-24
 
 Hotfix: RECONCILE's conflict-recovery ladder was blind to a freshly-invalidated

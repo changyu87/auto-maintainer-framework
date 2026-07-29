@@ -195,6 +195,26 @@ def test_reviewer_agent_doc_is_advisory_not_a_merge_gate():
         or "not a merge gate" in lower
 
 
+def test_reviewer_agent_doc_excludes_merge_conflict_and_collision_findings():
+    """REVIEW is scoped to the PR's OWN diff — the reviewer must be told NOT to
+    file findings about merge conflicts, mergeability state, or cross-PR
+    version-bump / shared-file collisions with sibling loop PRs (those are owned
+    by RECONCILE + the VERIFY/INTEGRATE merge gates). This pins the scope-boundary
+    exclusion prose into the agent definition (spec Scope boundary + invariant)."""
+    agent_path = os.path.join(_FEATURE_DIR, "ship", "agents",
+                              "auto-maintainer-reviewer.md")
+    text = open(agent_path, encoding="utf-8").read()
+    lower = text.lower()
+    # The exclusion names the excluded concerns...
+    assert "merge conflict" in lower
+    assert "collision" in lower
+    assert "sibling" in lower
+    # ...and points at the deterministic owners (RECONCILE + the merge gates).
+    assert "reconcile" in lower
+    # ...and reaffirms the reviewer judges only THIS PR's own diff.
+    assert "own base..head diff" in lower or "own diff" in lower
+
+
 def test_reviewer_agent_doc_does_not_emit_approval_verdict():
     """The advisory reviewer must NOT instruct an approve/reject merge verdict —
     that was the old merge-gate contract (removed)."""
