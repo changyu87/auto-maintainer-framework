@@ -1,12 +1,12 @@
 {
   "name": "packaging-config",
-  "version": "0.7.19",
+  "version": "0.7.20",
   "owner": "changyu87",
   "paths": [],
   "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-07-29",
-  "spec_change_reason": "Cut release v0.25.2: bump _PLUGIN_VERSION 0.25.1 -> 0.25.2 (the single-source-of-truth release constant; #355 monotonicity requires strictly-greater) and regenerate the committed plugin tree so the shipped lib/status.py carries the merged scheduling 0.41.0 change (/auto-maintainer:status now shows the configured heartbeat interval). The regenerated tree updates only the version stamps (plugin.json + marketplace.json -> 0.25.2) and the naturally-changed lib/status.py bytes; every other shipped byte is unchanged. The version-assertion test advanced to 0.25.2 and test/release_lib_baseline.json re-anchored (version + lib_digest) so the drift + #355 monotonicity guards stay green.",
+  "spec_change_reason": "Cut release v0.25.3: bump _PLUGIN_VERSION 0.25.2 -> 0.25.3 (the single-source-of-truth release constant; #355 monotonicity requires strictly-greater) and regenerate the committed plugin tree so the shipped lib/verify_integrate.py carries the merged verify-integrate 0.12.2 hotfix (RECONCILE's gh_pr_state_source no longer polls a transient mergeable=UNKNOWN). The regenerated tree updates only the version stamps (plugin.json + marketplace.json -> 0.25.3) and the naturally-changed lib/verify_integrate.py bytes; every other shipped byte is unchanged. The version-assertion test advanced to 0.25.3 and test/release_lib_baseline.json re-anchored (version + lib_digest) so the drift + #355 monotonicity guards stay green.",
   "spec_no_change_reason": "release rebuild; version is the build_plugin.py _PLUGIN_VERSION constant, no spec surface change"
 }
