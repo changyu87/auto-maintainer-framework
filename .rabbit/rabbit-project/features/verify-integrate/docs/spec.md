@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.9.2
+version: 0.9.3
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
@@ -122,6 +122,18 @@ IMPLEMENT's deterministic run.py gate plus VERIFY + guardrails + the trust ladde
 so a lazy reviewer costs only missed quality notes, never an unsafe merge (this
 structurally defuses the #255 rubber-stamp danger). The findings are filed as
 backlog issues by the downstream REPORT port and fixed on a later tick.
+
+**Scope boundary — REVIEW reviews the PR's OWN diff, never merge state.** The
+reviewer emits findings ONLY about the LOGICAL and FUNCTIONAL quality of the code
+in THIS PR's own `base..head` diff — correctness bugs, broken/missing behavior,
+security, error handling, missing tests for the changed code, clear code-quality
+defects — judged from the diff ALONE. It MUST NOT emit findings about merge
+conflicts, rebase/mergeability state, or version-bump / shared-file COLLISIONS
+between this PR and sibling/other open loop PRs, nor any cross-PR or merge-state
+concern: those are owned deterministically by RECONCILE (conflict-recovery ladder)
+and the VERIFY/INTEGRATE merge gates, and a REVIEW finding about them is duplicate
+noise that races RECONCILE (observed: it filed "PR #x version bump collides with
+sibling #y"). REVIEW never inspects how a PR relates to other open PRs.
 
 ## VERIFY (slice 1 — THIN, DESIGN §3.7.1/§3.7.2/§3.7.6)
 
@@ -493,6 +505,10 @@ CLEANUP → PERSIST → EXIT`.
 
 - VERIFY is read-only w.r.t. GitHub (no GitHub writes); INTEGRATE merges ONLY at
   `auto-merge` and ONLY a PR that is `ok` AND passes guardrails.
+- REVIEW's findings are scoped to the PR's OWN diff (logical/functional/quality
+  defects in the changed code); REVIEW NEVER files findings about merge conflicts,
+  mergeability state, or cross-PR version-bump/shared-file collisions — those are
+  owned by RECONCILE + the VERIFY/INTEGRATE merge gates, not REVIEW.
 - VERIFY's `ok` is mergeable+base only (CI recorded, not gating); a failing
   cross-feature complement flips every verdict `ok=False`.
 - VERIFY resolves a transient `mergeable=UNKNOWN` via a BOUNDED, injectable-runner
