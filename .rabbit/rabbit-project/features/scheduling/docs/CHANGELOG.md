@@ -1,5 +1,15 @@
 # scheduling — Changelog
 
+## feature 0.41.0 — 2026-07-24
+
+- **`/auto-maintainer:status` shows the heartbeat interval.** `status_data()`
+  now includes `heartbeat_interval_minutes` (the configured `/start` cadence,
+  read via `safety_governance.load_config` → `config["heartbeat"]["interval_minutes"]`,
+  shipped default 3), and `render_status` prints a `heartbeat  <n> min` line near
+  the mode/budget fields — so an operator can see how often the loop ticks without
+  inspecting the config. Read-only informational; no behavior change, no new config
+  key. (Configure the value with `configure --interval-minutes <n>`.)
+
 ## feature 0.40.0 — 2026-07-24
 
 Two changes surfaced by the v0.24.0 live test (Wave 2, consumer of
