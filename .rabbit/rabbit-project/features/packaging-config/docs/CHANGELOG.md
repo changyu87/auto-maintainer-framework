@@ -1,5 +1,24 @@
 # Changelog — packaging-config
 
+## 0.25.3 — regen release: ship the verify-integrate transient-UNKNOWN hotfix
+
+- Operator release step for the plugin: bump `_PLUGIN_VERSION` 0.25.2 -> 0.25.3
+  (the single source of truth; #355 monotonicity requires strictly-greater) and
+  regenerate the committed `plugins/auto-maintainer/` tree so the shipped
+  `lib/verify_integrate.py` carries the merged `verify-integrate` 0.12.2 hotfix:
+  RECONCILE's `gh_pr_state_source` no longer polls a transient
+  `mergeable=UNKNOWN`.
+- Only the version stamps (`plugin.json` + `marketplace.json` -> 0.25.3) and the
+  naturally-changed `lib/verify_integrate.py` bytes move; every other shipped
+  byte is unchanged.
+- Re-anchor `test/release_lib_baseline.json` (version + lib_digest) so the
+  build-drift and #355 monotonicity guards stay green.
+- No spec surface change: `docs/spec.md` is byte-identical; the release version
+  is the `build_plugin.py` `_PLUGIN_VERSION` constant.
+- Invariant: version 0.25.3 is consistent across `plugin.json` +
+  `marketplace.json`; the committed tree matches a fresh build with no
+  source-tree leak.
+
 ## 0.25.2 — regen release: ship the scheduling /status heartbeat display
 
 - Operator release step for the plugin: bump `_PLUGIN_VERSION` 0.25.1 -> 0.25.2
