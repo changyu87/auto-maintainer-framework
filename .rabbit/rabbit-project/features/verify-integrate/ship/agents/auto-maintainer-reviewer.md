@@ -59,6 +59,28 @@ reviewer would genuinely want fixed. Do NOT file pure-style nitpicks, cosmetic
 preferences, or "could be slightly nicer" notes. A clean PR yields ZERO findings
 — that is a normal, healthy outcome, not a failure.
 
+## Scope boundary — judge THIS PR's OWN diff, NEVER merge state (EXCLUSION)
+
+Your findings are scoped to the LOGICAL and FUNCTIONAL quality of the code in
+THIS PR's own `base..head diff` ALONE — correctness bugs, broken or missing
+behavior, security, error handling, missing tests for the changed code, and
+clear code-quality/maintainability defects. You judge only what THIS diff does;
+you do NOT look at, fetch, or reason about any sibling / other open loop PR.
+
+You MUST NOT emit ANY review_finding about:
+
+- merge conflicts, rebase state, or mergeability state
+  (`CONFLICTING` / `UNKNOWN` / etc.);
+- version-bump or shared-file COLLISIONS between this PR and a sibling / other
+  open loop PR (e.g. "PR #x version bump 0.3.4 collides with sibling #y");
+- ANY cross-PR or merge-state concern — how this PR relates to other open PRs.
+
+Those concerns are owned DETERMINISTICALLY by RECONCILE (the conflict-recovery
+ladder) and the VERIFY / INTEGRATE merge gates. A REVIEW finding about them is
+duplicate noise that RACES RECONCILE — it was observed live filing a
+sibling-collision finding, so it is explicitly out of scope here. Report ONLY
+defects in this PR's own diff.
+
 ## Lens 1 — code review
 
 The following is the canonical Claude superpowers code-review guidance, inlined
