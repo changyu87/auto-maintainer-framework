@@ -2068,30 +2068,34 @@ def gh_issue_close_sink(issue_ref, repo=None, comment=None,
 
 
 def gh_open_pr_closing_issue_source(repo=None, runner=subprocess.run):
-    """Production same-issue-dedup source (C): shell `gh pr list --label
-    auto-maintainer --state open --json number,url,closingIssuesReferences` and
-    return the LIVE open loop-PR set as `[{pr_ref, url, issue_ref}]`, each PR
-    mapped to its FIRST closing-issue ref (`owner/repo#number` when `repo` is
-    given, else `#number`). A PR that closes NO issue is EXCLUDED (it cannot be a
-    same-issue duplicate). Injectable `runner` for deterministic tests (no
-    network), mirroring the sibling gh sources."""
+    """Production same-issue-dedup source (C): return the LIVE open loop-PR set as
+    `[{pr_ref, url, issue_ref}]`, each PR mapped to its FIRST closing-issue ref
+    (`owner/repo#number` when `repo` is given, else `#number`).
+
+    `closingIssuesReferences` is a `gh pr view`-only `--json` field — it is NOT
+    valid on `gh pr list` (requesting it there aborts the whole tick on stock gh),
+    so this LISTS the open loop PRs with only SUPPORTED fields
+    (`gh pr list --json number,url`) and then resolves EACH PR's first
+    closing-issue ref by delegating to the EXISTING `gh_closing_issue_ref` (which
+    uses the supported `gh pr view <n> --json closingIssuesReferences`). A PR that
+    closes NO issue (gh_closing_issue_ref returns None) is EXCLUDED (it cannot be a
+    same-issue duplicate). The `runner` is INJECTABLE (threaded into BOTH the list
+    call AND the per-PR gh_closing_issue_ref delegation) for deterministic tests
+    (no network), mirroring the sibling gh sources."""
     cmd = ["gh", "pr", "list", "--label", LOOP_PR_LABEL, "--state", "open",
-           "--json", "number,url,closingIssuesReferences"]
+           "--json", "number,url"]
     if repo:
         cmd += ["--repo", repo]
     out = runner(cmd, capture_output=True, text=True, check=True)
     prs = json.loads(out.stdout or "[]")
     entries = []
     for pr in prs:
-        refs = pr.get("closingIssuesReferences") or []
-        if not refs:
+        pr_ref = _derive_pr_ref(pr.get("url", ""), pr["number"])
+        issue_ref = gh_closing_issue_ref(pr_ref, repo=repo, runner=runner)
+        if issue_ref is None:
             continue
-        issue_number = refs[0].get("number")
-        if issue_number is None:
-            continue
-        issue_ref = f"{repo}#{issue_number}" if repo else f"#{issue_number}"
         entries.append({
-            "pr_ref": _derive_pr_ref(pr.get("url", ""), pr["number"]),
+            "pr_ref": pr_ref,
             "url": pr.get("url", ""),
             "issue_ref": issue_ref,
         })
@@ -2291,43 +2295,54 @@ class Reconcile:
         NEVER closes the sole PR for an issue, NEVER touches a group whose issue is
         CLOSED, NEVER crosses issues. Trust-gated: at dry-run/propose the
         would-close intent is recorded under `skipped`. Each close is wrapped in a
-        per-entry try/except that records faults under `errors` and never raises."""
-        entries = self._open_pr_closing_issue_source(repo=self._repo)
-        groups = {}
-        for e in entries:
-            groups.setdefault(e["issue_ref"], []).append(e)
+        per-entry try/except that records faults under `errors` and never raises.
 
-        for issue_ref, group in groups.items():
-            if len(group) <= 1:
-                continue  # sole PR for the issue — never touched.
-            issue_state = self._issue_state_source(issue_ref, repo=self._repo)
-            if (issue_state or {}).get("state") != "OPEN":
-                continue  # closed-issue group — never touched (not (C)'s concern).
-            ordered = sorted(group, key=lambda e: _pr_number(e["pr_ref"]),
-                             reverse=True)
-            kept = ordered[0]
-            for dup in ordered[1:]:
-                dup_ref = dup["pr_ref"]
-                if not permitted:
-                    result.skipped.append({
-                        "ref": dup_ref,
-                        "reason": ("duplicate same-issue loop PR — would close "
-                                   "at auto-merge"),
-                    })
-                    continue
-                try:
-                    self._pr_close_sink(dup_ref, repo=self._repo)
-                    self._comment_sink(
-                        issue_ref,
-                        reconcile_dedup_comment(dup_ref, kept["pr_ref"]),
-                        repo=self._repo)
-                    result.deduped.append({
-                        "pr_ref": dup_ref,
-                        "issue_ref": issue_ref,
-                        "kept_pr_ref": kept["pr_ref"],
-                    })
-                except Exception as exc:  # noqa: BLE001 — record, never raise
-                    result.errors.append({"ref": dup_ref, "reason": str(exc)})
+        ADVISORY FAULT-ISOLATION (the WHOLE step): the entire dedup step — the one
+        `open_pr_closing_issue_source` call AND the per-group grouping+close loop —
+        is wrapped so ANY fault (a gh error from the source, an unresolvable ref)
+        is recorded under `errors` as `{ref: "dedup", ...}` and the tick CONTINUES
+        with dedup degraded to a no-op. A dedup fault NEVER raises and NEVER aborts
+        the tick — RECONCILE stays advisory (emits only OK)."""
+        try:
+            entries = self._open_pr_closing_issue_source(repo=self._repo)
+            groups = {}
+            for e in entries:
+                groups.setdefault(e["issue_ref"], []).append(e)
+
+            for issue_ref, group in groups.items():
+                if len(group) <= 1:
+                    continue  # sole PR for the issue — never touched.
+                issue_state = self._issue_state_source(issue_ref, repo=self._repo)
+                if (issue_state or {}).get("state") != "OPEN":
+                    continue  # closed-issue group — never touched (not (C)'s).
+                ordered = sorted(group, key=lambda e: _pr_number(e["pr_ref"]),
+                                 reverse=True)
+                kept = ordered[0]
+                for dup in ordered[1:]:
+                    dup_ref = dup["pr_ref"]
+                    if not permitted:
+                        result.skipped.append({
+                            "ref": dup_ref,
+                            "reason": ("duplicate same-issue loop PR — would "
+                                       "close at auto-merge"),
+                        })
+                        continue
+                    try:
+                        self._pr_close_sink(dup_ref, repo=self._repo)
+                        self._comment_sink(
+                            issue_ref,
+                            reconcile_dedup_comment(dup_ref, kept["pr_ref"]),
+                            repo=self._repo)
+                        result.deduped.append({
+                            "pr_ref": dup_ref,
+                            "issue_ref": issue_ref,
+                            "kept_pr_ref": kept["pr_ref"],
+                        })
+                    except Exception as exc:  # noqa: BLE001 — record, never raise
+                        result.errors.append({"ref": dup_ref,
+                                              "reason": str(exc)})
+        except Exception as exc:  # noqa: BLE001 — advisory: dedup -> no-op
+            result.errors.append({"ref": "dedup", "reason": str(exc)})
 
     def _reconcile_one(self, result, pr_ref, issue_ref, repo, permitted):
         """Reconcile one `opened` ledger entry into `result` (branch A or B)."""

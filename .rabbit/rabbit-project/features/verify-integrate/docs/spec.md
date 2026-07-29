@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.9.0
+version: 0.9.1
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
@@ -369,9 +369,14 @@ REPORT/work-intake's (contract `never`).
   closes an issue with a machine-readable comment naming the PR.
 - `gh_open_pr_closing_issue_source(repo) -> [{pr_ref, url, issue_ref}]` — NEW
   injectable source for same-issue dedup (C): the LIVE open loop-PR set with each
-  PR's first closing-issue ref (production: `gh pr list --label auto-maintainer
-  --state open --json number,url,closingIssuesReferences`). Runner injectable; no
-  network in tests.
+  PR's first closing-issue ref. Production: LIST with only supported fields — `gh
+  pr list --label auto-maintainer --state open --json number,url` — then for each
+  listed PR resolve its first closing-issue ref by delegating to the EXISTING
+  `gh_closing_issue_ref` (which uses `gh pr view <n> --json closingIssuesReferences`,
+  the supported form). `closingIssuesReferences` is NOT a valid `gh pr list` `--json`
+  field (only `gh pr view` supports it), so requesting it on the list would abort
+  the tick on stock `gh` — hence list-then-per-PR-view. A PR whose closing-issue ref
+  is None (closes no issue) is EXCLUDED. Runner injectable; no network in tests.
 - the EXISTING injectable PR-close sink and issue-comment sink, and the EXISTING
   GATE integration-worktree helper (fetch a PR head, merge/rebase onto a fresh
   base), reused for the tier-1 rebase.
@@ -417,10 +422,14 @@ guarantee.
 
 Dedup sources the LIVE open loop-PR set (NOT the `acted_ledger`, which holds only
 the latest `opened` entry per work order and would miss a re-dispatch's orphaned
-first-run PR) via an INJECTABLE source (production: `gh pr list --label
-auto-maintainer --state open --json number,url,closingIssuesReferences`, each PR
-mapped to its FIRST closing-issue ref; a PR that closes no issue is excluded from
-dedup). It GROUPS the open PRs by closing-issue ref and, for each group with **more
+first-run PR) via an INJECTABLE source (production: LIST the open loop PRs with only
+supported `--json` fields — `gh pr list --label auto-maintainer --state open --json
+number,url` — then resolve EACH PR's FIRST closing-issue ref via the EXISTING
+`gh_closing_issue_ref` (`gh pr view <n> --json closingIssuesReferences`); a PR that
+closes no issue is excluded from dedup). `closingIssuesReferences` is a `gh pr
+view`-only field — it is NOT valid on `gh pr list`, so it must NEVER be requested on
+the list (doing so aborts the whole tick on stock `gh`). It GROUPS the open PRs by
+closing-issue ref and, for each group with **more
 than one** open PR whose **source issue is still OPEN** (`gh_issue_state_source`),
 KEEPS exactly one — the **highest PR number** (the loop-tracked / newest re-land) —
 and CLOSES every other PR in the group via the EXISTING PR-close sink (`gh pr close
@@ -429,6 +438,14 @@ superseding same-issue re-land). Recorded in `reconcile_result.deduped`. Dedup N
 touches the sole PR for an issue, NEVER touches a group whose issue is CLOSED (an
 orphaned duplicate whose issue closed is INTEGRATE's/orphan path's concern, and a
 merged-issue is (A)'s), and NEVER touches PRs across different issues.
+
+**Advisory fault-isolation (the whole dedup step).** The entire dedup step — the
+one `gh_open_pr_closing_issue_source` call AND the per-group close work — is wrapped
+so ANY fault (a gh error from the source, an unresolvable ref, a close-sink failure)
+is recorded under `reconcile_result.errors` (e.g. `{ref: "dedup", reason: <str>}`)
+and the tick CONTINUES with dedup degraded to a no-op. A dedup fault NEVER raises
+and NEVER aborts the tick — RECONCILE stays advisory (emits only `OK`). This closes
+the regression where a source-call fault propagated and crashed the whole tick.
 
 **Trust-gated exactly like INTEGRATE.** The mutating acts (issue-close,
 force-push, PR-close, same-issue dedup PR-close) run ONLY at `permits("merge",
@@ -491,7 +508,12 @@ CLEANUP → PERSIST → EXIT`.
   highest-numbered PR and closes the rest via the existing PR-close sink. It NEVER
   closes the sole PR for an issue, NEVER touches a group whose issue is closed, and
   NEVER crosses issues; it is trust-gated (`auto-merge` only) and records closures
-  in `reconcile_result.deduped`.
+  in `reconcile_result.deduped`. Its open-PR source LISTS with only supported
+  `gh pr list` `--json` fields (`number,url`) and resolves each closing-issue ref
+  via `gh_closing_issue_ref` (`gh pr view`) — it NEVER requests
+  `closingIssuesReferences` on `gh pr list` (an invalid field that would abort the
+  tick). The entire dedup step is fault-isolated: any fault is recorded under
+  `errors` and the tick CONTINUES (RECONCILE never crashes on a dedup fault).
 
 ## Deferred (NOT v1)
 
