@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.40.0
+version: 0.41.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -213,7 +213,10 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      (`default` vs the project-local `route.json` override path, #59), and the
      real loop status. It exposes a **machine-first `status_data()`** returning a
      dict of every surfaced field — `plugin_version`, `disposition`, `awaiting`,
-     `mode`, budget (`budget_spent`/`budget_ceiling`/`budget_window`/
+     `mode`, `heartbeat_interval_minutes` (the configured `/start` cadence, read
+     via `safety_governance.load_config` — `config["heartbeat"]["interval_minutes"]`,
+     the same value `start.py`'s `heartbeat_interval_minutes()` uses; shipped
+     default 3), budget (`budget_spent`/`budget_ceiling`/`budget_window`/
      `budget_paused`), the four read-product counts, `reported`
      (`filed`/`skipped`), `route` (`{source, states, chain}`), and `runtime_dir`
      — and a derived **human view `render_status(data)`** (philosophy §1: the
@@ -382,9 +385,11 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 (trace shows the count), PERSISTs them, and EXITs **IDLE**. Every
 `heartbeat.interval_minutes` (default 3) the heartbeat re-pulls the current open
 issues. `/auto-maintainer:status` shows a formatted report: the emphasized
-plugin version, disposition/awaiting/mode/budget/reported/read-product counts,
-and the active route listing (states + happy-path chain, shown even when it is
-the default). `/stop` latches STOPPED + cancels the heartbeat.
+plugin version, disposition/awaiting/mode/heartbeat-interval/budget/reported/
+read-product counts, and the active route listing (states + happy-path chain,
+shown even when it is the default). The heartbeat line shows the configured
+`heartbeat.interval_minutes` (e.g. `heartbeat  30 min`) so an operator can see
+the `/start` cadence without inspecting the config. `/stop` latches STOPPED + cancels the heartbeat.
 
 ## Current behaviour
 
