@@ -1,14 +1,14 @@
 {
   "name": "verify-integrate",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/verify-integrate/src/**"
   ],
   "created": "2026-06-14T16:35:52Z",
   "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict / ReconcileResult schemas reach a breaking major version.",
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "updated": "2026-07-28",
-  "spec_change_reason": "Two convergence fixes making auto-merge reliable the tick a PR is opened. CHANGE 1 (VERIFY): resolve a transient gh mergeable=UNKNOWN via a BOUNDED, injectable-runner + injectable-sleep poll (MERGEABILITY_POLL_ATTEMPTS/MERGEABILITY_POLL_INTERVAL_S) in gh_open_pr_source before deriving the verdict; a still-UNKNOWN result becomes a DEFERRED verdict (ok=False, transient reason) DISTINCT from the permanent CONFLICTING hard failure (derive_verdict now splits the non-mergeable reason). CHANGE 2 (RECONCILE): add same-issue open-PR dedup (C) \u2014 the new gh_open_pr_closing_issue_source seam sources the live open loop-PR set, groups by closing issue, and for each group with >1 open PR whose issue is still OPEN keeps the highest-numbered PR and closes the rest via the existing PR-close sink; ReconcileResult gains an additive `deduped` list and RECONCILE_RESULT_SCHEMA_VERSION -> 1.1.0. Trust-gated exactly like INTEGRATE.",
-  "spec_no_change_reason": "spec.md already carries the transient-UNKNOWN mergeability poll + RECONCILE (C) same-issue dedup sections (committed on this branch as the spec-update step 49ee5a9); this cycle implements them in src + tests + re-anchors the housekeep doc baseline."
+  "spec_change_reason": "v0.25.1 hotfix: the v0.25.0 RECONCILE same-issue dedup (C) crashed the whole tick on gh 2.69.0. FIX 1 (the crash): gh_open_pr_closing_issue_source requested closingIssuesReferences on `gh pr list` (a `gh pr view`-only --json field, invalid on list -> gh non-zero -> check=True aborts the tick); rewritten to LIST with supported fields only (`gh pr list --json number,url`, + --repo when set) and resolve each PR's first closing-issue ref via the EXISTING gh_closing_issue_ref (`gh pr view <n> --json closingIssuesReferences`), excluding PRs that close no issue; runner threaded into both calls; closingIssuesReferences is NEVER requested on `gh pr list`. FIX 2 (advisory fault-isolation): the ENTIRE (C) dedup step (the source call AND the per-group grouping+close loop) is wrapped in try/except that records any fault under reconcile_result.errors as {ref:'dedup', reason} and CONTINUES (dedup degrades to a no-op); RECONCILE stays advisory (emits only OK, never raises/aborts). Existing per-close trust-gate + deduped recording preserved. Housekeep doc baseline re-anchored (spec.md 515 -> 537).",
+  "spec_no_change_reason": "spec.md already updated + committed on this branch (e6ba000) with the RECONCILE (C) dedup gh-query-shape clarification + fault-isolation invariant for this hotfix; this cycle implements them in src + tests"
 }
