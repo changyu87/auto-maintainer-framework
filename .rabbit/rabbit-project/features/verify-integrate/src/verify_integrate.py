@@ -2019,22 +2019,44 @@ RECONCILE_MANIFEST = fc.StateManifest(reads=["acted_ledger"],
                                       emits=RECONCILE_SIGNALS)
 
 
-def gh_pr_state_source(pr_ref, repo=None, runner=subprocess.run):
+def gh_pr_state_source(pr_ref, repo=None, runner=subprocess.run,
+                       sleep=time.sleep):
     """Production PR-state read: shell `gh pr view <n> --json state,mergedAt,
     mergeable` and return `{state, merged, mergeable}` — `merged` is True when the
     PR has a `mergedAt` timestamp; `mergeable` is gh's MERGEABLE|CONFLICTING|
-    UNKNOWN string. Injectable `runner` for deterministic tests (no network),
-    mirroring the sibling gh resolvers/sinks."""
+    UNKNOWN string.
+
+    A transient `mergeable=UNKNOWN` is RESOLVED before the dict is returned, via
+    the SAME bounded poll VERIFY's `gh_open_pr_source` uses (`poll_mergeability`,
+    MERGEABILITY_POLL_ATTEMPTS / MERGEABILITY_POLL_INTERVAL_S): when the PR is OPEN
+    and NOT merged and `mergeable` is UNKNOWN, re-query gh until the value settles
+    to MERGEABLE/CONFLICTING or the bounded attempts exhaust, and return that
+    settled value. This keeps RECONCILE's (B) conflict-recovery ladder from being
+    blind to a just-invalidated loop PR (GitHub reports UNKNOWN transiently right
+    after a sibling merge). A MERGED PR SHORT-CIRCUITS (no poll — merge state is
+    final); a still-UNKNOWN result after the bounded poll is returned AS-IS, so
+    `_reconcile_one`'s CONFLICTING check stays False and the entry defers to the
+    next tick (never a crash, never a permanent not-conflicting).
+
+    Both the subprocess `runner` and the `sleep` fn are INJECTABLE (defaulting to
+    the production impls) so tests drive the poll deterministically with no network
+    and no wall-clock wait, mirroring the sibling gh resolvers/sinks."""
     number = pr_ref.split("#")[-1]
     cmd = ["gh", "pr", "view", number, "--json", "state,mergedAt,mergeable"]
     if repo:
         cmd += ["--repo", repo]
     out = runner(cmd, capture_output=True, text=True, check=True)
     data = json.loads(out.stdout or "{}")
+    merged = data.get("mergedAt") is not None
+    mergeable = data.get("mergeable")
+    if (not merged and data.get("state") == "OPEN"
+            and (mergeable or "").upper() == "UNKNOWN"):
+        mergeable = poll_mergeability(number, repo=repo, runner=runner,
+                                      sleep=sleep)
     return {
         "state": data.get("state"),
-        "merged": data.get("mergedAt") is not None,
-        "mergeable": data.get("mergeable"),
+        "merged": merged,
+        "mergeable": mergeable,
     }
 
 
