@@ -803,29 +803,177 @@ def test_reconcile_e2e_dedup_close_fault_recorded_in_errors():
     assert "gh pr close 403" in res["errors"][0]["reason"]
 
 
-def test_gh_open_pr_closing_issue_source_shape():
-    payload = json.dumps([
-        {"number": 7, "url": "https://github.com/acme/widget/pull/7",
-         "closingIssuesReferences": [{"number": 3}, {"number": 99}]},
-        {"number": 9, "url": "https://github.com/acme/widget/pull/9",
-         "closingIssuesReferences": []},  # no closing issue -> skipped
-    ])
+def _dedup_source_runner(list_payload, view_by_number):
+    """A fake runner scripting the (C) dedup source's TWO gh command shapes: the
+    `gh pr list` (supported fields only) and the per-PR `gh pr view <n> --json
+    closingIssuesReferences` delegation to gh_closing_issue_ref. Records argv."""
     seen = []
 
     def runner(cmd, capture_output=None, text=None, check=None):  # noqa: ARG001
         seen.append(cmd)
-        return _proc(stdout=payload)
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _proc(stdout=list_payload)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return _proc(stdout=view_by_number[cmd[3]])
+        raise AssertionError(f"unexpected gh command {cmd}")
+
+    runner.seen = seen
+    return runner
+
+
+def test_gh_open_pr_closing_issue_source_shape():
+    # FIX 1 — the LIST requests only SUPPORTED `gh pr list --json` fields
+    # (number,url); closingIssuesReferences is resolved per-PR via `gh pr view`.
+    list_payload = json.dumps([
+        {"number": 7, "url": "https://github.com/acme/widget/pull/7"},
+        {"number": 9, "url": "https://github.com/acme/widget/pull/9"},  # no issue
+    ])
+    view_by_number = {
+        "7": json.dumps([{"number": 3}, {"number": 99}]),  # first ref -> #3
+        "9": json.dumps([]),                               # closes no issue
+    }
+    runner = _dedup_source_runner(list_payload, view_by_number)
 
     out = vi.gh_open_pr_closing_issue_source(repo="acme/widget", runner=runner)
     # only the PR WITH a closing issue is returned, mapped to its FIRST ref.
     assert out == [{"pr_ref": "acme/widget#7",
                     "url": "https://github.com/acme/widget/pull/7",
                     "issue_ref": "acme/widget#3"}]
-    cmd = seen[0]
+    cmd = runner.seen[0]
     assert cmd[:3] == ["gh", "pr", "list"]
     assert "--label" in cmd and cmd[cmd.index("--label") + 1] == "auto-maintainer"
     assert "--state" in cmd and cmd[cmd.index("--state") + 1] == "open"
     json_fields = cmd[cmd.index("--json") + 1]
-    for f in ("number", "url", "closingIssuesReferences"):
+    for f in ("number", "url"):
         assert f in json_fields
     assert "--repo" in cmd and cmd[cmd.index("--repo") + 1] == "acme/widget"
+
+
+# ==========================================================================
+# HOTFIX v0.25.1 — (C) dedup source uses SUPPORTED gh pr list fields + the
+# whole dedup step is fault-isolated (the v0.25.0 dedup crashed the tick on
+# gh 2.69.0 by requesting closingIssuesReferences on `gh pr list`).
+# ==========================================================================
+
+def test_gh_open_pr_closing_issue_source_never_requests_closing_refs_on_list():
+    # FIX 1 command-shape: the `gh pr list` argv requests number,url and does NOT
+    # contain closingIssuesReferences anywhere; the closing-issue ref is resolved
+    # by a SUBSEQUENT `gh pr view <n> --json closingIssuesReferences` per PR.
+    list_payload = json.dumps([
+        {"number": 7, "url": "https://github.com/acme/widget/pull/7"},
+        {"number": 9, "url": "https://github.com/acme/widget/pull/9"},
+    ])
+    view_by_number = {
+        "7": json.dumps([{"number": 3}]),
+        "9": json.dumps([]),  # closes no issue -> excluded
+    }
+    runner = _dedup_source_runner(list_payload, view_by_number)
+
+    out = vi.gh_open_pr_closing_issue_source(repo="acme/widget", runner=runner)
+
+    # the returned entries are correct: #7 -> issue #3; the no-closing-issue PR
+    # (#9) is EXCLUDED.
+    assert out == [{"pr_ref": "acme/widget#7",
+                    "url": "https://github.com/acme/widget/pull/7",
+                    "issue_ref": "acme/widget#3"}]
+
+    list_cmds = [c for c in runner.seen if c[:3] == ["gh", "pr", "list"]]
+    assert len(list_cmds) == 1
+    list_cmd = list_cmds[0]
+    # the invalid field must NEVER appear on the list argv (it aborts the tick).
+    assert "closingIssuesReferences" not in list_cmd
+    list_json_fields = list_cmd[list_cmd.index("--json") + 1]
+    assert "closingIssuesReferences" not in list_json_fields
+    assert "number" in list_json_fields and "url" in list_json_fields
+
+    # per-PR closing-issue resolution DID happen via `gh pr view ... --json
+    # closingIssuesReferences` (the supported form) for EACH listed PR.
+    view_cmds = [c for c in runner.seen if c[:3] == ["gh", "pr", "view"]]
+    assert [c[3] for c in view_cmds] == ["7", "9"]
+    for c in view_cmds:
+        assert "closingIssuesReferences" in c
+
+
+def _raising_open_pr_source(exc):
+    """A (C) dedup open-PR source that RAISES — models the v0.25.0 crash (an
+    invalid gh field, an unresolvable ref, or any source fault)."""
+    def source(repo=None):  # noqa: ARG001
+        raise exc
+    return source
+
+
+def test_reconcile_e2e_dedup_source_fault_isolated_ab_unchanged():
+    # FIX 2 fault-isolation: a dedup-source fault is recorded under errors as
+    # {ref:'dedup', ...}, the run still returns OK (never raises), and the (A)
+    # merged-issue-close + (B) rebase outcomes are UNCHANGED (dedup no-op).
+    pr = _pr_state_source({
+        "acme/widget#7": {"state": "MERGED", "merged": True,
+                          "mergeable": "UNKNOWN"},       # A -> closed_issues
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "CONFLICTING"}})  # B tier1 -> rebased
+    iss = _issue_state_source({"acme/widget#5": {"state": "OPEN"}})
+    helper = _worktree_helper({"acme/widget#8": True})
+    close = _recording_issue_close_sink()
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    boom = _raising_open_pr_source(
+        RuntimeError("gh pr list: unknown JSON field closingIssuesReferences"))
+    reconcile = _auto_reconcile(
+        pr_state_source=pr, issue_state_source=iss, issue_close_sink=close,
+        worktree_helper=helper, pr_close_sink=prclose, comment_sink=comment,
+        open_pr_closing_issue_source=boom)
+
+    # the run must NOT raise (advisory) — _run asserts signal == OK.
+    res = _run(reconcile, [_entry(number=7, issue=5), _entry(number=8, issue=1)])
+
+    # the dedup fault is recorded under errors as a single {ref:'dedup'} entry.
+    dedup_errors = [e for e in res["errors"] if e["ref"] == "dedup"]
+    assert len(dedup_errors) == 1
+    assert "closingIssuesReferences" in dedup_errors[0]["reason"]
+    # dedup degraded to a no-op.
+    assert res["deduped"] == []
+    # (A) and (B) outcomes are UNCHANGED by the dedup fault.
+    assert res["closed_issues"] == [{"issue_ref": "acme/widget#5",
+                                     "pr_ref": "acme/widget#7"}]
+    assert res["rebased"] == [{"pr_ref": "acme/widget#8"}]
+    assert res["relanded"] == []
+
+
+def test_reconcile_e2e_dedup_grouping_fault_isolated_returns_ok():
+    # A fault raised INSIDE the grouping/issue-state phase (not the source call
+    # nor a single close) is ALSO caught by the whole-step wrap: recorded under
+    # errors as {ref:'dedup'}, the run returns OK, and (A)/(B) are untouched.
+    def raising_issue_state(issue_ref, repo=None):  # noqa: ARG001
+        raise RuntimeError("gh issue view boom during dedup grouping")
+
+    pr = _pr_state_source({
+        "acme/widget#7": {"state": "MERGED", "merged": True,
+                          "mergeable": "UNKNOWN"}})       # A -> closed_issues
+    close = _recording_issue_close_sink()
+    prclose = _recording_pr_close_sink()
+    dedup = _open_pr_closing_issue_source([
+        _dedup_entry(11, 3), _dedup_entry(12, 3)])  # >1 PR -> triggers issue-state
+    # (A) uses a DISTINCT issue (#5) resolved before dedup; dedup's issue-state
+    # read (#3) is the one that raises.
+    iss_a = {"acme/widget#5": {"state": "OPEN"}}
+
+    def issue_state(issue_ref, repo=None):  # noqa: ARG001
+        if issue_ref == "acme/widget#3":
+            return raising_issue_state(issue_ref, repo=repo)
+        return dict(iss_a.get(issue_ref, {"state": "OPEN"}))
+
+    reconcile = _auto_reconcile(
+        pr_state_source=pr, issue_state_source=issue_state,
+        issue_close_sink=close, worktree_helper=_never_helper(),
+        pr_close_sink=prclose, open_pr_closing_issue_source=dedup)
+
+    res = _run(reconcile, [_entry(number=7, issue=5)])
+
+    dedup_errors = [e for e in res["errors"] if e["ref"] == "dedup"]
+    assert len(dedup_errors) == 1
+    assert "boom during dedup grouping" in dedup_errors[0]["reason"]
+    assert res["deduped"] == []
+    assert prclose.calls == []  # dedup degraded to a no-op before any close.
+    # (A) is unchanged.
+    assert res["closed_issues"] == [{"issue_ref": "acme/widget#5",
+                                     "pr_ref": "acme/widget#7"}]
