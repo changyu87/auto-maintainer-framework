@@ -161,6 +161,11 @@ def status_data():
         "awaiting": checkpoint.get("next_state", "none") if checkpoint
         else "none",
         "mode": gov.get("mode", ""),
+        # The configured /start heartbeat (tick) cadence, read from the SAME
+        # loaded config (load_governance == load_config) start.py's
+        # heartbeat_interval_minutes() reads (shipped default 3). Read-only.
+        "heartbeat_interval_minutes": gov.get("heartbeat", {}).get(
+            "interval_minutes", 3),
         "budget": {
             "spent": budget_state.get("spent_tokens", 0),
             "ceiling": ceiling,
@@ -227,6 +232,7 @@ def render_status(data):
         ("disposition", data["disposition"]),
         ("awaiting", data["awaiting"]),
         ("mode", data["mode"]),
+        ("heartbeat", f"{data['heartbeat_interval_minutes']} min"),
         ("budget", budget_str),
         ("reported", f"{data['reported']['filed']} filed / "
          f"{data['reported']['skipped']} skipped"),
