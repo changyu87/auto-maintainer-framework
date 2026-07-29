@@ -1,5 +1,25 @@
 # Changelog — packaging-config
 
+## 0.25.1 — regen release: ship the verify-integrate dedup hotfix
+
+- Operator release step for the plugin: bump `_PLUGIN_VERSION` 0.25.0 -> 0.25.1
+  (the single source of truth; #355 monotonicity requires strictly-greater) and
+  regenerate the committed `plugins/auto-maintainer/` tree so the shipped
+  `lib/verify_integrate.py` carries the merged `verify-integrate` 0.12.1 hotfix:
+  the RECONCILE dedup no longer requests the invalid `closingIssuesReferences`
+  field on `gh pr list`, and is fault-isolated so a dedup error can no longer
+  crash the tick on stock `gh`.
+- Only the version stamps (`plugin.json` + `marketplace.json` -> 0.25.1) and the
+  naturally-changed `lib/verify_integrate.py` bytes move; every other shipped
+  byte is unchanged.
+- Re-anchor `test/release_lib_baseline.json` (version + lib_digest) so the
+  build-drift and #355 monotonicity guards stay green.
+- No spec surface change: `docs/spec.md` is byte-identical; the release version
+  is the `build_plugin.py` `_PLUGIN_VERSION` constant.
+- Invariant: version 0.25.1 is consistent across `plugin.json` +
+  `marketplace.json`; the committed tree matches a fresh build with no
+  source-tree leak.
+
 ## 0.25.0 — regen release: ship the RECONCILE/auto-merge/dedup fixes
 
 - Operator release step for the plugin: bump `_PLUGIN_VERSION` 0.24.0 -> 0.25.0
