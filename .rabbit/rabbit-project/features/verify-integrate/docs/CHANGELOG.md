@@ -2,6 +2,28 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.9.1 — 2026-07-24
+
+Hotfix: the v0.9.0 RECONCILE same-issue dedup (C) crashed the whole tick on stock
+`gh` (2.69.0).
+
+- **Wrong gh query.** `gh_open_pr_closing_issue_source` requested
+  `gh pr list --label auto-maintainer --state open --json
+  number,url,closingIssuesReferences`, but `closingIssuesReferences` is a
+  `gh pr view`-only `--json` field — invalid on `gh pr list` — so gh exited
+  non-zero and (via `check=True`) aborted the tick in RECONCILE. Now the source
+  LISTS with only supported fields (`--json number,url`) and resolves each PR's
+  first closing-issue ref via the existing `gh_closing_issue_ref` (`gh pr view <n>
+  --json closingIssuesReferences`). Same `[{pr_ref, url, issue_ref}]` shape;
+  PRs closing no issue excluded.
+- **Advisory fault-isolation.** The dedup step (source call + per-group work) is
+  now wrapped: any fault is recorded under `reconcile_result.errors`
+  (`{ref: "dedup", reason}`) and the tick CONTINUES with dedup as a no-op —
+  restoring the invariant that RECONCILE is advisory and never aborts the tick.
+- New tests: a command-shape assertion that the `pr list` argv never requests
+  `closingIssuesReferences`, and a fault-isolation test that a raising source is
+  recorded under errors while (A)/(B) outcomes and the OK signal are unaffected.
+
 ## 0.9.0 — 2026-07-24
 
 Two auto-merge reliability + convergence fixes surfaced by the live test.
