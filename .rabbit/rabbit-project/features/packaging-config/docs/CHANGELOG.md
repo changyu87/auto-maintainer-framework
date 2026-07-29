@@ -1,5 +1,23 @@
 # Changelog — packaging-config
 
+## 0.25.2 — regen release: ship the scheduling /status heartbeat display
+
+- Operator release step for the plugin: bump `_PLUGIN_VERSION` 0.25.1 -> 0.25.2
+  (the single source of truth; #355 monotonicity requires strictly-greater) and
+  regenerate the committed `plugins/auto-maintainer/` tree so the shipped
+  `lib/status.py` carries the merged `scheduling` 0.41.0 change:
+  `/auto-maintainer:status` now shows the configured heartbeat interval.
+- Only the version stamps (`plugin.json` + `marketplace.json` -> 0.25.2) and the
+  naturally-changed `lib/status.py` bytes move; every other shipped byte is
+  unchanged.
+- Re-anchor `test/release_lib_baseline.json` (version + lib_digest) so the
+  build-drift and #355 monotonicity guards stay green.
+- No spec surface change: `docs/spec.md` is byte-identical; the release version
+  is the `build_plugin.py` `_PLUGIN_VERSION` constant.
+- Invariant: version 0.25.2 is consistent across `plugin.json` +
+  `marketplace.json`; the committed tree matches a fresh build with no
+  source-tree leak.
+
 ## 0.25.1 — regen release: ship the verify-integrate dedup hotfix
 
 - Operator release step for the plugin: bump `_PLUGIN_VERSION` 0.25.0 -> 0.25.1
