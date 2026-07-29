@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.9.1
+version: 0.9.2
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
@@ -362,7 +362,17 @@ REPORT/work-intake's (contract `never`).
 ### Injectable seams
 
 - `gh_pr_state_source(pr_ref, repo) -> {state, merged, mergeable}` — the EXISTING
-  PR-state read, extended to surface `mergeable` (MERGEABLE|CONFLICTING|UNKNOWN).
+  PR-state read, surfacing `mergeable` (MERGEABLE|CONFLICTING|UNKNOWN). It RESOLVES
+  a transient `mergeable=UNKNOWN` via the SAME bounded poll VERIFY's
+  `gh_open_pr_source` uses (reusing `poll_mergeability`, `MERGEABILITY_POLL_ATTEMPTS`
+  / `MERGEABILITY_POLL_INTERVAL_S`; injectable `runner` + `sleep`): when the PR is
+  OPEN and NOT merged and `mergeable` is `UNKNOWN`, it re-queries until the value
+  settles to MERGEABLE/CONFLICTING, so RECONCILE's (B) conflict detection is NOT
+  blind to a just-invalidated loop PR (GitHub reports UNKNOWN transiently right
+  after a sibling merge). A MERGED PR short-circuits (no poll — merge state is
+  final). A still-`UNKNOWN` result after the bounded poll is returned as-is, so
+  `_reconcile_one`'s `CONFLICTING` check stays False and the entry is DEFERRED to
+  the next tick (never a crash, never a permanent not-conflicting).
 - `gh_issue_state_source(issue_ref, repo) -> {state}` — the source issue's
   open/closed state (reuse VERIFY's closing-issue resolver seam).
 - `gh_issue_close_sink(issue_ref, repo, comment) -> None` — NEW injectable sink:
@@ -503,6 +513,12 @@ CLEANUP → PERSIST → EXIT`.
   human-closed one — and its tier-1 rebase force-pushes ONLY the loop's own PR
   branch; a real textual conflict falls back to re-land (never a silent semantic
   auto-merge).
+- RECONCILE's PR-state read (`gh_pr_state_source`) RESOLVES a transient
+  `mergeable=UNKNOWN` via the same bounded poll as VERIFY before the (B)
+  CONFLICTING decision, so a just-invalidated loop PR (UNKNOWN right after a
+  sibling merge) is not silently missed by the conflict-recovery ladder. A
+  still-UNKNOWN result after the poll defers the entry to the next tick (never a
+  crash, never treated as permanently not-conflicting); a MERGED PR does not poll.
 - RECONCILE same-issue dedup (C) closes a duplicate loop PR ONLY when MORE THAN
   ONE open `auto-maintainer` PR closes the SAME still-OPEN issue; it keeps the
   highest-numbered PR and closes the rest via the existing PR-close sink. It NEVER

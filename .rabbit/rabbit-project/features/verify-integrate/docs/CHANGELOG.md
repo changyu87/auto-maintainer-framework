@@ -2,6 +2,31 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.9.2 — 2026-07-24
+
+Hotfix: RECONCILE's conflict-recovery ladder was blind to a freshly-invalidated
+loop PR.
+
+- **RECONCILE missed transient `mergeable=UNKNOWN`.** RECONCILE runs at the start
+  of the tick and read PR state via `gh_pr_state_source`, which (unlike VERIFY's
+  `gh_open_pr_source` since 0.9.1) did NOT poll a transient `mergeable=UNKNOWN`.
+  Right after a sibling PR merged and invalidated a loop PR, GitHub reports
+  `UNKNOWN` momentarily, so `_reconcile_one`'s `(B)` branch (which requires
+  `mergeable == "CONFLICTING"`) silently skipped it — no tier-1 rebase, no tier-2
+  re-land. The conflict survived, VERIFY (which polls) later marked it CONFLICTING,
+  INTEGRATE skipped it, and REVIEW filed noise "sibling collision" issues (live:
+  #779/#780 left untouched by RECONCILE). Fix: `gh_pr_state_source` now resolves a
+  transient `UNKNOWN` via the same bounded `poll_mergeability` poll
+  (`MERGEABILITY_POLL_ATTEMPTS`/`MERGEABILITY_POLL_INTERVAL_S`; injectable runner +
+  sleep) when the PR is OPEN and not merged — a MERGED PR short-circuits, a
+  still-`UNKNOWN` result defers to the next tick. `_reconcile_one` is unchanged; it
+  now receives a settled value, so the (B) ladder engages on genuinely-conflicting
+  PRs.
+- New tests: `gh_pr_state_source` polls UNKNOWN→CONFLICTING (bounded, no-op sleep),
+  stays-UNKNOWN returns UNKNOWN (no crash), a MERGED PR does not poll; and an e2e
+  that RECONCILE runs the tier-1 rebase on a PR whose mergeability settles to
+  CONFLICTING.
+
 ## 0.9.1 — 2026-07-24
 
 Hotfix: the v0.9.0 RECONCILE same-issue dedup (C) crashed the whole tick on stock

@@ -939,6 +939,144 @@ def test_reconcile_e2e_dedup_source_fault_isolated_ab_unchanged():
     assert res["relanded"] == []
 
 
+# ==========================================================================
+# HOTFIX v0.25.3 — gh_pr_state_source resolves a transient mergeable=UNKNOWN
+# via the SAME bounded poll VERIFY's gh_open_pr_source uses (poll_mergeability,
+# injectable runner+sleep), so RECONCILE's (B) conflict-recovery ladder is not
+# blind to a just-invalidated loop PR (GitHub reports UNKNOWN transiently right
+# after a sibling merge). A MERGED PR short-circuits (no poll); a still-UNKNOWN
+# result is returned as-is (deferred to the next tick, never a crash).
+# ==========================================================================
+
+def _pr_state_runner(initial, poll_values):
+    """A fake runner scripting gh_pr_state_source's TWO gh command shapes: the
+    initial `gh pr view <n> --json state,mergedAt,mergeable` (returns `initial`
+    JSON) and the poll_mergeability `gh pr view <n> --json mergeable -q
+    .mergeable` (returns successive `poll_values`). Records argv."""
+    seen = []
+    poll_iter = iter(poll_values)
+
+    def runner(cmd, capture_output=None, text=None, check=None):  # noqa: ARG001
+        seen.append(cmd)
+        if "-q" in cmd:  # the poll_mergeability re-query
+            return _proc(stdout=next(poll_iter))
+        return _proc(stdout=json.dumps(initial))  # the initial state read
+
+    runner.seen = seen
+    return runner
+
+
+def _noop_sleep():
+    calls = []
+
+    def sleep(seconds):
+        calls.append(seconds)
+
+    sleep.calls = calls
+    return sleep
+
+
+def test_gh_pr_state_source_polls_transient_unknown_settles_conflicting():
+    # An OPEN, not-merged PR reported mergeable=UNKNOWN is re-queried via the
+    # bounded poll until it settles to CONFLICTING; the injected no-op sleep means
+    # no wall-clock wait, and the poll stops EARLY (bounded gh-call count).
+    runner = _pr_state_runner(
+        {"state": "OPEN", "mergedAt": None, "mergeable": "UNKNOWN"},
+        poll_values=["UNKNOWN\n", "CONFLICTING\n"])
+    sleep = _noop_sleep()
+
+    out = vi.gh_pr_state_source("acme/widget#9", repo="acme/widget",
+                                runner=runner, sleep=sleep)
+
+    assert out == {"state": "OPEN", "merged": False, "mergeable": "CONFLICTING"}
+    # 1 initial read + 2 poll re-queries (stopped early on CONFLICTING).
+    assert len(runner.seen) == 3
+    poll_cmds = [c for c in runner.seen if "-q" in c]
+    assert len(poll_cmds) == 2
+    # the poll slept once (between the two re-queries), via the injected sleep.
+    assert sleep.calls == [vi.MERGEABILITY_POLL_INTERVAL_S]
+
+
+def test_gh_pr_state_source_stays_unknown_returns_unknown_no_crash():
+    # A PR whose mergeability never settles within the bounded attempts returns
+    # 'UNKNOWN' (no crash) so _reconcile_one's CONFLICTING check stays False and
+    # the entry is deferred to the next tick.
+    runner = _pr_state_runner(
+        {"state": "OPEN", "mergedAt": None, "mergeable": "UNKNOWN"},
+        poll_values=["UNKNOWN\n"] * vi.MERGEABILITY_POLL_ATTEMPTS)
+    sleep = _noop_sleep()
+
+    out = vi.gh_pr_state_source("acme/widget#9", runner=runner, sleep=sleep)
+
+    assert out == {"state": "OPEN", "merged": False, "mergeable": "UNKNOWN"}
+    # bounded: 1 initial read + MERGEABILITY_POLL_ATTEMPTS poll re-queries.
+    assert len(runner.seen) == 1 + vi.MERGEABILITY_POLL_ATTEMPTS
+
+
+def test_gh_pr_state_source_merged_short_circuits_no_poll():
+    # A MERGED PR (mergedAt set) returns merged=True and issues NO poll calls —
+    # merge state is final, mergeability is irrelevant.
+    runner = _pr_state_runner(
+        {"state": "MERGED", "mergedAt": "2026-07-24T00:00:00Z",
+         "mergeable": "UNKNOWN"},
+        poll_values=[])
+    sleep = _noop_sleep()
+
+    out = vi.gh_pr_state_source("acme/widget#7", runner=runner, sleep=sleep)
+
+    assert out == {"state": "MERGED", "merged": True, "mergeable": "UNKNOWN"}
+    # exactly ONE gh call — the initial read; no poll re-query, no sleep.
+    assert len(runner.seen) == 1
+    assert not any("-q" in c for c in runner.seen)
+    assert sleep.calls == []
+
+
+def test_gh_pr_state_source_mergeable_no_poll():
+    # A settled MERGEABLE result does not poll either (only UNKNOWN triggers it).
+    runner = _pr_state_runner(
+        {"state": "OPEN", "mergedAt": None, "mergeable": "MERGEABLE"},
+        poll_values=[])
+    sleep = _noop_sleep()
+
+    out = vi.gh_pr_state_source("acme/widget#4", runner=runner, sleep=sleep)
+
+    assert out == {"state": "OPEN", "merged": False, "mergeable": "MERGEABLE"}
+    assert len(runner.seen) == 1
+    assert sleep.calls == []
+
+
+def test_reconcile_e2e_transient_unknown_settles_conflicting_triggers_rebase():
+    # E2E: the PRODUCTION gh_pr_state_source (fake runner + no-op sleep) reports a
+    # just-invalidated loop PR as UNKNOWN then CONFLICTING; RECONCILE's (B) ladder
+    # engages and TIER-1 rebase populates result.rebased (it was silently skipped
+    # before the poll was added to gh_pr_state_source).
+    runner = _pr_state_runner(
+        {"state": "OPEN", "mergedAt": None, "mergeable": "UNKNOWN"},
+        poll_values=["CONFLICTING\n"])
+    sleep = _noop_sleep()
+
+    def pr_state_source(pr_ref, repo=None):
+        return vi.gh_pr_state_source(pr_ref, repo=repo, runner=runner,
+                                     sleep=sleep)
+
+    helper = _worktree_helper({"acme/widget#8": True})
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr_state_source,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=helper,
+                                pr_close_sink=prclose, comment_sink=comment)
+
+    res = _run(reconcile, [_entry(number=8, issue=3)])
+
+    # the (B) ladder engaged on the settled CONFLICTING value: tier-1 rebase ran.
+    assert res["rebased"] == [{"pr_ref": "acme/widget#8"}]
+    assert res["relanded"] == []
+    assert len(helper.calls) == 1
+    assert helper.calls[0]["pr_ref"] == "acme/widget#8"
+    assert prclose.calls == []
+
+
 def test_reconcile_e2e_dedup_grouping_fault_isolated_returns_ok():
     # A fault raised INSIDE the grouping/issue-state phase (not the source call
     # nor a single close) is ALSO caught by the whole-step wrap: recorded under
