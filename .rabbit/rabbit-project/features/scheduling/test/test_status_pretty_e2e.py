@@ -225,6 +225,48 @@ def test_status_data_non_mutating():
         "status_data created the runtime dir"
 
 
+def _write_project_config(project_dir, config):
+    cfg = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(cfg, exist_ok=True)
+    path = os.path.join(cfg, "config.json")
+    with open(path, "w") as f:
+        json.dump(config, f)
+    return path
+
+
+def test_status_data_heartbeat_interval_default():
+    """status_data() surfaces heartbeat_interval_minutes; with no project config
+    it is the shipped default 3 (same source start.py's
+    heartbeat_interval_minutes() reads)."""
+    project_dir = tempfile.mkdtemp(prefix="sched-status-")
+    data = _with_project_dir(project_dir, st.status_data)
+    assert "heartbeat_interval_minutes" in data, sorted(data)
+    assert data["heartbeat_interval_minutes"] == 3, data
+
+
+def test_status_data_heartbeat_interval_reflects_config():
+    """A NON-default configured heartbeat.interval_minutes is reflected by
+    status_data (it reads config, not a hardcoded constant)."""
+    project_dir = tempfile.mkdtemp(prefix="sched-status-")
+    _write_project_config(project_dir, {"heartbeat": {"interval_minutes": 30}})
+    data = _with_project_dir(project_dir, st.status_data)
+    assert data["heartbeat_interval_minutes"] == 30, data
+
+
+def test_render_status_shows_heartbeat_line():
+    """render_status renders a `heartbeat <n> min` line reflecting the configured
+    interval (a NON-default value proves it is config-driven)."""
+    project_dir = tempfile.mkdtemp(prefix="sched-status-")
+    _write_project_config(project_dir, {"heartbeat": {"interval_minutes": 30}})
+    data = _with_project_dir(project_dir, st.status_data)
+    out = st.render_status(data)
+    assert "heartbeat" in out, out
+    # The configured value (30) and the `min` unit appear on the heartbeat line.
+    hb_line = [ln for ln in out.splitlines() if "heartbeat" in ln]
+    assert hb_line, out
+    assert "30" in hb_line[0] and "min" in hb_line[0], hb_line
+
+
 # --------------------------------------------------------------------------
 # render_status — the DERIVED human view.
 # --------------------------------------------------------------------------
