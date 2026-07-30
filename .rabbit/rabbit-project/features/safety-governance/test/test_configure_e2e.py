@@ -463,6 +463,7 @@ def test_describe_catalog_is_complete_one_entry_per_knob():
             "work_own_filings",
             "issue_filter.include_labels",
             "issue_filter.with_title_regex",
+            "issue_filter.exclude_labels",
         }
         assert set(keys) == expected_keys, (
             f"catalog knobs {set(keys)} != expected {expected_keys}")
@@ -901,6 +902,7 @@ def test_describe_entries_carry_stage_in_loop_order():
         by_key = {e["key"]: e["stage"] for e in catalog}
         assert by_key["issue_filter.include_labels"] == "PULL"
         assert by_key["issue_filter.with_title_regex"] == "PULL"
+        assert by_key["issue_filter.exclude_labels"] == "PULL"
         assert by_key["work_own_filings"] == "PULL"
         assert by_key["mode"] == "IMPLEMENT"
         assert by_key["implement_test_command"] == "IMPLEMENT"
@@ -1258,3 +1260,81 @@ def test_preflight_unaffected_by_json_flag():
                 "resolved_repo", "config_exists"}
         finally:
             configure._DEFAULT_RUNNER = original
+
+
+# ==========================================================================
+# E2E Behaviour: the --describe field catalog now carries an
+# issue_filter.exclude_labels entry at the PULL stage, positioned AFTER
+# issue_filter.with_title_regex and BEFORE work_own_filings (matching the spec's
+# PULL order include_labels -> with_title_regex -> exclude_labels ->
+# work_own_filings), so --describe / --setup / render_config all surface it.
+# ==========================================================================
+
+def test_describe_carries_exclude_labels_pull_entry_in_position():
+    with tempfile.TemporaryDirectory() as project_dir:
+        catalog = _describe(project_dir)
+        keys = [entry["key"] for entry in catalog]
+        assert "issue_filter.exclude_labels" in keys, (
+            "catalog must carry an issue_filter.exclude_labels entry")
+        entry = next(
+            e for e in catalog if e["key"] == "issue_filter.exclude_labels")
+        assert entry["stage"] == "PULL"
+        assert entry["label"] == "Issue exclude labels"
+        # Position: after with_title_regex, before work_own_filings.
+        i_exclude = keys.index("issue_filter.exclude_labels")
+        i_title = keys.index("issue_filter.with_title_regex")
+        i_own = keys.index("work_own_filings")
+        assert i_title < i_exclude < i_own, (
+            f"exclude_labels must sit between with_title_regex and "
+            f"work_own_filings; got order {keys}")
+        # The default is the canonical empty flat list.
+        assert entry["default"] == []
+
+
+# ==========================================================================
+# E2E Behaviour: the exclude_labels catalog entry's `current` reflects a
+# configured value read from the loaded config (same nested-get the other
+# issue_filter.* entries use).
+# ==========================================================================
+
+def test_describe_exclude_labels_current_reflects_config():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-exclude-labels", "auto-maintainer-rejected"]) == 0
+        catalog = _describe(project_dir)
+        entry = next(
+            e for e in catalog if e["key"] == "issue_filter.exclude_labels")
+        assert entry["current"] == ["auto-maintainer-rejected"]
+
+
+# ==========================================================================
+# E2E Behaviour: render_config surfaces the exclude_labels knob under PULL,
+# rendering a configured flat list as a comma list and an em dash when empty
+# (the friendly formatting the spec documents for exclude_labels).
+# ==========================================================================
+
+def test_render_config_shows_exclude_labels_when_configured():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-exclude-labels",
+             "auto-maintainer-rejected,wontfix"]) == 0
+        text = configure.render_config(
+            sg.load_config(project_dir), project_dir)
+        assert "Issue exclude labels" in text
+        assert "auto-maintainer-rejected, wontfix" in text
+
+
+def test_render_config_shows_exclude_labels_em_dash_when_empty():
+    with tempfile.TemporaryDirectory() as project_dir:
+        text = configure.render_config(
+            sg.load_config(project_dir), project_dir)
+        assert "Issue exclude labels" in text
+        # The default empty exclude_labels renders as an em dash on its line.
+        for line in text.splitlines():
+            if line.strip().startswith("Issue exclude labels:"):
+                assert line.strip() == "Issue exclude labels: —"
+                break
+        else:  # pragma: no cover - the label must appear
+            raise AssertionError("Issue exclude labels line not found")
