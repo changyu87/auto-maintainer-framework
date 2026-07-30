@@ -1,12 +1,12 @@
 {
   "name": "packaging-config",
-  "version": "0.7.23",
+  "version": "0.7.24",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "test-red",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
   "updated": "2026-07-30",
-  "spec_change_reason": "Cut release v0.27.0 (minor, stylish-configure lib re-ship): bump _PLUGIN_VERSION 0.26.0 -> 0.27.0 and regenerate the committed plugin tree so it carries safety-governance 0.17.0's configure.py (human-readable render_config --show view by default, a new --json machine escape, and issue_filter.exclude_labels promoted into the field catalog). The shipped default-config CONTENT is unchanged (still schema 2.9.0, same values); this release only re-normalizes lib/configure.py from the merged source and stamps plugin.json + marketplace.json to 0.27.0. The version-assertion test advanced to 0.27.0, test/release_lib_baseline.json re-anchored (version -> 0.27.0, lib_digest -> the new committed-lib digest since the shipped lib bytes changed), and test/housekeep_doc_baseline.json re-anchored (spec.md 353 -> 364 for the v0.27.0 release note) so the drift, #355 monotonicity, and doc-no-growth guards stay green.",
-  "spec_no_change_reason": "Spec already advanced to 0.7.17 (v0.27.0 release note) in commit bb36e5e at cycle start; this release cut carries no further spec surface beyond the _PLUGIN_VERSION bump."
+  "spec_change_reason": "Cut release v0.28.0 (minor, RECONCILE prior-verdict race-breaker lib re-ship): bump _PLUGIN_VERSION 0.27.0 -> 0.28.0 and regenerate the committed plugin tree so it carries verify-integrate 0.10.0 + scheduling 0.42.0's sources — lib/verify_integrate.py (RECONCILE's (B) ladder recovers a loop PR whose LIVE mergeability is still UNKNOWN at tick-top by consulting the previous tick's confirmed-CONFLICTING VERIFY verdict), lib/run_tick.py (make_reconcile seeds the new prior_verdicts slot from the durable persisted verdicts), and lib/status.py (heartbeat fallback sources DEFAULT_GOVERNANCE = 10). The shipped default-config CONTENT is unchanged (still schema 2.9.0, same values); this release only re-normalizes the affected libs from the merged sources and stamps plugin.json + marketplace.json to 0.28.0. The version-assertion test advanced to 0.28.0, test/release_lib_baseline.json re-anchored (version -> 0.28.0, lib_digest -> the new committed-lib digest since the shipped lib bytes changed), and test/housekeep_doc_baseline.json re-anchored (spec.md 364 -> 376 for the v0.28.0 release note) so the drift, #355 monotonicity, and doc-no-growth guards stay green.",
+  "spec_no_change_reason": "Spec surface already advanced to the v0.28.0 release note in commit f96fe11 at cycle start; this release-cut cycle carries no further spec change beyond the _PLUGIN_VERSION bump."
 }

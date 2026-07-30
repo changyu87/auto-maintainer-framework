@@ -119,7 +119,7 @@ def heartbeat_interval_minutes(project_dir=None):
     """The configured heartbeat (tick) cadence in minutes (§3.3.2).
 
     Read from the central config's heartbeat.interval_minutes via sg.load_config
-    (project-local config.json, else the documented default 3). The /start skill
+    (project-local config.json, else the shipped default 10). The /start skill
     schedules the recurring heartbeat at THIS cadence, so the interval is
     config-driven (#17 resolved) rather than hardcoded. Resolves project_dir the
     same way run_tick does when not injected (the installed case).
@@ -196,7 +196,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--print-interval", action="store_true",
         help="Print the configured heartbeat interval in minutes "
-             "(heartbeat.interval_minutes, default 3) and exit. The /start skill "
+             "(heartbeat.interval_minutes, default 10) and exit. The /start skill "
              "schedules the recurring heartbeat at this cadence; runs no tick.")
     args = parser.parse_args()
 
