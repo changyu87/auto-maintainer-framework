@@ -5,6 +5,21 @@ All notable changes to this feature are recorded here. Versions follow the
 `version` field, and the central-config `schema_version`
 (`GOVERNANCE_SCHEMA_VERSION`).
 
+## schema 2.9.0 — 2026-07-30 (exclude_labels in the field catalog)
+
+- **`issue_filter.exclude_labels` promoted into `configure.py`'s
+  `_field_catalog`.** The negative PULL filter (an open issue carrying ANY
+  listed label is dropped) now appears as a catalog entry at the `PULL` stage,
+  positioned after `issue_filter.with_title_regex` and before
+  `work_own_filings`, matching the spec's PULL order. Because `--describe`,
+  the guided `--setup` walk-through, and `render_config` all derive purely from
+  the catalog, the knob is now surfaced by all three (previously it had a
+  writer flag `--issue-exclude-labels` but was silently omitted from the
+  catalog-driven views). `render_config` renders a configured `exclude_labels`
+  as a comma list and an em dash when empty. No new schema and no new CLI flag
+  (the `--issue-exclude-labels` writer already exists); `GOVERNANCE_SCHEMA_VERSION`
+  stays 2.9.0.
+
 ## schema 2.9.0 — 2026-07-30 (stylish configure `--show`)
 
 - **`render_config(config) -> str` — the derived human view of a loaded config.**

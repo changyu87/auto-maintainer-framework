@@ -426,6 +426,19 @@ def _field_catalog(project_dir):
             "stage": "PULL",
         },
         {
+            "key": "issue_filter.exclude_labels",
+            "label": "Issue exclude labels",
+            "controls": "A flat list of labels; an open issue carrying ANY of "
+                        "them is DROPPED by PULL (a negative filter); "
+                        "empty = no exclusion.",
+            "default": defaults["issue_filter"]["exclude_labels"],
+            "current": current["issue_filter"]["exclude_labels"],
+            "type": "flat_labels",
+            "validator": "a comma-separated flat list of labels, "
+                         "or none/null to clear",
+            "stage": "PULL",
+        },
+        {
             "key": "work_own_filings",
             "label": "Work own filings",
             "controls": "Whether the loop works its OWN filings (the loopback "
@@ -573,6 +586,8 @@ def _friendly_value(key, config):
         return "on" if value else "off"
     if key == "issue_filter.include_labels":
         return _render_dnf(value or [])
+    if key == "issue_filter.exclude_labels":
+        return ", ".join(value) if value else _EM_DASH
     if key in ("regression_command", "doc_check_features_root",
                "features_root", "implement_test_command",
                "issue_filter.with_title_regex"):
