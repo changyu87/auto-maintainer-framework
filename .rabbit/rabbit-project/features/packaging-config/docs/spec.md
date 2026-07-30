@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.16
+version: 0.7.17
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -107,6 +107,17 @@ and carry a neutral (pull-all) issue_filter default:
   **10** (the ship-as-is cadence). The config `schema_version` is **2.9.0**, in
   step with safety-governance (the loader also accepts the legacy
   `labels`/`title_pattern` keys during the coexistence window).
+
+**Plugin minor v0.27.0** — re-ship to carry safety-governance 0.17.0's
+`configure.py`: `/auto-maintainer:configure --show` (and the post-write echo)
+now print a human-readable, loop-stage-ordered `render_config` view **by
+default**, with a new `--json` flag preserving the raw machine JSON, and
+`issue_filter.exclude_labels` is promoted into the `_field_catalog` (so it
+surfaces in `--describe`/`--setup`/the render). The shipped `default-config/`
+CONTENT is unchanged (config still schema 2.9.0, same values); this release only
+re-normalizes `lib/configure.py` (and `lib/safety_governance.py` if changed) from
+the updated source and bumps the version. No build change beyond
+`_PLUGIN_VERSION → 0.27.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
