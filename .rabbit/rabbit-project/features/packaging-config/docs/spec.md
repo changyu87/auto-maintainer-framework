@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.17
+version: 0.7.18
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -118,6 +118,18 @@ CONTENT is unchanged (config still schema 2.9.0, same values); this release only
 re-normalizes `lib/configure.py` (and `lib/safety_governance.py` if changed) from
 the updated source and bumps the version. No build change beyond
 `_PLUGIN_VERSION → 0.27.0`.
+
+**Plugin minor v0.28.0** — re-ship to carry the RECONCILE prior-verdict conflict
+race-breaker (verify-integrate 0.10.0 + scheduling 0.42.0): `lib/verify_integrate.py`
+(RECONCILE's (B) ladder now recovers a loop PR whose LIVE mergeability is still
+`UNKNOWN` at tick-top by consulting the previous tick's confirmed-CONFLICTING
+VERIFY verdict — so a genuinely-conflicting loop PR no longer lingers) and
+`lib/run_tick.py` (`make_reconcile` seeds the new `prior_verdicts` slot from the
+durable persisted verdicts; `lib/status.py` heartbeat fallback now sources
+`DEFAULT_GOVERNANCE` = 10). The shipped `default-config/` CONTENT is unchanged
+(config still schema 2.9.0, same values); this release only re-normalizes the
+affected libs from the updated source and bumps the version. No build change
+beyond `_PLUGIN_VERSION → 0.28.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
