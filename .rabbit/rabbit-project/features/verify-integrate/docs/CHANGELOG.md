@@ -2,6 +2,39 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.10.0 — 2026-07-30
+
+RECONCILE (B) conflict-recovery: a genuinely-CONFLICTING loop PR is now recovered
+even when GitHub still reports its live mergeability as UNKNOWN at tick-top.
+
+- **Prior-verdict race-breaker.** RECONCILE runs FIRST in the route (tick-top),
+  when a just-invalidated loop PR is most likely to still report
+  `mergeable=UNKNOWN` even after the bounded poll — so the (B) ladder, which
+  required a settled live `CONFLICTING`, never fired and the conflict lingered. The
+  previous tick's VERIFY — which ran later, once mergeability settled — already
+  recorded the hard CONFLICTING. `Reconcile` now reads a NEW OPTIONAL
+  `prior_verdicts` slot (the previous tick's VERIFY verdicts, a List of verdict
+  dicts identical in shape to the `verdicts` slot, seeded by scheduling's
+  `make_reconcile`) and the (B) conflict determination becomes LIVE-PREFERRED with
+  a prior-verdict race-breaker: a settled live `mergeable` is authoritative
+  (MERGEABLE ⇒ left alone/never force-pushed, CONFLICTING ⇒ ladder), and ONLY on a
+  live `UNKNOWN` (poll exhausted) does it consult `prior_verdicts`, treating the PR
+  as CONFLICTING iff the prior verdict for that `pr_ref` was CONFIRMED-CONFLICTING
+  (a hard `mergeable=CONFLICTING`, DISTINCT from a transient DEFERRED/UNKNOWN
+  verdict — centralized in the pure `_is_confirmed_conflicting_verdict`).
+- **Non-breaking + additive.** `prior_verdicts` is added to `RECONCILE_MANIFEST`
+  reads but read OPTIONALLY (absent/empty ⇒ exactly today's live-read-only
+  behavior, so the un-wired route still validates). RECONCILE stays advisory
+  (never raises; per-entry fault → `errors`; emits only OK) and trust-gated
+  (mutating recovery only at `permits("merge", mode)`). (A) merged-PR issue-close
+  and (C) same-issue dedup are unchanged.
+- New tests: the pure discriminator (hard CONFLICTING vs DEFERRED/MERGEABLE/absent),
+  live UNKNOWN + prior CONFIRMED-CONFLICTING ⇒ tier-1 rebase / tier-2 re-land, live
+  UNKNOWN + prior DEFERRED ⇒ left alone, live UNKNOWN + absent/empty prior ⇒ left
+  alone (back-compat), live MERGEABLE + prior CONFLICTING ⇒ NOT touched (live
+  preferred), and live CONFLICTING settled ⇒ ladder regardless of prior. Housekeep
+  doc baseline re-anchored (spec.md 569 → 616) for the prior_verdicts spec content.
+
 ## 0.9.3 — 2026-07-24
 
 REVIEW noise suppression: the advisory reviewer no longer files merge-conflict /
