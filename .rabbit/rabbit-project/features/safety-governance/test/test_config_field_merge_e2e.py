@@ -237,9 +237,10 @@ def test_load_config_surfaces_conflict_on_stderr_and_keeps_user_value():
     original = sg.DEFAULT_CONFIG_DIR
     with tempfile.TemporaryDirectory() as project_dir, \
             tempfile.TemporaryDirectory() as shipped_dir:
-        # base heartbeat.interval_minutes is 3. User set 10; shipped set 5.
+        # base heartbeat.interval_minutes is 10. User set 7; shipped set 5 —
+        # all three differ, so a genuine 3-way conflict is recorded.
         _write_json(_config_path(project_dir),
-                    {"heartbeat": {"interval_minutes": 10}})
+                    {"heartbeat": {"interval_minutes": 7}})
         _write_json(os.path.join(shipped_dir, "config.json"),
                     {"heartbeat": {"interval_minutes": 5}})
         sg.DEFAULT_CONFIG_DIR = shipped_dir
@@ -250,7 +251,7 @@ def test_load_config_surfaces_conflict_on_stderr_and_keeps_user_value():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         # User value kept, not silently overwritten by the shipped 5.
-        assert config["heartbeat"]["interval_minutes"] == 10
+        assert config["heartbeat"]["interval_minutes"] == 7
         # Conflict surfaced.
         err = buf.getvalue()
         assert "conflict" in err.lower()
@@ -277,7 +278,7 @@ def test_load_config_no_shipped_default_is_whole_file_behaviour():
         assert config["budget"]["per_day_tokens"] == 500000
         # Backfilled from defaults exactly as before.
         assert config["budget"]["window_tz"] == "local"
-        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["heartbeat"]["interval_minutes"] == 10
 
 
 def test_load_config_schema_version_never_conflicts():
@@ -289,7 +290,7 @@ def test_load_config_schema_version_never_conflicts():
     with tempfile.TemporaryDirectory() as project_dir, \
             tempfile.TemporaryDirectory() as shipped_dir:
         # User override carries a stale schema_version (2.7.0); shipped default
-        # carries the frozen 2.2.0; the embedded base is the current 2.8.0 —
+        # carries the frozen 2.2.0; the embedded base is the current 2.9.0 —
         # all three differ, which pre-fix produced a spurious conflict.
         _write_json(_config_path(project_dir),
                     {"schema_version": "2.7.0", "mode": "propose"})

@@ -83,17 +83,17 @@ def _write_json(path, payload):
 
 
 # ==========================================================================
-# Behaviour: the central config schema is versioned (2.5.0) and machine-first.
+# Behaviour: the central config schema is versioned (2.9.0) and machine-first.
 # DEFAULT_GOVERNANCE matches the spec's documented defaults: mode=propose,
-# budget.per_day_tokens=null, budget.window_tz=local, heartbeat.interval_minutes=3,
+# budget.per_day_tokens=null, budget.window_tz=local, heartbeat.interval_minutes=10,
 # backoff.threshold=5, work_own_filings=True, regression_command=None. The
 # per_tick_tokens, maintainer_repo, and self_deploy fields are REMOVED.
 # ==========================================================================
 
 def test_schema_version_and_defaults():
-    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.8.0"
+    assert sg.GOVERNANCE_SCHEMA_VERSION == "2.9.0"
     d = sg.DEFAULT_GOVERNANCE
-    assert d["schema_version"] == "2.8.0"
+    assert d["schema_version"] == "2.9.0"
     assert d["mode"] == "propose"
     # doc_check_features_root (§3.7, verify-integrate GATE doc check) defaults
     # null (the doc check is OFF); schema 2.5.0 -> 2.6.0.
@@ -103,10 +103,10 @@ def test_schema_version_and_defaults():
     # historical behavior); schema 2.7.0 -> 2.8.0.
     assert d["implement_test_command"] is None
     # issue_filter (the PULL-stage open-issue filter) defaults the no-filter
-    # object {labels: [], title_pattern: null, exclude_labels: []}; schema
-    # 2.6.0 -> 2.7.0; exclude_labels added additively (still 2.8.0).
+    # object {include_labels: [], with_title_regex: null, exclude_labels: []};
+    # the fields were RENAMED from labels/title_pattern in schema 2.9.0.
     assert d["issue_filter"] == {
-        "labels": [], "title_pattern": None, "exclude_labels": []}
+        "include_labels": [], "with_title_regex": None, "exclude_labels": []}
     # self_deploy (#309) is REMOVED from the schema (the self_deploy ACTION was
     # removed in #324, so the knob is dead; schema 2.3.0 -> 2.4.0).
     assert "self_deploy" not in d
@@ -115,7 +115,7 @@ def test_schema_version_and_defaults():
     assert d["budget"]["per_day_tokens"] is None
     assert d["budget"]["window_tz"] == "local"
     # heartbeat + backoff knobs, owned here, read by scheduling.
-    assert d["heartbeat"]["interval_minutes"] == 3
+    assert d["heartbeat"]["interval_minutes"] == 10
     assert d["backoff"]["threshold"] == 5
     # per_tick_tokens + maintainer_repo are REMOVED from the schema.
     assert "per_tick_tokens" not in d["budget"]
@@ -138,14 +138,15 @@ def test_maintainer_repo_is_fixed_constant():
 def test_load_config_defaults_when_absent():
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
-        assert config["schema_version"] == "2.8.0"
+        assert config["schema_version"] == "2.9.0"
         assert config["mode"] == "propose"
         assert config["issue_filter"] == {
-            "labels": [], "title_pattern": None, "exclude_labels": []}
+            "include_labels": [], "with_title_regex": None,
+            "exclude_labels": []}
         assert "self_deploy" not in config
         assert config["budget"]["per_day_tokens"] is None
         assert config["budget"]["window_tz"] == "local"
-        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["heartbeat"]["interval_minutes"] == 10
         assert config["backoff"]["threshold"] == 5
         # Absent file writes nothing.
         assert not os.path.exists(_config_path(project_dir))
@@ -166,7 +167,7 @@ def test_load_config_override_read_and_backfilled():
         assert config["budget"]["per_day_tokens"] == 500000
         # backfilled from defaults:
         assert config["budget"]["window_tz"] == "local"
-        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["heartbeat"]["interval_minutes"] == 10
         assert config["backoff"]["threshold"] == 5
 
 
@@ -483,39 +484,60 @@ def test_implement_test_command_accessor_returns_raw_value():
 
 def test_default_issue_filter_is_no_filter():
     """issue_filter defaults the no-filter canonical object — PULL pulls every
-    open issue, exactly as before (non-breaking opt-in)."""
+    open issue, exactly as before (non-breaking opt-in). Schema 2.9.0 keys."""
     assert sg.DEFAULT_GOVERNANCE["issue_filter"] == {
-        "labels": [], "title_pattern": None, "exclude_labels": []}
+        "include_labels": [], "with_title_regex": None, "exclude_labels": []}
     with tempfile.TemporaryDirectory() as project_dir:
         config = sg.load_config(project_dir)
         assert config["issue_filter"] == {
-            "labels": [], "title_pattern": None, "exclude_labels": []}
+            "include_labels": [], "with_title_regex": None,
+            "exclude_labels": []}
 
 
-def test_load_config_reads_issue_filter_override():
-    """An explicit top-level issue_filter in config.json is surfaced on the
-    loaded config (already-canonical DNF list-of-lists passthrough). The #357
-    field-merge adopts the newly-added exclude_labels default ([]) that the
-    override lacks (the unfreeze)."""
+def test_load_config_reads_issue_filter_override_new_keys():
+    """An explicit top-level issue_filter using the NEW schema-2.9.0 keys
+    (include_labels/with_title_regex) is surfaced canonically on the loaded
+    config."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        _write_json(_config_path(project_dir),
+                    {"issue_filter": {
+                        "include_labels": [["bug", "P1"], ["security"]],
+                        "with_title_regex": "^\\[fix\\]"}})
+        config = sg.load_config(project_dir)
+        assert config["issue_filter"] == {
+            "include_labels": [["bug", "P1"], ["security"]],
+            "with_title_regex": "^\\[fix\\]",
+            "exclude_labels": []}
+
+
+def test_load_config_reads_legacy_issue_filter_keys_and_canonicalizes():
+    """COEXISTENCE (schema 2.9.0 rename): an existing config.json written with
+    the LEGACY keys (labels/title_pattern) still loads, and the loaded config is
+    canonicalized to the NEW names (include_labels/with_title_regex) so
+    /configure --show shows the new names."""
     with tempfile.TemporaryDirectory() as project_dir:
         _write_json(_config_path(project_dir),
                     {"issue_filter": {"labels": [["bug", "P1"], ["security"]],
                                       "title_pattern": "^\\[fix\\]"}})
         config = sg.load_config(project_dir)
         assert config["issue_filter"] == {
-            "labels": [["bug", "P1"], ["security"]],
-            "title_pattern": "^\\[fix\\]",
+            "include_labels": [["bug", "P1"], ["security"]],
+            "with_title_regex": "^\\[fix\\]",
             "exclude_labels": []}
+        # The legacy names are NOT surfaced on the loaded config.
+        assert "labels" not in config["issue_filter"]
+        assert "title_pattern" not in config["issue_filter"]
 
 
 def test_load_config_backfills_issue_filter_when_absent():
     """A config.json that omits issue_filter loads with the default no-filter
-    object (non-breaking backfill)."""
+    object (non-breaking backfill), schema 2.9.0 keys."""
     with tempfile.TemporaryDirectory() as project_dir:
         _write_json(_config_path(project_dir), {"mode": "propose"})
         config = sg.load_config(project_dir)
         assert config["issue_filter"] == {
-            "labels": [], "title_pattern": None, "exclude_labels": []}
+            "include_labels": [], "with_title_regex": None,
+            "exclude_labels": []}
 
 
 def test_issue_filter_accessor_default_no_filter():
@@ -678,6 +700,37 @@ def test_issue_filter_accessor_full_object_roundtrip():
                           "exclude_labels": ["wontfix", "duplicate"]}}) == {
         "labels": [["bug", "P1"]], "title_pattern": "^\\[fix\\]",
         "exclude_labels": ["wontfix", "duplicate"]}
+
+
+def test_issue_filter_accessor_accepts_new_schema_keys():
+    """COEXISTENCE: the accessor reads the NEW schema-2.9.0 input keys
+    (include_labels/with_title_regex) and returns the consumer-facing matcher
+    DTO (whose keys are UNCHANGED: labels/title_pattern/exclude_labels)."""
+    assert sg.issue_filter(
+        {"issue_filter": {"include_labels": ["bug", "P1"],
+                          "with_title_regex": "^\\[fix\\]",
+                          "exclude_labels": ["wontfix"]}}) == {
+        "labels": [["bug", "P1"]], "title_pattern": "^\\[fix\\]",
+        "exclude_labels": ["wontfix"]}
+
+
+def test_issue_filter_accessor_new_keys_win_over_legacy():
+    """When BOTH the new and legacy keys are present, the new keys win
+    (include_labels else labels; with_title_regex else title_pattern)."""
+    assert sg.issue_filter(
+        {"issue_filter": {"include_labels": [["new"]], "labels": [["old"]],
+                          "with_title_regex": "new", "title_pattern": "old"}}) \
+        == {"labels": [["new"]], "title_pattern": "new", "exclude_labels": []}
+
+
+def test_issue_filter_accessor_matcher_dto_shape_unchanged():
+    """The matcher object RETURNED to consumers (scheduling/work-intake) keeps
+    its pre-existing key shape {labels, title_pattern, exclude_labels} — the
+    schema-2.9.0 rename touches the config/input keys only, not the DTO."""
+    dto = sg.issue_filter(
+        {"issue_filter": {"include_labels": ["bug"],
+                          "with_title_regex": None}})
+    assert set(dto.keys()) == {"labels", "title_pattern", "exclude_labels"}
 
 
 def test_issue_filter_accessor_rejects_non_string_exclude_label():
@@ -846,7 +899,7 @@ def test_migration_governance_json_to_config_json():
         assert "per_tick_tokens" not in config["budget"]
         assert "maintainer_repo" not in config
         # backfilled:
-        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["heartbeat"]["interval_minutes"] == 10
         assert config["backoff"]["threshold"] == 5
         # config.json written; legacy renamed (non-destructive).
         assert os.path.exists(_config_path(project_dir))
@@ -916,7 +969,7 @@ def test_load_config_reads_shipped_default_fresh_when_no_project_local():
         assert config["budget"]["per_day_tokens"] == 750000
         # Backfilled from defaults (shipped omitted these).
         assert config["budget"]["window_tz"] == "local"
-        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["heartbeat"]["interval_minutes"] == 10
         assert config["backoff"]["threshold"] == 5
         assert config["work_own_filings"] is True
         # No seed-once copy: the shipped file was NOT copied into the project.
@@ -937,9 +990,9 @@ def test_load_config_falls_back_to_default_governance_when_no_shipped_file():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.8.0"
+        assert config["schema_version"] == "2.9.0"
         assert config["budget"]["per_day_tokens"] is None
-        assert config["heartbeat"]["interval_minutes"] == 3
+        assert config["heartbeat"]["interval_minutes"] == 10
         assert config["backoff"]["threshold"] == 5
 
 
@@ -975,7 +1028,7 @@ def test_load_config_unparsable_shipped_file_falls_back_to_defaults():
         finally:
             sg.DEFAULT_CONFIG_DIR = original
         assert config["mode"] == "propose"
-        assert config["schema_version"] == "2.8.0"
+        assert config["schema_version"] == "2.9.0"
 
 
 # ==========================================================================
@@ -991,7 +1044,7 @@ def test_load_governance_alias_delegates_to_load_config():
         via_alias = sg.load_governance(project_dir)
         assert via_alias["mode"] == "auto-merge"
         assert via_alias["budget"]["per_day_tokens"] == 500000
-        assert via_alias["heartbeat"]["interval_minutes"] == 3
+        assert via_alias["heartbeat"]["interval_minutes"] == 10
 
 
 # ==========================================================================
