@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.41.0
+version: 0.42.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -1071,7 +1071,19 @@ work-intake seams landed in the providers wave. Both are deterministic, live in
   and injects the production seams (`gh_pr_state_source`, `gh_issue_state_source`,
   `gh_issue_close_sink`, PR-close + comment sinks, `reconcile_rebase_worktree`)
   plus the resolved `mode` (so `permits('merge', mode)` gates the mutating tiers)
-  and default branch. After RECONCILE, scheduling PERSISTS the outcome: a
+  and default branch. scheduling ALSO SEEDS `Reconcile`'s OPTIONAL
+  **`prior_verdicts`** slot from durable state: it reads the persisted `verdicts`
+  read-product (the PREVIOUS tick's VERIFY output, via the existing
+  persisted-state accessor pattern) and `ctx.write`s it verbatim — the same List
+  of verdict dicts VERIFY wrote (`{pr_ref, mergeable, ok, reasons, …}`), NOT
+  reshaped — seeding `[]` when absent (first tick / none). This is the
+  race-breaker for verify-integrate's RECONCILE (B) ladder: when a loop PR's LIVE
+  mergeability is still `UNKNOWN` at tick-top, `Reconcile` falls back to the prior
+  tick's confirmed-CONFLICTING verdict to rebase/re-land it, so a conflicting loop
+  PR no longer lingers across ticks. The `prior_verdicts` ctx slot is registered
+  (`register_slot('prior_verdicts', array)`) alongside `acted_ledger`. Seeding
+  `[]` reproduces exactly the prior behavior (non-breaking). After RECONCILE,
+  scheduling PERSISTS the outcome: a
   merged-PR issue-close recorded in `reconcile_result.closed_issues` is stamped
   back into the acted-ledger entry (idempotency — a later tick never re-comments),
   and a tier-2 re-land's PR-close clears/updates the entry so the existing §3.8.5
