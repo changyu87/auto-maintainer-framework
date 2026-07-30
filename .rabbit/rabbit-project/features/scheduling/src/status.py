@@ -163,9 +163,13 @@ def status_data():
         "mode": gov.get("mode", ""),
         # The configured /start heartbeat (tick) cadence, read from the SAME
         # loaded config (load_governance == load_config) start.py's
-        # heartbeat_interval_minutes() reads (shipped default 3). Read-only.
+        # heartbeat_interval_minutes() reads. The fallback sources the shipped
+        # default from safety_governance.DEFAULT_GOVERNANCE (the single source of
+        # truth, currently 10) so it never drifts from the shipped config.
+        # Read-only.
         "heartbeat_interval_minutes": gov.get("heartbeat", {}).get(
-            "interval_minutes", 3),
+            "interval_minutes",
+            rt.sg.DEFAULT_GOVERNANCE["heartbeat"]["interval_minutes"]),
         "budget": {
             "spent": budget_state.get("spent_tokens", 0),
             "ceiling": ceiling,

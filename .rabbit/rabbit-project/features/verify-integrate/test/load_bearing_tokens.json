@@ -47,6 +47,7 @@
     "closed_issues",
     "rebased",
     "relanded",
-    "acted_ledger"
+    "acted_ledger",
+    "prior_verdicts"
   ]
 }

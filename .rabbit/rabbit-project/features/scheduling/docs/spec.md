@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.41.0
+version: 0.42.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -144,7 +144,7 @@ enforcement of act-skip is **deferred** to the acting doer (next milestone).
   acting adapters can consult `permits`/budget — without disturbing the existing
   runtime keys (`project_dir`/`runtime_dir`/`source`/`now`). It also READS
   `backoff.threshold` (default 5) from this config for the backoff gate, and the
-  `/start` heartbeat reads `heartbeat.interval_minutes` (default 3) for its
+  `/start` heartbeat reads `heartbeat.interval_minutes` (default 10) for its
   cadence (both owned by safety-governance, consumed here via the contract).
 - **Durable, cross-tick budget window.** A durable key `budget` stores
   `{window_key, spent_tokens}`. Each tick resolves a tz-aware `now` (the injected
@@ -216,7 +216,7 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      `mode`, `heartbeat_interval_minutes` (the configured `/start` cadence, read
      via `safety_governance.load_config` — `config["heartbeat"]["interval_minutes"]`,
      the same value `start.py`'s `heartbeat_interval_minutes()` uses; shipped
-     default 3), budget (`budget_spent`/`budget_ceiling`/`budget_window`/
+     default 10), budget (`budget_spent`/`budget_ceiling`/`budget_window`/
      `budget_paused`), the four read-product counts, `reported`
      (`filed`/`skipped`), `route` (`{source, states, chain}`), and `runtime_dir`
      — and a derived **human view `render_status(data)`** (philosophy §1: the
@@ -260,11 +260,11 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      start; the heartbeat does not re-clear it (re-clearing each interval would
      defeat a `/stop` that lands between heartbeats). **The interval is
      config-driven** — `start.py` emits the configured `heartbeat.interval_minutes`
-     (default 3, from the central config) and the `/start` skill schedules at that The latch is cleared ONCE at
+     (default 10, from the central config) and the `/start` skill schedules at that The latch is cleared ONCE at
      start; the heartbeat does not re-clear it (re-clearing each interval would
      defeat a `/stop` that lands between heartbeats). **The interval is
      config-driven** — `start.py` emits the configured `heartbeat.interval_minutes`
-     (default 3, from the central config) and the `/start` skill schedules at that
+     (default 10, from the central config) and the `/start` skill schedules at that
      cadence. The in-session heartbeat ends with the session, but the loop is
      **durable across sessions** (§3.3.2, #31): `start.py` records a durable
      **loop-intent** marker (via `heartbeat.py`) when it clears the latch, and the
@@ -383,7 +383,7 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 
 `/auto-maintainer:start` → tick #1 pulls the repo's open issues into `work_items`
 (trace shows the count), PERSISTs them, and EXITs **IDLE**. Every
-`heartbeat.interval_minutes` (default 3) the heartbeat re-pulls the current open
+`heartbeat.interval_minutes` (default 10) the heartbeat re-pulls the current open
 issues. `/auto-maintainer:status` shows a formatted report: the emphasized
 plugin version, disposition/awaiting/mode/heartbeat-interval/budget/reported/
 read-product counts, and the active route listing (states + happy-path chain,
@@ -1071,7 +1071,19 @@ work-intake seams landed in the providers wave. Both are deterministic, live in
   and injects the production seams (`gh_pr_state_source`, `gh_issue_state_source`,
   `gh_issue_close_sink`, PR-close + comment sinks, `reconcile_rebase_worktree`)
   plus the resolved `mode` (so `permits('merge', mode)` gates the mutating tiers)
-  and default branch. After RECONCILE, scheduling PERSISTS the outcome: a
+  and default branch. scheduling ALSO SEEDS `Reconcile`'s OPTIONAL
+  **`prior_verdicts`** slot from durable state: it reads the persisted `verdicts`
+  read-product (the PREVIOUS tick's VERIFY output, via the existing
+  persisted-state accessor pattern) and `ctx.write`s it verbatim — the same List
+  of verdict dicts VERIFY wrote (`{pr_ref, mergeable, ok, reasons, …}`), NOT
+  reshaped — seeding `[]` when absent (first tick / none). This is the
+  race-breaker for verify-integrate's RECONCILE (B) ladder: when a loop PR's LIVE
+  mergeability is still `UNKNOWN` at tick-top, `Reconcile` falls back to the prior
+  tick's confirmed-CONFLICTING verdict to rebase/re-land it, so a conflicting loop
+  PR no longer lingers across ticks. The `prior_verdicts` ctx slot is registered
+  (`register_slot('prior_verdicts', array)`) alongside `acted_ledger`. Seeding
+  `[]` reproduces exactly the prior behavior (non-breaking). After RECONCILE,
+  scheduling PERSISTS the outcome: a
   merged-PR issue-close recorded in `reconcile_result.closed_issues` is stamped
   back into the acted-ledger entry (idempotency — a later tick never re-comments),
   and a tier-2 re-land's PR-close clears/updates the entry so the existing §3.8.5
@@ -1361,7 +1373,7 @@ guessing.
 - Configurable **route** + **adapter-map** via the `/auto-maintainer:route` and
   `/auto-maintainer:adapter-map` CLIs — IMPLEMENTED (see "Wiring config CLIs"
   above). The tick **interval is config-driven** (`heartbeat.interval_minutes`,
-  default 3) — #17 resolved.
+  default 10) — #17 resolved.
 - System-cron scheduler backend (§3.3.1) — slice 1 is in-session heartbeat only.
 - TRIAGE/IMPLEMENT/VERIFY/INTEGRATE — the loop PULLs (read-and-idle) and, on an
   ACTING route, EXIT is now **work-driven**: it refires while actionable work

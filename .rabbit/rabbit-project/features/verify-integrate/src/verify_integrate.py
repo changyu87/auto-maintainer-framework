@@ -2012,11 +2012,34 @@ RECONCILE_RESULT_SLOT = {
 RECONCILE_SIGNALS = ["OK"]
 
 # Per-state manifest (bounded-scope): reads the injected `acted_ledger` slot (the
-# durable opened-entries scheduling seeds), writes the `reconcile_result` slot,
-# emits OK.
-RECONCILE_MANIFEST = fc.StateManifest(reads=["acted_ledger"],
+# durable opened-entries scheduling seeds) plus the OPTIONAL `prior_verdicts` slot
+# (the PREVIOUS tick's VERIFY verdicts, seeded by scheduling's make_reconcile — the
+# (B)-ladder race-breaker), writes the `reconcile_result` slot, emits OK.
+# `prior_verdicts` is read OPTIONALLY (via _read_optional_slot); absent/empty ⇒
+# exactly today's live-read-only behavior, so the un-wired route still validates.
+RECONCILE_MANIFEST = fc.StateManifest(reads=["acted_ledger", "prior_verdicts"],
                                       writes=["reconcile_result"],
                                       emits=RECONCILE_SIGNALS)
+
+
+# The substring a hard CONFLICTING VERIFY verdict's reason carries
+# (`not mergeable (mergeable=CONFLICTING)`), which DISTINGUISHES it from a transient
+# DEFERRED verdict whose reason carries `mergeable=UNKNOWN`. Kept as the exact token
+# VERIFY stamps so the discriminator never drifts from derive_verdict.
+_CONFIRMED_CONFLICT_REASON_MARKER = "mergeable=CONFLICTING"
+
+
+def _is_confirmed_conflicting_verdict(verdict):
+    """Whether a previous-tick VERIFY verdict dict is a CONFIRMED-CONFLICTING one —
+    a hard `not mergeable (mergeable=CONFLICTING)` failure, DISTINCT from a transient
+    DEFERRED verdict (`mergeability not yet determined (mergeable=UNKNOWN) — deferred
+    to a later tick`). True ONLY when the verdict is not ok AND some reason carries
+    the `mergeable=CONFLICTING` marker. A None/empty verdict (absent prior) ⇒ False,
+    so RECONCILE reproduces exactly today's live-read-only behavior. Pure."""
+    if not verdict or verdict.get("ok"):
+        return False
+    return any(_CONFIRMED_CONFLICT_REASON_MARKER in (r or "")
+               for r in (verdict.get("reasons") or []))
 
 
 def gh_pr_state_source(pr_ref, repo=None, runner=subprocess.run,
@@ -2288,12 +2311,21 @@ class Reconcile:
         permitted = self._permits_fn("merge", self._mode)
         result = ReconcileResult()
 
+        # The OPTIONAL `prior_verdicts` input (the previous tick's VERIFY verdicts,
+        # seeded by scheduling's make_reconcile) — the (B)-ladder race-breaker. Read
+        # OPTIONALLY (absent/empty ⇒ today's live-read-only behavior); indexed by
+        # pr_ref for the live-UNKNOWN fallback in _reconcile_one.
+        prior_verdicts = _read_optional_slot(ctx, "prior_verdicts") or []
+        prior_by_ref = {v["pr_ref"]: v for v in prior_verdicts
+                        if v.get("pr_ref")}
+
         for entry in ledger:
             pr_ref = entry.get("pr_ref")
             issue_ref = entry.get("issue_ref")
             repo = entry.get("repo") or self._repo
             try:
-                self._reconcile_one(result, pr_ref, issue_ref, repo, permitted)
+                self._reconcile_one(result, pr_ref, issue_ref, repo, permitted,
+                                    prior_by_ref)
             except Exception as exc:  # noqa: BLE001 — advisory: record, never raise
                 result.errors.append({"ref": pr_ref or issue_ref,
                                       "reason": str(exc)})
@@ -2366,7 +2398,26 @@ class Reconcile:
         except Exception as exc:  # noqa: BLE001 — advisory: dedup -> no-op
             result.errors.append({"ref": "dedup", "reason": str(exc)})
 
-    def _reconcile_one(self, result, pr_ref, issue_ref, repo, permitted):
+    def _is_conflicting(self, pr_ref, pr_state, prior_by_ref):
+        """The (B) conflict determination: live-preferred with a prior-verdict
+        race-breaker. A settled live `mergeable` is authoritative — CONFLICTING ⇒
+        True, MERGEABLE ⇒ False (live preferred; never force-push a fixed PR). ONLY
+        when the live read is `UNKNOWN` (poll exhausted) does it consult the OPTIONAL
+        `prior_verdicts`, returning True iff the previous tick recorded a
+        CONFIRMED-CONFLICTING verdict for this pr_ref (a hard `mergeable=CONFLICTING`,
+        DISTINCT from a transient DEFERRED/UNKNOWN verdict). A live UNKNOWN with no
+        confirmed-conflicting prior (deferred/absent) ⇒ False (defer to next tick),
+        exactly today's behavior. Pure given its inputs."""
+        live = (pr_state.get("mergeable") or "").upper()
+        if live == "CONFLICTING":
+            return True
+        if live == "MERGEABLE":
+            return False
+        # live is UNKNOWN (poll exhausted) or unset: the prior-verdict race-breaker.
+        return _is_confirmed_conflicting_verdict(prior_by_ref.get(pr_ref))
+
+    def _reconcile_one(self, result, pr_ref, issue_ref, repo, permitted,
+                       prior_by_ref):
         """Reconcile one `opened` ledger entry into `result` (branch A or B)."""
         pr_state = self._pr_state_source(pr_ref, repo=repo)
 
@@ -2393,10 +2444,15 @@ class Reconcile:
                                          "pr_ref": pr_ref})
             return
 
-        # (B) conflict-recovery ladder: an OPEN + CONFLICTING PR (a sibling merged
-        # and invalidated it).
+        # (B) conflict-recovery ladder — LIVE-PREFERRED with a prior-verdict
+        # race-breaker. A settled live read is authoritative: live CONFLICTING enters
+        # the ladder, live MERGEABLE is left alone (never force-pushed). ONLY on a
+        # live UNKNOWN (poll exhausted) does RECONCILE consult prior_verdicts — a PR
+        # confirmed CONFLICTING by the previous tick's VERIFY (which ran later, once
+        # mergeability settled) is recovered THIS tick even though the tick-top live
+        # read still races GitHub's async mergeability computation.
         if (pr_state.get("state") == "OPEN"
-                and pr_state.get("mergeable") == "CONFLICTING"):
+                and self._is_conflicting(pr_ref, pr_state, prior_by_ref)):
             if not permitted:
                 result.skipped.append({
                     "ref": pr_ref,

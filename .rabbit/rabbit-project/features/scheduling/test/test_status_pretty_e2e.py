@@ -236,12 +236,12 @@ def _write_project_config(project_dir, config):
 
 def test_status_data_heartbeat_interval_default():
     """status_data() surfaces heartbeat_interval_minutes; with no project config
-    it is the shipped default 3 (same source start.py's
+    it is the shipped default 10 (same source start.py's
     heartbeat_interval_minutes() reads)."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
     data = _with_project_dir(project_dir, st.status_data)
     assert "heartbeat_interval_minutes" in data, sorted(data)
-    assert data["heartbeat_interval_minutes"] == 3, data
+    assert data["heartbeat_interval_minutes"] == 10, data
 
 
 def test_status_data_heartbeat_interval_reflects_config():
