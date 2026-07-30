@@ -560,17 +560,20 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.27.0, stylish-configure lib re-ship): version bumped to
-# 0.27.0 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.27.0 rebuilds the committed plugin tree so it ships safety-governance
-# 0.17.0's configure.py (human-readable render_config --show view by default, a
-# new --json machine escape, and issue_filter.exclude_labels promoted into the
-# field catalog). The shipped default-config CONTENT is unchanged (still schema
-# 2.9.0, same values); this release only re-normalizes lib/configure.py (+
-# lib/safety_governance.py) and bumps the version so the marketplace serves the
-# new lib to existing installs.
+# Release (v0.28.0, RECONCILE prior-verdict race-breaker lib re-ship): version
+# bumped to 0.28.0 in BOTH plugin.json and marketplace.json, and the two are
+# consistent. v0.28.0 rebuilds the committed plugin tree so it ships the
+# verify-integrate 0.10.0 + scheduling 0.42.0 sources: lib/verify_integrate.py
+# (RECONCILE's (B) ladder recovers a loop PR whose LIVE mergeability is still
+# UNKNOWN at tick-top by consulting the previous tick's confirmed-CONFLICTING
+# VERIFY verdict), lib/run_tick.py (make_reconcile seeds the new prior_verdicts
+# slot from the durable persisted verdicts), and lib/status.py (heartbeat
+# fallback sources DEFAULT_GOVERNANCE = 10). The shipped default-config CONTENT
+# is unchanged (still schema 2.9.0, same values); this release only
+# re-normalizes the affected libs and bumps the version so the marketplace
+# serves the new lib to existing installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_27_0_and_consistent():
+def test_version_bumped_to_0_28_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -582,10 +585,10 @@ def test_version_bumped_to_0_27_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.27.0", \
-            f"plugin.json version must be 0.27.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.27.0", \
-            "marketplace.json plugin entry version must be 0.27.0"
+        assert pdata.get("version") == "0.28.0", \
+            f"plugin.json version must be 0.28.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.28.0", \
+            "marketplace.json plugin entry version must be 0.28.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
