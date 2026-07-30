@@ -1,5 +1,25 @@
 # Changelog — packaging-config
 
+## 0.27.0 — re-ship the stylish-configure lib; release v0.27.0
+
+- **Release v0.27.0 (minor — new configure UX reaches installs):**
+  `_PLUGIN_VERSION` 0.26.0 -> 0.27.0; committed plugin tree regenerated so the
+  shipped `lib/configure.py` carries safety-governance 0.17.0's changes:
+  `/auto-maintainer:configure --show` (and the post-write echo) now print a
+  human-readable, loop-stage-ordered `render_config` view **by default**, a new
+  `--json` flag preserves the raw machine JSON, and
+  `issue_filter.exclude_labels` is promoted into the `_field_catalog` (so it
+  surfaces in `--describe`/`--setup`/the render).
+- **Shipped `default-config/` CONTENT unchanged** — config still schema 2.9.0
+  with the same values; this is a lib-refresh release, not a config-content
+  change. Only `lib/configure.py`, the version stamps (`plugin.json` +
+  `marketplace.json` -> 0.27.0) move.
+- Version-assertion test advanced to 0.27.0; `test/release_lib_baseline.json`
+  re-anchored (version -> 0.27.0, `lib_digest` -> the new committed-lib digest
+  since the shipped lib bytes changed); `test/housekeep_doc_baseline.json`
+  re-anchored (spec.md 353 -> 364 for the v0.27.0 release note) so the drift,
+  #355 monotonicity, and doc-no-growth guards stay green.
+
 ## 0.26.0 — shipped default-config schema 2.9.0 + neutral defaults; release v0.26.0
 
 - **Shipped `default-config/config.json` updated to config schema 2.9.0.**
