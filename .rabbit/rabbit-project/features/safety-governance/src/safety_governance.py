@@ -8,7 +8,8 @@ config (config.json). Decision surfaces plus one effectful halt helper:
      DEFAULT_GOVERNANCE, load_config(project_dir), work_own_filings(config),
      regression_command(config), implement_test_command(config),
      doc_check_features_root(config),
-     issue_filter(config) (a pure DNF-label + title_pattern normalizer). The
+     issue_filter(config) (a pure include_labels DNF + with_title_regex
+     normalizer; accepts the legacy labels/title_pattern keys, schema 2.9.0). The
      config is project-local at
      ${project_dir}/.auto-maintainer/config.json (the single central userConfig,
      §3.10.1; mirrors route.json, §3.10.2); an absent file yields the documented
@@ -126,8 +127,17 @@ import lifecycle_dispositions as ld
 # dropped post-fetch by work-intake PULL), composed as a final AND with
 # labels/title_pattern; an absent key backfills [] (pull-all preserved), so it is
 # backward compatible. schema_version gates nothing at runtime (purely
-# informational), so the additive term rides the same 2.8.0 stamp.
-GOVERNANCE_SCHEMA_VERSION = "2.8.0"
+# informational), so the additive term rides the same 2.8.0 stamp. 2.9.0: the
+# issue_filter fields `labels`/`title_pattern` are RENAMED to
+# `include_labels`/`with_title_regex` (exclude_labels unchanged). COEXISTENCE:
+# the loader/normalizer STILL accepts the legacy names as a fallback
+# (include_labels else labels; with_title_regex else title_pattern) and
+# canonicalizes the loaded config to the new names, so an existing old-keyed
+# config.json keeps working; the legacy names are dropped only once no install
+# carries them. The matcher DTO returned by issue_filter(config) to consumers
+# keeps its pre-existing key shape (labels/title_pattern/exclude_labels) — the
+# rename touches the config/input keys only, not the DTO.
+GOVERNANCE_SCHEMA_VERSION = "2.9.0"
 
 # The maintainer-self REPORT destination — a FIXED constant (§3.11.6), NOT a
 # config field. The loop's OWN defects route here ALWAYS, never the project
@@ -138,7 +148,7 @@ MAINTAINER_REPO = "changyu87/auto-maintainer-framework"
 # The documented defaults (spec "Central config schema"). Trust default is
 # `propose` (§2.3). per_day_tokens defaults null (NO LIMIT) per an explicit user
 # decision; a finite ceiling is opt-in. window_tz `local` is the host's local
-# timezone. heartbeat.interval_minutes (tick cadence, §3.3.2) defaults 3;
+# timezone. heartbeat.interval_minutes (tick cadence, §3.3.2) defaults 10;
 # backoff.threshold (consecutive-blocked count K, §3.8.5) defaults 5.
 # features_root (the MAINTAINED project's features directory, §3.7.6) defaults
 # null (UNCONFIGURED): VERIFY's cross-feature complement then conservatively
@@ -170,8 +180,8 @@ DEFAULT_GOVERNANCE = {
     "regression_command": None,
     "implement_test_command": None,
     "issue_filter": {
-        "labels": [],
-        "title_pattern": None,
+        "include_labels": [],
+        "with_title_regex": None,
         "exclude_labels": [],
     },
     "budget": {
@@ -179,7 +189,7 @@ DEFAULT_GOVERNANCE = {
         "window_tz": "local",
     },
     "heartbeat": {
-        "interval_minutes": 3,
+        "interval_minutes": 10,
     },
     "backoff": {
         "threshold": 5,
@@ -230,12 +240,36 @@ def _copy_defaults():
     d["heartbeat"] = dict(DEFAULT_GOVERNANCE["heartbeat"])
     d["backoff"] = dict(DEFAULT_GOVERNANCE["backoff"])
     d["issue_filter"] = {
-        "labels": list(DEFAULT_GOVERNANCE["issue_filter"]["labels"]),
-        "title_pattern": DEFAULT_GOVERNANCE["issue_filter"]["title_pattern"],
+        "include_labels": list(
+            DEFAULT_GOVERNANCE["issue_filter"]["include_labels"]),
+        "with_title_regex":
+            DEFAULT_GOVERNANCE["issue_filter"]["with_title_regex"],
         "exclude_labels": list(
             DEFAULT_GOVERNANCE["issue_filter"]["exclude_labels"]),
     }
     return d
+
+
+def _canonical_issue_filter(raw_if):
+    """Canonicalize a raw issue_filter object to the schema-2.9.0 key names.
+
+    COEXISTENCE (2.9.0 rename): reads include_labels else the legacy labels, and
+    with_title_regex else the legacy title_pattern (new-then-legacy), plus
+    exclude_labels, and returns a dict keyed by the NEW names so the loaded
+    config carries only the canonical keys (an existing old-keyed config.json
+    still loads). Non-dict input (None/[]) is returned unchanged — the no-filter
+    forms are handled by issue_filter()/callers. This only renames the keys; the
+    DNF/regex normalization + validation stays in issue_filter(config).
+    """
+    if not isinstance(raw_if, dict):
+        return raw_if
+    return {
+        "include_labels": raw_if.get(
+            "include_labels", raw_if.get("labels", [])),
+        "with_title_regex": raw_if.get(
+            "with_title_regex", raw_if.get("title_pattern", None)),
+        "exclude_labels": raw_if.get("exclude_labels", []),
+    }
 
 
 def merge_config(base, theirs, mine, _path=""):
@@ -356,9 +390,11 @@ def _overlay(raw):
     default None (run the touched feature's test/run.py). This backfill does NOT
     interpret it — the three-way interpretation lives in implement's test_gate.py.
     An explicit top-level `issue_filter` (the PULL-stage open-issue filter) is
-    surfaced raw here; absent keeps the no-filter default. The pure accessor
-    issue_filter(config) does the DNF/title-pattern normalization + validation
-    (this backfill only carries the key through). A
+    CANONICALIZED to the schema-2.9.0 key names (include_labels/
+    with_title_regex, accepting the legacy labels/title_pattern as a fallback)
+    here; absent keeps the no-filter default. The pure accessor
+    issue_filter(config) does the DNF/regex normalization + validation
+    (this backfill only renames + carries the keys through). A
     stale top-level `self_deploy` key (the removed self-deployment gate, #324) is
     silently dropped (tolerated, ignored — the self_deploy ACTION was removed, so
     the knob gates nothing).
@@ -377,7 +413,10 @@ def _overlay(raw):
     if "implement_test_command" in raw:
         config["implement_test_command"] = raw["implement_test_command"]
     if "issue_filter" in raw:
-        config["issue_filter"] = raw["issue_filter"]
+        # Canonicalize to the schema-2.9.0 key names (include_labels/
+        # with_title_regex), accepting the legacy labels/title_pattern as a
+        # coexistence fallback, so the loaded config carries only the new names.
+        config["issue_filter"] = _canonical_issue_filter(raw["issue_filter"])
     budget = raw.get("budget", {})
     for key in ("per_day_tokens", "window_tz"):
         if key in budget:
@@ -446,6 +485,18 @@ def load_config(project_dir):
         # base stamps differ; a real knob conflict (e.g. mode) still surfaces.
         raw = {k: v for k, v in raw.items() if k != "schema_version"}
         mine = {k: v for k, v in mine.items() if k != "schema_version"}
+        # Canonicalize issue_filter on BOTH sides to the schema-2.9.0 keys
+        # BEFORE the 3-way merge (coexistence): an override written with the
+        # legacy labels/title_pattern must merge against the new-keyed default
+        # under the SAME keys — otherwise the merge would adopt the default's
+        # empty include_labels as a "new key theirs never set" and drop the
+        # user's legacy labels.
+        if isinstance(raw.get("issue_filter"), dict):
+            raw = dict(raw)
+            raw["issue_filter"] = _canonical_issue_filter(raw["issue_filter"])
+        if isinstance(mine.get("issue_filter"), dict):
+            mine = dict(mine)
+            mine["issue_filter"] = _canonical_issue_filter(mine["issue_filter"])
         merged, conflicts = merge_config(DEFAULT_GOVERNANCE, raw, mine)
         # Surface conflicts (acceptance #2): a key the user changed that the new
         # default ALSO changed keeps the USER value (merge_config never
@@ -540,7 +591,8 @@ def doc_check_features_root(config):
 
 
 def _normalize_labels(labels):
-    """Canonicalize the `labels` matcher to disjunctive-normal-form List[List[str]].
+    """Canonicalize the include_labels matcher to disjunctive-normal-form
+    List[List[str]].
 
     Accepts: None/[] => [] (no label filter); a FLAT list of non-empty strings
     (sugar for one AND-group) => [that list]; an already-canonical List[List[str]]
@@ -551,7 +603,8 @@ def _normalize_labels(labels):
         return []
     if not isinstance(labels, list):
         raise ValueError(
-            f"issue_filter.labels must be a list, got {type(labels).__name__}")
+            f"issue_filter.include_labels must be a list, got "
+            f"{type(labels).__name__}")
     # Flat form (sugar): every entry is a string -> a single AND-group.
     if all(isinstance(item, str) for item in labels):
         group = _validate_group(labels)
@@ -561,7 +614,7 @@ def _normalize_labels(labels):
     for item in labels:
         if not isinstance(item, list):
             raise ValueError(
-                "issue_filter.labels must be a flat string list or a "
+                "issue_filter.include_labels must be a flat string list or a "
                 f"List[List[str]]; got a mixed entry {item!r}")
         groups.append(_validate_group(item))
     return groups
@@ -574,7 +627,8 @@ def _validate_group(group):
     label, or an empty-string label.
     """
     if not group:
-        raise ValueError("issue_filter.labels has an empty inner AND-group")
+        raise ValueError(
+            "issue_filter.include_labels has an empty inner AND-group")
     out = []
     for label in group:
         if not isinstance(label, str):
@@ -619,21 +673,27 @@ def issue_filter(config):
     """The PULL-stage open-issue filter, normalized to its canonical form.
 
     A pure normalizer + validator over the loaded config's `issue_filter`
-    (§work-intake PULL). Returns {"labels": List[List[str]], "title_pattern":
-    str|None, "exclude_labels": List[str]}. Canonicalizes user input:
+    (§work-intake PULL). It READS the schema-2.9.0 input keys include_labels /
+    with_title_regex / exclude_labels, accepting the legacy labels /
+    title_pattern as a COEXISTENCE fallback (include_labels else labels;
+    with_title_regex else title_pattern). It returns the consumer-facing matcher
+    DTO {"labels": List[List[str]], "title_pattern": str|None, "exclude_labels":
+    List[str]} — the DTO key shape is UNCHANGED by the 2.9.0 rename (scheduling/
+    work-intake consume it as-is). Canonicalizes user input:
     absent / null / [] => the no-filter default (pull all open issues); a FLAT
-    list of non-empty strings for `labels` is sugar for a single AND-group; an
-    already-canonical List[List[str]] is validated as-is; `exclude_labels` is a
-    FLAT OR of forbidden labels (an issue carrying ANY is dropped post-fetch by
-    work-intake PULL), canonicalized to a flat List[str] (absent/null/[] => []).
+    list of non-empty strings for include_labels is sugar for a single
+    AND-group; an already-canonical List[List[str]] is validated as-is;
+    `exclude_labels` is a FLAT OR of forbidden labels (an issue carrying ANY is
+    dropped post-fetch by work-intake PULL), canonicalized to a flat List[str]
+    (absent/null/[] => []).
     Raises ValueError (never a silent/partial write) on a non-string label, an
     empty-string label, an empty inner AND-group, a non-string/empty-string
-    exclude label, or a title_pattern that is neither null nor a compilable
-    regex. The default (empty labels + null pattern + empty exclude_labels)
+    exclude label, or a with_title_regex that is neither null nor a compilable
+    regex. The default (empty labels + null regex + empty exclude_labels)
     preserves the pull-all behavior. exclude_labels composes as a final AND with
-    labels/title_pattern. work-intake PULL consumes this to build the gh query +
-    post-fetch title match + exclusion; scheduling threads it from the loaded
-    config.
+    include_labels/with_title_regex. work-intake PULL consumes the DTO to build
+    the gh query + post-fetch title match + exclusion; scheduling threads it
+    from the loaded config.
     """
     raw = config.get("issue_filter")
     if raw is None or raw == []:
@@ -643,20 +703,20 @@ def issue_filter(config):
             f"issue_filter must be an object or null, got "
             f"{type(raw).__name__}")
 
-    labels = _normalize_labels(raw.get("labels"))
+    labels = _normalize_labels(raw.get("include_labels", raw.get("labels")))
 
-    pattern = raw.get("title_pattern")
+    pattern = raw.get("with_title_regex", raw.get("title_pattern"))
     if pattern is not None:
         if not isinstance(pattern, str):
             raise ValueError(
-                f"issue_filter.title_pattern must be a string or null, got "
+                f"issue_filter.with_title_regex must be a string or null, got "
                 f"{type(pattern).__name__}")
         try:
             re.compile(pattern)
         except re.error as exc:
             raise ValueError(
-                f"issue_filter.title_pattern {pattern!r} is not a compilable "
-                f"regex: {exc}")
+                f"issue_filter.with_title_regex {pattern!r} is not a "
+                f"compilable regex: {exc}")
 
     exclude_labels = _normalize_exclude_labels(raw.get("exclude_labels"))
 
@@ -668,7 +728,7 @@ def issue_filter_apply_labels(config):
     """The labels a loop-FILED discovery issue must carry to be re-pullable.
 
     Returns the labels of the FIRST non-empty AND-group of the normalized
-    issue_filter.labels (a plain list[str]) — carrying ALL labels of one
+    issue_filter.include_labels (a plain list[str]) — carrying ALL labels of one
     AND-group satisfies that group, hence the whole DNF, so a later
     label-filtered PULL matches the filed issue. Returns [] when issue_filter
     has no labels (no filter => nothing to stamp => REPORT filing unchanged).

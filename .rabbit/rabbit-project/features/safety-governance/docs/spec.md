@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.14.0
+version: 0.15.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -32,15 +32,15 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 
 ```json
 {
-  "schema_version": "2.8.0",
+  "schema_version": "2.9.0",
   "mode": "propose",
   "work_own_filings": true,
   "regression_command": null,
   "doc_check_features_root": null,
   "implement_test_command": null,
   "issue_filter": {
-    "labels": [],
-    "title_pattern": null,
+    "include_labels": [],
+    "with_title_regex": null,
     "exclude_labels": []
   },
   "budget": {
@@ -48,7 +48,7 @@ single central `userConfig` (§3.10.1); it **replaces** the former
     "window_tz": "local"
   },
   "heartbeat": {
-    "interval_minutes": 3
+    "interval_minutes": 10
   },
   "backoff": {
     "threshold": 5
@@ -68,8 +68,8 @@ single central `userConfig` (§3.10.1); it **replaces** the former
 - `budget.window_tz` — the day-boundary basis for the per-day window; **`local`
   (the host's local timezone) by default**.
 - `heartbeat.interval_minutes` — the tick cadence the `/start` heartbeat
-  schedules (§3.3.2). **Default `3`.** Owned here, **read by `scheduling`** via
-  the cross-feature contract.
+  schedules (§3.3.2). **Default `10`** (the ship-as-is cadence). Owned here,
+  **read by `scheduling`** via the cross-feature contract.
 - `backoff.threshold` — the per-item consecutive-`blocked` count K at which the
   loop escalates + defers a work order (§3.8.5). **Default `5`.** Owned here,
   **read by `scheduling`** (`run_tick`).
@@ -121,33 +121,45 @@ single central `userConfig` (§3.10.1); it **replaces** the former
     configure flag); **read by `implement`** via the cross-feature contract.
 - `issue_filter` — an optional filter narrowing WHICH open GitHub issues the
   PULL stage (work-intake) pulls. An object
-  `{"labels": <DNF>, "title_pattern": <regex-string-or-null>}`:
-  - `labels` — a **disjunctive-normal-form (OR-of-ANDs)** label matcher in
+  `{"include_labels": <DNF>, "with_title_regex": <regex-string-or-null>,
+  "exclude_labels": <flat-list>}`:
+  - `include_labels` — a **disjunctive-normal-form (OR-of-ANDs)** label matcher in
     canonical form `List[List[str]]`: the outer list is OR, each inner list is
     AND. `[["A","B"],["C"]]` means *(label A AND label B) OR (label C)*. The
-    canonical empty form `[]` = **no label filter**.
-  - `title_pattern` — a regular-expression string an issue's title must match
-    (applied post-fetch, since `gh` has no title query), or **`null` = no title
-    filter**.
+    canonical empty form `[]` = **no label filter**. (Renamed from `labels` in
+    schema 2.9.0; see coexistence below.)
+  - `with_title_regex` — a **regular-expression** string an issue's title must
+    match (applied post-fetch, since `gh` has no title query), or **`null` = no
+    title filter**. The name states the regex semantics explicitly. (Renamed from
+    `title_pattern` in schema 2.9.0.)
   - `exclude_labels` — a **flat** list of label strings; an open issue carrying
     **ANY** of them is DROPPED (a NEGATIVE term, applied post-fetch by work-intake
     PULL — `gh`'s per-AND-group union query cannot express negation). The canonical
-    empty form `[]` = **no exclusion**. This is how a disposed reject
-    (`auto-maintainer-rejected`, work-intake's `REJECTED_LABEL`) is kept out of
-    PULL: the shipped default-config (packaging-config) seeds `exclude_labels` with
-    that label. `exclude_labels` composes with `labels`/`title_pattern` as a final
-    AND (an issue must clear the labels DNF, match the title pattern, AND carry no
-    exclude label).
-  **Default `{"labels": [], "title_pattern": null, "exclude_labels": []}` = NO
-  filter** — PULL pulls
-  every open issue, exactly as before (non-breaking, opt-in). Read + normalized
-  through the pure accessor `issue_filter(config)`, which returns the canonical
-  object. The **normalizer** accepts and canonicalizes user input:
+    empty form `[]` = **no exclusion**. `exclude_labels` composes with
+    `include_labels`/`with_title_regex` as a final AND (an issue must clear the
+    label DNF, match the title regex, AND carry no exclude label). Name unchanged.
+    (A project that wants disposed rejects — `auto-maintainer-rejected`,
+    work-intake's `REJECTED_LABEL` — kept out of PULL sets this via `/configure`;
+    the ship-as-is default-config leaves it `[]`.)
+  **Coexistence (schema 2.9.0 rename).** `include_labels`/`with_title_regex` are
+  the canonical names; the loader/normalizer STILL accepts the legacy
+  `labels`/`title_pattern` as a fallback (`include_labels` else legacy `labels`;
+  `with_title_regex` else legacy `title_pattern`) and canonicalizes to the new
+  names in the loaded config, so an existing project `config.json` written with the
+  old keys keeps working unchanged. The legacy names are dropped only once no
+  install carries them.
+  **Default `{"include_labels": [], "with_title_regex": null, "exclude_labels":
+  []}` = NO filter** — PULL pulls
+  every open issue (non-breaking, opt-in). Read + normalized
+  through the pure accessor `issue_filter(config)`, which reads the (new-or-legacy)
+  input keys and returns the canonical matcher object consumed UNCHANGED by
+  work-intake/scheduling (the accessor's internal output shape is not part of this
+  rename). The **normalizer** accepts and canonicalizes user input:
   absent / `null` / `[]` ⇒ no-filter; a **flat** list of non-empty strings
   `["A","B"]` is sugar for a single AND-group ⇒ `[["A","B"]]`; a `List[List[str]]`
   is validated as-is. It **rejects** (raises `ValueError`, never a silent write)
   non-string label entries, empty-string labels, and empty inner groups; and
-  `title_pattern` must be a string that **compiles** as a regex, or `null`.
+  `with_title_regex` must be a string that **compiles** as a regex, or `null`.
   `exclude_labels` is normalized to a flat `List[str]` (absent / `null` / `[]` ⇒
   no exclusion), rejecting non-string or empty-string entries; it never accepts a
   DNF (exclusion is a flat OR of forbidden labels, not an AND-of-ORs).
@@ -160,8 +172,9 @@ single central `userConfig` (§3.10.1); it **replaces** the former
     to be re-pullable.** A pure helper returning the label set that, when stamped
     on a newly-filed discovery issue, guarantees a future label-filtered PULL
     matches it: the labels of the **FIRST non-empty AND-group** of the normalized
-    `issue_filter.labels` (carrying ALL labels of one AND-group satisfies that
-    group, hence the whole DNF). Returns `[]` when `issue_filter` has no labels
+    `issue_filter.include_labels` (carrying ALL labels of one AND-group satisfies
+    that group, hence the whole DNF).
+    Returns `[]` when `issue_filter` has no labels
     (no filter ⇒ nothing to stamp ⇒ REPORT filing unchanged). Owned here;
     **`scheduling`** resolves it at the REPORT flush and threads it into
     **`work-intake`**'s filing sink so the loop's own PROJECT-target discoveries
@@ -356,16 +369,17 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
   - `--work-own-filings` — the §3.11.5 loopback toggle. Accepts a boolean
     `true`/`false` (case-insensitive; `1`/`0`, `yes`/`no` tolerated); an
     unparseable value raises `ValueError`.
-  - `--issue-labels` — the `issue_filter.labels` DNF (public surface added in
-    schema 2.7.0). Compact syntax: **comma = AND within a group, semicolon = OR
+  - `--issue-labels` — writes the `issue_filter.include_labels` DNF (flag name
+    retained for back-compat; renamed field, schema 2.9.0). Compact syntax: **comma = AND within a group, semicolon = OR
     between groups**, e.g. `"bug,triaged;urgent"` → `[["bug","triaged"],["urgent"]]`
     = *(bug AND triaged) OR urgent*. A single group `"bug"` → `[["bug"]]`;
     `none`/`null`/`""` clears to `[]` (no label filter). The parsed DNF is
     validated + canonicalized through this feature's `issue_filter` normalizer
     (rejecting empty labels/groups) before the write — the writer owns NO
     validation the reader does not.
-  - `--issue-title-pattern` — the `issue_filter.title_pattern` regex string an
-    issue's title must match; `none`/`null`/`""` clears to `null`. It must
+  - `--issue-title-pattern` — writes the `issue_filter.with_title_regex` regex
+    string an issue's title must match (flag name retained for back-compat);
+    `none`/`null`/`""` clears to `null`. It must
     **compile** as a regex (validated via the same `issue_filter` normalizer),
     else `ValueError`.
   - `--issue-exclude-labels` — the `issue_filter.exclude_labels` flat list; an
@@ -384,8 +398,8 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
     single source of truth the guided `--setup` walk-through reads. The **`stage`**
     field (added for the onboarding walk-through) groups each knob by the loop
     state that consumes it, and the catalog is **ordered by loop stage** so the
-    walk-through follows the route: `PULL` (`issue_filter.labels`,
-    `issue_filter.title_pattern`, `work_own_filings`) →
+    walk-through follows the route: `PULL` (`issue_filter.include_labels`,
+    `issue_filter.with_title_regex`, `work_own_filings`) →
     `IMPLEMENT` (`mode`, `implement_test_command`) →
     `VERIFY` (`features_root`) → `GATE` (`regression_command`,
     `doc_check_features_root`) → `SCHEDULING` (`heartbeat.interval_minutes`) →
@@ -451,13 +465,18 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
 - The `config.json` runtime file carries only `schema_version` + the knobs; it is
   the single central config (no scattered per-concern files). `maintainer-self`
   routing is a fixed `MAINTAINER_REPO` constant, not a config field.
-- `issue_filter(config)` is a pure normalizer: it canonicalizes to
-  `{"labels": List[List[str]], "title_pattern": str|None}`, treats
+- `issue_filter(config)` is a pure normalizer. It READS the schema-2.9.0 config
+  keys `include_labels` / `with_title_regex` / `exclude_labels`, accepting the
+  legacy `labels` / `title_pattern` as a coexistence fallback (`include_labels`
+  else `labels`; `with_title_regex` else `title_pattern`) and canonicalizing the
+  loaded config to the new names. Its returned matcher object shape is stable for
+  consumers (unchanged by this rename). It treats
   absent/`null`/`[]` as the no-filter default, expands a flat string list into a
   single AND-group, and raises `ValueError` (never a silent/partial write) on a
   non-string label, an empty-string label, an empty inner group, or a
-  `title_pattern` that is neither `null` nor a compilable regex. The default
-  (empty labels + null pattern) preserves the pull-all behavior.
+  `with_title_regex` that is neither `null` nor a compilable regex. The default
+  (empty labels + null regex) preserves the pull-all behavior. `DEFAULT_GOVERNANCE`
+  ships `heartbeat.interval_minutes: 10` and `issue_filter.exclude_labels: []`.
 - Budget NEVER latches a halt disposition — it gates work and auto-resumes via
   `IDLE` at the next window. `null` ceiling ⇒ unbounded (no gate).
 - ABORTED (§3.8.3 faults) IS a true latch; only budget auto-resumes.

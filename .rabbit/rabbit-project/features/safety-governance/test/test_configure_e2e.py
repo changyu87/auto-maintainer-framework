@@ -75,7 +75,7 @@ def test_cli_sets_mode_and_writes_file():
         assert rc == 0
         cfg = _read_cfg(project_dir)
         assert cfg["mode"] == "dry-run"
-        assert cfg["schema_version"] == "2.8.0"
+        assert cfg["schema_version"] == "2.9.0"
 
 
 # ==========================================================================
@@ -342,7 +342,7 @@ def test_load_modify_save_preserves_unmentioned_keys():
         assert cfg["budget"]["per_day_tokens"] == 200000
         assert cfg["budget"]["window_tz"] == "local"
         # heartbeat/backoff defaults preserved across the modify-save.
-        assert cfg["heartbeat"]["interval_minutes"] == 3
+        assert cfg["heartbeat"]["interval_minutes"] == 10
         assert cfg["backoff"]["threshold"] == 5
 
 
@@ -460,8 +460,8 @@ def test_describe_catalog_is_complete_one_entry_per_knob():
             "doc_check_features_root",
             "features_root",
             "work_own_filings",
-            "issue_filter.labels",
-            "issue_filter.title_pattern",
+            "issue_filter.include_labels",
+            "issue_filter.with_title_regex",
         }
         assert set(keys) == expected_keys, (
             f"catalog knobs {set(keys)} != expected {expected_keys}")
@@ -680,8 +680,9 @@ def test_cli_work_own_filings_unparseable_rejected():
 # ==========================================================================
 # Phase 2 E2E Behaviour: --issue-labels parses the compact DNF syntax
 # (comma = AND within a group, semicolon = OR between groups) into the
-# canonical List[List[str]] and writes issue_filter.labels; a clear sentinel
-# (none/null/"") resets it to [].
+# canonical List[List[str]] and writes issue_filter.include_labels (the flag
+# name is retained for back-compat; the field was RENAMED in schema 2.9.0); a
+# clear sentinel (none/null/"") resets it to [].
 # ==========================================================================
 
 def test_cli_issue_labels_dnf_parse():
@@ -690,7 +691,7 @@ def test_cli_issue_labels_dnf_parse():
             ["--project-dir", project_dir,
              "--issue-labels", "bug,triaged;urgent"])
         assert rc == 0
-        assert (_read_cfg(project_dir)["issue_filter"]["labels"]
+        assert (_read_cfg(project_dir)["issue_filter"]["include_labels"]
                 == [["bug", "triaged"], ["urgent"]])
 
 
@@ -699,7 +700,8 @@ def test_cli_issue_labels_single_group():
         rc = configure.main(
             ["--project-dir", project_dir, "--issue-labels", "bug"])
         assert rc == 0
-        assert _read_cfg(project_dir)["issue_filter"]["labels"] == [["bug"]]
+        assert (_read_cfg(project_dir)["issue_filter"]["include_labels"]
+                == [["bug"]])
 
 
 def test_cli_issue_labels_clear():
@@ -708,7 +710,7 @@ def test_cli_issue_labels_clear():
             ["--project-dir", project_dir, "--issue-labels", "bug"]) == 0
         assert configure.main(
             ["--project-dir", project_dir, "--issue-labels", "none"]) == 0
-        assert _read_cfg(project_dir)["issue_filter"]["labels"] == []
+        assert _read_cfg(project_dir)["issue_filter"]["include_labels"] == []
 
 
 # ==========================================================================
@@ -726,10 +728,11 @@ def test_cli_issue_labels_empty_group_rejected():
 
 
 # ==========================================================================
-# Phase 2 E2E Behaviour: --issue-title-pattern sets issue_filter.title_pattern
-# to a regex string; a clear sentinel (none/null/"") resets it to null; a
-# non-compilable regex is a non-zero exit (validated via the normalizer) with
-# no write.
+# Phase 2 E2E Behaviour: --issue-title-pattern sets
+# issue_filter.with_title_regex to a regex string (the flag name is retained for
+# back-compat; the field was RENAMED in schema 2.9.0); a clear sentinel
+# (none/null/"") resets it to null; a non-compilable regex is a non-zero exit
+# (validated via the normalizer) with no write.
 # ==========================================================================
 
 def test_cli_issue_title_pattern_set_then_clear():
@@ -738,13 +741,14 @@ def test_cli_issue_title_pattern_set_then_clear():
             ["--project-dir", project_dir,
              "--issue-title-pattern", r"^\[bug\]"])
         assert rc == 0
-        assert (_read_cfg(project_dir)["issue_filter"]["title_pattern"]
+        assert (_read_cfg(project_dir)["issue_filter"]["with_title_regex"]
                 == r"^\[bug\]")
 
         rc = configure.main(
             ["--project-dir", project_dir, "--issue-title-pattern", "none"])
         assert rc == 0
-        assert _read_cfg(project_dir)["issue_filter"]["title_pattern"] is None
+        assert (_read_cfg(project_dir)["issue_filter"]["with_title_regex"]
+                is None)
 
 
 def test_cli_issue_title_pattern_compile_fail_rejected():
@@ -770,8 +774,8 @@ def test_cli_issue_labels_preserves_existing_title_pattern():
         assert configure.main(
             ["--project-dir", project_dir, "--issue-labels", "urgent"]) == 0
         cfg = _read_cfg(project_dir)
-        assert cfg["issue_filter"]["labels"] == [["urgent"]]
-        assert cfg["issue_filter"]["title_pattern"] == r"^\[bug\]"
+        assert cfg["issue_filter"]["include_labels"] == [["urgent"]]
+        assert cfg["issue_filter"]["with_title_regex"] == r"^\[bug\]"
 
 
 def test_cli_issue_title_pattern_preserves_existing_labels():
@@ -782,8 +786,8 @@ def test_cli_issue_title_pattern_preserves_existing_labels():
             ["--project-dir", project_dir,
              "--issue-title-pattern", r"^\[bug\]"]) == 0
         cfg = _read_cfg(project_dir)
-        assert cfg["issue_filter"]["labels"] == [["urgent"]]
-        assert cfg["issue_filter"]["title_pattern"] == r"^\[bug\]"
+        assert cfg["issue_filter"]["include_labels"] == [["urgent"]]
+        assert cfg["issue_filter"]["with_title_regex"] == r"^\[bug\]"
 
 
 # ==========================================================================
@@ -820,8 +824,9 @@ def test_cli_issue_exclude_labels_single():
 
 
 def test_cli_issue_exclude_labels_preserves_labels_and_pattern():
-    """Setting ONLY --issue-exclude-labels preserves an existing labels DNF and
-    title_pattern (the writer preserves unmentioned issue_filter sub-keys)."""
+    """Setting ONLY --issue-exclude-labels preserves an existing include_labels
+    DNF and with_title_regex (the writer preserves unmentioned issue_filter
+    sub-keys)."""
     with tempfile.TemporaryDirectory() as project_dir:
         assert configure.main(
             ["--project-dir", project_dir,
@@ -830,8 +835,8 @@ def test_cli_issue_exclude_labels_preserves_labels_and_pattern():
             ["--project-dir", project_dir,
              "--issue-exclude-labels", "wontfix"]) == 0
         cfg = _read_cfg(project_dir)
-        assert cfg["issue_filter"]["labels"] == [["bug"]]
-        assert cfg["issue_filter"]["title_pattern"] == r"^\[x\]"
+        assert cfg["issue_filter"]["include_labels"] == [["bug"]]
+        assert cfg["issue_filter"]["with_title_regex"] == r"^\[x\]"
         assert cfg["issue_filter"]["exclude_labels"] == ["wontfix"]
 
 
@@ -844,16 +849,39 @@ def test_cli_issue_labels_preserves_existing_exclude_labels():
         assert configure.main(
             ["--project-dir", project_dir, "--issue-labels", "bug"]) == 0
         cfg = _read_cfg(project_dir)
-        assert cfg["issue_filter"]["labels"] == [["bug"]]
+        assert cfg["issue_filter"]["include_labels"] == [["bug"]]
         assert cfg["issue_filter"]["exclude_labels"] == ["wontfix"]
+
+
+def test_cli_canonicalizes_legacy_keyed_config_on_write():
+    """COEXISTENCE: an existing config.json written with the LEGACY issue_filter
+    keys (labels/title_pattern) is canonicalized to the NEW schema-2.9.0 names
+    (include_labels/with_title_regex) when configure loads-modifies-saves it —
+    the legacy names are dropped, the user's values preserved."""
+    with tempfile.TemporaryDirectory() as project_dir:
+        os.makedirs(os.path.dirname(_cfg_path(project_dir)), exist_ok=True)
+        with open(_cfg_path(project_dir), "w") as fh:
+            json.dump({"issue_filter": {"labels": [["bug"]],
+                                        "title_pattern": r"^\[x\]"}}, fh)
+        # Modify an unrelated issue_filter sub-key; the load-modify-save must
+        # canonicalize the whole object to the new key names.
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-exclude-labels", "wontfix"]) == 0
+        cfg = _read_cfg(project_dir)
+        assert cfg["issue_filter"]["include_labels"] == [["bug"]]
+        assert cfg["issue_filter"]["with_title_regex"] == r"^\[x\]"
+        assert cfg["issue_filter"]["exclude_labels"] == ["wontfix"]
+        assert "labels" not in cfg["issue_filter"]
+        assert "title_pattern" not in cfg["issue_filter"]
 
 
 # ==========================================================================
 # Phase 2 E2E Behaviour: --describe entries carry a loop-'stage' field and the
 # catalog is ORDERED by loop stage:
 # PULL -> IMPLEMENT -> VERIFY -> GATE -> SCHEDULING -> SAFETY, with the new
-# knobs (issue_filter.labels/title_pattern, work_own_filings, features_root)
-# present under their stages.
+# knobs (issue_filter.include_labels/with_title_regex, work_own_filings,
+# features_root) present under their stages.
 # ==========================================================================
 
 def _describe(project_dir):
@@ -870,8 +898,8 @@ def test_describe_entries_carry_stage_in_loop_order():
     with tempfile.TemporaryDirectory() as project_dir:
         catalog = _describe(project_dir)
         by_key = {e["key"]: e["stage"] for e in catalog}
-        assert by_key["issue_filter.labels"] == "PULL"
-        assert by_key["issue_filter.title_pattern"] == "PULL"
+        assert by_key["issue_filter.include_labels"] == "PULL"
+        assert by_key["issue_filter.with_title_regex"] == "PULL"
         assert by_key["work_own_filings"] == "PULL"
         assert by_key["mode"] == "IMPLEMENT"
         assert by_key["implement_test_command"] == "IMPLEMENT"
