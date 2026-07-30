@@ -467,3 +467,148 @@ def test_empty_ledger_is_noop():
     assert result.final_state == "DONE", result.path
     assert caps.pr_state == [], caps.pr_state
     assert caps.closes == [], caps.closes
+
+
+# ==========================================================================
+# prior_verdicts seeding (race-breaker for verify-integrate's RECONCILE (B)
+# ladder): make_reconcile SEEDS Reconcile's OPTIONAL `prior_verdicts` slot from
+# the durable persisted `verdicts` read-product (the PREVIOUS tick's VERIFY
+# output), VERBATIM (same List-of-verdict-dicts shape), seeding [] when absent.
+# The prior_verdicts ctx slot is registered alongside acted_ledger.
+# ==========================================================================
+
+_PRIOR_VERDICTS = [
+    {"pr_ref": _PR_REF, "mergeable": "CONFLICTING", "ok": False,
+     "reasons": ["merge conflict with base"]},
+]
+
+
+class _FakeReconcile:
+    """Captures the ctx `prior_verdicts` slot make_reconcile seeds, then returns
+    a minimal empty ReconcileResult (no closed_issues / relanded), so the run
+    wrapper's _persist_reconcile_outcome is a clean no-op."""
+
+    captured = {}
+
+    def __init__(self, **kwargs):
+        pass
+
+    def run(self, ctx):
+        _FakeReconcile.captured["prior_verdicts"] = ctx.read("prior_verdicts")
+        _FakeReconcile.captured["acted_ledger"] = ctx.read("acted_ledger")
+
+        class _R:
+            writes = {"reconcile_result": vi.ReconcileResult().to_dict()}
+
+        return _R()
+
+
+def _make_reconcile_capture(state_path):
+    """Build the ctx (via _seed_context on the RECONCILE route), run
+    make_reconcile's bound wrapper against a fake Reconcile that captures the
+    seeded slots. Returns _FakeReconcile.captured."""
+    _FakeReconcile.captured = {}
+    ctx = rt._seed_context(state_path, "/tmp/j.jsonl", _RECONCILE_ROUTE)
+    restore, _caps = _patch_reconcile_seams({"merged": False, "state": "OPEN"})
+    saved_reconcile = vi.Reconcile
+    vi.Reconcile = _FakeReconcile
+    try:
+        runtime = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
+                   "source": None, "now": None,
+                   "governance": {"mode": "auto-merge"}}
+        _manifest, run = rt.make_reconcile(runtime)
+        run(ctx)
+    finally:
+        vi.Reconcile = saved_reconcile
+        restore()
+    return _FakeReconcile.captured
+
+
+def test_make_reconcile_seeds_prior_verdicts_verbatim():
+    project_dir = tempfile.mkdtemp(prefix="sched-recpv-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    ds.DurableState(state_path).save({
+        "schema_version": ds.SCHEMA_VERSION,
+        "counter": 0,
+        rt.VERDICTS_KEY: _PRIOR_VERDICTS,
+    })
+    captured = _make_reconcile_capture(state_path)
+    # The persisted verdicts are seeded VERBATIM (same shape, not reshaped).
+    assert captured["prior_verdicts"] == _PRIOR_VERDICTS, captured
+
+
+def test_make_reconcile_seeds_prior_verdicts_empty_when_absent():
+    project_dir = tempfile.mkdtemp(prefix="sched-recpvempty-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    # No VERDICTS_KEY persisted (first tick / none).
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
+    captured = _make_reconcile_capture(state_path)
+    assert captured["prior_verdicts"] == [], captured
+
+
+def test_persisted_verdicts_reads_durable_read_product():
+    project_dir = tempfile.mkdtemp(prefix="sched-pvaccessor-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    ds.DurableState(state_path).save({
+        "schema_version": ds.SCHEMA_VERSION,
+        "counter": 0,
+        rt.VERDICTS_KEY: _PRIOR_VERDICTS,
+    })
+    assert rt.persisted_verdicts(state_path) == _PRIOR_VERDICTS
+    # Absent -> [] (non-breaking default).
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
+    assert rt.persisted_verdicts(state_path) == []
+
+
+def test_seed_context_registers_prior_verdicts_when_routed():
+    project_dir = tempfile.mkdtemp(prefix="sched-recpvseed-")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(runtime_dir, exist_ok=True)
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
+    ctx = rt._seed_context(state_path, "/tmp/j.jsonl", _RECONCILE_ROUTE)
+    slots = ctx.registered_slots()
+    assert "prior_verdicts" in slots, slots
+    # Seeded EMPTY so a route reads it without a ContractError.
+    assert ctx.read("prior_verdicts") == []
+
+
+def test_seed_context_omits_prior_verdicts_when_reconcile_absent():
+    project_dir = tempfile.mkdtemp(prefix="sched-recpvnoseed-")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(runtime_dir, exist_ok=True)
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
+    ctx = rt._seed_context(state_path, "/tmp/j.jsonl", rt.DEFAULT_ROUTE)
+    assert "prior_verdicts" not in ctx.registered_slots(), \
+        ctx.registered_slots()
+
+
+def test_prior_verdicts_in_initial_slots():
+    assert "prior_verdicts" in rt._INITIAL_SLOTS, rt._INITIAL_SLOTS
+
+
+def test_reconcile_route_with_prior_verdicts_resolves_and_validates():
+    # data-readiness: RECONCILE reads acted_ledger + prior_verdicts and runs
+    # BEFORE PULL, so both must be satisfied by the initial set for build_loop.
+    restore, _caps = _patch_reconcile_seams({"merged": False, "state": "OPEN"})
+    try:
+        runtime = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
+                   "source": None, "now": None,
+                   "governance": {"mode": "auto-merge"}}
+        route, states = aw.build_loop(
+            _RECONCILE_ROUTE, rt.DEFAULT_ADAPTER_MAP, runtime,
+            start="GUARD", initial=rt._INITIAL_SLOTS)
+    finally:
+        restore()
+    assert "RECONCILE" in states, list(states)
