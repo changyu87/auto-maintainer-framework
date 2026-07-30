@@ -400,7 +400,8 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
     field (added for the onboarding walk-through) groups each knob by the loop
     state that consumes it, and the catalog is **ordered by loop stage** so the
     walk-through follows the route: `PULL` (`issue_filter.include_labels`,
-    `issue_filter.with_title_regex`, `work_own_filings`) →
+    `issue_filter.with_title_regex`, `issue_filter.exclude_labels`,
+    `work_own_filings`) →
     `IMPLEMENT` (`mode`, `implement_test_command`) →
     `VERIFY` (`features_root`) → `GATE` (`regression_command`,
     `doc_check_features_root`) → `SCHEDULING` (`heartbeat.interval_minutes`) →
