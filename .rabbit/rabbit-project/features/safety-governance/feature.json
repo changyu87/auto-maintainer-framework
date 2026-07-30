@@ -1,14 +1,14 @@
 {
   "name": "safety-governance",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/safety-governance/src/**"
   ],
   "created": "2026-06-13T03:57:44Z",
   "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
-  "tdd_state": "test-green",
-  "updated": "2026-07-27",
-  "spec_change_reason": "Add the pure helper issue_filter_apply_labels(config) -> list[str]: the labels a loop-FILED discovery issue must carry to be re-pullable by a later label-filtered PULL, namely the FIRST non-empty AND-group of the normalized issue_filter.labels (carrying one full AND-group satisfies the whole DNF), or [] when issue_filter has no labels. It reuses the existing issue_filter(config) normalizer; pure, no I/O. GOVERNANCE_SCHEMA_VERSION UNCHANGED (2.8.0) \u2014 accessor only, no new config field. Label dimension only (title_pattern is not enforced on filed-issue titles, a documented limitation). scheduling resolves it at the REPORT flush and threads it into work-intake's filing sink. The spec sub-bullet + contract accessor entry were committed in cb35896; this cycle implements the code+tests and re-anchors the housekeep doc-baseline floor 454->468 for the legitimate spec growth.",
-  "spec_no_change_reason": "spec for issue_filter exclude_labels + --issue-exclude-labels already committed in 84958b5 prior to this test-write cycle"
+  "tdd_state": "impl",
+  "updated": "2026-07-30",
+  "spec_change_reason": "Rename the issue_filter config fields (labels -> include_labels, title_pattern -> with_title_regex; exclude_labels unchanged) and bump GOVERNANCE_SCHEMA_VERSION 2.8.0 -> 2.9.0, with a COEXISTENCE loader: load_config + the issue_filter(config) normalizer read the new keys with the legacy names as a fallback (include_labels else labels; with_title_regex else title_pattern) and canonicalize the LOADED config to the new names, so an existing old-keyed config.json keeps working. The matcher DTO returned by issue_filter(config) keeps its consumer-facing shape (labels/title_pattern/exclude_labels) unchanged, so scheduling/work-intake are untouched. DEFAULT_GOVERNANCE.heartbeat.interval_minutes flips 3 -> 10 (the ship-as-is cadence). configure.py keeps its CLI flag names (--issue-labels/--issue-title-pattern/--issue-exclude-labels) but writes the new config field names; validation error messages reference the new names. Re-anchors the housekeep doc-baseline floor 486 -> 505 for the legitimate spec growth (coexistence documentation).",
+  "spec_no_change_reason": "spec 0.15.0 (config schema 2.9.0: issue_filter field rename + coexistence + interval-10) already committed prior to this test-write cycle"
 }

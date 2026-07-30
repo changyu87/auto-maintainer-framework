@@ -43,11 +43,14 @@ Knobs:
   - ``--work-own-filings`` is the §3.11.5 loopback toggle: a bool
     (true/false, also 1/0, yes/no, case-insensitive); an unparseable value
     raises ValueError.
-  - ``--issue-labels`` is the ``issue_filter.labels`` DNF in compact syntax
-    (comma = AND within a group, semicolon = OR between groups); one of
-    {none, null, ""} clears it to ``[]``. Validated + canonicalized through
-    safety_governance's ``issue_filter`` normalizer before the write.
-  - ``--issue-title-pattern`` is the ``issue_filter.title_pattern`` regex; one
+  - ``--issue-labels`` writes the ``issue_filter.include_labels`` DNF in compact
+    syntax (comma = AND within a group, semicolon = OR between groups); one of
+    {none, null, ""} clears it to ``[]``. The FLAG name is retained for
+    back-compat; the config field was RENAMED in schema 2.9.0. Validated +
+    canonicalized through safety_governance's ``issue_filter`` normalizer before
+    the write.
+  - ``--issue-title-pattern`` writes the ``issue_filter.with_title_regex`` regex
+    (flag name retained for back-compat; field renamed in schema 2.9.0); one
     of {none, null, ""} clears it to null. It must compile as a regex
     (validated via the same ``issue_filter`` normalizer).
   - ``--issue-exclude-labels`` is the ``issue_filter.exclude_labels`` flat OR of
@@ -347,24 +350,31 @@ def configure(project_dir, *, mode=None, per_day_tokens=_UNSET,
     if (issue_labels is not _UNSET or issue_title_pattern is not _UNSET
             or issue_exclude_labels is not _UNSET):
         # Preserve unmentioned issue_filter sub-keys: start from the current
-        # (backfilled) issue_filter and override only what was mentioned.
+        # (backfilled, already canonicalized to the schema-2.9.0 keys by
+        # load_config) issue_filter and override only what was mentioned.
         existing = cfg.get("issue_filter") or {}
         candidate_labels = (issue_labels if issue_labels is not _UNSET
-                            else existing.get("labels", []))
+                            else existing.get("include_labels", []))
         candidate_pattern = (issue_title_pattern
                             if issue_title_pattern is not _UNSET
-                            else existing.get("title_pattern"))
+                            else existing.get("with_title_regex"))
         candidate_exclude = (issue_exclude_labels
                             if issue_exclude_labels is not _UNSET
                             else existing.get("exclude_labels", []))
         # Validate + canonicalize THROUGH this feature's reader normalizer (the
         # writer owns no validation the reader does not); a bad label/group/
-        # pattern/exclude label raises ValueError -> non-zero exit, no partial
-        # write.
-        cfg["issue_filter"] = sg.issue_filter(
-            {"issue_filter": {"labels": candidate_labels,
-                              "title_pattern": candidate_pattern,
+        # regex/exclude label raises ValueError -> non-zero exit, no partial
+        # write. The normalizer returns the consumer DTO (labels/title_pattern/
+        # exclude_labels); write config.json with the schema-2.9.0 field names.
+        matcher = sg.issue_filter(
+            {"issue_filter": {"include_labels": candidate_labels,
+                              "with_title_regex": candidate_pattern,
                               "exclude_labels": candidate_exclude}})
+        cfg["issue_filter"] = {
+            "include_labels": matcher["labels"],
+            "with_title_regex": matcher["title_pattern"],
+            "exclude_labels": matcher["exclude_labels"],
+        }
 
     path = _config_path(project_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -386,25 +396,25 @@ def _field_catalog(project_dir):
     return [
         # ---- PULL (work-intake): which issues, and the loopback toggle. ----
         {
-            "key": "issue_filter.labels",
+            "key": "issue_filter.include_labels",
             "label": "Issue label filter",
             "controls": "Which open issues PULL pulls, by label (DNF: "
                         "comma = AND within a group, semicolon = OR between "
                         "groups); empty = no label filter.",
-            "default": defaults["issue_filter"]["labels"],
-            "current": current["issue_filter"]["labels"],
+            "default": defaults["issue_filter"]["include_labels"],
+            "current": current["issue_filter"]["include_labels"],
             "type": "dnf_labels",
             "validator": "compact DNF 'a,b;c' (comma=AND, semicolon=OR), "
                          "or none/null to clear",
             "stage": "PULL",
         },
         {
-            "key": "issue_filter.title_pattern",
+            "key": "issue_filter.with_title_regex",
             "label": "Issue title pattern",
             "controls": "A regex an issue's title must match (post-fetch); "
                         "null = no title filter.",
-            "default": defaults["issue_filter"]["title_pattern"],
-            "current": current["issue_filter"]["title_pattern"],
+            "default": defaults["issue_filter"]["with_title_regex"],
+            "current": current["issue_filter"]["with_title_regex"],
             "type": "str_or_null",
             "validator": "a compilable regex string, or none/null to clear",
             "stage": "PULL",
@@ -587,13 +597,14 @@ def main(argv=None):
     parser.add_argument(
         "--issue-labels",
         default=None,
-        help="issue_filter.labels DNF: compact 'a,b;c' (comma=AND within a "
-             "group, semicolon=OR between groups), or none/null to clear",
+        help="issue_filter.include_labels DNF: compact 'a,b;c' (comma=AND "
+             "within a group, semicolon=OR between groups), or none/null to "
+             "clear",
     )
     parser.add_argument(
         "--issue-title-pattern",
         default=None,
-        help="issue_filter.title_pattern: a compilable regex an issue title "
+        help="issue_filter.with_title_regex: a compilable regex an issue title "
              "must match, or none/null to clear",
     )
     parser.add_argument(
