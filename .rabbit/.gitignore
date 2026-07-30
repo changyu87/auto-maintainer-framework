@@ -10,3 +10,4 @@ impl-suggestion-*.json
 .rabbit-update-restart-needed
 __pycache__/
 *.pyc
+.pytest_cache/

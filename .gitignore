@@ -18,3 +18,4 @@ __pycache__/
 # lock). Root-anchored (leading /) so it does NOT match the tracked vendored
 # .rabbit/.claude/ tooling (Strategy D).
 /.claude/
+.pytest_cache/
