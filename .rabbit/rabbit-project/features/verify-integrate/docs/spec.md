@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.9.3
+version: 0.10.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
@@ -368,6 +368,16 @@ REPORT/work-intake's (contract `never`).
   `outcome == "opened"`, each carrying `{work_order_id, pr_ref, issue_ref, repo}`.
   Scheduling loads the ledger from durable state and seeds this slot; Reconcile
   never reads durable state itself.
+- a **`prior_verdicts`** slot (NEW, OPTIONAL) — the PREVIOUS tick's VERIFY
+  verdicts, a `List` of verdict dicts in the SAME shape VERIFY writes to the
+  `verdicts` slot (`{pr_ref, mergeable, ok, reasons, …}`). Scheduling's
+  `make_reconcile` seeds it from the durable persisted `verdicts` slot (the last
+  tick's VERIFY output); Reconcile never reads durable state itself. It is the
+  deterministic race-breaker for the (B) ladder (see below): a PR confirmed
+  CONFLICTING by the previous tick's VERIFY is recovered THIS tick even when the
+  live mergeability read is still `UNKNOWN`. **Absent / empty ⇒ exactly today's
+  behavior** (the (B) ladder relies solely on the live read); the slot is
+  non-breaking and back-compatible.
 - the injectable seams below; ALL GitHub/git effects run behind them so the class
   is unit-testable with fakes and touches no network in tests.
 
@@ -415,8 +425,31 @@ scheduling records it in the ledger and a later tick never re-comments.
 
 ### (B) Conflict-recovery ladder
 
-For each `opened` entry whose PR is OPEN and **CONFLICTING** (`mergeable ==
-CONFLICTING` — a sibling merged and invalidated it):
+**Conflict determination — live-preferred, prior-verdict race-breaker.** An
+`opened` entry's PR is treated as CONFLICTING (and enters the ladder below) when
+EITHER:
+- its LIVE `gh_pr_state_source` read is a settled `mergeable == CONFLICTING`
+  (today's path — always authoritative when settled), OR
+- its live read is still `UNKNOWN` after the bounded poll (poll exhausted) for a
+  still-OPEN, not-merged PR, AND the `prior_verdicts` input carries a
+  **CONFIRMED-CONFLICTING** verdict for that SAME `pr_ref` — i.e. a hard
+  `not mergeable (mergeable=CONFLICTING)` verdict, DISTINCT from a transient
+  DEFERRED verdict (`mergeability not yet determined (mergeable=UNKNOWN) —
+  deferred to a later tick`). RECONCILE runs FIRST in the route (tick-top), when
+  GitHub is most likely to still report `UNKNOWN`; the previous tick's VERIFY —
+  which ran later, once mergeability settled — already recorded the hard
+  CONFLICTING. Consulting it breaks the race so a PR confirmed CONFLICTING on
+  tick N is recovered on tick N+1 without depending on a live poll that races
+  GitHub's async mergeability computation.
+
+The **LIVE read is always preferred** when it is settled: a live `MERGEABLE`
+(the PR was fixed/rebased between ticks) is left alone and NEVER force-pushed,
+even if `prior_verdicts` recorded CONFLICTING; a live `CONFLICTING` enters the
+ladder directly. The prior-verdict fallback fires ONLY on a live `UNKNOWN`. A
+live `UNKNOWN` with NO confirmed-CONFLICTING prior verdict (deferred or absent)
+stays DEFERRED to the next tick, exactly as today.
+
+For each `opened` entry whose PR is CONFLICTING per the determination above:
 
 - **TIER 1 — deterministic rebase (no model, ~zero tokens).** In a disposable
   integration worktree (the GATE worktree helper), fetch the PR head and rebase it
@@ -482,8 +515,11 @@ relanded: [{pr_ref, issue_ref}], deduped: [{pr_ref, issue_ref, kept_pr_ref}],
 skipped: [{ref, reason}], errors: [{ref, reason}] }`. `deduped` records the
 same-issue duplicate PRs (C) closed this tick — each entry names the closed
 `pr_ref`, its `issue_ref`, and the `kept_pr_ref` that superseded it — kept SEPARATE
-from `closed_issues`/`rebased`/`relanded`. `RECONCILE_MANIFEST` reads `acted_ledger`,
-writes `reconcile_result`, emits only `OK`. `RECONCILE_RESULT_SCHEMA_VERSION` is
+from `closed_issues`/`rebased`/`relanded`. `RECONCILE_MANIFEST` reads
+`acted_ledger` and (OPTIONAL) `prior_verdicts`, writes `reconcile_result`, emits
+only `OK`. `prior_verdicts` (the previous tick's VERIFY verdicts, seeded by
+`scheduling`'s `make_reconcile`) is the (B)-ladder race-breaker — absent/empty ⇒
+today's live-read-only behavior. `RECONCILE_RESULT_SCHEMA_VERSION` is
 `1.1.0` (additive: the `deduped` list was added to the `1.0.0` shape).
 
 ## Guardrails (consumed from safety-governance)
@@ -503,6 +539,17 @@ CLEANUP → PERSIST → EXIT`.
 
 ## Invariants
 
+- **RECONCILE (B) conflict determination is live-preferred with a prior-verdict
+  race-breaker.** A settled live `mergeable` (MERGEABLE or CONFLICTING) is always
+  authoritative: live `MERGEABLE` is left alone (never force-pushed), live
+  `CONFLICTING` enters the (B) ladder. ONLY when the live read is `UNKNOWN` (poll
+  exhausted) for a still-OPEN, not-merged PR does RECONCILE consult the OPTIONAL
+  `prior_verdicts` input, treating the PR as CONFLICTING iff the previous tick's
+  verdict for that `pr_ref` was a CONFIRMED-CONFLICTING verdict (a hard
+  `mergeable=CONFLICTING`, DISTINCT from a transient DEFERRED/`UNKNOWN` verdict).
+  `prior_verdicts` absent/empty ⇒ exactly the prior live-read-only behavior
+  (non-breaking). This makes a PR confirmed CONFLICTING on tick N deterministically
+  recovered on tick N+1 without depending on a live poll that races GitHub.
 - VERIFY is read-only w.r.t. GitHub (no GitHub writes); INTEGRATE merges ONLY at
   `auto-merge` and ONLY a PR that is `ok` AND passes guardrails.
 - REVIEW's findings are scoped to the PR's OWN diff (logical/functional/quality
