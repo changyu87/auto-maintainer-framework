@@ -63,9 +63,15 @@ Knobs:
   - ``--preflight`` is a READ-ONLY environment probe emitting JSON
     ``{gh_authenticated, gh_account, resolved_repo, config_exists}`` for the
     guided ``--setup`` onboarding; it shells ``gh`` and writes nothing.
-  - ``--show`` (or no mutating flag) prints the current config and writes nothing.
+  - ``--show`` (or no mutating flag) prints the current config and writes
+    nothing — BY DEFAULT as the human-readable ``render_config`` view (grouped,
+    labeled, loop-stage-ordered). The post-write echo uses the same render.
+  - ``--json`` is the machine-first escape hatch: ``--show`` and the post-write
+    echo emit the raw ``json.dumps`` instead of the human render.
+    ``--describe`` / ``--preflight`` ALWAYS emit their JSON catalogs and are
+    UNAFFECTED by ``--json``.
 
-Version: 0.5.0
+Version: 0.6.0
 Owner: rabbit-workflow team
 Deprecation criterion: Superseded when the central-config schema
   (safety_governance.GOVERNANCE_SCHEMA_VERSION) reaches a breaking major
@@ -420,6 +426,19 @@ def _field_catalog(project_dir):
             "stage": "PULL",
         },
         {
+            "key": "issue_filter.exclude_labels",
+            "label": "Issue exclude labels",
+            "controls": "A flat list of labels; an open issue carrying ANY of "
+                        "them is DROPPED by PULL (a negative filter); "
+                        "empty = no exclusion.",
+            "default": defaults["issue_filter"]["exclude_labels"],
+            "current": current["issue_filter"]["exclude_labels"],
+            "type": "flat_labels",
+            "validator": "a comma-separated flat list of labels, "
+                         "or none/null to clear",
+            "stage": "PULL",
+        },
+        {
             "key": "work_own_filings",
             "label": "Work own filings",
             "controls": "Whether the loop works its OWN filings (the loopback "
@@ -528,6 +547,90 @@ def _field_catalog(project_dir):
     ]
 
 
+_EM_DASH = "—"
+
+
+def _config_get(config, dotted_key):
+    """Read a (possibly dotted) key off the config dict, returning None if any
+    segment is missing."""
+    node = config
+    for seg in dotted_key.split("."):
+        if not isinstance(node, dict) or seg not in node:
+            return None
+        node = node[seg]
+    return node
+
+
+def _render_dnf(dnf):
+    """Render an issue_filter include_labels DNF (List[List[str]]) as a readable
+    string: [] -> '— (pull all)', a single AND-group ['a','b'] -> '(a AND b)',
+    multiple groups -> '(a AND b) OR (c)'."""
+    if not dnf:
+        return f"{_EM_DASH} (pull all)"
+    groups = ["(" + " AND ".join(group) + ")" for group in dnf]
+    return " OR ".join(groups)
+
+
+def _friendly_value(key, config):
+    """The friendly, human-readable rendering of a single catalog knob's value,
+    read straight off the passed config dict (a pure function of config)."""
+    value = _config_get(config, key)
+    if key == "heartbeat.interval_minutes":
+        return f"{value} min"
+    if key == "budget.per_day_tokens":
+        tz = _config_get(config, "budget.window_tz")
+        if value is None:
+            return f"unlimited (window: {tz})"
+        return f"{value} tokens/day (window: {tz})"
+    if key == "work_own_filings":
+        return "on" if value else "off"
+    if key == "issue_filter.include_labels":
+        return _render_dnf(value or [])
+    if key == "issue_filter.exclude_labels":
+        return ", ".join(value) if value else _EM_DASH
+    if key in ("regression_command", "doc_check_features_root",
+               "features_root", "implement_test_command",
+               "issue_filter.with_title_regex"):
+        return value if value else _EM_DASH
+    # mode, backoff.threshold and any other plain scalar render as-is.
+    return str(value)
+
+
+def render_config(config, project_dir=None):
+    """The DERIVED HUMAN VIEW of a loaded config (machine-first §1: config.json is
+    the machine artifact; this render is its derived human view — mirrors
+    scheduling/status.py's status_data()/render_status() split).
+
+    A PURE, DETERMINISTIC formatter: same config in => byte-identical text out; no
+    I/O beyond reading the _field_catalog labels/order, no wall-clock, no model,
+    and it does not mutate config. It groups the catalog knobs by their loop
+    `stage`, PRESERVING the catalog's loop-stage order (PULL -> IMPLEMENT ->
+    VERIFY -> GATE -> SCHEDULING -> SAFETY), so the human view can never drift
+    from the knob catalog (the same catalog --describe emits)."""
+    catalog = _field_catalog(project_dir)
+    lines = []
+    header = f"auto-maintainer config {_EM_DASH} schema {config.get('schema_version')}"
+    lines.append(header)
+    lines.append("=" * len(header))
+    # Group knobs by stage, preserving the catalog's first-seen stage order.
+    stage_order = []
+    by_stage = {}
+    for entry in catalog:
+        stage = entry["stage"]
+        if stage not in by_stage:
+            by_stage[stage] = []
+            stage_order.append(stage)
+        by_stage[stage].append(entry)
+    for stage in stage_order:
+        lines.append("")
+        lines.append(f"{stage}")
+        lines.append("-" * len(stage))
+        for entry in by_stage[stage]:
+            friendly = _friendly_value(entry["key"], config)
+            lines.append(f"  {entry['label']}: {friendly}")
+    return "\n".join(lines) + "\n"
+
+
 def _resolve_project_dir(explicit):
     return explicit or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
@@ -630,6 +733,13 @@ def main(argv=None):
         action="store_true",
         help="print the current config without changing it",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="machine-first escape hatch: --show and the post-write echo emit "
+             "the raw JSON instead of the human render (--describe/--preflight "
+             "always emit JSON, unaffected by this flag)",
+    )
     args = parser.parse_args(argv)
     project_dir = _resolve_project_dir(args.project_dir)
 
@@ -657,8 +767,13 @@ def main(argv=None):
     )
 
     # --show, or no mutating flags at all: print the current config and stop.
+    # By DEFAULT this is the human render; --json re-selects the raw JSON.
     if args.show or not mutating:
-        print(json.dumps(sg.load_config(project_dir), indent=2, sort_keys=True))
+        current = sg.load_config(project_dir)
+        if args.json:
+            print(json.dumps(current, indent=2, sort_keys=True))
+        else:
+            print(render_config(current, project_dir))
         return 0
 
     try:
@@ -706,7 +821,11 @@ def main(argv=None):
         print(f"configure: error: {exc}", file=sys.stderr)
         return 2
 
-    print(json.dumps(cfg, indent=2, sort_keys=True))
+    # Post-write echo: the human render by default, raw JSON under --json.
+    if args.json:
+        print(json.dumps(cfg, indent=2, sort_keys=True))
+    else:
+        print(render_config(cfg, project_dir))
     return 0
 
 

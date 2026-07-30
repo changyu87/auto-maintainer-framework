@@ -50,6 +50,7 @@ if _FSM_SRC not in sys.path:
     sys.path.insert(0, _FSM_SRC)
 
 import configure  # noqa: E402
+import safety_governance as sg  # noqa: E402
 
 _SKILL_PATH = os.path.join(
     _FEATURE_DIR, "ship", "skills", "configure", "SKILL.md")
@@ -462,6 +463,7 @@ def test_describe_catalog_is_complete_one_entry_per_knob():
             "work_own_filings",
             "issue_filter.include_labels",
             "issue_filter.with_title_regex",
+            "issue_filter.exclude_labels",
         }
         assert set(keys) == expected_keys, (
             f"catalog knobs {set(keys)} != expected {expected_keys}")
@@ -900,6 +902,7 @@ def test_describe_entries_carry_stage_in_loop_order():
         by_key = {e["key"]: e["stage"] for e in catalog}
         assert by_key["issue_filter.include_labels"] == "PULL"
         assert by_key["issue_filter.with_title_regex"] == "PULL"
+        assert by_key["issue_filter.exclude_labels"] == "PULL"
         assert by_key["work_own_filings"] == "PULL"
         assert by_key["mode"] == "IMPLEMENT"
         assert by_key["implement_test_command"] == "IMPLEMENT"
@@ -1047,3 +1050,291 @@ def test_skill_body_documents_phase2_flags():
         assert flag in body, f"skill body must document {flag}"
     assert "stage" in body, (
         "skill body must group the walk-through by the catalog 'stage' field")
+
+
+# ==========================================================================
+# E2E Behaviour: render_config(config) is the DERIVED HUMAN VIEW of a loaded
+# config — a pure, deterministic formatter. Same config in => byte-identical
+# text out, and the passed config dict is NOT mutated.
+# ==========================================================================
+
+def test_render_config_is_pure_and_deterministic():
+    with tempfile.TemporaryDirectory() as project_dir:
+        cfg = sg.load_config(project_dir)
+        before = json.loads(json.dumps(cfg))
+        out1 = configure.render_config(cfg, project_dir)
+        out2 = configure.render_config(cfg, project_dir)
+        assert isinstance(out1, str)
+        assert out1 == out2, "same config must render byte-identical text"
+        # Pure: the input config is not mutated.
+        assert cfg == before, "render_config must not mutate its input config"
+
+
+# ==========================================================================
+# E2E Behaviour: render_config produces a grouped, labeled, loop-stage-ordered
+# plain-text view with a schema-version header and the documented friendly value
+# formatting (interval '<n> min', null budget 'unlimited' + window, on/off
+# booleans, DNF readable, em dash for null/empty fields).
+# ==========================================================================
+
+def test_render_config_friendly_renderings():
+    with tempfile.TemporaryDirectory() as project_dir:
+        # Configure a representative config: a single-AND-group include_labels
+        # DNF, default interval 10, default null budget, default work_own_filings
+        # true, default null regression_command.
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-labels", "dci-team marketplace"]) == 0
+        cfg = sg.load_config(project_dir)
+        text = configure.render_config(cfg, project_dir)
+        # Schema-version header.
+        assert "schema 2.9.0" in text
+        assert "auto-maintainer config" in text
+        # Loop-stage groups appear in order.
+        assert "PULL" in text
+        assert text.index("PULL") < text.index("IMPLEMENT") < text.index(
+            "VERIFY") < text.index("GATE") < text.index(
+            "SCHEDULING") < text.index("SAFETY")
+        # Labels from the catalog are used (no drift).
+        assert "Heartbeat interval" in text
+        # Friendly value formatting.
+        assert "10 min" in text
+        assert "unlimited" in text  # null budget ceiling
+        assert "on" in text  # work_own_filings True
+        assert "(dci-team marketplace)" in text  # include_labels DNF
+        assert "—" in text  # em dash for a null field (regression_command)
+
+
+# ==========================================================================
+# E2E Behaviour: render_config renders a multi-group include_labels DNF as
+# '(A AND B) OR (C)', and the empty DNF as '— (pull all)'.
+# ==========================================================================
+
+def test_render_config_dnf_multigroup_and_empty():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-labels", "bug,triaged;urgent"]) == 0
+        text = configure.render_config(sg.load_config(project_dir), project_dir)
+        assert "(bug AND triaged) OR (urgent)" in text
+
+    with tempfile.TemporaryDirectory() as project_dir:
+        text = configure.render_config(sg.load_config(project_dir), project_dir)
+        assert "— (pull all)" in text
+
+
+# ==========================================================================
+# E2E Behaviour: `--show` (default, no --json) prints the HUMAN RENDER — NOT
+# raw JSON — and writes nothing.
+# ==========================================================================
+
+def test_cli_show_prints_human_render_by_default():
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = configure.main(["--project-dir", project_dir, "--show"])
+        assert rc == 0
+        out = buf.getvalue()
+        # The human render carries the header and is NOT valid JSON.
+        assert "auto-maintainer config" in out
+        assert "schema 2.9.0" in out
+        raised = False
+        try:
+            json.loads(out)
+        except ValueError:
+            raised = True
+        assert raised, "default --show must print the human render, not JSON"
+        assert not os.path.exists(_cfg_path(project_dir))
+
+
+# ==========================================================================
+# E2E Behaviour: `--show --json` is the machine-first escape hatch — it prints
+# valid JSON equal to load_config(project_dir) and writes nothing.
+# ==========================================================================
+
+def test_cli_show_json_prints_raw_json():
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = configure.main(
+                ["--project-dir", project_dir, "--show", "--json"])
+        assert rc == 0
+        parsed = json.loads(buf.getvalue())
+        assert parsed == sg.load_config(project_dir)
+        assert not os.path.exists(_cfg_path(project_dir))
+
+
+# ==========================================================================
+# E2E Behaviour: no mutating flag + --json also emits raw JSON (the escape
+# hatch works without --show).
+# ==========================================================================
+
+def test_cli_no_flags_json_prints_raw_json():
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = configure.main(["--project-dir", project_dir, "--json"])
+        assert rc == 0
+        parsed = json.loads(buf.getvalue())
+        assert parsed == sg.load_config(project_dir)
+        assert not os.path.exists(_cfg_path(project_dir))
+
+
+# ==========================================================================
+# E2E Behaviour: the post-write config echo is the human render by DEFAULT and
+# raw JSON under --json.
+# ==========================================================================
+
+def test_cli_post_write_echo_human_by_default():
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = configure.main(
+                ["--project-dir", project_dir, "--mode", "propose"])
+        assert rc == 0
+        out = buf.getvalue()
+        assert "auto-maintainer config" in out
+        raised = False
+        try:
+            json.loads(out)
+        except ValueError:
+            raised = True
+        assert raised, "post-write echo must be the human render by default"
+
+
+def test_cli_post_write_echo_json_under_flag():
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = configure.main(
+                ["--project-dir", project_dir, "--mode", "propose", "--json"])
+        assert rc == 0
+        parsed = json.loads(buf.getvalue())
+        assert parsed["mode"] == "propose"
+
+
+# ==========================================================================
+# E2E Behaviour: --describe and --preflight ALWAYS emit their JSON catalogs and
+# are UNAFFECTED by --json (machine-first by design, never a human render).
+# ==========================================================================
+
+def test_describe_unaffected_by_json_flag():
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = configure.main(
+                ["--project-dir", project_dir, "--describe", "--json"])
+        assert rc == 0
+        catalog = json.loads(buf.getvalue())
+        assert isinstance(catalog, list) and catalog
+
+
+def test_preflight_unaffected_by_json_flag():
+    import io
+    import contextlib
+    with tempfile.TemporaryDirectory() as project_dir:
+        original = configure._DEFAULT_RUNNER
+        configure._DEFAULT_RUNNER = _fake_runner(
+            auth_rc=1, auth_out="", repo_rc=1, repo_out="")
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = configure.main(
+                    ["--project-dir", project_dir, "--preflight", "--json"])
+            assert rc == 0
+            result = json.loads(buf.getvalue())
+            assert set(result.keys()) == {
+                "gh_authenticated", "gh_account",
+                "resolved_repo", "config_exists"}
+        finally:
+            configure._DEFAULT_RUNNER = original
+
+
+# ==========================================================================
+# E2E Behaviour: the --describe field catalog now carries an
+# issue_filter.exclude_labels entry at the PULL stage, positioned AFTER
+# issue_filter.with_title_regex and BEFORE work_own_filings (matching the spec's
+# PULL order include_labels -> with_title_regex -> exclude_labels ->
+# work_own_filings), so --describe / --setup / render_config all surface it.
+# ==========================================================================
+
+def test_describe_carries_exclude_labels_pull_entry_in_position():
+    with tempfile.TemporaryDirectory() as project_dir:
+        catalog = _describe(project_dir)
+        keys = [entry["key"] for entry in catalog]
+        assert "issue_filter.exclude_labels" in keys, (
+            "catalog must carry an issue_filter.exclude_labels entry")
+        entry = next(
+            e for e in catalog if e["key"] == "issue_filter.exclude_labels")
+        assert entry["stage"] == "PULL"
+        assert entry["label"] == "Issue exclude labels"
+        # Position: after with_title_regex, before work_own_filings.
+        i_exclude = keys.index("issue_filter.exclude_labels")
+        i_title = keys.index("issue_filter.with_title_regex")
+        i_own = keys.index("work_own_filings")
+        assert i_title < i_exclude < i_own, (
+            f"exclude_labels must sit between with_title_regex and "
+            f"work_own_filings; got order {keys}")
+        # The default is the canonical empty flat list.
+        assert entry["default"] == []
+
+
+# ==========================================================================
+# E2E Behaviour: the exclude_labels catalog entry's `current` reflects a
+# configured value read from the loaded config (same nested-get the other
+# issue_filter.* entries use).
+# ==========================================================================
+
+def test_describe_exclude_labels_current_reflects_config():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-exclude-labels", "auto-maintainer-rejected"]) == 0
+        catalog = _describe(project_dir)
+        entry = next(
+            e for e in catalog if e["key"] == "issue_filter.exclude_labels")
+        assert entry["current"] == ["auto-maintainer-rejected"]
+
+
+# ==========================================================================
+# E2E Behaviour: render_config surfaces the exclude_labels knob under PULL,
+# rendering a configured flat list as a comma list and an em dash when empty
+# (the friendly formatting the spec documents for exclude_labels).
+# ==========================================================================
+
+def test_render_config_shows_exclude_labels_when_configured():
+    with tempfile.TemporaryDirectory() as project_dir:
+        assert configure.main(
+            ["--project-dir", project_dir,
+             "--issue-exclude-labels",
+             "auto-maintainer-rejected,wontfix"]) == 0
+        text = configure.render_config(
+            sg.load_config(project_dir), project_dir)
+        assert "Issue exclude labels" in text
+        assert "auto-maintainer-rejected, wontfix" in text
+
+
+def test_render_config_shows_exclude_labels_em_dash_when_empty():
+    with tempfile.TemporaryDirectory() as project_dir:
+        text = configure.render_config(
+            sg.load_config(project_dir), project_dir)
+        assert "Issue exclude labels" in text
+        # The default empty exclude_labels renders as an em dash on its line.
+        for line in text.splitlines():
+            if line.strip().startswith("Issue exclude labels:"):
+                assert line.strip() == "Issue exclude labels: —"
+                break
+        else:  # pragma: no cover - the label must appear
+            raise AssertionError("Issue exclude labels line not found")
