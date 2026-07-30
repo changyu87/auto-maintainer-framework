@@ -1,5 +1,22 @@
 # scheduling — Changelog
 
+## feature 0.42.0 — 2026-07-30
+
+- **RECONCILE `prior_verdicts` race-breaker.** `make_reconcile`'s bound run
+  wrapper now ALSO seeds `Reconcile`'s OPTIONAL `prior_verdicts` ctx slot from the
+  durable persisted `verdicts` read-product (the PREVIOUS tick's VERIFY output),
+  written VERBATIM (the same List of verdict dicts VERIFY wrote — `{pr_ref,
+  mergeable, ok, reasons, …}` — not reshaped), seeding `[]` when absent (first
+  tick / none, non-breaking). A new `persisted_verdicts(state_path)` accessor
+  reads it (mirroring `persisted_acted_ledger`). `_seed_context` registers + seeds
+  `prior_verdicts` EMPTY alongside `acted_ledger` when RECONCILE is routed, and
+  `prior_verdicts` is added to `_INITIAL_SLOTS` (RECONCILE reads it before PULL and
+  nothing produces it on the route). This lets verify-integrate's `Reconcile` fall
+  back to the prior tick's confirmed-CONFLICTING verdict when a loop PR's LIVE
+  mergeability is still `UNKNOWN` at tick-top, so a conflicting loop PR no longer
+  lingers across ticks. scheduling only SEEDS the slot; verify-integrate owns the
+  Reconcile logic that consumes it. Seeding `[]` reproduces prior behavior exactly.
+
 ## feature 0.41.0 — 2026-07-24
 
 - **`/auto-maintainer:status` shows the heartbeat interval.** `status_data()`

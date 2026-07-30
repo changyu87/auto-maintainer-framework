@@ -743,6 +743,14 @@ def make_reconcile(runtime):
         state_path = ctx.read("state_path")
         seed = _reconcile_ledger_seed(persisted_acted_ledger(state_path))
         ctx.write("acted_ledger", seed)
+        # SEED Reconcile's OPTIONAL prior_verdicts slot from the durable persisted
+        # verdicts read-product (the PREVIOUS tick's VERIFY output), VERBATIM (the
+        # same List of verdict dicts VERIFY wrote, NOT reshaped); [] when absent
+        # (first tick / none). This is the race-breaker for verify-integrate's
+        # RECONCILE (B) ladder: a loop PR whose LIVE mergeability is still UNKNOWN
+        # at tick-top falls back to the prior tick's confirmed-CONFLICTING verdict.
+        # Seeding [] reproduces exactly the prior behavior (non-breaking).
+        ctx.write("prior_verdicts", persisted_verdicts(state_path) or [])
         result = reconcile.run(ctx)
         recon = vi.ReconcileResult.from_dict(result.writes["reconcile_result"])
         _persist_reconcile_outcome(state_path, seed, recon)
@@ -846,9 +854,12 @@ _VOCAB = fc.SignalVocabulary([
 # because RECONCILE READS it and RECONCILE runs BEFORE PULL (nothing produces it
 # on the route). make_reconcile SEEDS the slot from the durable ACTED_LEDGER_KEY
 # opened entries at run time; _seed_context registers + seeds it empty only when
-# RECONCILE is routed, so a route without RECONCILE never reads it.
+# RECONCILE is routed, so a route without RECONCILE never reads it. prior_verdicts
+# (RECONCILE's OPTIONAL input, the previous tick's VERIFY verdicts) is likewise in
+# the `initial` set: RECONCILE READS it before PULL and nothing produces it on the
+# route; make_reconcile SEEDS it from the durable persisted verdicts at run time.
 _INITIAL_SLOTS = ["state_path", "journal_path", "counter", "tick_outcome",
-                  "cross_cutting_risk", "acted_ledger"]
+                  "cross_cutting_risk", "acted_ledger", "prior_verdicts"]
 
 
 def _seed_context(state_path, journal_path, route):
@@ -967,6 +978,12 @@ def _seed_context(state_path, journal_path, route):
     if "RECONCILE" in route["states"]:
         ctx.register_slot("acted_ledger", {"type": "array"}, version="1.0.0")
         ctx.write("acted_ledger", [])
+        # prior_verdicts: RECONCILE's OPTIONAL input (the previous tick's VERIFY
+        # verdicts), which make_reconcile SEEDS from the durable persisted verdicts
+        # at run time. Registered + seeded EMPTY here (like acted_ledger) so a route
+        # reads it without a ContractError; seeding [] is the non-breaking default.
+        ctx.register_slot("prior_verdicts", {"type": "array"}, version="1.0.0")
+        ctx.write("prior_verdicts", [])
         ctx.register_slot(
             vi.RECONCILE_RESULT_SLOT["name"], vi.RECONCILE_RESULT_SLOT["schema"],
             version=vi.RECONCILE_RESULT_SLOT["version"])
@@ -1198,6 +1215,17 @@ def persisted_review_findings(state_path):
     produced none (no REVIEW stage). A per-tick #64 read product (FT-C)."""
     doc = ds.DurableState(state_path).load()
     return doc.get(REVIEW_FINDINGS_KEY, [])
+
+
+def persisted_verdicts(state_path):
+    """The last tick's verdicts snapshot persisted in durable state (the list of
+    Verdict dicts VERIFY wrote: {pr_ref, mergeable, ok, reasons, ...}), or [] when
+    the active route produced none (no VERIFY stage / first tick). A per-tick #64
+    read product persisted under VERDICTS_KEY. make_reconcile SEEDS Reconcile's
+    OPTIONAL `prior_verdicts` slot from this (the PREVIOUS tick's VERIFY output),
+    verbatim (not reshaped)."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(VERDICTS_KEY, [])
 
 
 def persisted_budget_state(state_path):
