@@ -560,15 +560,17 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.26.0, neutral pull-all default-config rebuild): version bumped to
-# 0.26.0 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.26.0 rebuilds the committed plugin tree so it ships the neutral shipped
-# default-config (schema 2.9.0: issue_filter pulls all with empty
-# include_labels/exclude_labels and null with_title_regex; heartbeat interval
-# 10), so the committed plugin tree is regenerated and the version bumped so the
-# marketplace serves the new content to existing installs.
+# Release (v0.27.0, stylish-configure lib re-ship): version bumped to
+# 0.27.0 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.27.0 rebuilds the committed plugin tree so it ships safety-governance
+# 0.17.0's configure.py (human-readable render_config --show view by default, a
+# new --json machine escape, and issue_filter.exclude_labels promoted into the
+# field catalog). The shipped default-config CONTENT is unchanged (still schema
+# 2.9.0, same values); this release only re-normalizes lib/configure.py (+
+# lib/safety_governance.py) and bumps the version so the marketplace serves the
+# new lib to existing installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_26_0_and_consistent():
+def test_version_bumped_to_0_27_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -580,10 +582,10 @@ def test_version_bumped_to_0_26_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.26.0", \
-            f"plugin.json version must be 0.26.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.26.0", \
-            "marketplace.json plugin entry version must be 0.26.0"
+        assert pdata.get("version") == "0.27.0", \
+            f"plugin.json version must be 0.27.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.27.0", \
+            "marketplace.json plugin entry version must be 0.27.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
