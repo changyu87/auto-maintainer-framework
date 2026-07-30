@@ -1,6 +1,6 @@
 ---
 feature: safety-governance
-version: 0.15.0
+version: 0.16.0
 owner: changyu87
 deprecation_criterion: Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).
 ---
@@ -344,7 +344,8 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
   load-modify-save of `config.json`: it loads the current config via
   `load_config` (absent keys backfilled from the defaults), applies only the
   mentioned fields, validates, writes back (pretty, `sort_keys`), and prints the
-  resulting config. It owns NO schema — the schema is this feature's
+  resulting config as the **human-readable render** (see `render_config` below),
+  unless `--json` is passed. It owns NO schema — the schema is this feature's
   (`GOVERNANCE_SCHEMA_VERSION` = 2.1.0).
   - `--mode` is validated through `permits` (the closed mode set
     {dry-run, propose, auto-merge}); an unknown mode raises `ValueError`
@@ -406,8 +407,36 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
     `SAFETY` (`budget.per_day_tokens`, `backoff.threshold`).
   - An unmentioned field is preserved unchanged.
   - Project dir resolves from `--project-dir`, else `$CLAUDE_PROJECT_DIR`, else
-    cwd. `--show` (or no mutating flag) prints the current config and writes
-    nothing.
+    cwd. `--show` (or no mutating flag) prints the current config **as the
+    human-readable render** (`render_config`, below) and writes nothing.
+  - `--json` — a **machine-first escape hatch**. When present, `--show` (and the
+    post-write config echo) emit the raw `json.dumps(load_config, indent=2,
+    sort_keys=True)` instead of the human render — the machine artifact for any
+    tooling that parses configure's output. **Default (flag absent) is the human
+    render.** `--describe` and `--preflight` are unaffected (they ALWAYS emit
+    their JSON catalogs — machine-first by design, never a human render).
+- **`render_config(config) -> str`** — the **derived human view** of a loaded
+  config (machine-first §1: the JSON is the machine artifact, this render is the
+  derived human view — mirrors `scheduling/status.py`'s `status_data()` /
+  `render_status()` split). A **pure, deterministic** formatter (no I/O, no
+  wall-clock, no model): same config in ⇒ byte-identical text out. It produces a
+  grouped, **labeled, loop-stage-ordered** plain-text view (plain ASCII / simple
+  rule lines, no emojis, terminal-readable), reusing this feature's own
+  `_field_catalog(project_dir)` as the single source of labels + loop-stage order
+  so the render never drifts from the knob catalog (the same catalog `--describe`
+  emits and `--setup` walks). Each knob renders as `<label>: <friendly-value>`
+  grouped under its loop stage (PULL → IMPLEMENT → VERIFY → GATE → SCHEDULING →
+  SAFETY). A header line shows the config `schema_version` (e.g.
+  `auto-maintainer config — schema 2.9.0`). **Friendly value formatting:**
+  heartbeat `interval_minutes` ⇒ `<n> min`; a `null` budget ceiling ⇒
+  `unlimited` (with the budget `window_tz` shown); booleans (e.g.
+  `work_own_filings`) ⇒ `on` / `off`; a `null` / empty command or root field ⇒
+  an em dash `—`; `issue_filter.include_labels` DNF ⇒ readable — a single
+  AND-group `[["dci-team marketplace"]]` ⇒ `(dci-team marketplace)`, multiple
+  groups ⇒ `(A AND B) OR (C)`, the empty `[]` ⇒ `— (pull all)`;
+  `with_title_regex` ⇒ the regex string or `—`; `exclude_labels` ⇒ a comma list
+  or `—`. Owned here (the human view of this feature's config); it decides over
+  NO new schema.
 - **`/auto-maintainer:configure` skill** (`ship/skills/configure/SKILL.md`) — a
   thin relay: it invokes `configure.py` with only the flags matching the user's
   request (the values are the user's data, passed verbatim) and reports the
@@ -462,6 +491,14 @@ hand-editing JSON, and be walked through them via the guided `--setup` onboardin
   (field catalog, now carrying a loop-`stage` per knob) and `--preflight` (the
   read-only `gh` auth + resolved-repo probe for onboarding) are BOTH read-only:
   they emit JSON and write nothing.
+- `render_config(config)` is a **pure, deterministic** function of the loaded
+  config (no I/O beyond reading the `_field_catalog` labels/order, no wall-clock,
+  no model): the same config renders byte-identical text. It is the **derived
+  human view** — `--show` and the post-write echo print it BY DEFAULT; `--json`
+  is the machine-first escape hatch that re-selects the raw `json.dumps` for
+  tooling. `--describe` / `--preflight` are unaffected by `--json` (always JSON).
+  The render never invents field names, labels, or stage order — it derives them
+  from `_field_catalog`, so it cannot drift from the knob catalog.
 - The `config.json` runtime file carries only `schema_version` + the knobs; it is
   the single central config (no scattered per-concern files). `maintainer-self`
   routing is a fixed `MAINTAINER_REPO` constant, not a config field.
