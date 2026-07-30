@@ -1,21 +1,19 @@
 {
-  "schema_version": "2.8.0",
+  "schema_version": "2.9.0",
   "mode": "auto-merge",
   "work_own_filings": true,
   "features_root": null,
   "issue_filter": {
-    "labels": [],
-    "title_pattern": null,
-    "exclude_labels": [
-      "auto-maintainer-rejected"
-    ]
+    "include_labels": [],
+    "with_title_regex": null,
+    "exclude_labels": []
   },
   "budget": {
     "per_day_tokens": null,
     "window_tz": "local"
   },
   "heartbeat": {
-    "interval_minutes": 3
+    "interval_minutes": 10
   },
   "backoff": {
     "threshold": 5

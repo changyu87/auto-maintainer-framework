@@ -1,12 +1,12 @@
 {
   "name": "packaging-config",
-  "version": "0.7.21",
+  "version": "0.7.22",
   "owner": "changyu87",
   "paths": [],
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-07-29",
-  "spec_change_reason": "Cut release v0.25.4: bump _PLUGIN_VERSION 0.25.3 -> 0.25.4 (the single-source-of-truth release constant; #355 monotonicity requires strictly-greater) and regenerate the committed plugin tree so the shipped agents/auto-maintainer-reviewer.md carries the merged verify-integrate 0.12.3 change (the REVIEW reviewer is scoped to the PR's own diff \u2014 it no longer files merge-conflict/collision findings). The regenerated tree updates only the version stamps (plugin.json + marketplace.json -> 0.25.4) and the naturally-changed agents/auto-maintainer-reviewer.md bytes; the shipped lib/ is byte-identical (its digest is unchanged), so every other shipped byte is unchanged. The version-assertion test advanced to 0.25.4 and test/release_lib_baseline.json re-anchored (version -> 0.25.4; lib_digest unchanged) so the drift + #355 monotonicity guards stay green.",
-  "spec_no_change_reason": "release rebuild; version is the build_plugin.py _PLUGIN_VERSION constant, no spec surface change"
+  "updated": "2026-07-30",
+  "spec_change_reason": "Cut release v0.26.0: edit the shipped default-config asset to schema_version 2.9.0 with a neutral pull-all issue_filter ({include_labels:[], with_title_regex:null, exclude_labels:[]}, replacing the labels/title_pattern shape that seeded exclude_labels:[auto-maintainer-rejected]) and heartbeat.interval_minutes 10 (was 3), then bump _PLUGIN_VERSION 0.25.4 -> 0.26.0 and regenerate the committed plugin tree. The regenerated tree carries the new version stamps (plugin.json + marketplace.json -> 0.26.0), the new default-config bytes, and the already-merged safety-governance normalizer change to lib/safety_governance.py + lib/configure.py (the committed tree had drifted from source until this release regenerated it). The version-assertion test advanced to 0.26.0, the shipped-default-config content assertions advanced to schema 2.9.0 + neutral issue_filter + interval 10, test/release_lib_baseline.json re-anchored (version -> 0.26.0, lib_digest -> the new committed-lib digest since the shipped lib bytes changed), and test/housekeep_doc_baseline.json re-anchored (spec.md 350 -> 353) so the drift, #355 monotonicity, and doc-no-growth guards stay green.",
+  "spec_no_change_reason": "spec v0.7.16 (shipped default-config schema 2.9.0 neutral issue_filter + interval 10 + CHANGELOG v0.26.0) already committed in the spec-update step; this cycle carries no further working-tree spec change"
 }
