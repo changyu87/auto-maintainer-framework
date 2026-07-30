@@ -1,5 +1,18 @@
 # Changelog — packaging-config
 
+## 0.26.0 — shipped default-config schema 2.9.0 + neutral defaults; release v0.26.0
+
+- **Shipped `default-config/config.json` updated to config schema 2.9.0.**
+  `issue_filter` renamed to the neutral pull-all default
+  `{"include_labels": [], "with_title_regex": null, "exclude_labels": []}` — the
+  ship-as-is `exclude_labels` is now `[]` (no longer seeds `auto-maintainer-rejected`;
+  a project re-adds it via `/configure`). `heartbeat.interval_minutes` ships at 10
+  (was 3). Aligns with safety-governance 0.15.0.
+- **Release v0.26.0 (minor — ship-as-is default behavior changed):** `_PLUGIN_VERSION`
+  0.25.4 -> 0.26.0; committed plugin tree regenerated (plugin.json + marketplace.json
+  0.26.0; the shipped default-config asset carries the new fields/defaults);
+  version-assertion test + release_lib_baseline re-anchored.
+
 ## 0.25.4 — regen release: ship the verify-integrate REVIEW-scope narrowing
 
 - Operator release step for the plugin: bump `_PLUGIN_VERSION` 0.25.3 -> 0.25.4

@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.15
+version: 0.7.16
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -89,21 +89,24 @@ auto-maintainer-framework/
 The built `plugins/auto-maintainer/` tree is **committed** (so a GitHub clone
 includes it — required by the install flow below).
 
-**Shipped default-config wiring for RECONCILE + reject exclusion (Wave-2 consumers).**
-The shipped `default-config/` data files carry the RECONCILE state + reject-label
-exclusion out of the box:
+**Shipped default-config wiring for RECONCILE + a neutral issue_filter default (Wave-2 consumers).**
+The shipped `default-config/` data files wire the RECONCILE state out of the box
+and carry a neutral (pull-all) issue_filter default:
 - `route.json` — the shipped acting route inserts `RECONCILE` between `DRAIN` and
   `PULL` (`… GUARD → DRAIN → RECONCILE → PULL → TRIAGE → …`): the `DRAIN → PULL`
   edge is repointed to `DRAIN → RECONCILE`, with a new `RECONCILE → PULL` (`OK`)
   edge, and `RECONCILE` added to the `states` list. Routing stays pure data — no
   state names another (fsm-contracts).
 - `adapter-map.json` — adds `"RECONCILE": "run_tick:make_reconcile"`.
-- `config.json` — the default `issue_filter` seeds
-  `"exclude_labels": ["auto-maintainer-rejected"]` (work-intake's `REJECTED_LABEL`)
-  so a disposed reject is excluded from PULL out of the box; `labels` /
-  `title_pattern` defaults are unchanged (empty / null = pull-all otherwise).
-  The config `schema_version` bumps additively (2.7.0 → 2.8.0) in step with
-  safety-governance's normalizer.
+- `config.json` — the shipped `issue_filter` is the **neutral ship-as-is default**
+  `{"include_labels": [], "with_title_regex": null, "exclude_labels": []}` (schema
+  2.9.0 field names, aligned with safety-governance's normalizer): empty
+  include/exclude + null title-regex = **pull-all**, no filtering out of the box. A
+  project narrows PULL (e.g. re-adds `auto-maintainer-rejected` to `exclude_labels`,
+  or sets `include_labels`) via `/configure`. `heartbeat.interval_minutes` ships at
+  **10** (the ship-as-is cadence). The config `schema_version` is **2.9.0**, in
+  step with safety-governance (the loader also accepts the legacy
+  `labels`/`title_pattern` keys during the coexistence window).
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
