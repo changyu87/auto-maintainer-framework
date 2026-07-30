@@ -263,7 +263,9 @@ def test_reconcile_result_slot_descriptor_is_versioned():
 
 def test_reconcile_manifest_declares_reads_writes_emits():
     m = vi.RECONCILE_MANIFEST
-    assert list(m.reads) == ["acted_ledger"]
+    # `prior_verdicts` (the previous tick's VERIFY verdicts) is the OPTIONAL (B)
+    # race-breaker read; scheduling's make_reconcile seeds it.
+    assert list(m.reads) == ["acted_ledger", "prior_verdicts"]
     assert list(m.writes) == ["reconcile_result"]
     assert list(m.emits) == ["OK"]
 
@@ -1115,3 +1117,206 @@ def test_reconcile_e2e_dedup_grouping_fault_isolated_returns_ok():
     # (A) is unchanged.
     assert res["closed_issues"] == [{"issue_ref": "acme/widget#5",
                                      "pr_ref": "acme/widget#7"}]
+
+
+# ==========================================================================
+# (B) conflict determination — LIVE-PREFERRED with a prior-verdict race-breaker.
+#
+# RECONCILE runs FIRST in the route (tick-top), when GitHub is most likely to
+# still report a just-invalidated loop PR as mergeable=UNKNOWN even after the
+# bounded poll. The previous tick's VERIFY — which ran later, once mergeability
+# settled — already recorded the hard CONFLICTING in the OPTIONAL `prior_verdicts`
+# input. So ONLY on a live UNKNOWN (poll exhausted) does RECONCILE consult
+# prior_verdicts and treat the PR as CONFLICTING iff its prior verdict was a
+# CONFIRMED-CONFLICTING one (a hard `mergeable=CONFLICTING`, DISTINCT from a
+# transient DEFERRED/UNKNOWN verdict). A settled live read is always authoritative:
+# live MERGEABLE is left alone (never force-pushed), live CONFLICTING enters the
+# ladder directly. prior_verdicts absent/empty => exactly today's behavior.
+# ==========================================================================
+
+def _prior_verdict(pr_ref, mergeable_raw, base=_DEFAULT_BRANCH):
+    """A previous-tick VERIFY verdict dict for `pr_ref` built via the PRODUCTION
+    `derive_verdict`, so the `reasons` strings are EXACTLY what VERIFY records: a
+    CONFLICTING mergeable yields the hard `not mergeable (mergeable=CONFLICTING)`
+    reason; an UNKNOWN yields the transient DEFERRED reason. Same shape as the
+    `verdicts` slot (the cross-feature contract scheduling seeds)."""
+    number = pr_ref.split("#")[-1]
+    url = f"https://github.com/{_REPO}/pull/{number}"
+    return vi.derive_verdict(
+        {"number": int(number), "url": url, "baseRefName": base,
+         "mergeable": mergeable_raw, "statusCheckRollup": []},
+        _DEFAULT_BRANCH).to_dict()
+
+
+def _run_with_prior(reconcile, ledger, prior_verdicts):
+    """Drive RECONCILE end-to-end with the OPTIONAL `prior_verdicts` slot seeded
+    (as scheduling's make_reconcile will), committing through fc.apply_result under
+    the manifest + signal vocab; returns reconcile_result."""
+    ctx = _fresh_ctx()
+    ctx.register_slot("prior_verdicts", {"type": "array"},
+                      version=vi.VERDICT_SCHEMA_VERSION)
+    ctx.write("acted_ledger", ledger)
+    ctx.write("prior_verdicts", prior_verdicts)
+    result = reconcile.run(ctx)
+    assert fc.validate_state_result(result).passed is True
+    assert result.signal == "OK"
+    vocab = fc.SignalVocabulary(vi.RECONCILE_SIGNALS)
+    fc.apply_result(ctx, vi.RECONCILE_MANIFEST, result, vocab)
+    return ctx.read("reconcile_result")
+
+
+# --- the pure discriminator: a hard CONFLICTING prior verdict vs everything else.
+
+def test_is_confirmed_conflicting_verdict_true_only_for_hard_conflict():
+    conflicting = _prior_verdict("acme/widget#8", "CONFLICTING")
+    deferred = _prior_verdict("acme/widget#8", "UNKNOWN")
+    mergeable = _prior_verdict("acme/widget#8", "MERGEABLE")
+    assert vi._is_confirmed_conflicting_verdict(conflicting) is True
+    # a transient DEFERRED/UNKNOWN verdict is NOT a confirmed conflict.
+    assert vi._is_confirmed_conflicting_verdict(deferred) is False
+    # a mergeable (ok) verdict is not a conflict.
+    assert vi._is_confirmed_conflicting_verdict(mergeable) is False
+    # None / empty -> False (absent prior => today's behavior).
+    assert vi._is_confirmed_conflicting_verdict(None) is False
+    assert vi._is_confirmed_conflicting_verdict({}) is False
+
+
+# --- (a) live UNKNOWN + prior CONFIRMED-CONFLICTING => (B) ladder engages.
+
+def test_reconcile_e2e_live_unknown_prior_conflicting_tier1_rebases():
+    pr = _pr_state_source({
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "UNKNOWN"}})  # poll exhausted, still UNKNOWN
+    helper = _worktree_helper({"acme/widget#8": True})
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=helper,
+                                pr_close_sink=prclose, comment_sink=comment)
+
+    res = _run_with_prior(reconcile, [_entry(number=8, issue=3)],
+                          [_prior_verdict("acme/widget#8", "CONFLICTING")])
+
+    # the prior CONFIRMED-CONFLICTING verdict breaks the race: tier-1 rebase ran.
+    assert res["rebased"] == [{"pr_ref": "acme/widget#8"}]
+    assert res["relanded"] == []
+    assert len(helper.calls) == 1
+    assert prclose.calls == []
+
+
+def test_reconcile_e2e_live_unknown_prior_conflicting_tier2_relands():
+    pr = _pr_state_source({
+        "acme/widget#9": {"state": "OPEN", "merged": False,
+                          "mergeable": "UNKNOWN"}})
+    helper = _worktree_helper({"acme/widget#9": False})  # real textual conflict
+    prclose = _recording_pr_close_sink()
+    comment = _recording_comment_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=helper,
+                                pr_close_sink=prclose, comment_sink=comment)
+
+    res = _run_with_prior(reconcile, [_entry(number=9, issue=3)],
+                          [_prior_verdict("acme/widget#9", "CONFLICTING")])
+
+    assert res["relanded"] == [{"pr_ref": "acme/widget#9",
+                                "issue_ref": "acme/widget#3"}]
+    assert res["rebased"] == []
+    assert prclose.calls == [{"pr_ref": "acme/widget#9", "repo": _REPO}]
+
+
+# --- (b) live UNKNOWN + prior DEFERRED (UNKNOWN) => left alone (not confirmed).
+
+def test_reconcile_e2e_live_unknown_prior_deferred_left_alone():
+    pr = _pr_state_source({
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "UNKNOWN"}})
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=_never_helper())
+
+    res = _run_with_prior(reconcile, [_entry(number=8, issue=3)],
+                          [_prior_verdict("acme/widget#8", "UNKNOWN")])
+
+    # a transient DEFERRED prior verdict is NOT a confirmed conflict — the entry
+    # stays DEFERRED to the next tick; the (B) ladder never engages.
+    assert res["rebased"] == []
+    assert res["relanded"] == []
+    assert res["skipped"] == []
+    assert res["errors"] == []
+
+
+# --- (c) live UNKNOWN + prior_verdicts absent/empty => left alone (back-compat).
+
+def test_reconcile_e2e_live_unknown_no_prior_verdicts_slot_left_alone():
+    # No prior_verdicts slot registered at all (the un-wired route): the optional
+    # read tolerates absence and RECONCILE reproduces exactly today's behavior.
+    pr = _pr_state_source({
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "UNKNOWN"}})
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=_never_helper())
+
+    res = _run(reconcile, [_entry(number=8, issue=3)])
+
+    assert res["rebased"] == []
+    assert res["relanded"] == []
+    assert res["errors"] == []
+
+
+def test_reconcile_e2e_live_unknown_empty_prior_verdicts_left_alone():
+    pr = _pr_state_source({
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "UNKNOWN"}})
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=_never_helper())
+
+    res = _run_with_prior(reconcile, [_entry(number=8, issue=3)], [])
+
+    assert res["rebased"] == []
+    assert res["relanded"] == []
+
+
+# --- (d) live MERGEABLE + prior CONFLICTING => NOT touched (live preferred).
+
+def test_reconcile_e2e_live_mergeable_prior_conflicting_left_alone():
+    # The PR was fixed/rebased between ticks — live says MERGEABLE. The live read
+    # is ALWAYS preferred when settled: the stale prior CONFLICTING verdict is
+    # ignored and the PR is NEVER force-pushed.
+    pr = _pr_state_source({
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "MERGEABLE"}})
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=_never_helper())
+
+    res = _run_with_prior(reconcile, [_entry(number=8, issue=3)],
+                          [_prior_verdict("acme/widget#8", "CONFLICTING")])
+
+    assert res["rebased"] == []
+    assert res["relanded"] == []
+    assert res["skipped"] == []
+    assert res["errors"] == []
+
+
+# --- (e) live CONFLICTING settled => (B) ladder directly, prior irrelevant.
+
+def test_reconcile_e2e_live_conflicting_settled_rebases_regardless_of_prior():
+    pr = _pr_state_source({
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "CONFLICTING"}})
+    helper = _worktree_helper({"acme/widget#8": True})
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=helper)
+
+    # even with a prior MERGEABLE verdict, a settled live CONFLICTING is
+    # authoritative and enters the ladder.
+    res = _run_with_prior(reconcile, [_entry(number=8, issue=3)],
+                          [_prior_verdict("acme/widget#8", "MERGEABLE")])
+
+    assert res["rebased"] == [{"pr_ref": "acme/widget#8"}]
+    assert len(helper.calls) == 1
