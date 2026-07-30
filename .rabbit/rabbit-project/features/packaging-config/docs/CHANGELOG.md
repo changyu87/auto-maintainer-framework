@@ -1,5 +1,26 @@
 # Changelog — packaging-config
 
+## 0.28.0 — re-ship the RECONCILE prior-verdict race-breaker; release v0.28.0
+
+- **Release v0.28.0 (minor — RECONCILE race-breaker reaches installs):**
+  `_PLUGIN_VERSION` 0.27.0 -> 0.28.0; committed plugin tree regenerated so the
+  shipped libs carry verify-integrate 0.10.0 + scheduling 0.42.0's sources:
+  `lib/verify_integrate.py` — RECONCILE's (B) ladder now recovers a loop PR
+  whose LIVE mergeability is still `UNKNOWN` at tick-top by consulting the
+  previous tick's confirmed-CONFLICTING VERIFY verdict, so a genuinely
+  conflicting loop PR no longer lingers; `lib/run_tick.py` — `make_reconcile`
+  seeds the new `prior_verdicts` slot from the durable persisted verdicts;
+  `lib/status.py` — the heartbeat fallback now sources `DEFAULT_GOVERNANCE` = 10.
+- **Shipped `default-config/` CONTENT unchanged** — config still schema 2.9.0
+  with the same values; this is a lib-refresh release, not a config-content
+  change. Only the affected libs and the version stamps (`plugin.json` +
+  `marketplace.json` -> 0.28.0) move.
+- Version-assertion test advanced to 0.28.0; `test/release_lib_baseline.json`
+  re-anchored (version -> 0.28.0, `lib_digest` -> the new committed-lib digest
+  since the shipped lib bytes changed); `test/housekeep_doc_baseline.json`
+  re-anchored (spec.md 364 -> 376 for the v0.28.0 release note) so the drift,
+  #355 monotonicity, and doc-no-growth guards stay green.
+
 ## 0.27.0 — re-ship the stylish-configure lib; release v0.27.0
 
 - **Release v0.27.0 (minor — new configure UX reaches installs):**
