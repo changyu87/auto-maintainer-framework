@@ -144,7 +144,7 @@ enforcement of act-skip is **deferred** to the acting doer (next milestone).
   acting adapters can consult `permits`/budget — without disturbing the existing
   runtime keys (`project_dir`/`runtime_dir`/`source`/`now`). It also READS
   `backoff.threshold` (default 5) from this config for the backoff gate, and the
-  `/start` heartbeat reads `heartbeat.interval_minutes` (default 3) for its
+  `/start` heartbeat reads `heartbeat.interval_minutes` (default 10) for its
   cadence (both owned by safety-governance, consumed here via the contract).
 - **Durable, cross-tick budget window.** A durable key `budget` stores
   `{window_key, spent_tokens}`. Each tick resolves a tz-aware `now` (the injected
@@ -216,7 +216,7 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      `mode`, `heartbeat_interval_minutes` (the configured `/start` cadence, read
      via `safety_governance.load_config` — `config["heartbeat"]["interval_minutes"]`,
      the same value `start.py`'s `heartbeat_interval_minutes()` uses; shipped
-     default 3), budget (`budget_spent`/`budget_ceiling`/`budget_window`/
+     default 10), budget (`budget_spent`/`budget_ceiling`/`budget_window`/
      `budget_paused`), the four read-product counts, `reported`
      (`filed`/`skipped`), `route` (`{source, states, chain}`), and `runtime_dir`
      — and a derived **human view `render_status(data)`** (philosophy §1: the
@@ -260,11 +260,11 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
      start; the heartbeat does not re-clear it (re-clearing each interval would
      defeat a `/stop` that lands between heartbeats). **The interval is
      config-driven** — `start.py` emits the configured `heartbeat.interval_minutes`
-     (default 3, from the central config) and the `/start` skill schedules at that The latch is cleared ONCE at
+     (default 10, from the central config) and the `/start` skill schedules at that The latch is cleared ONCE at
      start; the heartbeat does not re-clear it (re-clearing each interval would
      defeat a `/stop` that lands between heartbeats). **The interval is
      config-driven** — `start.py` emits the configured `heartbeat.interval_minutes`
-     (default 3, from the central config) and the `/start` skill schedules at that
+     (default 10, from the central config) and the `/start` skill schedules at that
      cadence. The in-session heartbeat ends with the session, but the loop is
      **durable across sessions** (§3.3.2, #31): `start.py` records a durable
      **loop-intent** marker (via `heartbeat.py`) when it clears the latch, and the
@@ -383,7 +383,7 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 
 `/auto-maintainer:start` → tick #1 pulls the repo's open issues into `work_items`
 (trace shows the count), PERSISTs them, and EXITs **IDLE**. Every
-`heartbeat.interval_minutes` (default 3) the heartbeat re-pulls the current open
+`heartbeat.interval_minutes` (default 10) the heartbeat re-pulls the current open
 issues. `/auto-maintainer:status` shows a formatted report: the emphasized
 plugin version, disposition/awaiting/mode/heartbeat-interval/budget/reported/
 read-product counts, and the active route listing (states + happy-path chain,
@@ -1373,7 +1373,7 @@ guessing.
 - Configurable **route** + **adapter-map** via the `/auto-maintainer:route` and
   `/auto-maintainer:adapter-map` CLIs — IMPLEMENTED (see "Wiring config CLIs"
   above). The tick **interval is config-driven** (`heartbeat.interval_minutes`,
-  default 3) — #17 resolved.
+  default 10) — #17 resolved.
 - System-cron scheduler backend (§3.3.1) — slice 1 is in-session heartbeat only.
 - TRIAGE/IMPLEMENT/VERIFY/INTEGRATE — the loop PULLs (read-and-idle) and, on an
   ACTING route, EXIT is now **work-driven**: it refires while actionable work

@@ -16,6 +16,16 @@
   mergeability is still `UNKNOWN` at tick-top, so a conflicting loop PR no longer
   lingers across ticks. scheduling only SEEDS the slot; verify-integrate owns the
   Reconcile logic that consumes it. Seeding `[]` reproduces prior behavior exactly.
+- **Heartbeat-default drift aligned to the shipped default (10).** The
+  `heartbeat.interval_minutes` shipped default has been `10` since the v0.26.0
+  neutral-defaults wave (`safety_governance.DEFAULT_GOVERNANCE` and
+  packaging-config's `default-config/config.json`), but scheduling's tests +
+  `status.py` fallback + spec prose still asserted the old `3`. Realigned them:
+  `status.py`'s `status_data()` fallback now sources the default from
+  `safety_governance.DEFAULT_GOVERNANCE` (single source of truth, drift-proof);
+  `start.py`'s docstring/`--print-interval` help and the spec prose say `10`; and
+  the three stale heartbeat-default tests assert `10`. No behavior change to the
+  live config path (`start.py`'s helper already read via `sg.load_config`).
 
 ## feature 0.41.0 — 2026-07-24
 

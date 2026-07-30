@@ -1162,9 +1162,10 @@ def test_start_skill_has_no_handrolled_disposition_clear():
 # cadence — never a hardcoded ~3-minute value.
 # --------------------------------------------------------------------------
 
-def test_start_print_interval_emits_default_three():
-    """`start.py --print-interval` with no project config prints the documented
-    default heartbeat interval (3) — one bare integer on stdout, exit 0."""
+def test_start_print_interval_emits_default_ten():
+    """`start.py --print-interval` with no project config prints the shipped
+    default heartbeat interval (10, from safety_governance.DEFAULT_GOVERNANCE) —
+    one bare integer on stdout, exit 0."""
     import subprocess
     project_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
     env = dict(os.environ)
@@ -1173,7 +1174,7 @@ def test_start_print_interval_emits_default_three():
         [sys.executable, os.path.join(_SRC, "start.py"), "--print-interval"],
         capture_output=True, text=True, env=env)
     assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
-    assert proc.stdout.strip() == "3", repr(proc.stdout)
+    assert proc.stdout.strip() == "10", repr(proc.stdout)
     # --print-interval runs NO tick (no disposition write, no event log).
     am_dir = os.path.join(project_dir, ".auto-maintainer")
     assert not os.path.exists(os.path.join(am_dir, "events.jsonl")), proc.stdout
@@ -1199,9 +1200,9 @@ def test_start_print_interval_reflects_configured_value():
 
 def test_start_heartbeat_interval_helper_reads_config():
     """The programmatic helper start.heartbeat_interval_minutes reads the config
-    via sg.load_config: default 3, override honored."""
+    via sg.load_config: shipped default 10, override honored."""
     default_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
-    assert sa.heartbeat_interval_minutes(default_dir) == 3
+    assert sa.heartbeat_interval_minutes(default_dir) == 10
     over_dir = tempfile.mkdtemp(prefix="scheduling-proj-")
     am_dir = os.path.join(over_dir, ".auto-maintainer")
     os.makedirs(am_dir, exist_ok=True)
