@@ -560,15 +560,15 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.25.4, verify-integrate REVIEW-scope rebuild): version bumped to
-# 0.25.4 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.25.4 rebuilds the committed plugin tree so it ships the merged
-# verify-integrate 0.12.3 change (the REVIEW reviewer is scoped to the PR's own
-# diff — it no longer files merge-conflict/collision findings), so the committed
-# plugin tree is regenerated and the version bumped so the marketplace serves the
-# new content to existing installs.
+# Release (v0.26.0, neutral pull-all default-config rebuild): version bumped to
+# 0.26.0 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.26.0 rebuilds the committed plugin tree so it ships the neutral shipped
+# default-config (schema 2.9.0: issue_filter pulls all with empty
+# include_labels/exclude_labels and null with_title_regex; heartbeat interval
+# 10), so the committed plugin tree is regenerated and the version bumped so the
+# marketplace serves the new content to existing installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_25_4_and_consistent():
+def test_version_bumped_to_0_26_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -580,10 +580,10 @@ def test_version_bumped_to_0_25_4_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.25.4", \
-            f"plugin.json version must be 0.25.4, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.25.4", \
-            "marketplace.json plugin entry version must be 0.25.4"
+        assert pdata.get("version") == "0.26.0", \
+            f"plugin.json version must be 0.26.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.26.0", \
+            "marketplace.json plugin entry version must be 0.26.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2879,7 +2879,7 @@ def test_shipped_run_tick_carries_pool_refire_and_merged_refs():
 # 2.2.0 (matching safety-governance's GOVERNANCE_SCHEMA_VERSION), and that the
 # pre-existing keys (mode/features_root/budget/heartbeat/backoff) are unchanged.
 # ---------------------------------------------------------------------------
-def test_default_config_surfaces_work_own_filings_at_schema_2_8_0():
+def test_default_config_surfaces_work_own_filings_at_schema_2_9_0():
     out_root = _build_into_temp()
     try:
         dc = os.path.join(
@@ -2887,30 +2887,29 @@ def test_default_config_surfaces_work_own_filings_at_schema_2_8_0():
         )
         with open(os.path.join(dc, "config.json"), encoding="utf-8") as fh:
             cfg = json.load(fh)
-        # schema_version bumps additively (2.7.0 -> 2.8.0) in step with
-        # safety-governance's normalizer (GOVERNANCE_SCHEMA_VERSION 2.8.0), which
-        # carries the issue_filter.exclude_labels term.
-        assert cfg.get("schema_version") == "2.8.0", \
-            f"seed config schema_version must be 2.8.0, got " \
+        # schema_version bumps additively (2.8.0 -> 2.9.0) in step with
+        # safety-governance's normalizer, which carries the neutral pull-all
+        # issue_filter shape (include_labels/with_title_regex/exclude_labels).
+        assert cfg.get("schema_version") == "2.9.0", \
+            f"seed config schema_version must be 2.9.0, got " \
             f"{cfg.get('schema_version')!r}"
         assert cfg.get("work_own_filings") is True, \
             "seed config must surface the §3.11.5 work_own_filings opt-out " \
             "(default-on true) so users can find the knob"
-        # The default issue_filter seeds exclude_labels with work-intake's
-        # REJECTED_LABEL so a disposed reject is excluded from PULL out of the
-        # box; labels/title_pattern defaults stay pull-all (empty / null).
-        assert cfg["issue_filter"]["exclude_labels"] == [
-            "auto-maintainer-rejected"], \
-            "seed issue_filter.exclude_labels must seed the reject label"
-        assert cfg["issue_filter"]["labels"] == [], \
-            "seed issue_filter.labels must stay empty (pull-all)"
-        assert cfg["issue_filter"]["title_pattern"] is None, \
-            "seed issue_filter.title_pattern must stay null (pull-all)"
+        # The default issue_filter is fully neutral (pull-all): empty
+        # include_labels, null with_title_regex, and empty exclude_labels so no
+        # label or title constrains PULL out of the box.
+        assert cfg["issue_filter"]["include_labels"] == [], \
+            "seed issue_filter.include_labels must stay empty (pull-all)"
+        assert cfg["issue_filter"]["with_title_regex"] is None, \
+            "seed issue_filter.with_title_regex must stay null (pull-all)"
+        assert cfg["issue_filter"]["exclude_labels"] == [], \
+            "seed issue_filter.exclude_labels must be empty (neutral default)"
         # the pre-existing keys must remain unchanged.
         assert cfg["mode"] == "auto-merge"
         assert cfg["features_root"] is None
         assert cfg["budget"] == {"per_day_tokens": None, "window_tz": "local"}
-        assert cfg["heartbeat"] == {"interval_minutes": 3}
+        assert cfg["heartbeat"] == {"interval_minutes": 10}
         assert cfg["backoff"] == {"threshold": 5}
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
@@ -2932,13 +2931,16 @@ def test_committed_default_config_surfaces_work_own_filings():
         "committed default-config/config.json must ship in the plugin tree"
     with open(committed, encoding="utf-8") as fh:
         cfg = json.load(fh)
-    assert cfg.get("schema_version") == "2.8.0", \
-        "committed seed config schema_version must be 2.8.0"
+    assert cfg.get("schema_version") == "2.9.0", \
+        "committed seed config schema_version must be 2.9.0"
     assert cfg.get("work_own_filings") is True, \
         "committed seed config must surface the work_own_filings opt-out"
-    assert cfg["issue_filter"]["exclude_labels"] == [
-        "auto-maintainer-rejected"], \
-        "committed seed issue_filter.exclude_labels must seed the reject label"
+    assert cfg["issue_filter"]["include_labels"] == [], \
+        "committed seed issue_filter.include_labels must stay empty (pull-all)"
+    assert cfg["issue_filter"]["with_title_regex"] is None, \
+        "committed seed issue_filter.with_title_regex must stay null (pull-all)"
+    assert cfg["issue_filter"]["exclude_labels"] == [], \
+        "committed seed issue_filter.exclude_labels must be empty (neutral)"
 
 
 # ---------------------------------------------------------------------------
