@@ -7,7 +7,7 @@
   ],
   "created": "2026-06-13T03:57:44Z",
   "deprecation_criterion": "Superseded when trust-ladder / budget enforcement moves into a different layer than a project-local central config (config.json) consulted at tick entry, or when the config schema reaches its next breaking major (3.0.0).",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-07-30",
   "spec_change_reason": "Rename the issue_filter config fields (labels -> include_labels, title_pattern -> with_title_regex; exclude_labels unchanged) and bump GOVERNANCE_SCHEMA_VERSION 2.8.0 -> 2.9.0, with a COEXISTENCE loader: load_config + the issue_filter(config) normalizer read the new keys with the legacy names as a fallback (include_labels else labels; with_title_regex else title_pattern) and canonicalize the LOADED config to the new names, so an existing old-keyed config.json keeps working. The matcher DTO returned by issue_filter(config) keeps its consumer-facing shape (labels/title_pattern/exclude_labels) unchanged, so scheduling/work-intake are untouched. DEFAULT_GOVERNANCE.heartbeat.interval_minutes flips 3 -> 10 (the ship-as-is cadence). configure.py keeps its CLI flag names (--issue-labels/--issue-title-pattern/--issue-exclude-labels) but writes the new config field names; validation error messages reference the new names. Re-anchors the housekeep doc-baseline floor 486 -> 505 for the legitimate spec growth (coexistence documentation).",
   "spec_no_change_reason": "spec already documents issue_filter.exclude_labels in the --describe catalog PULL order; this cycle only brings configure.py's _field_catalog into compliance with the already-written spec"
