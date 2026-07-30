@@ -5,6 +5,22 @@ All notable changes to this feature are recorded here. Versions follow the
 `version` field, and the central-config `schema_version`
 (`GOVERNANCE_SCHEMA_VERSION`).
 
+## schema 2.9.0 — 2026-07-24
+
+- **`issue_filter` field rename (with coexistence).** `labels` → `include_labels`
+  and `title_pattern` → `with_title_regex` (the new name states the regex
+  semantics); `exclude_labels` unchanged. The loader/normalizer reads the new
+  names but STILL accepts the legacy `labels`/`title_pattern` as a fallback and
+  canonicalizes to the new names, so an existing project `config.json` with the
+  old keys keeps working (coexistence window, spec-rules §3). `DEFAULT_GOVERNANCE`,
+  `load_config`, the `issue_filter` normalizer + `ValueError` messages, and
+  `configure.py` (writes) all use the new names; the internal matcher object
+  returned by `issue_filter(config)` keeps its consumer-facing shape (scheduling /
+  work-intake untouched). `--issue-labels` / `--issue-title-pattern` flag names are
+  retained for back-compat and now write the new fields.
+- **Ship-as-is `heartbeat.interval_minutes` default 3 → 10.**
+- `issue_filter.exclude_labels` default stays `[]` in `DEFAULT_GOVERNANCE`.
+
 ## schema 2.7.0 — 2026-07-22
 
 - **Additive `issue_filter` knob (default no-filter).** An optional filter
