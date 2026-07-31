@@ -612,3 +612,67 @@ def test_reconcile_route_with_prior_verdicts_resolves_and_validates():
     finally:
         restore()
     assert "RECONCILE" in states, list(states)
+
+
+# ==========================================================================
+# auto_merged ledger-stamp (report-once): scheduling stamps each acted-ledger
+# entry named in reconcile_result.auto_merged to a TERMINAL outcome='merged' so
+# _reconcile_ledger_seed (seeds only outcome=='opened') never re-seeds it — an
+# async auto-merge completion is surfaced in EXACTLY ONE tick's auto_merged.
+# The real Reconcile records auto_merged for EVERY merged acted_ledger PR seen;
+# a merged PR whose source issue is ALREADY CLOSED lands in auto_merged but NOT
+# closed_issues, isolating the merged-stamp path.
+# ==========================================================================
+
+def test_auto_merged_stamps_ledger_terminal_merged():
+    project_dir = tempfile.mkdtemp(prefix="sched-recautomerged-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    _seed_acted_ledger(state_path)
+    result, caps = _run(
+        project_dir, state_path, "auto-merge",
+        pr_state={"merged": True, "state": "MERGED", "mergeable": "MERGEABLE"},
+        issue_state={"state": "CLOSED"})
+    assert result.final_state == "DONE", result.path
+    # The merged PR's issue was already closed -> auto_merged captured it, but
+    # closed_issues did NOT (never re-touch a closed issue).
+    assert caps.closes == [], caps.closes
+    # The acted-ledger entry is stamped outcome='merged' (a terminal, non-'opened'
+    # outcome) so _reconcile_ledger_seed never re-seeds it.
+    ledger = rt.persisted_acted_ledger(state_path)
+    assert ledger[_WO_ID]["outcome"] == "merged", ledger
+
+
+def test_auto_merged_report_once_seed_excludes_stamped_entry():
+    """After the auto_merged stamp, _reconcile_ledger_seed (opened-only) no longer
+    includes the entry — the completion is reported in EXACTLY ONE tick."""
+    project_dir = tempfile.mkdtemp(prefix="sched-recreportonce-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    _seed_acted_ledger(state_path)
+    _run(project_dir, state_path, "auto-merge",
+         pr_state={"merged": True, "state": "MERGED", "mergeable": "MERGEABLE"},
+         issue_state={"state": "CLOSED"})
+    ledger = rt.persisted_acted_ledger(state_path)
+    seed = rt._reconcile_ledger_seed(ledger)
+    assert all(e["work_order_id"] != _WO_ID for e in seed), seed
+
+
+def test_auto_merged_with_open_issue_ends_terminal():
+    """A merged PR whose issue is still OPEN lands in BOTH auto_merged and
+    closed_issues; the entry ends TERMINAL either way (idempotent), so the
+    report-once seed still excludes it next tick."""
+    project_dir = tempfile.mkdtemp(prefix="sched-recboth-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    _seed_acted_ledger(state_path)
+    _run(project_dir, state_path, "auto-merge",
+         pr_state={"merged": True, "state": "MERGED", "mergeable": "MERGEABLE"},
+         issue_state={"state": "OPEN"})
+    ledger = rt.persisted_acted_ledger(state_path)
+    assert ledger[_WO_ID]["outcome"] in ("closed", "merged"), ledger
+    seed = rt._reconcile_ledger_seed(ledger)
+    assert all(e["work_order_id"] != _WO_ID for e in seed), seed
