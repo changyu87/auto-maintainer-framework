@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.11.1
+version: 0.11.2
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
@@ -485,6 +485,19 @@ For each `opened` entry whose PR is CONFLICTING per the determination above:
   detected but never rebased/re-landed). scheduling ALSO normalizes the seed to
   `owner/repo#N` at the source; the two together guarantee tier-1 is never
   URL-crashed.
+  **Worktree-path robustness (unique per invocation).** `reconcile_rebase_worktree`
+  MUST use a UNIQUE per-invocation worktree path (`tempfile.mkdtemp`, recognizable
+  prefix e.g. `am-reconcile-`), NOT a single fixed path. It also runs
+  `git worktree prune` (injectable runner) BEFORE `git worktree add`, and its
+  `finally` removes the per-invocation worktree. This closes a real regression: the
+  helper used a FIXED path (`/tmp/am-reconcile-integration`) cleaned only in a
+  `finally`, so a tick killed mid-rebase (an abrupt stop) orphaned that worktree and
+  then EVERY subsequent tier-1 `git worktree add <fixed>` failed — the error was
+  caught (RECONCILE is advisory) and swallowed into `reconcile_result.errors`, so
+  conflicting loop PRs were never recovered until the orphan was removed by hand. A
+  unique path per invocation also lets MULTIPLE conflicting PRs be recovered in ONE
+  tick without colliding on a shared path; a leftover is at worst a harmless
+  orphaned `/tmp` dir, never a wedge.
 - **TIER 2 — re-land fallback.** If the rebase hits a real textual conflict
   (semantic resolution is the implementer's job, not determinism — spec-rules §1),
   close the PR via the EXISTING PR-close sink and comment the source issue with the
@@ -582,6 +595,13 @@ CLEANUP → PERSIST → EXIT`.
   crashes on a URL-form `pr_ref` — closing the regression where a URL seed threw
   `int(<url>)` every tick and a CONFLICTING loop PR was detected but never
   recovered.
+- **`reconcile_rebase_worktree` uses a UNIQUE per-invocation worktree path**
+  (`tempfile.mkdtemp`, not a fixed path) and prunes dangling worktrees before
+  `git worktree add`. A tick killed mid-rebase can therefore never wedge later
+  tier-1 attempts on a leftover worktree, and multiple conflicting PRs recovered
+  in one tick never collide — closing the regression where the fixed
+  `/tmp/am-reconcile-integration` worktree, orphaned by an abrupt stop, made every
+  subsequent rebase silently error into `reconcile_result.errors`.
 - **RECONCILE records every merged acted_ledger PR in `auto_merged`** (A) — a
   pure observability record surfacing an auto-merge that GitHub completed
   asynchronously between ticks. It is recorded UNCONDITIONALLY for a MERGED PR
