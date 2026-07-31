@@ -1,5 +1,29 @@
 # Changelog — packaging-config
 
+## 0.31.0 — re-ship RECONCILE worktree-robustness + recovery observability; release v0.31.0
+
+- **Release v0.31.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.30.0 -> 0.31.0;
+  committed plugin tree regenerated so the shipped libs carry verify-integrate
+  0.11.2 + scheduling 0.45.0's sources:
+  - `lib/verify_integrate.py` — `reconcile_rebase_worktree` now uses a UNIQUE
+    per-invocation `mkdtemp` worktree + `git worktree prune` before add, so a
+    tick killed mid-rebase can never wedge later tier-1 conflict recovery on a
+    leftover worktree.
+  - `lib/run_tick.py` — `tick_end` surfaces the RECONCILE recovery outcome
+    (`rebased`/`relanded`/`reconcile_errors` counts + refs, with `>0`-only trace
+    tokens), so a silently-erroring RECONCILE is never invisible.
+- **No `_LIBS` change** — `open_pr.py` was already registered in v0.30.0; this is
+  a pure lib-refresh with no build change beyond the version bump.
+- **Shipped `default-config/` CONTENT unchanged** — config still schema 2.9.0
+  with the same values; only the two affected libs and the version stamps
+  (`plugin.json` + `marketplace.json` -> 0.31.0) move.
+- Version-assertion test advanced to 0.31.0; an e2e test added asserting the
+  committed libs carry the v0.31.0 reconcile-worktree + observability tokens;
+  `test/release_lib_baseline.json` re-anchored (version -> 0.31.0, lib_digest ->
+  the new committed-lib digest); the housekeep doc baseline re-anchored to the
+  grown spec (403 -> 415) so the drift, #355 monotonicity, and doc-size guards
+  stay green.
+
 ## 0.30.0 — re-ship the loop-convergence fixes + register open_pr lib; release v0.30.0
 
 - **Release v0.30.0 (minor — loop-convergence fixes + a new implementer lib
