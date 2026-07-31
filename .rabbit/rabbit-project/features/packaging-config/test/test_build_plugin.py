@@ -560,20 +560,20 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.28.0, RECONCILE prior-verdict race-breaker lib re-ship): version
-# bumped to 0.28.0 in BOTH plugin.json and marketplace.json, and the two are
-# consistent. v0.28.0 rebuilds the committed plugin tree so it ships the
-# verify-integrate 0.10.0 + scheduling 0.42.0 sources: lib/verify_integrate.py
-# (RECONCILE's (B) ladder recovers a loop PR whose LIVE mergeability is still
-# UNKNOWN at tick-top by consulting the previous tick's confirmed-CONFLICTING
-# VERIFY verdict), lib/run_tick.py (make_reconcile seeds the new prior_verdicts
-# slot from the durable persisted verdicts), and lib/status.py (heartbeat
-# fallback sources DEFAULT_GOVERNANCE = 10). The shipped default-config CONTENT
-# is unchanged (still schema 2.9.0, same values); this release only
-# re-normalizes the affected libs and bumps the version so the marketplace
-# serves the new lib to existing installs.
+# Release (v0.29.0, auto-merge-completion observability lib re-ship): version
+# bumped to 0.29.0 in BOTH plugin.json and marketplace.json, and the two are
+# consistent. v0.29.0 rebuilds the committed plugin tree so it ships the
+# verify-integrate 0.11.0 + scheduling 0.43.0 sources: lib/verify_integrate.py
+# (RECONCILE now records every merged acted_ledger PR in
+# reconcile_result.auto_merged, surfacing an auto-merge GitHub completed
+# asynchronously between ticks) and lib/run_tick.py (tick_end surfaces
+# auto_merged + auto_merged_refs; _persist_reconcile_outcome stamps those ledger
+# entries terminal outcome="merged" so the completion reports exactly once). The
+# shipped default-config CONTENT is unchanged (still schema 2.9.0, same values);
+# this release only re-normalizes the affected libs and bumps the version so the
+# marketplace serves the new lib to existing installs.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_28_0_and_consistent():
+def test_version_bumped_to_0_29_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -585,10 +585,10 @@ def test_version_bumped_to_0_28_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.28.0", \
-            f"plugin.json version must be 0.28.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.28.0", \
-            "marketplace.json plugin entry version must be 0.28.0"
+        assert pdata.get("version") == "0.29.0", \
+            f"plugin.json version must be 0.29.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.29.0", \
+            "marketplace.json plugin entry version must be 0.29.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
