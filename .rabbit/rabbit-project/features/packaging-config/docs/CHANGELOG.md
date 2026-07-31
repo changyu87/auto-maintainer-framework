@@ -1,5 +1,34 @@
 # Changelog — packaging-config
 
+## 0.30.0 — re-ship the loop-convergence fixes + register open_pr lib; release v0.30.0
+
+- **Release v0.30.0 (minor — loop-convergence fixes + a new implementer lib
+  reach installs):** `_PLUGIN_VERSION` 0.29.0 -> 0.30.0; committed plugin tree
+  regenerated so the shipped libs carry verify-integrate 0.11.1 + scheduling
+  0.44.0 + implement 0.11.0's sources: `lib/verify_integrate.py` — RECONCILE
+  `_pr_number` tolerates a URL-form `pr_ref` so tier-1 conflict-recovery never
+  crashes; `lib/run_tick.py` — RECONCILE seed uses canonical `owner/repo#N` refs
+  + a durable prior-verdicts snapshot that survives the fresh-tick reset, so the
+  (B) race-breaker actually recovers a CONFLICTING loop PR.
+- **Build change — register `open_pr.py` in `_LIBS`:** `build_plugin._LIBS`
+  gains `open_pr.py` (`implement/src/open_pr.py`), a pure-stdlib
+  (argparse/subprocess/sys) byte-for-byte lib exactly like `test_gate.py`, so
+  the shipped `agents/auto-maintainer-implementer.md` (v2.11.0) can invoke
+  `${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py` (its deterministic worktree-setup +
+  explicit `--base <default>` PR-open that fixes wrong-base stacking). Without
+  this registration the deployed agent's call would fail. The implementer agent
+  md re-collects via the `ship/` convention.
+- **Shipped `default-config/` CONTENT unchanged** — config still schema 2.9.0
+  with the same values; only the affected libs, the new `lib/open_pr.py`, the
+  re-collected agent md, and the version stamps (`plugin.json` +
+  `marketplace.json` -> 0.30.0) move.
+- Version-assertion test advanced to 0.30.0; ship assertions added for
+  `lib/open_pr.py` (byte-identical to `implement/src/open_pr.py`, no `.rabbit`
+  leak); `test/release_lib_baseline.json` re-anchored (version -> 0.30.0,
+  `lib_digest` -> the new committed-lib digest incl. `open_pr.py`); the
+  housekeep doc baseline re-anchored to the grown spec (387 -> 403) so the
+  drift, #355 monotonicity, and doc-size guards stay green.
+
 ## 0.29.0 — re-ship the auto-merge-completion observability; release v0.29.0
 
 - **Release v0.29.0 (minor — auto-merge-completion observability reaches
