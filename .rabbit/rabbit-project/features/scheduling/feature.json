@@ -8,7 +8,7 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "impl",
+  "tdd_state": "test-green",
   "updated": "2026-07-31",
   "spec_change_reason": "Surface verify-integrate's RECONCILE RECOVERY outcome in observability. run_tick's tick_end event detail now also carries rebased=len(reconcile_result.rebased) + rebased_refs, relanded=len(reconcile_result.relanded) + relanded_refs, and reconcile_errors=len(reconcile_result.errors), derived from the reconcile_result read product EXACTLY like the existing deduped/auto_merged, and the one-line trace gains compact rebased=<n>/relanded=<n>/reconcile_errors=<n> tokens shown only when >0. 0/[] when reconcile_result is absent (a route without RECONCILE) \u2014 non-breaking. This closes the observability gap where a RECONCILE that silently errored on every conflicting PR (the fixed-worktree wedge) was invisible in the trace, since only deduped/auto_merged were surfaced. scheduling only READS existing ReconcileResult fields into the trace; no schema change and no verify-integrate change. Re-anchored the housekeep spec.md baseline 1450->1462 for the already-committed 0.45.0 spec growth (contract.md kept under its strictly-grew gate).",
   "spec_no_change_reason": null
