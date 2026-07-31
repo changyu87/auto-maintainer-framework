@@ -1390,3 +1390,56 @@ def test_reconcile_e2e_live_conflicting_settled_rebases_regardless_of_prior():
 
     assert res["rebased"] == [{"pr_ref": "acme/widget#8"}]
     assert len(helper.calls) == 1
+
+
+# ==========================================================================
+# _pr_number: dual-form ref tolerance (owner/repo#N AND a full GitHub PR URL).
+#
+# Regression: an upstream seed (e.g. scheduling's acted-ledger) that passes a
+# URL-form pr_ref crashed tier-1's reconcile_rebase_worktree with int(<url>)
+# every tick, so a detected-CONFLICTING loop PR was never rebased/re-landed.
+# _pr_number must parse BOTH forms and raise ValueError only when no number is
+# parseable.
+# ==========================================================================
+
+def test_pr_number_canonical_owner_repo_ref():
+    assert vi._pr_number("AMD-CIT/ssbdci-grimlock#831") == 831
+
+
+def test_pr_number_bare_hash_ref():
+    assert vi._pr_number("#42") == 42
+
+
+def test_pr_number_full_pull_url():
+    assert vi._pr_number(
+        "https://github.com/AMD-CIT/ssbdci-grimlock/pull/831") == 831
+
+
+def test_pr_number_pull_url_trailing_slash():
+    assert vi._pr_number("https://github.com/o/r/pull/831/") == 831
+
+
+def test_pr_number_pull_url_query_stripped():
+    assert vi._pr_number(
+        "https://github.com/o/r/pull/831?foo=bar") == 831
+
+
+def test_pr_number_unparseable_raises_value_error():
+    import pytest
+    with pytest.raises(ValueError):
+        vi._pr_number("not-a-ref")
+
+
+def test_reconcile_rebase_worktree_url_form_ref_reaches_worktree():
+    # THE REGRESSION: a URL-form pr_ref must NOT crash tier-1 with int(<url>).
+    # A clean-rebase scripted runner drives the helper; a URL ref must parse the
+    # PR number (831) and reach the fetch/rebase/force-push path just like the
+    # canonical owner/repo#N form.
+    runner = _scripted_git_runner(rebase_rc=0)
+    out = vi.reconcile_rebase_worktree(
+        "https://github.com/acme/widget/pull/831", _DEFAULT_BRANCH,
+        repo="acme/widget", runner=runner,
+        worktree_dir="/tmp/am-reconcile-test")
+    assert out["rebased"] is True
+    # the PR number (831) is parsed from the URL and drives the pr-head fetch.
+    assert any(c[-1] == "pull/831/head" for c in runner.seen if "fetch" in c)

@@ -53,6 +53,7 @@ for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
         sys.path.insert(0, _dep_src)
 
 import durable_state as ds  # noqa: E402
+import fsm_contracts as fc  # noqa: E402
 import work_intake as wi  # noqa: E402
 import adapter_wiring as aw  # noqa: E402
 import verify_integrate as vi  # noqa: E402
@@ -503,11 +504,9 @@ class _FakeReconcile:
     def run(self, ctx):
         _FakeReconcile.captured["prior_verdicts"] = ctx.read("prior_verdicts")
         _FakeReconcile.captured["acted_ledger"] = ctx.read("acted_ledger")
-
-        class _R:
-            writes = {"reconcile_result": vi.ReconcileResult().to_dict()}
-
-        return _R()
+        return fc.StateResult(
+            signal="OK",
+            writes={"reconcile_result": vi.ReconcileResult().to_dict()})
 
 
 def _make_reconcile_capture(state_path):
@@ -531,8 +530,28 @@ def _make_reconcile_capture(state_path):
     return _FakeReconcile.captured
 
 
-def test_make_reconcile_seeds_prior_verdicts_verbatim():
+def test_make_reconcile_seeds_prior_verdicts_from_snapshot():
     project_dir = tempfile.mkdtemp(prefix="sched-recpv-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    # make_reconcile now seeds prior_verdicts from the DURABLE PRIOR_VERDICTS_KEY
+    # snapshot (written at tick end), NOT the ephemeral VERDICTS_KEY read product
+    # (which the fresh-tick reset wipes before RECONCILE runs). Seed ONLY the
+    # snapshot key and assert it is read VERBATIM.
+    ds.DurableState(state_path).save({
+        "schema_version": ds.SCHEMA_VERSION,
+        "counter": 0,
+        rt.PRIOR_VERDICTS_KEY: _PRIOR_VERDICTS,
+    })
+    captured = _make_reconcile_capture(state_path)
+    assert captured["prior_verdicts"] == _PRIOR_VERDICTS, captured
+
+
+def test_make_reconcile_ignores_live_verdicts_slot():
+    """make_reconcile must NOT read the ephemeral VERDICTS_KEY read product: with
+    ONLY the live verdicts key populated (and no snapshot), prior_verdicts is []."""
+    project_dir = tempfile.mkdtemp(prefix="sched-recpvlive-")
     state_path = os.path.join(project_dir, ".auto-maintainer",
                               "durable-state.json")
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
@@ -542,8 +561,7 @@ def test_make_reconcile_seeds_prior_verdicts_verbatim():
         rt.VERDICTS_KEY: _PRIOR_VERDICTS,
     })
     captured = _make_reconcile_capture(state_path)
-    # The persisted verdicts are seeded VERBATIM (same shape, not reshaped).
-    assert captured["prior_verdicts"] == _PRIOR_VERDICTS, captured
+    assert captured["prior_verdicts"] == [], captured
 
 
 def test_make_reconcile_seeds_prior_verdicts_empty_when_absent():
@@ -551,7 +569,7 @@ def test_make_reconcile_seeds_prior_verdicts_empty_when_absent():
     state_path = os.path.join(project_dir, ".auto-maintainer",
                               "durable-state.json")
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
-    # No VERDICTS_KEY persisted (first tick / none).
+    # No PRIOR_VERDICTS_KEY persisted (first tick / none).
     ds.DurableState(state_path).save(
         {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
     captured = _make_reconcile_capture(state_path)
@@ -683,3 +701,171 @@ def test_auto_merged_with_open_issue_ends_terminal():
     assert ledger[_WO_ID]["outcome"] in ("closed", "merged"), ledger
     seed = rt._reconcile_ledger_seed(ledger)
     assert all(e["work_order_id"] != _WO_ID for e in seed), seed
+
+
+# ==========================================================================
+# _reconcile_ledger_seed canonical pr_ref (tier-1 crash fix): the acted-ledger
+# stores each PR ref as a full GitHub URL; the seed must derive the canonical
+# owner/repo#N form so verify-integrate's tier-1 _pr_number never crashes on
+# int(<url>) and the prior_by_ref verdict keys match. An already-canonical ref
+# is unchanged.
+# ==========================================================================
+
+_PR_URL = "https://github.com/acme/widget/pull/42"
+
+
+def test_reconcile_ledger_seed_converts_url_ref_to_canonical():
+    ledger = {_WO_ID: {"outcome": "opened", "ref": _PR_URL,
+                       "acted_at_updated_at": _UPDATED}}
+    seed = rt._reconcile_ledger_seed(ledger)
+    assert len(seed) == 1, seed
+    assert seed[0]["pr_ref"] == "acme/widget#42", seed
+    # issue_ref / repo derivation is unchanged.
+    assert seed[0]["issue_ref"] == _ISSUE_REF, seed
+    assert seed[0]["repo"] == "acme/widget", seed
+
+
+def test_reconcile_ledger_seed_leaves_canonical_ref_unchanged():
+    ledger = {_WO_ID: {"outcome": "opened", "ref": _PR_REF,
+                       "acted_at_updated_at": _UPDATED}}
+    seed = rt._reconcile_ledger_seed(ledger)
+    assert seed[0]["pr_ref"] == _PR_REF, seed
+
+
+def test_reconcile_ledger_seed_url_ref_none_stays_none():
+    ledger = {_WO_ID: {"outcome": "opened", "ref": None,
+                       "acted_at_updated_at": _UPDATED}}
+    seed = rt._reconcile_ledger_seed(ledger)
+    assert seed[0]["pr_ref"] is None, seed
+
+
+# ==========================================================================
+# Durable PRIOR_VERDICTS_KEY snapshot (race-breaker fix): written at tick end,
+# EXEMPT from _reset_ephemeral_read_products, verdict pr_refs normalized to
+# owner/repo#N. make_reconcile seeds prior_verdicts from THIS snapshot, so a
+# PR confirmed CONFLICTING by tick N's VERIFY reaches tick N+1's RECONCILE even
+# after the fresh-tick reset wipes the live `verdicts` slot.
+# ==========================================================================
+
+def test_prior_verdicts_key_defined_and_distinct_from_verdicts():
+    assert rt.PRIOR_VERDICTS_KEY, rt.PRIOR_VERDICTS_KEY
+    assert rt.PRIOR_VERDICTS_KEY != rt.VERDICTS_KEY, rt.PRIOR_VERDICTS_KEY
+    # It is a durable CROSS-TICK fact, NOT an ephemeral read product.
+    assert rt.PRIOR_VERDICTS_KEY not in rt.EPHEMERAL_READ_PRODUCT_DEFAULTS
+
+
+def test_persisted_prior_verdicts_reads_snapshot_key():
+    project_dir = tempfile.mkdtemp(prefix="sched-ppvaccessor-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    ds.DurableState(state_path).save({
+        "schema_version": ds.SCHEMA_VERSION,
+        "counter": 0,
+        rt.PRIOR_VERDICTS_KEY: _PRIOR_VERDICTS,
+    })
+    assert rt.persisted_prior_verdicts(state_path) == _PRIOR_VERDICTS
+    # Absent -> [] (non-breaking default).
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
+    assert rt.persisted_prior_verdicts(state_path) == []
+
+
+def test_reset_ephemeral_read_products_does_not_clear_snapshot():
+    project_dir = tempfile.mkdtemp(prefix="sched-resetpv-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    ds.DurableState(state_path).save({
+        "schema_version": ds.SCHEMA_VERSION,
+        "counter": 0,
+        rt.VERDICTS_KEY: _PRIOR_VERDICTS,
+        rt.PRIOR_VERDICTS_KEY: _PRIOR_VERDICTS,
+    })
+    rt._reset_ephemeral_read_products(state_path)
+    doc = ds.DurableState(state_path).load()
+    # The ephemeral live verdicts slot is wiped ...
+    assert doc[rt.VERDICTS_KEY] == [], doc
+    # ... but the durable prior-verdicts snapshot survives.
+    assert doc[rt.PRIOR_VERDICTS_KEY] == _PRIOR_VERDICTS, doc
+
+
+def test_snapshot_normalizes_pr_refs_to_canonical():
+    url_verdicts = [
+        {"pr_ref": _PR_URL, "mergeable": "CONFLICTING", "ok": False,
+         "reasons": ["merge conflict with base"]},
+    ]
+    snap = rt._snapshot_prior_verdicts(url_verdicts)
+    assert snap[0]["pr_ref"] == "acme/widget#42", snap
+    # Non-pr_ref fields preserved verbatim.
+    assert snap[0]["mergeable"] == "CONFLICTING", snap
+    assert snap[0]["reasons"] == ["merge conflict with base"], snap
+
+
+def test_tick_end_writes_prior_verdicts_snapshot():
+    project_dir = tempfile.mkdtemp(prefix="sched-tickendpv-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
+    # The RECONCILE route has no VERIFY, so the snapshot is written EMPTY -- but
+    # the KEY is written at the tick-end done path either way.
+    _run(project_dir, state_path, "auto-merge",
+         pr_state={"merged": False, "state": "OPEN"})
+    doc = ds.DurableState(state_path).load()
+    assert rt.PRIOR_VERDICTS_KEY in doc, doc
+    assert doc[rt.PRIOR_VERDICTS_KEY] == [], doc
+
+
+# ==========================================================================
+# Cross-tick e2e: the durable snapshot survives the fresh-tick reset that wipes
+# the live `verdicts` slot, so tick N+1's make_reconcile seeds the prior tick's
+# CONFLICTING verdict into prior_verdicts even though the live verdicts slot was
+# reset to [] before RECONCILE ran.
+# ==========================================================================
+
+def _run_capture_prior_verdicts(project_dir, state_path):
+    """Run a FULL run_tick over the RECONCILE route with vi.Reconcile replaced by
+    a capturing fake, so the run exercises _reset_ephemeral_read_products (the
+    fresh-tick wipe) before RECONCILE seeds prior_verdicts. Returns the captured
+    prior_verdicts slot."""
+    _write_project_route(project_dir, _RECONCILE_ROUTE)
+    _write_governance(project_dir, "auto-merge")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+    _FakeReconcile.captured = {}
+    restore, _caps = _patch_reconcile_seams({"merged": False, "state": "OPEN"})
+    saved_reconcile = vi.Reconcile
+    vi.Reconcile = _FakeReconcile
+    try:
+        rt.run_tick(
+            project_dir=project_dir, runtime_dir=runtime_dir,
+            state_path=state_path, journal_path=journal_path,
+            source=_stub_source(), return_run_result=True)
+    finally:
+        vi.Reconcile = saved_reconcile
+        restore()
+    return _FakeReconcile.captured.get("prior_verdicts")
+
+
+def test_snapshot_survives_fresh_reset_reaches_next_tick_reconcile():
+    project_dir = tempfile.mkdtemp(prefix="sched-pvcrosstick-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    # Simulate the state AFTER tick N: the durable snapshot holds tick N's
+    # CONFLICTING verdict; the ephemeral live `verdicts` slot holds a decoy that
+    # the fresh-tick reset will wipe to [] BEFORE RECONCILE runs.
+    decoy = [{"pr_ref": "acme/widget#999", "mergeable": "MERGEABLE",
+              "ok": True, "reasons": []}]
+    ds.DurableState(state_path).save({
+        "schema_version": ds.SCHEMA_VERSION,
+        "counter": 0,
+        rt.VERDICTS_KEY: decoy,
+        rt.PRIOR_VERDICTS_KEY: _PRIOR_VERDICTS,
+    })
+    captured = _run_capture_prior_verdicts(project_dir, state_path)
+    # RECONCILE seeded from the DURABLE snapshot (the prior CONFLICTING verdict),
+    # NOT the wiped live verdicts slot and NOT the decoy.
+    assert captured == _PRIOR_VERDICTS, captured

@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.11.0
+version: 0.11.1
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
@@ -474,6 +474,17 @@ For each `opened` entry whose PR is CONFLICTING per the determination above:
   onto fresh `origin/<default-branch>`. If it rebases CLEAN, force-push the rebased
   branch so the PR is mergeable again and re-enters VERIFY/GATE/INTEGRATE next tick
   with NO implementer run. Recorded in `reconcile_result.rebased`.
+  **`pr_ref` form robustness.** The tier-1 helper derives the PR number from the
+  `pr_ref` via the internal `_pr_number(pr_ref)`, which MUST tolerate BOTH the
+  canonical `owner/repo#N` ref AND a full GitHub PR URL (`…/pull/N`): it takes the
+  digits after the last `#`, else the trailing `/pull/<n>` digits (any trailing
+  slash/query stripped), and raises `ValueError` only when NO number is parseable.
+  This is a defensive backstop — an upstream seed that passes a URL-form ref (e.g.
+  scheduling's acted-ledger seed) MUST NOT crash tier-1 with `int(<url>)`
+  (a real regression: a URL ref threw every tick, so a CONFLICTING loop PR was
+  detected but never rebased/re-landed). scheduling ALSO normalizes the seed to
+  `owner/repo#N` at the source; the two together guarantee tier-1 is never
+  URL-crashed.
 - **TIER 2 — re-land fallback.** If the rebase hits a real textual conflict
   (semantic resolution is the implementer's job, not determinism — spec-rules §1),
   close the PR via the EXISTING PR-close sink and comment the source issue with the
@@ -564,6 +575,13 @@ CLEANUP → PERSIST → EXIT`.
 
 ## Invariants
 
+- **`_pr_number(pr_ref)` tolerates both ref forms.** It parses the PR number from
+  a canonical `owner/repo#N` ref (digits after the last `#`) OR a full GitHub PR
+  URL (`…/pull/N`, trailing slash/query stripped), raising `ValueError` only when
+  no number is parseable. Tier-1's `reconcile_rebase_worktree` therefore never
+  crashes on a URL-form `pr_ref` — closing the regression where a URL seed threw
+  `int(<url>)` every tick and a CONFLICTING loop PR was detected but never
+  recovered.
 - **RECONCILE records every merged acted_ledger PR in `auto_merged`** (A) — a
   pure observability record surfacing an auto-merge that GitHub completed
   asynchronously between ticks. It is recorded UNCONDITIONALLY for a MERGED PR

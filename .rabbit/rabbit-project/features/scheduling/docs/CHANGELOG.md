@@ -1,5 +1,30 @@
 # scheduling — Changelog
 
+## feature 0.44.0 — 2026-07-31
+
+- **RECONCILE seed `pr_ref` is the canonical `owner/repo#N` form (tier-1 crash
+  fix).** The durable acted-ledger stores each PR's `ref` as a full GitHub URL
+  (`https://github.com/OWNER/REPO/pull/N`). `_reconcile_ledger_seed` now derives the
+  canonical `owner/repo#N` ref from that URL (via `_canonical_pr_ref`, reusing
+  verify-integrate's `_pr_number` + `_derive_pr_ref`) and seeds `pr_ref` in that
+  form; an already-canonical ref (containing `#`) or a falsy/unparseable ref is left
+  unchanged. This closes a real regression: a URL-form `pr_ref` (a) crashed
+  verify-integrate's tier-1 `_pr_number` (`int(<url>)` threw every tick, so a
+  CONFLICTING loop PR was detected but never rebased/re-landed) and (b) mismatched
+  the `prior_by_ref` key form (VERIFY verdicts key on `owner/repo#N`).
+- **Prior-verdict race-breaker made functional — durable `PRIOR_VERDICTS_KEY`
+  snapshot.** `make_reconcile` now seeds Reconcile's OPTIONAL `prior_verdicts` slot
+  from a NEW durable `PRIOR_VERDICTS_KEY` snapshot (via `persisted_prior_verdicts`),
+  NOT the ephemeral `verdicts` read product. The snapshot is written at tick end
+  (the terminal done-path, where `verdicts` is durably persisted) with each verdict
+  `pr_ref` normalized to `owner/repo#N` so it matches the seed refs, and it is EXEMPT
+  from `_reset_ephemeral_read_products`. Previously the fresh-tick reset wiped
+  `verdicts` to `[]` BEFORE RECONCILE ran, so `prior_verdicts` was ALWAYS `[]` and
+  the race-breaker never had data; now a PR confirmed CONFLICTING by tick N's VERIFY
+  reaches tick N+1's RECONCILE (B) UNKNOWN-mergeability fallback. The live `verdicts`
+  ephemeral reset is UNCHANGED; an empty snapshot reproduces the prior behavior
+  (non-breaking). scheduling does not modify verify-integrate's Reconcile logic.
+
 ## feature 0.43.0 — 2026-07-30
 
 - **RECONCILE `auto_merged` completion surfaced + reported once.** `run_tick`

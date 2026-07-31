@@ -3,6 +3,38 @@
 All notable changes to this feature are recorded here. Versions follow the
 spec/contract `version:` frontmatter. Owner: changyu87.
 
+## 0.11.0 — 2026-07-31
+
+Script-backed worktree setup + explicit PR base (fixes wrong-base PR stacking).
+
+- **New deterministic companion script `src/open_pr.py`.** The shipped
+  implementer's order-critical git sequence — resolve the repo default branch
+  (`gh repo view --json defaultBranchRef`), `git fetch origin <default>`,
+  `git worktree add <wt> -b <branch> origin/<default>`, and
+  `gh pr create --base <default>` — moved out of PROMPT-TIER agent prose into a
+  self-contained, stdlib-only script with an INJECTABLE runner (spec-rules §4
+  Script-Backed Orchestration). The worktree start-point is ALWAYS the
+  freshly-fetched `origin/<default>` (never local HEAD), and the PR base is
+  ALWAYS an explicit `--base <default>` (never inferred/tracked).
+- **Fixes the wrong-base STACKED PR bug (#844/#846).** During a back-to-back
+  drain burst the old prose let consecutive implementer runs branch off the
+  PREVIOUS loop branch and open PRs based on a sibling loop branch (#844 based on
+  #831's head, #846 on #844's), which INTEGRATE refused (never-merge-wrong-base)
+  and nothing recovered. The script's unconditional origin/<default> start-point
+  and explicit base make the base impossible to drift.
+- **Agent `.md` bumped v2.10.0 -> v2.11.0.** The subagent now INVOKES the script
+  at the deployed `${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py` path (mirroring
+  `test_gate.py`) via a `setup` and a `create` subcommand, in place of the raw
+  git/gh base prose. Own-worktree isolation and every other step (test-gate,
+  self-review, supersede-on-retry, build-tree regen, `Closes #<n>`) are
+  preserved.
+- **contract.md 0.7.0 -> 0.8.0** adds `open_pr.py` to `provides.scripts` and
+  `invokes`. Housekeep doc baseline re-anchored (spec.md 355 -> 378, contract.md
+  35 -> 36).
+- **Follow-on (out of this feature's scope):** packaging-config's `build_plugin`
+  `_LIBS` must register `lib/open_pr.py` (mirroring `test_gate.py`) so the script
+  deploys to the installed plugin — a separate packaging release.
+
 ## 0.7.0 — 2026-07-09
 
 In-PR regeneration of a committed build tree (auto-maintainer-framework#354).

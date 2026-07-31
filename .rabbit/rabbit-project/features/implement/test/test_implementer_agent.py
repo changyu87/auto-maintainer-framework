@@ -197,12 +197,41 @@ def test_shipped_implementer_body_supersedes_prior_same_issue_pr():
         "body must constrain the close to the SAME issue only")
 
 
-def test_shipped_implementer_frontmatter_version_is_2_10_0():
-    """v2.10.0 removes the now-dead rejected->close branch: the doer only ever
-    sees an accepted order (reject disposition moved to TRIAGE), so it reports
-    only opened or blocked and never closes a source issue."""
+def test_shipped_implementer_frontmatter_version_is_2_11_0():
+    """v2.11.0 moves the worktree-setup + PR-open from prompt-tier git/gh prose
+    into the deterministic companion script open_pr.py (spec-rules §4), fixing
+    the wrong-base STACKED PR bug (#844/#846)."""
     fm = _frontmatter()
-    assert fm["version"] == "2.10.0"
+    assert fm["version"] == "2.11.0"
+
+
+def test_shipped_implementer_invokes_open_pr_script_at_deployed_lib_path():
+    """v2.11.0: the order-critical git sequence (resolve default, fetch, worktree
+    add from origin/<default>, gh pr create --base <default>) is now a
+    DETERMINISTIC companion script invoked at the deployed
+    ${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py path (mirroring test_gate.py), NOT
+    hand-run git/gh prose. The body must invoke the script at that deployed
+    path."""
+    body = _body()
+    assert "${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py" in body, (
+        "body must invoke the worktree/PR script at the deployed "
+        "${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py path")
+
+
+def test_shipped_implementer_no_raw_worktree_add_base_prose():
+    """v2.11.0: the raw `git worktree add ... origin/<default>` and the raw
+    `gh pr create --base <default>` prose is REPLACED by the script invocation —
+    the deterministic base/start-point resolution no longer lives as model-filled
+    git/gh prose the model assembles per-invocation (spec-rules §4). The body
+    must not carry the raw `git worktree add` command nor a hand-run
+    `gh pr create --base` command line."""
+    body = _body()
+    assert "git worktree add" not in body, (
+        "raw `git worktree add` prose must be replaced by the open_pr.py "
+        "script invocation")
+    assert "gh pr create --base" not in body, (
+        "raw `gh pr create --base` prose must be replaced by the open_pr.py "
+        "script invocation")
 
 
 def test_shipped_implementer_body_never_reports_planned():
