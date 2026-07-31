@@ -560,20 +560,19 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.30.0, loop-convergence fixes + open_pr implementer lib): version
-# bumped to 0.30.0 in BOTH plugin.json and marketplace.json, and the two are
-# consistent. v0.30.0 rebuilds the committed plugin tree so it ships the
-# verify-integrate 0.11.1 + scheduling 0.44.0 + implement 0.11.0 sources:
-# lib/verify_integrate.py (RECONCILE _pr_number tolerates a URL-form pr_ref so
-# tier-1 conflict-recovery never crashes) and lib/run_tick.py (RECONCILE seed
-# uses canonical owner/repo#N refs + a durable prior-verdicts snapshot). This
-# release also REGISTERS a new implementer lib: build_plugin._LIBS gains
-# open_pr.py (implement/src/open_pr.py) — a pure-stdlib byte-for-byte lib like
-# test_gate.py — so the shipped agents/auto-maintainer-implementer.md (v2.11.0)
-# can invoke ${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py. The shipped default-config
-# CONTENT is unchanged (still schema 2.9.0, same values).
+# Release (v0.31.0, RECONCILE worktree-robustness + recovery observability):
+# version bumped to 0.31.0 in BOTH plugin.json and marketplace.json, and the two
+# are consistent. v0.31.0 rebuilds the committed plugin tree so it ships the
+# verify-integrate 0.11.2 + scheduling 0.45.0 sources: lib/verify_integrate.py
+# (reconcile_rebase_worktree uses a UNIQUE per-invocation mkdtemp worktree +
+# `git worktree prune` before add, so a tick killed mid-rebase can never wedge
+# later tier-1 conflict recovery on a leftover worktree) and lib/run_tick.py
+# (tick_end surfaces the RECONCILE recovery outcome — rebased/relanded/
+# reconcile_errors counts + refs with >0-only trace tokens). No _LIBS change
+# (open_pr.py already registered in v0.30.0) and no shipped default-config
+# CONTENT change (still schema 2.9.0, same values).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_30_0_and_consistent():
+def test_version_bumped_to_0_31_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -585,10 +584,10 @@ def test_version_bumped_to_0_30_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.30.0", \
-            f"plugin.json version must be 0.30.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.30.0", \
-            "marketplace.json plugin entry version must be 0.30.0"
+        assert pdata.get("version") == "0.31.0", \
+            f"plugin.json version must be 0.31.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.31.0", \
+            "marketplace.json plugin entry version must be 0.31.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2373,6 +2372,49 @@ def test_committed_verify_integrate_carries_255_evidence_gate():
         "committed verify_integrate must carry the #255 review_evidence_valid gate"
     assert "batch_is_untrustworthy" in body, \
         "committed verify_integrate must carry the #255 batch_is_untrustworthy gate"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.31.0 (RECONCILE worktree-robustness + recovery observability)
+# deploy confirmation: the whole point of this release is that the committed
+# (shipped) libs carry verify-integrate 0.11.2's reconcile_rebase_worktree
+# UNIQUE-worktree fix (a per-invocation mkdtemp path + `git worktree prune`
+# before add, so a tick killed mid-rebase can never wedge later tier-1 conflict
+# recovery on a leftover worktree) and scheduling 0.45.0's run_tick recovery
+# observability (tick_end surfaces rebased/relanded/reconcile_errors counts).
+# Assert the COMMITTED libs — the bytes an installed plugin runs — carry each.
+# ---------------------------------------------------------------------------
+def test_committed_libs_carry_v0_31_0_reconcile_worktree_and_observability():
+    lib = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer", "lib")
+
+    # verify-integrate 0.11.2: reconcile_rebase_worktree uses a unique
+    # per-invocation mkdtemp worktree + prunes stale worktrees before add.
+    vi = os.path.join(lib, "verify_integrate.py")
+    assert os.path.isfile(vi), \
+        "committed lib/verify_integrate.py must ship in the plugin tree"
+    with open(vi, encoding="utf-8") as fh:
+        vi_body = fh.read()
+    assert "def reconcile_rebase_worktree(" in vi_body, \
+        "committed verify_integrate must carry reconcile_rebase_worktree"
+    assert "mkdtemp(prefix=\"am-reconcile-\")" in vi_body, \
+        "committed verify_integrate must carry the v0.31.0 unique per-invocation " \
+        "mkdtemp reconcile worktree"
+    assert "\"worktree\", \"prune\"" in vi_body, \
+        "committed verify_integrate must prune stale worktrees before add"
+
+    # scheduling 0.45.0: run_tick's tick_end surfaces the RECONCILE recovery
+    # outcome as rebased/relanded/reconcile_errors trace tokens.
+    rt = os.path.join(lib, "run_tick.py")
+    assert os.path.isfile(rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(rt, encoding="utf-8") as fh:
+        rt_body = fh.read()
+    assert "rebased={rebased_count}" in rt_body, \
+        "committed run_tick must surface the v0.31.0 rebased recovery token"
+    assert "relanded={relanded_count}" in rt_body, \
+        "committed run_tick must surface the v0.31.0 relanded recovery token"
+    assert "reconcile_errors={reconcile_errors_count}" in rt_body, \
+        "committed run_tick must surface the v0.31.0 reconcile_errors token"
 
 
 # ---------------------------------------------------------------------------

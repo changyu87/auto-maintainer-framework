@@ -3590,6 +3590,22 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     auto_merged_entries = (reconcile_result or {}).get("auto_merged", [])
     auto_merged_count = len(auto_merged_entries)
     auto_merged_refs = [e.get("pr_ref") for e in auto_merged_entries]
+    # The RECONCILE RECOVERY outcome (#69-style observability): rebased=<n> =
+    # CONFLICTING loop PRs RECONCILE tier-1 rebased+force-pushed this tick
+    # (len(reconcile_result.rebased)); relanded=<n> = tier-2 close+reland
+    # (len(reconcile_result.relanded)); reconcile_errors=<n> = per-entry RECONCILE
+    # faults recorded this tick (len(reconcile_result.errors), verify-integrate's
+    # ReconcileResult). Surfacing these closes the gap where a RECONCILE that
+    # silently errored on every conflicting PR (the fixed-worktree wedge) was
+    # invisible in the trace. Derived from reconcile_result EXACTLY like
+    # deduped/auto_merged; 0/[] when no RECONCILE / empty result.
+    rebased_entries = (reconcile_result or {}).get("rebased", [])
+    rebased_count = len(rebased_entries)
+    rebased_refs = [e.get("pr_ref") for e in rebased_entries]
+    relanded_entries = (reconcile_result or {}).get("relanded", [])
+    relanded_count = len(relanded_entries)
+    relanded_refs = [e.get("pr_ref") for e in relanded_entries]
+    reconcile_errors_count = len((reconcile_result or {}).get("errors", []))
     # Additive per-PR IDENTIFIERS for tick_end.detail: the full INTEGRATE result
     # ({merged: [{pr_ref, url}], skipped: [{pr_ref, reason}], errored: [{pr_ref,
     # reason}]}) enriching the count-only merged/integrate_skipped/
@@ -3630,6 +3646,14 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # count + refs (0/[] when no RECONCILE / no completion this tick).
     auto_merged_field = (
         f" auto_merged={auto_merged_count}" if auto_merged_count > 0 else "")
+    # rebased/relanded/reconcile_errors=<n> are appended to the trace ONLY when >0
+    # (mirroring the deduped/auto_merged-when-positive convention); the tick_end
+    # detail always carries the counts + refs (0/[] when no RECONCILE / empty).
+    rebased_field = f" rebased={rebased_count}" if rebased_count > 0 else ""
+    relanded_field = f" relanded={relanded_count}" if relanded_count > 0 else ""
+    reconcile_errors_field = (
+        f" reconcile_errors={reconcile_errors_count}"
+        if reconcile_errors_count > 0 else "")
     # The refire decision (legible idle-vs-refire): the EXIT signal already carries
     # it; surface a boolean in the tick_end detail disambiguating
     # idle-because-no-work (False) from refire-because-work-remains (True).
@@ -3649,6 +3673,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         f"signal={signal} route={route_src} default_src={default_src} "
         f"{gov_fields} {reported_field} "
         f"{triaged_field} {merged_field}{deduped_field}{auto_merged_field}"
+        f"{rebased_field}{relanded_field}{reconcile_errors_field}"
         f"{release_field}\n")
 
     # Terminal events (observability §3.9.1): the resulting disposition, then the
@@ -3672,6 +3697,11 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "deduped": deduped_count,
         "auto_merged": auto_merged_count,
         "auto_merged_refs": auto_merged_refs,
+        "rebased": rebased_count,
+        "rebased_refs": rebased_refs,
+        "relanded": relanded_count,
+        "relanded_refs": relanded_refs,
+        "reconcile_errors": reconcile_errors_count,
         "merged_refs": merged_refs,
         "release_needed": release_needed,
         "refire": refire,

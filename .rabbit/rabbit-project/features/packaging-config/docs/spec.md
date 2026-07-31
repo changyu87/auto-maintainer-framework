@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.20
+version: 0.7.21
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -157,6 +157,18 @@ stacking); without this registration the deployed agent's call would fail. The
 implementer agent md re-collects via the `ship/` convention. The shipped
 `default-config/` CONTENT is unchanged (config still schema 2.9.0). Version bump
 `_PLUGIN_VERSION → 0.30.0`.
+
+**Plugin minor v0.31.0** — re-ship the RECONCILE worktree-robustness + recovery
+observability (verify-integrate 0.11.2 + scheduling 0.45.0): `lib/verify_integrate.py`
+(`reconcile_rebase_worktree` now uses a UNIQUE per-invocation `mkdtemp` worktree +
+`git worktree prune` before add, so a tick killed mid-rebase can never wedge later
+tier-1 conflict recovery on a leftover worktree) and `lib/run_tick.py` (`tick_end`
+now surfaces the RECONCILE recovery outcome — `rebased`/`relanded`/`reconcile_errors`
+counts + refs with `>0`-only trace tokens — so a silently-erroring RECONCILE is
+never invisible). No `_LIBS` change (open_pr.py already registered in v0.30.0) and no
+shipped `default-config/` CONTENT change (schema 2.9.0); this release re-normalizes
+the two libs from source and bumps the version. No build change beyond
+`_PLUGIN_VERSION → 0.31.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
