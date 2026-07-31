@@ -2,6 +2,26 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.11.2 — 2026-07-31
+
+RECONCILE tier-1 unique-worktree robustness: a leftover worktree from an abrupt
+mid-rebase stop no longer wedges every subsequent tier-1 rebase.
+
+- **`reconcile_rebase_worktree` uses a UNIQUE per-invocation worktree path.** It
+  now derives the disposable integration worktree from `tempfile.mkdtemp(prefix=
+  "am-reconcile-")` instead of the fixed `/tmp/am-reconcile-integration`, and runs
+  `git worktree prune` (injectable runner) BEFORE `git worktree add`; the `finally`
+  removes the per-invocation worktree (`git worktree remove --force` +
+  `shutil.rmtree`). Previously the fixed path, orphaned by a tick killed
+  mid-rebase, made every subsequent `git worktree add <fixed>` fail — the error was
+  swallowed into `reconcile_result.errors` (RECONCILE is advisory), so CONFLICTING
+  loop PRs were never recovered until the orphan was removed by hand. A unique path
+  per invocation also lets multiple conflicting PRs be recovered in ONE tick without
+  colliding, and a leftover is at worst a harmless orphaned `/tmp` dir. The fixed
+  `_RECONCILE_WORKTREE_DIR` constant is retired. `ReconcileResult` schema is
+  UNCHANGED; tier-1 clean-rebase / tier-2 reland behavior is otherwise unchanged;
+  RECONCILE stays advisory.
+
 ## 0.11.1 — 2026-07-31
 
 RECONCILE tier-1 URL-ref-crash fix: a URL-form `pr_ref` no longer crashes the
