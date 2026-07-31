@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.43.0
+version: 0.44.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -1075,20 +1075,35 @@ work-intake seams landed in the providers wave. Both are deterministic, live in
   `DEFAULT_ADAPTER_MAP`. RECONCILE runs BEFORE PULL (route
   `GUARD → DRAIN → RECONCILE → PULL → …`). scheduling SEEDS `Reconcile`'s
   `acted_ledger` slot from durable state: it loads `ACTED_LEDGER_KEY` and passes
-  the `opened`-outcome entries (each `{work_order_id, pr_ref, issue_ref, repo}`),
-  and injects the production seams (`gh_pr_state_source`, `gh_issue_state_source`,
+  the `opened`-outcome entries (each `{work_order_id, pr_ref, issue_ref, repo}`).
+  **The seeded `pr_ref` is the CANONICAL `owner/repo#N` form, NOT the raw URL.**
+  The durable acted-ledger stores each PR's `ref` as a full GitHub URL
+  (`https://github.com/OWNER/REPO/pull/N`); `_reconcile_ledger_seed` derives the
+  canonical `owner/repo#N` ref from that URL (parsing `…/pull/N` + the `owner/repo`
+  from the URL) and seeds `pr_ref` in that form. This closes a real regression: a
+  URL-form `pr_ref` (a) crashed verify-integrate's tier-1 `_pr_number` (`int(<url>)`
+  threw every tick, so a CONFLICTING loop PR was detected but never rebased/
+  re-landed) and (b) mismatched the `prior_by_ref` key form (VERIFY verdicts key on
+  `owner/repo#N`). Seeding the canonical form fixes both. The factory injects the
+  production seams (`gh_pr_state_source`, `gh_issue_state_source`,
   `gh_issue_close_sink`, PR-close + comment sinks, `reconcile_rebase_worktree`)
   plus the resolved `mode` (so `permits('merge', mode)` gates the mutating tiers)
   and default branch. scheduling ALSO SEEDS `Reconcile`'s OPTIONAL
-  **`prior_verdicts`** slot from durable state: it reads the persisted `verdicts`
-  read-product (the PREVIOUS tick's VERIFY output, via the existing
-  persisted-state accessor pattern) and `ctx.write`s it verbatim — the same List
-  of verdict dicts VERIFY wrote (`{pr_ref, mergeable, ok, reasons, …}`), NOT
-  reshaped — seeding `[]` when absent (first tick / none). This is the
-  race-breaker for verify-integrate's RECONCILE (B) ladder: when a loop PR's LIVE
-  mergeability is still `UNKNOWN` at tick-top, `Reconcile` falls back to the prior
-  tick's confirmed-CONFLICTING verdict to rebase/re-land it, so a conflicting loop
-  PR no longer lingers across ticks. The `prior_verdicts` ctx slot is registered
+  **`prior_verdicts`** slot from a DURABLE PRIOR-VERDICTS SNAPSHOT (NOT the live
+  `verdicts` read-product). The prior wiring read the persisted `verdicts` key —
+  but the fresh-tick `_reset_ephemeral_read_products` wipes `verdicts` to `[]` at
+  tick start BEFORE RECONCILE runs, so `prior_verdicts` was ALWAYS `[]` and the
+  race-breaker never had data. The fix: at tick end (the terminal/PERSIST
+  done-path, where `verdicts` is durably written) scheduling ALSO snapshots the
+  completed tick's verdicts into a DEDICATED durable key (`PRIOR_VERDICTS_KEY`),
+  which the next tick's `_reset_ephemeral_read_products` does NOT touch;
+  `make_reconcile` seeds the `prior_verdicts` ctx slot from THAT snapshot (verbatim
+  verdict dicts `{pr_ref, mergeable, ok, reasons, …}`, `pr_ref` in `owner/repo#N`
+  form so it matches the seed keys), `[]` when absent. So a PR confirmed CONFLICTING
+  by tick N's VERIFY is available to tick N+1's RECONCILE (B) fallback even when the
+  live poll returns `UNKNOWN` — the race-breaker finally works. The live `verdicts`
+  ephemeral reset is UNCHANGED; only the durable prior snapshot is added. The
+  `prior_verdicts` ctx slot is registered
   (`register_slot('prior_verdicts', array)`) alongside `acted_ledger`. Seeding
   `[]` reproduces exactly the prior behavior (non-breaking). After RECONCILE,
   scheduling PERSISTS the outcome: a
