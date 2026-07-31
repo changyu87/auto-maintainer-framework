@@ -682,6 +682,13 @@ def _persist_reconcile_outcome(state_path, seed, recon):
       - each `relanded` entry (a conflicting PR RECONCILE closed for a re-land) has
         its ledger entry CLEARED so the §3.8.5 acted-ledger re-entry gate
         re-dispatches it next tick.
+      - each `auto_merged` entry (a PR RECONCILE detected MERGED — an auto-merge
+        GitHub completed asynchronously BETWEEN ticks) has its ledger entry STAMPED
+        outcome='merged' (a TERMINAL, non-'opened' outcome) so `_reconcile_ledger_seed`
+        (which seeds only outcome=='opened') never re-seeds it — guaranteeing the
+        completion is surfaced in `tick_end.auto_merged` EXACTLY ONCE. This is
+        applied BEFORE the `closed_issues` stamp so an entry in BOTH ends terminal
+        as 'closed' (both terminal — idempotent either way).
     Load-modify-save of ONLY ACTED_LEDGER_KEY, preserving every other durable
     key. `rebased`/`skipped`/`errors` entries leave the ledger untouched."""
     pr_to_wo = {e["pr_ref"]: e["work_order_id"]
@@ -689,6 +696,13 @@ def _persist_reconcile_outcome(state_path, seed, recon):
     doc = ds.DurableState(state_path).load()
     ledger = dict(doc.get(ACTED_LEDGER_KEY, {}))
     changed = False
+    for a in recon.auto_merged:
+        wo_id = pr_to_wo.get(a.get("pr_ref"))
+        if wo_id and wo_id in ledger:
+            entry = dict(ledger[wo_id])
+            entry["outcome"] = "merged"
+            ledger[wo_id] = entry
+            changed = True
     for c in recon.closed_issues:
         wo_id = pr_to_wo.get(c.get("pr_ref"))
         if wo_id and wo_id in ledger:
@@ -3480,6 +3494,16 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         ctx.read(vi.RECONCILE_RESULT_SLOT["name"])
         if "RECONCILE" in route["states"] else None)
     deduped_count = len((reconcile_result or {}).get("deduped", []))
+    # auto_merged=<n> = acted_ledger PRs RECONCILE detected MERGED this tick (an
+    # auto-merge GitHub completed asynchronously BETWEEN ticks,
+    # len(reconcile_result.auto_merged), verify-integrate v0.11.0). Because
+    # scheduling stamps each such acted_ledger entry to a TERMINAL outcome (see
+    # _persist_reconcile_outcome), a given completion is reported in EXACTLY ONE
+    # tick's auto_merged. auto_merged_refs is the list of merged pr_refs. 0/[] when
+    # no RECONCILE / no completion this tick.
+    auto_merged_entries = (reconcile_result or {}).get("auto_merged", [])
+    auto_merged_count = len(auto_merged_entries)
+    auto_merged_refs = [e.get("pr_ref") for e in auto_merged_entries]
     # Additive per-PR IDENTIFIERS for tick_end.detail: the full INTEGRATE result
     # ({merged: [{pr_ref, url}], skipped: [{pr_ref, reason}], errored: [{pr_ref,
     # reason}]}) enriching the count-only merged/integrate_skipped/
@@ -3515,6 +3539,11 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     # integrate_errored/auto_merge_enabled-when-positive convention); the tick_end
     # detail always carries the count (0 when no RECONCILE / empty dedup).
     deduped_field = f" deduped={deduped_count}" if deduped_count > 0 else ""
+    # auto_merged=<n> is appended to the trace ONLY when >0 (mirroring the
+    # deduped-when-positive convention); the tick_end detail always carries the
+    # count + refs (0/[] when no RECONCILE / no completion this tick).
+    auto_merged_field = (
+        f" auto_merged={auto_merged_count}" if auto_merged_count > 0 else "")
     # The refire decision (legible idle-vs-refire): the EXIT signal already carries
     # it; surface a boolean in the tick_end detail disambiguating
     # idle-because-no-work (False) from refire-because-work-remains (True).
@@ -3533,7 +3562,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         f"disposition={disposition} "
         f"signal={signal} route={route_src} default_src={default_src} "
         f"{gov_fields} {reported_field} "
-        f"{triaged_field} {merged_field}{deduped_field}{release_field}\n")
+        f"{triaged_field} {merged_field}{deduped_field}{auto_merged_field}"
+        f"{release_field}\n")
 
     # Terminal events (observability §3.9.1): the resulting disposition, then the
     # tick_end carrying the final signal + the four read-product counts, the REPORT
@@ -3554,6 +3584,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "integrate_errored": integrate_errored,
         "auto_merge_enabled": auto_merge_enabled_count,
         "deduped": deduped_count,
+        "auto_merged": auto_merged_count,
+        "auto_merged_refs": auto_merged_refs,
         "merged_refs": merged_refs,
         "release_needed": release_needed,
         "refire": refire,

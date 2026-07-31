@@ -1,5 +1,28 @@
 # scheduling — Changelog
 
+## feature 0.43.0 — 2026-07-30
+
+- **RECONCILE `auto_merged` completion surfaced + reported once.** `run_tick`
+  consumes verify-integrate's new `reconcile_result.auto_merged` (a List of
+  `{pr_ref, issue_ref}` — acted_ledger PRs RECONCILE detected MERGED this tick,
+  i.e. an auto-merge GitHub completed asynchronously BETWEEN ticks). The
+  `tick_end` event `detail` now carries `auto_merged=len(reconcile_result.auto_merged)`
+  and `auto_merged_refs` (the merged `pr_ref`s), mirroring the `deduped` count; the
+  one-line trace gains a compact `auto_merged=<n>` token shown ONLY when `>0`. A
+  route with no RECONCILE (or no completion this tick) shows `auto_merged=0` /
+  `auto_merged_refs=[]` with no trace token.
+- **Terminal ledger stamp → report-once.** `_persist_reconcile_outcome` now stamps
+  each acted_ledger entry named in `reconcile_result.auto_merged` to a TERMINAL
+  `outcome="merged"` (a non-`opened` outcome). Because `_reconcile_ledger_seed`
+  seeds only `outcome=="opened"` entries, the completed PR is never re-seeded — so a
+  given async auto-merge completion is surfaced in `tick_end.auto_merged` EXACTLY
+  ONCE (the first tick that detects it), never every tick. The stamp is applied
+  BEFORE the `closed_issues` stamp, so an entry in BOTH ends terminal (`closed` or
+  `merged` — both terminal, idempotent either way). scheduling only CONSUMES
+  `reconcile_result.auto_merged` + stamps the ledger; verify-integrate owns the
+  Reconcile logic (separate cycle, same wave). Cross-feature contract: the field is
+  exactly `auto_merged`, entries `{pr_ref, issue_ref}`.
+
 ## feature 0.42.0 — 2026-07-30
 
 - **RECONCILE `prior_verdicts` race-breaker.** `make_reconcile`'s bound run

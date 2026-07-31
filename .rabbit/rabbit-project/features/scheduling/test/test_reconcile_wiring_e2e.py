@@ -423,10 +423,17 @@ def test_propose_does_not_mutate():
         issue_state={"state": "OPEN"})
     assert result.final_state == "DONE", result.path
     # merge is not permitted at propose -> the would-close is recorded under
-    # skipped inside Reconcile; the issue-close sink is NEVER called.
+    # skipped inside Reconcile; the issue-close sink is NEVER called (no GitHub
+    # mutation at propose).
     assert caps.closes == [], caps.closes
+    # The PR is factually MERGED, so RECONCILE records it under auto_merged
+    # UNCONDITIONALLY (a pure observability record, mode-independent). scheduling
+    # stamps the entry TERMINAL outcome='merged' regardless of mode — the local
+    # ledger stamp is not a GitHub mutation, and stamping terminal is what
+    # guarantees the completion is surfaced in tick_end.auto_merged EXACTLY ONCE
+    # (gating it by mode would re-seed + re-detect it every propose tick).
     ledger = rt.persisted_acted_ledger(state_path)
-    assert ledger[_WO_ID]["outcome"] == "opened", ledger
+    assert ledger[_WO_ID]["outcome"] == "merged", ledger
 
 
 # ==========================================================================
