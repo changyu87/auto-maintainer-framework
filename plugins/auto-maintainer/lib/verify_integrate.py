@@ -1944,9 +1944,11 @@ class Cleanup:
 # ==========================================================================
 
 # The versioned ReconcileResult schema (machine-first; bumped on a breaking
-# field-set change). Distinct from the feature version. `1.1.0` is ADDITIVE: the
-# `deduped` list (same-issue open-PR dedup, C) was added to the `1.0.0` shape.
-RECONCILE_RESULT_SCHEMA_VERSION = "1.1.0"
+# field-set change). Distinct from the feature version. `1.2.0` is ADDITIVE: the
+# `auto_merged` list (auto-merge-completion observability, A) was added to the
+# `1.1.0` shape, which had added the `deduped` list (same-issue open-PR dedup, C)
+# to the `1.0.0` shape.
+RECONCILE_RESULT_SCHEMA_VERSION = "1.2.0"
 
 
 @dataclass(eq=True)
@@ -1965,6 +1967,13 @@ class ReconcileResult:
         because MORE THAN ONE open auto-maintainer PR closed the SAME still-OPEN
         issue (branch C); the highest-numbered PR (`kept_pr_ref`) is kept and each
         lower one is closed. Kept SEPARATE from closed_issues/rebased/relanded.
+      - `auto_merged` — [{pr_ref, issue_ref}] EVERY merged acted_ledger PR seen
+        this tick (branch A) — a pure OBSERVABILITY record surfacing an auto-merge
+        GitHub completed asynchronously between ticks. Recorded UNCONDITIONALLY for
+        a MERGED PR (whether or not the source issue is still open); it drives NO
+        GitHub write and is INDEPENDENT of closed_issues (a merged PR whose issue
+        is already closed appears here but NOT in closed_issues). Kept SEPARATE
+        from the others.
       - `skipped` — [{ref, reason}] would-act intents recorded at a mode that does
         not permit merge (dry-run/propose): a human acts.
       - `errors` — [{ref, reason}] single-entry faults (never raised; RECONCILE is
@@ -1979,6 +1988,7 @@ class ReconcileResult:
     rebased: List[dict] = field(default_factory=list)
     relanded: List[dict] = field(default_factory=list)
     deduped: List[dict] = field(default_factory=list)
+    auto_merged: List[dict] = field(default_factory=list)
     skipped: List[dict] = field(default_factory=list)
     errors: List[dict] = field(default_factory=list)
 
@@ -1989,6 +1999,7 @@ class ReconcileResult:
             "rebased": [dict(e) for e in self.rebased],
             "relanded": [dict(e) for e in self.relanded],
             "deduped": [dict(e) for e in self.deduped],
+            "auto_merged": [dict(e) for e in self.auto_merged],
             "skipped": [dict(e) for e in self.skipped],
             "errors": [dict(e) for e in self.errors],
         }
@@ -2000,6 +2011,7 @@ class ReconcileResult:
             rebased=[dict(e) for e in d.get("rebased", [])],
             relanded=[dict(e) for e in d.get("relanded", [])],
             deduped=[dict(e) for e in d.get("deduped", [])],
+            auto_merged=[dict(e) for e in d.get("auto_merged", [])],
             skipped=[dict(e) for e in d.get("skipped", [])],
             errors=[dict(e) for e in d.get("errors", [])],
         )
@@ -2431,6 +2443,11 @@ class Reconcile:
         # MERGED PR (never a human-closed one). Idempotent — reported so a later
         # tick never re-comments.
         if pr_state.get("merged"):
+            # auto-merge-completion observability: record EVERY merged ledger PR
+            # UNCONDITIONALLY (whether or not the source issue is still open) — a
+            # pure observability record that drives no GitHub write, independent of
+            # the closed_issues still-open-issue close path below.
+            result.auto_merged.append({"pr_ref": pr_ref, "issue_ref": issue_ref})
             if not issue_ref:
                 return
             issue_state = self._issue_state_source(issue_ref, repo=repo)

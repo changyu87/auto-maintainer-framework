@@ -1,5 +1,25 @@
 # Changelog — packaging-config
 
+## 0.29.0 — re-ship the auto-merge-completion observability; release v0.29.0
+
+- **Release v0.29.0 (minor — auto-merge-completion observability reaches
+  installs):** `_PLUGIN_VERSION` 0.28.0 -> 0.29.0; committed plugin tree
+  regenerated so the shipped libs carry verify-integrate 0.11.0 + scheduling
+  0.43.0's sources: `lib/verify_integrate.py` — RECONCILE now records every
+  merged `acted_ledger` PR in `reconcile_result.auto_merged`, surfacing an
+  auto-merge GitHub completed asynchronously between ticks; `lib/run_tick.py` —
+  `tick_end` surfaces `auto_merged` + `auto_merged_refs`, and
+  `_persist_reconcile_outcome` stamps those ledger entries terminal
+  `outcome="merged"` so the completion reports exactly once.
+- **Shipped `default-config/` CONTENT unchanged** — config still schema 2.9.0
+  with the same values; this is a lib-refresh release, not a config-content
+  change. Only the affected libs and the version stamps (`plugin.json` +
+  `marketplace.json` -> 0.29.0) move.
+- Version-assertion test advanced to 0.29.0; `test/release_lib_baseline.json`
+  re-anchored (version -> 0.29.0, `lib_digest` -> the new committed-lib digest
+  since the shipped lib bytes changed) so the drift and #355 monotonicity guards
+  stay green.
+
 ## 0.28.0 — re-ship the RECONCILE prior-verdict race-breaker; release v0.28.0
 
 - **Release v0.28.0 (minor — RECONCILE race-breaker reaches installs):**
