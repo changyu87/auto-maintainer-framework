@@ -1443,3 +1443,92 @@ def test_reconcile_rebase_worktree_url_form_ref_reaches_worktree():
     assert out["rebased"] is True
     # the PR number (831) is parsed from the URL and drives the pr-head fetch.
     assert any(c[-1] == "pull/831/head" for c in runner.seen if "fetch" in c)
+
+
+# ==========================================================================
+# Worktree-path robustness (unique per invocation) — the live wedge where an
+# orphaned FIXED-path worktree (from an abrupt mid-rebase stop) made every
+# subsequent tier-1 `git worktree add` silently error, so conflicting loop PRs
+# were never recovered. reconcile_rebase_worktree MUST use a UNIQUE
+# per-invocation path (tempfile.mkdtemp, prefix am-reconcile-) and run
+# `git worktree prune` BEFORE `git worktree add`; the finally still removes it.
+# ==========================================================================
+
+def _worktree_add_path(seen):
+    """The path passed to `git worktree add` in a recorded command list."""
+    for c in seen:
+        if c[:3] == ["git", "worktree", "add"]:
+            # ["git","worktree","add","--detach",<worktree>,"origin/<default>"]
+            return c[4]
+    return None
+
+
+def test_reconcile_rebase_worktree_default_path_is_unique_per_invocation():
+    # Two consecutive default (no worktree_dir) calls MUST use DIFFERENT
+    # worktree paths, each a recognizable am-reconcile- mkdtemp dir — so a
+    # leftover can never wedge a later attempt and two PRs recovered in one
+    # tick never collide on a shared path.
+    r1 = _scripted_git_runner(rebase_rc=0)
+    r2 = _scripted_git_runner(rebase_rc=0)
+    vi.reconcile_rebase_worktree(
+        "acme/widget#8", _DEFAULT_BRANCH, repo="acme/widget", runner=r1)
+    vi.reconcile_rebase_worktree(
+        "acme/widget#9", _DEFAULT_BRANCH, repo="acme/widget", runner=r2)
+    p1 = _worktree_add_path(r1.seen)
+    p2 = _worktree_add_path(r2.seen)
+    assert p1 and p2
+    assert p1 != p2
+    assert "am-reconcile-" in os.path.basename(p1)
+    assert "am-reconcile-" in os.path.basename(p2)
+
+
+def test_reconcile_rebase_worktree_prunes_before_add():
+    # `git worktree prune` clears dangling registrations from previously-killed
+    # ticks; it MUST run BEFORE `git worktree add`.
+    runner = _scripted_git_runner(rebase_rc=0)
+    vi.reconcile_rebase_worktree(
+        "acme/widget#8", _DEFAULT_BRANCH, repo="acme/widget", runner=runner)
+    prune_idx = next(i for i, c in enumerate(runner.seen)
+                     if c[:3] == ["git", "worktree", "prune"])
+    add_idx = next(i for i, c in enumerate(runner.seen)
+                   if c[:3] == ["git", "worktree", "add"])
+    assert prune_idx < add_idx
+
+
+def test_reconcile_rebase_worktree_does_not_use_fixed_path():
+    # The retired fixed path must never be the worktree used, and the fixed
+    # module constant is retired (no caller depends on a fixed path).
+    runner = _scripted_git_runner(rebase_rc=0)
+    vi.reconcile_rebase_worktree(
+        "acme/widget#8", _DEFAULT_BRANCH, repo="acme/widget", runner=runner)
+    assert _worktree_add_path(runner.seen) != "/tmp/am-reconcile-integration"
+    assert not hasattr(vi, "_RECONCILE_WORKTREE_DIR")
+
+
+def test_reconcile_rebase_worktree_finally_removes_per_invocation_path():
+    # The finally still tears down the per-invocation worktree it created.
+    runner = _scripted_git_runner(rebase_rc=0)
+    vi.reconcile_rebase_worktree(
+        "acme/widget#8", _DEFAULT_BRANCH, repo="acme/widget", runner=runner)
+    add_path = _worktree_add_path(runner.seen)
+    removes = [c for c in runner.seen
+               if c[:3] == ["git", "worktree", "remove"]]
+    assert any(add_path in c for c in removes)
+
+
+def test_reconcile_rebase_worktree_stale_fixed_leftover_does_not_wedge():
+    # A pre-existing dir/worktree at the OLD fixed path must NOT break a new
+    # rebase — the new call uses a fresh mkdtemp path, unrelated to the leftover.
+    stale = "/tmp/am-reconcile-integration"
+    os.makedirs(stale, exist_ok=True)
+    try:
+        runner = _scripted_git_runner(rebase_rc=0)
+        out = vi.reconcile_rebase_worktree(
+            "acme/widget#8", _DEFAULT_BRANCH, repo="acme/widget", runner=runner)
+        assert out["rebased"] is True
+        assert _worktree_add_path(runner.seen) != stale
+    finally:
+        try:
+            os.rmdir(stale)
+        except OSError:
+            pass
