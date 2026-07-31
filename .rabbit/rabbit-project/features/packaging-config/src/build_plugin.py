@@ -106,7 +106,7 @@ _FEATURES_REL = os.path.join(
 )
 
 _PLUGIN_NAME = "auto-maintainer"
-_PLUGIN_VERSION = "0.29.0"
+_PLUGIN_VERSION = "0.30.0"
 _DESCRIPTION = (
     "Auto-maintainer: an autonomous repository maintenance loop, "
     "shipped as a Claude Code plugin."
@@ -194,6 +194,15 @@ _LIBS = {
     # byte-for-byte alongside the other pure libs — NOT normalized.
     "test_gate.py": os.path.join(
         _FEATURES_REL, "implement", "src", "test_gate.py",
+    ),
+    # open_pr is the IMPLEMENT doer's deterministic worktree-setup + explicit
+    # `--base <default>` PR-open (fixing wrong-base PR stacking). It imports only
+    # stdlib (argparse/subprocess/sys) and NO sibling lib, so it ships
+    # byte-for-byte alongside the other pure libs — NOT normalized. The shipped
+    # agents/auto-maintainer-implementer.md invokes it at
+    # ${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py.
+    "open_pr.py": os.path.join(
+        _FEATURES_REL, "implement", "src", "open_pr.py",
     ),
 }
 

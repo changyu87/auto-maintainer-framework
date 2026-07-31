@@ -232,6 +232,21 @@ EPHEMERAL_READ_PRODUCT_DEFAULTS = {
     INTEGRATION_RESULT_KEY: {},
 }
 
+# The durable-state document key under which the PRIOR-VERDICTS SNAPSHOT is
+# persisted: a durable CROSS-TICK fact (like BUDGET_KEY / ACTED_LEDGER_KEY, NOT a
+# per-tick #64 read product) holding a copy of the completed tick's VERIFY
+# verdicts, taken at tick end where `verdicts` is durably written. It is the
+# race-breaker source make_reconcile seeds Reconcile's OPTIONAL `prior_verdicts`
+# slot from: the fresh-tick `_reset_ephemeral_read_products` wipes the ephemeral
+# VERDICTS_KEY to [] BEFORE RECONCILE runs, so seeding prior_verdicts from the live
+# read product always yielded [] and the fallback never had data. This DEDICATED
+# durable key is EXEMPT from that ephemeral reset (it is NOT in
+# EPHEMERAL_READ_PRODUCT_DEFAULTS), so tick N's confirmed-CONFLICTING verdicts
+# reach tick N+1's RECONCILE. Each snapshot's verdict `pr_ref` is normalized to the
+# canonical `owner/repo#N` form so it matches the RECONCILE seed refs (VERIFY
+# already writes that form, so the normalization is normally a no-op copy).
+PRIOR_VERDICTS_KEY = "prior_verdicts_snapshot"
+
 # The durable-state document key under which the safety-governance budget window
 # {window_key, spent_tokens} is persisted. Unlike the four read-product keys
 # above, BUDGET is a durable CROSS-TICK fact (like the counter), NOT a per-tick
@@ -649,12 +664,51 @@ def make_cleanup(runtime):  # noqa: ARG001 - CLEANUP binds no runtime config
     return vi.CLEANUP_MANIFEST, cleanup.run
 
 
+def _canonical_pr_ref(ref):
+    """Derive the canonical `owner/repo#N` form of a PR ref for RECONCILE seeding.
+
+    The durable acted-ledger stores each PR's `ref` as a full GitHub URL
+    (`https://github.com/OWNER/REPO/pull/N`), but verify-integrate's tier-1
+    `_pr_number` and the `prior_by_ref` verdict keys both expect the canonical
+    `owner/repo#N` ref. A URL-form seed crashed tier-1 (`int(<url>)`) so a
+    CONFLICTING loop PR was detected but never rebased/re-landed, and it mismatched
+    the verdict-key form. This converts a URL to `owner/repo#N` (via
+    verify-integrate's `_pr_number` to parse N + `_derive_pr_ref` to parse
+    owner/repo); an already-canonical ref (containing `#`) is returned unchanged, as
+    is a falsy or unparseable ref (best-effort — never raise). Pure; no I/O."""
+    if not ref or "#" in str(ref):
+        return ref
+    try:
+        return vi._derive_pr_ref(ref, vi._pr_number(ref))
+    except (ValueError, AttributeError):
+        return ref
+
+
+def _snapshot_prior_verdicts(verdicts):
+    """Copy the tick's verdicts with each `pr_ref` normalized to the canonical
+    `owner/repo#N` form, for the durable PRIOR_VERDICTS_KEY snapshot. The keys must
+    match the RECONCILE seed refs (from `_reconcile_ledger_seed`) so
+    verify-integrate's `prior_by_ref` fallback lookup hits. VERIFY already writes
+    `owner/repo#N`, so this is normally a verbatim copy; the normalization is a
+    defensive backstop against a URL-form ref. Pure; no I/O."""
+    snap = []
+    for v in verdicts or []:
+        v2 = dict(v)
+        if "pr_ref" in v2:
+            v2["pr_ref"] = _canonical_pr_ref(v2["pr_ref"])
+        snap.append(v2)
+    return snap
+
+
 def _reconcile_ledger_seed(ledger):
     """Shape the durable acted-ledger's `opened` entries into the list Reconcile's
     `acted_ledger` slot expects: `[{work_order_id, pr_ref, issue_ref, repo}...]`.
 
     The acted-ledger is keyed by work_order_id (`wo-<work_item_id>`) with value
-    `{outcome, ref, acted_at_updated_at}`; `ref` is the opened PR ref. The source
+    `{outcome, ref, acted_at_updated_at}`; `ref` is the opened PR ref (stored as a
+    full GitHub URL). The seeded `pr_ref` is the CANONICAL `owner/repo#N` form
+    derived from that URL (via `_canonical_pr_ref`), NOT the raw URL — this closes
+    the tier-1 `int(<url>)` crash and aligns the `prior_by_ref` key form. The source
     issue ref is the work_item_id (the work order id with the `wo-` prefix
     stripped, e.g. `wo-acme/widget#7` -> `acme/widget#7`) and the repo is the
     `owner/repo` portion of that ref. Only `opened` entries are seeded — a
@@ -667,7 +721,7 @@ def _reconcile_ledger_seed(ledger):
         repo = issue_ref.split("#")[0] if "#" in issue_ref else None
         seed.append({
             "work_order_id": wo_id,
-            "pr_ref": entry.get("ref"),
+            "pr_ref": _canonical_pr_ref(entry.get("ref")),
             "issue_ref": issue_ref,
             "repo": repo,
         })
@@ -761,14 +815,19 @@ def make_reconcile(runtime):
         state_path = ctx.read("state_path")
         seed = _reconcile_ledger_seed(persisted_acted_ledger(state_path))
         ctx.write("acted_ledger", seed)
-        # SEED Reconcile's OPTIONAL prior_verdicts slot from the durable persisted
-        # verdicts read-product (the PREVIOUS tick's VERIFY output), VERBATIM (the
-        # same List of verdict dicts VERIFY wrote, NOT reshaped); [] when absent
-        # (first tick / none). This is the race-breaker for verify-integrate's
-        # RECONCILE (B) ladder: a loop PR whose LIVE mergeability is still UNKNOWN
-        # at tick-top falls back to the prior tick's confirmed-CONFLICTING verdict.
-        # Seeding [] reproduces exactly the prior behavior (non-breaking).
-        ctx.write("prior_verdicts", persisted_verdicts(state_path) or [])
+        # SEED Reconcile's OPTIONAL prior_verdicts slot from the DURABLE
+        # PRIOR_VERDICTS_KEY snapshot (the PREVIOUS tick's VERIFY output, snapshotted
+        # at tick end), NOT the ephemeral VERDICTS_KEY read-product: the fresh-tick
+        # `_reset_ephemeral_read_products` wipes `verdicts` to [] BEFORE RECONCILE
+        # runs, so seeding from the live read product ALWAYS yielded [] and the
+        # race-breaker never had data. The snapshot key is exempt from that reset, so
+        # tick N's confirmed-CONFLICTING verdicts (pr_ref in owner/repo#N form, so
+        # they match the seed refs) reach here at tick N+1; [] when absent (first
+        # tick / none), reproducing exactly the prior behavior (non-breaking). This
+        # is the race-breaker for verify-integrate's RECONCILE (B) ladder: a loop PR
+        # whose LIVE mergeability is still UNKNOWN at tick-top falls back to the prior
+        # tick's confirmed-CONFLICTING verdict.
+        ctx.write("prior_verdicts", persisted_prior_verdicts(state_path) or [])
         result = reconcile.run(ctx)
         recon = vi.ReconcileResult.from_dict(result.writes["reconcile_result"])
         _persist_reconcile_outcome(state_path, seed, recon)
@@ -1239,11 +1298,26 @@ def persisted_verdicts(state_path):
     """The last tick's verdicts snapshot persisted in durable state (the list of
     Verdict dicts VERIFY wrote: {pr_ref, mergeable, ok, reasons, ...}), or [] when
     the active route produced none (no VERIFY stage / first tick). A per-tick #64
-    read product persisted under VERDICTS_KEY. make_reconcile SEEDS Reconcile's
-    OPTIONAL `prior_verdicts` slot from this (the PREVIOUS tick's VERIFY output),
-    verbatim (not reshaped)."""
+    read product persisted under VERDICTS_KEY. NOTE: make_reconcile no longer seeds
+    Reconcile's OPTIONAL `prior_verdicts` slot from this ephemeral product (the
+    fresh-tick reset wipes it before RECONCILE runs) — it now seeds from the durable
+    `persisted_prior_verdicts` snapshot; this accessor is retained as the public
+    VERDICTS_KEY reader."""
     doc = ds.DurableState(state_path).load()
     return doc.get(VERDICTS_KEY, [])
+
+
+def persisted_prior_verdicts(state_path):
+    """The DURABLE prior-verdicts snapshot persisted under PRIOR_VERDICTS_KEY (a copy
+    of the completed tick's VERIFY verdicts, taken at tick end, with each `pr_ref`
+    normalized to `owner/repo#N`), or [] when absent (first tick / no VERIFY). Unlike
+    `persisted_verdicts` (the ephemeral #64 VERDICTS_KEY read product that the
+    fresh-tick reset wipes to [] before RECONCILE runs), this key is EXEMPT from
+    `_reset_ephemeral_read_products`, so it survives across ticks. make_reconcile
+    SEEDS Reconcile's OPTIONAL `prior_verdicts` slot from THIS — the race-breaker
+    source for the RECONCILE (B) UNKNOWN-mergeability fallback."""
+    doc = ds.DurableState(state_path).load()
+    return doc.get(PRIOR_VERDICTS_KEY, [])
 
 
 def persisted_budget_state(state_path):
@@ -3367,6 +3441,14 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         doc[VERDICTS_KEY] = (
             ctx.read(vi.VERDICTS_SLOT["name"])
             if "VERIFY" in route["states"] else [])
+        # The DURABLE prior-verdicts snapshot (NOT a #64 read product): copy THIS
+        # tick's verdicts (pr_refs normalized to owner/repo#N) into the dedicated
+        # PRIOR_VERDICTS_KEY, which the next tick's _reset_ephemeral_read_products
+        # does NOT wipe. This is what make_reconcile seeds prior_verdicts from, so a
+        # PR confirmed CONFLICTING by this tick's VERIFY reaches the NEXT tick's
+        # RECONCILE (B) UNKNOWN-mergeability fallback even after the fresh-tick reset
+        # clears the ephemeral verdicts slot.
+        doc[PRIOR_VERDICTS_KEY] = _snapshot_prior_verdicts(doc[VERDICTS_KEY])
         # review_findings (FT-C): the ADVISORY REVIEW state's per-tick read
         # product. Persisted when REVIEW is routed (the slot is seeded only then),
         # else empty (NOT a stale carry-forward). INTEGRATE no longer consumes it.
