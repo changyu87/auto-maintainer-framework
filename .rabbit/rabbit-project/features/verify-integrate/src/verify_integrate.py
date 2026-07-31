@@ -125,8 +125,10 @@ Deprecation criterion: Superseded when the loop adopts a non-git VCS backend,
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import List
@@ -2198,11 +2200,6 @@ def reconcile_reland_comment(pr_ref):
             f"this issue re-lands on a later tick.")
 
 
-# The fixed disposable worktree path the tier-1 rebase uses (mirrors GATE's fixed
-# path; a crashed prior tick can leave it behind, so the helper clears it first).
-_RECONCILE_WORKTREE_DIR = os.path.join("/tmp", "am-reconcile-integration")
-
-
 def _gh_pr_head_ref(pr_ref, repo=None, runner=subprocess.run):
     """The PR's head branch name (`gh pr view <n> --json headRefName`), needed to
     force-push a rebased branch back onto the PR. None when unresolvable."""
@@ -2228,11 +2225,13 @@ def reconcile_rebase_worktree(pr_ref, default_branch, repo=None,
     tier-2 close on an unrelated fault). The subprocess `runner` is INJECTABLE so
     the whole ladder is unit-tested with a fake (no real git)."""
     number = _pr_number(pr_ref)
-    worktree = worktree_dir or _RECONCILE_WORKTREE_DIR
+    # A UNIQUE per-invocation worktree path (never a fixed path): a tick killed
+    # mid-rebase can never wedge later tier-1 attempts on a leftover worktree,
+    # and multiple conflicting PRs recovered in one tick never collide.
+    worktree = worktree_dir or tempfile.mkdtemp(prefix="am-reconcile-")
 
-    # Best-effort clear a stale leftover from a crashed prior tick (ignore rc).
-    runner(["git", "worktree", "remove", "--force", worktree],
-           capture_output=True, text=True)
+    # Prune dangling worktree registrations left by previously-killed ticks
+    # BEFORE `git worktree add` (ignore rc).
     runner(["git", "worktree", "prune"], capture_output=True, text=True)
 
     fetch_base = runner(["git", "fetch", "origin", default_branch],
@@ -2276,6 +2275,7 @@ def reconcile_rebase_worktree(pr_ref, default_branch, repo=None,
     finally:
         runner(["git", "worktree", "remove", "--force", worktree],
                capture_output=True, text=True)
+        shutil.rmtree(worktree, ignore_errors=True)
 
 
 class Reconcile:

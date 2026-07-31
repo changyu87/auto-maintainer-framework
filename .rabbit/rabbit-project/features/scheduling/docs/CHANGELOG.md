@@ -1,5 +1,24 @@
 # scheduling — Changelog
 
+## feature 0.45.0 — 2026-07-31
+
+- **RECONCILE recovery outcome surfaced in observability.** `run_tick`'s
+  `tick_end` event detail now also carries `rebased`
+  (`len(reconcile_result.rebased)`) + `rebased_refs`, `relanded`
+  (`len(reconcile_result.relanded)`) + `relanded_refs`, and `reconcile_errors`
+  (`len(reconcile_result.errors)`), derived from the `reconcile_result` read
+  product EXACTLY like the existing `deduped`/`auto_merged`. The one-line trace
+  gains compact `rebased=<n>`/`relanded=<n>`/`reconcile_errors=<n>` tokens shown
+  ONLY when `> 0`. This closes the observability gap where a RECONCILE that
+  silently errored on every conflicting PR (the fixed-worktree wedge) was
+  invisible in the trace, since only `deduped`/`auto_merged` were surfaced. A
+  route without RECONCILE (or an empty result) shows all counts `0` + empty ref
+  lists in detail and emits no trace token (non-breaking). scheduling only READS
+  existing `ReconcileResult` fields; no schema change and no verify-integrate
+  change.
+- **Housekeep baseline re-anchored `spec.md` 1450->1462** for the already-committed
+  0.45.0 spec growth (contract.md kept under its strictly-grew gate).
+
 ## feature 0.44.0 — 2026-07-31
 
 - **RECONCILE seed `pr_ref` is the canonical `owner/repo#N` form (tier-1 crash

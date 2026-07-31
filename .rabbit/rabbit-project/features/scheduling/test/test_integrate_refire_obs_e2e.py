@@ -634,6 +634,136 @@ def test_reconcile_empty_auto_merged_shows_zero_no_trace_token():
     assert "auto_merged=" not in trace, trace
 
 
+# ==========================================================================
+# Behaviour H — RECONCILE's RECOVERY outcome (rebased / relanded /
+# reconcile_errors counts + rebased_refs/relanded_refs) is surfaced in the
+# tick_end detail (always) + the one-line trace (each token only when >0),
+# mirroring deduped/auto_merged. This closes the observability gap where a
+# RECONCILE that silently errored on every conflicting PR (the fixed-worktree
+# wedge) was invisible in the trace. verify-integrate's ReconcileResult
+# rebased/relanded/errors fields are consumed UNCHANGED.
+# ==========================================================================
+
+_REBASED = [{"pr_ref": "acme/widget#43", "issue_ref": "acme/widget#7"}]
+_RELANDED = [{"pr_ref": "acme/widget#44", "issue_ref": "acme/widget#8"}]
+_ERRORS = [{"ref": "acme/widget#45", "reason": "worktree wedged"}]
+
+
+class _RecoveryReconcile:
+    """A fake vi.Reconcile whose run writes a reconcile_result carrying non-empty
+    `rebased`, `relanded`, and `errors` lists (one PR each). No network, no git,
+    no dependence on the def-time seams."""
+
+    _RB = _REBASED
+    _RL = _RELANDED
+    _ER = _ERRORS
+
+    def __init__(self, *a, **k):
+        pass
+
+    def run(self, ctx):
+        return fc.StateResult(signal="OK", writes={"reconcile_result": {
+            "schema_version": vi.RECONCILE_RESULT_SCHEMA_VERSION,
+            "closed_issues": [], "deduped": [], "auto_merged": [],
+            "rebased": [dict(e) for e in self._RB],
+            "relanded": [dict(e) for e in self._RL],
+            "skipped": [], "errors": [dict(e) for e in self._ER],
+        }})
+
+
+def _patch_reconcile_recovery(cls):
+    saved = {"R": vi.Reconcile, "branch": vi.gh_default_branch_source}
+    vi.Reconcile = cls
+    vi.gh_default_branch_source = lambda repo=None: "main"
+
+    def restore():
+        vi.Reconcile = saved["R"]
+        vi.gh_default_branch_source = saved["branch"]
+    return restore
+
+
+def test_reconcile_recovery_surfaced_in_tick_end_and_trace():
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "auto-merge", route=_RECONCILE_ROUTE)
+    restore = _patch_reconcile_recovery(_RecoveryReconcile)
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            signal = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                                 state_path=state_path,
+                                 journal_path=journal_path,
+                                 source=_stub_source())
+        trace = buf.getvalue()
+    finally:
+        restore()
+    assert signal == "idle", signal
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("rebased") == 1, detail
+    assert detail.get("rebased_refs") == ["acme/widget#43"], detail
+    assert detail.get("relanded") == 1, detail
+    assert detail.get("relanded_refs") == ["acme/widget#44"], detail
+    assert detail.get("reconcile_errors") == 1, detail
+    # Each token appears in the trace when >0.
+    assert "rebased=1" in trace, trace
+    assert "relanded=1" in trace, trace
+    assert "reconcile_errors=1" in trace, trace
+
+
+def test_route_without_reconcile_shows_recovery_zero_no_trace_tokens():
+    """A route with no RECONCILE state shows rebased=0/relanded=0/
+    reconcile_errors=0 + empty ref lists in the tick_end detail and omits the
+    trace tokens (mirroring deduped/auto_merged)."""
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "propose", route=rt.DEFAULT_ROUTE)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                    state_path=state_path, journal_path=journal_path,
+                    source=_stub_source())
+    trace = buf.getvalue()
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("rebased") == 0, detail
+    assert detail.get("rebased_refs") == [], detail
+    assert detail.get("relanded") == 0, detail
+    assert detail.get("relanded_refs") == [], detail
+    assert detail.get("reconcile_errors") == 0, detail
+    assert "rebased=" not in trace, trace
+    assert "relanded=" not in trace, trace
+    assert "reconcile_errors=" not in trace, trace
+
+
+def test_reconcile_empty_recovery_shows_zero_no_trace_tokens():
+    """A RECONCILE route whose result carries empty rebased/relanded/errors
+    shows all counts 0 + empty ref lists and omits the trace tokens."""
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "auto-merge", route=_RECONCILE_ROUTE)
+
+    class _NoRecovery(_RecoveryReconcile):
+        _RB = []
+        _RL = []
+        _ER = []
+
+    restore = _patch_reconcile_recovery(_NoRecovery)
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                        state_path=state_path, journal_path=journal_path,
+                        source=_stub_source())
+        trace = buf.getvalue()
+    finally:
+        restore()
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("rebased") == 0, detail
+    assert detail.get("rebased_refs") == [], detail
+    assert detail.get("relanded") == 0, detail
+    assert detail.get("relanded_refs") == [], detail
+    assert detail.get("reconcile_errors") == 0, detail
+    assert "rebased=" not in trace, trace
+    assert "relanded=" not in trace, trace
+    assert "reconcile_errors=" not in trace, trace
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

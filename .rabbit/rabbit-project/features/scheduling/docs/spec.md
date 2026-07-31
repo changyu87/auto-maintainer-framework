@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.44.0
+version: 0.45.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -858,14 +858,26 @@ kind outside the closed vocabulary):
   — acted_ledger PRs RECONCILE detected MERGED this tick, i.e. an auto-merge
   GitHub completed asynchronously BETWEEN ticks, from the `reconcile_result` read
   product) plus `auto_merged_refs` (the merged `pr_ref`s); `0`/`[]` when there is
-  no RECONCILE state or no completion this tick, and a
+  no RECONCILE state or no completion this tick, the RECONCILE **recovery**
+  outcome — `rebased` (`len(reconcile_result.rebased)` — CONFLICTING loop PRs
+  tier-1 rebased+force-pushed this tick) plus `rebased_refs`, `relanded`
+  (`len(reconcile_result.relanded)` — tier-2 close+reland) plus `relanded_refs`,
+  and `reconcile_errors` (`len(reconcile_result.errors)` — per-entry RECONCILE
+  faults recorded this tick); all `0`/`[]` when there is no RECONCILE state or an
+  empty result — and a
   `refire` boolean disambiguating idle-because-no-work (`false`) from
   refire-because-work-remains (`true`). The one-line trace also gains a compact
   `merged=<n>` token (plus `integrate_errored=<n>`, `auto_merge_enabled=<n>`,
-  `deduped=<n>`, and `auto_merged=<n>` each shown only when `> 0`). All existing
+  `deduped=<n>`, `auto_merged=<n>`, `rebased=<n>`, `relanded=<n>`, and
+  `reconcile_errors=<n>` each shown only when `> 0`). Surfacing `rebased`/
+  `relanded`/`reconcile_errors` closes an observability gap: a RECONCILE that
+  silently errored on every conflicting PR (e.g. the fixed-worktree wedge) was
+  previously invisible in the trace, since only `deduped`/`auto_merged` were
+  surfaced. All existing
   detail keys + trace fields are preserved; a route with no INTEGRATE shows
   `merged=0`/`merged_refs=[]`/`auto_merge_enabled=0`, and a route with no
-  RECONCILE (or no completion) shows `deduped=0`/`auto_merged=0`/`auto_merged_refs=[]`
+  RECONCILE (or an empty result) shows
+  `deduped=0`/`auto_merged=0`/`auto_merged_refs=[]`/`rebased=0`/`relanded=0`/`reconcile_errors=0`
   in detail with no trace token. Because scheduling stamps each `auto_merged`
   acted_ledger entry to a TERMINAL outcome (see `make_reconcile` below), a given
   auto-merge completion is reported in EXACTLY ONE tick's `auto_merged`, never
