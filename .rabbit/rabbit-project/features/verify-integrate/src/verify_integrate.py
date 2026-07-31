@@ -659,9 +659,22 @@ def _derive_pr_ref(url, number):
 
 
 def _pr_number(pr_ref):
-    """The integer PR number parsed off a `pr_ref` (`owner/repo#number` or bare
-    `#number`), used to order the GATE's cumulative merges deterministically."""
-    return int(pr_ref.split("#")[-1])
+    """The integer PR number parsed off a `pr_ref`, tolerating BOTH the canonical
+    `owner/repo#number` (or bare `#number`) ref AND a full GitHub PR URL
+    (`…/pull/number`, trailing slash/query stripped). Raises `ValueError` only when
+    no number is parseable. Used to order the GATE's cumulative merges and to drive
+    the RECONCILE tier-1 rebase; the URL tolerance is a defensive backstop so an
+    upstream seed passing a URL-form ref never crashes tier-1 with `int(<url>)`."""
+    s = str(pr_ref).strip().split("?")[0].rstrip("/")
+    if "#" in s:
+        tail = s.rsplit("#", 1)[-1]
+    elif "/pull/" in s:
+        tail = s.rsplit("/pull/", 1)[-1].split("/")[0]
+    else:
+        tail = s.rsplit("/", 1)[-1]
+    if tail.isdigit():
+        return int(tail)
+    raise ValueError(f"cannot parse PR number from ref: {pr_ref!r}")
 
 
 def _pr_url(pr_ref, repo):

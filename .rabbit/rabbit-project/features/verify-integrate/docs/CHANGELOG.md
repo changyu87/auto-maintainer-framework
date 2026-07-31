@@ -2,6 +2,21 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.11.1 — 2026-07-31
+
+RECONCILE tier-1 URL-ref-crash fix: a URL-form `pr_ref` no longer crashes the
+deterministic rebase helper.
+
+- **`_pr_number(pr_ref)` tolerates both ref forms.** It now parses the PR number
+  from BOTH the canonical `owner/repo#N` (or bare `#N`) ref AND a full GitHub PR
+  URL (`…/pull/N`, trailing slash/query stripped), raising `ValueError` only when
+  no number is parseable. Previously `int(pr_ref.split("#")[-1])` threw on a
+  URL-form ref, so `reconcile_rebase_worktree` (tier-1) crashed every tick and a
+  detected-CONFLICTING loop PR was never rebased/re-landed. A defensive backstop:
+  scheduling also normalizes the seed to `owner/repo#N` at the source; either alone
+  prevents the crash. No behavior change for existing `owner/repo#N` callers;
+  RECONCILE stays advisory.
+
 ## 0.11.0 — 2026-07-30
 
 RECONCILE (A) auto-merge-completion observability: an auto-merge GitHub completed
