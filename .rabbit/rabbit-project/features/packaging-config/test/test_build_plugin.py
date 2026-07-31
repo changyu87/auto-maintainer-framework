@@ -560,20 +560,20 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.29.0, auto-merge-completion observability lib re-ship): version
-# bumped to 0.29.0 in BOTH plugin.json and marketplace.json, and the two are
-# consistent. v0.29.0 rebuilds the committed plugin tree so it ships the
-# verify-integrate 0.11.0 + scheduling 0.43.0 sources: lib/verify_integrate.py
-# (RECONCILE now records every merged acted_ledger PR in
-# reconcile_result.auto_merged, surfacing an auto-merge GitHub completed
-# asynchronously between ticks) and lib/run_tick.py (tick_end surfaces
-# auto_merged + auto_merged_refs; _persist_reconcile_outcome stamps those ledger
-# entries terminal outcome="merged" so the completion reports exactly once). The
-# shipped default-config CONTENT is unchanged (still schema 2.9.0, same values);
-# this release only re-normalizes the affected libs and bumps the version so the
-# marketplace serves the new lib to existing installs.
+# Release (v0.30.0, loop-convergence fixes + open_pr implementer lib): version
+# bumped to 0.30.0 in BOTH plugin.json and marketplace.json, and the two are
+# consistent. v0.30.0 rebuilds the committed plugin tree so it ships the
+# verify-integrate 0.11.1 + scheduling 0.44.0 + implement 0.11.0 sources:
+# lib/verify_integrate.py (RECONCILE _pr_number tolerates a URL-form pr_ref so
+# tier-1 conflict-recovery never crashes) and lib/run_tick.py (RECONCILE seed
+# uses canonical owner/repo#N refs + a durable prior-verdicts snapshot). This
+# release also REGISTERS a new implementer lib: build_plugin._LIBS gains
+# open_pr.py (implement/src/open_pr.py) — a pure-stdlib byte-for-byte lib like
+# test_gate.py — so the shipped agents/auto-maintainer-implementer.md (v2.11.0)
+# can invoke ${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py. The shipped default-config
+# CONTENT is unchanged (still schema 2.9.0, same values).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_29_0_and_consistent():
+def test_version_bumped_to_0_30_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -585,10 +585,10 @@ def test_version_bumped_to_0_29_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.29.0", \
-            f"plugin.json version must be 0.29.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.29.0", \
-            "marketplace.json plugin entry version must be 0.29.0"
+        assert pdata.get("version") == "0.30.0", \
+            f"plugin.json version must be 0.30.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.30.0", \
+            "marketplace.json plugin entry version must be 0.30.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2741,6 +2741,55 @@ def test_shipped_test_gate_no_source_tree_leak():
         assert ".rabbit" not in body, "shipped test_gate leaks .rabbit"
         assert "rabbit-project" not in body, \
             "shipped test_gate references the source feature tree"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.30.0 (#), open_pr.py ship: implement's open_pr.py — the IMPLEMENT
+# doer's deterministic worktree-setup + explicit `--base <default>` PR-open
+# (fixing wrong-base PR stacking) — ships under lib/. It imports ONLY stdlib
+# (argparse/subprocess/sys) and NO sibling lib, so it is a PURE byte-copied lib
+# (in _LIBS, NOT _NORMALIZED_LIBS) — copied verbatim like test_gate. The shipped
+# agents/auto-maintainer-implementer.md (v2.11.0) invokes it at
+# ${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py, so without this registration the deployed
+# agent's call would fail. Prove the fresh build ships lib/open_pr.py
+# byte-identical to implement/src/open_pr.py.
+# ---------------------------------------------------------------------------
+def test_open_pr_lib_present_and_byte_identical():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        dst = os.path.join(lib, "open_pr.py")
+        assert os.path.isfile(dst), \
+            "lib/open_pr.py must ship in the plugin tree"
+        src = os.path.join(
+            _REPO_ROOT, ".rabbit", "rabbit-project", "features",
+            "implement", "src", "open_pr.py",
+        )
+        with open(src, "rb") as a, open(dst, "rb") as b:
+            assert a.read() == b.read(), \
+                "open_pr.py is not byte-identical to its source"
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.30.0: the byte-copied open_pr.py must not leak a path back into the
+# source feature tree — the headline clean-ship invariant applies to it too
+# (it is pure stdlib, so this is a sanity guard mirroring the other pure libs).
+# ---------------------------------------------------------------------------
+def test_shipped_open_pr_no_source_tree_leak():
+    out_root = _build_into_temp()
+    try:
+        lib = os.path.join(out_root, "plugins", "auto-maintainer", "lib")
+        with open(
+            os.path.join(lib, "open_pr.py"), encoding="utf-8"
+        ) as fh:
+            body = fh.read()
+        assert ".rabbit" not in body, "shipped open_pr leaks .rabbit"
+        assert "rabbit-project" not in body, \
+            "shipped open_pr references the source feature tree"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
