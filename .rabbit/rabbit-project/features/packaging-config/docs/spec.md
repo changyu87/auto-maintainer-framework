@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.19
+version: 0.7.20
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -141,6 +141,22 @@ ledger entries terminal `outcome="merged"` so the completion reports exactly
 once). The shipped `default-config/` CONTENT is unchanged (config still schema
 2.9.0, same values); this release only re-normalizes the affected libs and bumps
 the version. No build change beyond `_PLUGIN_VERSION → 0.29.0`.
+
+**Plugin minor v0.30.0** — re-ship the loop-convergence fixes (verify-integrate
+0.11.1 + scheduling 0.44.0 + implement 0.11.0) AND register a new implementer lib.
+`lib/verify_integrate.py` (RECONCILE `_pr_number` tolerates a URL-form `pr_ref` so
+tier-1 conflict-recovery never crashes) and `lib/run_tick.py` (RECONCILE seed uses
+canonical `owner/repo#N` refs + a durable prior-verdicts snapshot that survives the
+fresh-tick reset, so the (B) race-breaker actually recovers a CONFLICTING loop PR)
+re-normalize from source. **Build change:** `build_plugin`'s `_LIBS` gains
+`open_pr.py` (`implement/src/open_pr.py`) — a pure-stdlib byte-for-byte lib exactly
+like `test_gate.py` — so the shipped `agents/auto-maintainer-implementer.md`
+(v2.11.0) can invoke `${CLAUDE_PLUGIN_ROOT}/lib/open_pr.py` (its deterministic
+worktree-setup + explicit `--base <default>` PR-open that fixes wrong-base
+stacking); without this registration the deployed agent's call would fail. The
+implementer agent md re-collects via the `ship/` convention. The shipped
+`default-config/` CONTENT is unchanged (config still schema 2.9.0). Version bump
+`_PLUGIN_VERSION → 0.30.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
