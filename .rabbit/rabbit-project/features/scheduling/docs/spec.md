@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.42.0
+version: 0.43.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -854,14 +854,22 @@ kind outside the closed vocabulary):
   RECONCILE `deduped` count (`len(reconcile_result.deduped)` — the same-issue
   duplicate loop PRs RECONCILE closed this tick, from the `reconcile_result` read
   product; `0` when the route has no RECONCILE state or `reconcile_result` is
-  absent), and a
+  absent), the RECONCILE `auto_merged` count (`len(reconcile_result.auto_merged)`
+  — acted_ledger PRs RECONCILE detected MERGED this tick, i.e. an auto-merge
+  GitHub completed asynchronously BETWEEN ticks, from the `reconcile_result` read
+  product) plus `auto_merged_refs` (the merged `pr_ref`s); `0`/`[]` when there is
+  no RECONCILE state or no completion this tick, and a
   `refire` boolean disambiguating idle-because-no-work (`false`) from
   refire-because-work-remains (`true`). The one-line trace also gains a compact
-  `merged=<n>` token (plus `integrate_errored=<n>`, `auto_merge_enabled=<n>`, and
-  `deduped=<n>` each shown only when `> 0`). All existing
+  `merged=<n>` token (plus `integrate_errored=<n>`, `auto_merge_enabled=<n>`,
+  `deduped=<n>`, and `auto_merged=<n>` each shown only when `> 0`). All existing
   detail keys + trace fields are preserved; a route with no INTEGRATE shows
   `merged=0`/`merged_refs=[]`/`auto_merge_enabled=0`, and a route with no
-  RECONCILE (or an empty dedup) shows `deduped=0` in detail with no trace token.
+  RECONCILE (or no completion) shows `deduped=0`/`auto_merged=0`/`auto_merged_refs=[]`
+  in detail with no trace token. Because scheduling stamps each `auto_merged`
+  acted_ledger entry to a TERMINAL outcome (see `make_reconcile` below), a given
+  auto-merge completion is reported in EXACTLY ONE tick's `auto_merged`, never
+  every tick.
   - **Per-issue / per-PR IDENTIFIERS (additive, so the log alone answers "which
     issues + which PRs").** In addition to the counts above, `tick_end.detail`
     carries identifier lists sourced from the read products already in scope at
@@ -1087,7 +1095,14 @@ work-intake seams landed in the providers wave. Both are deterministic, live in
   merged-PR issue-close recorded in `reconcile_result.closed_issues` is stamped
   back into the acted-ledger entry (idempotency — a later tick never re-comments),
   and a tier-2 re-land's PR-close clears/updates the entry so the existing §3.8.5
-  acted-ledger re-entry gate re-lands it next tick. RECONCILE is advisory (emits
+  acted-ledger re-entry gate re-lands it next tick. scheduling ALSO stamps each
+  acted-ledger entry named in `reconcile_result.auto_merged` (the PRs RECONCILE
+  detected MERGED — an auto-merge GitHub completed between ticks) to a TERMINAL
+  outcome `outcome="merged"`, so `_reconcile_ledger_seed` (which seeds only
+  `outcome == "opened"`) never re-seeds it — guaranteeing the completion is
+  surfaced in `tick_end.auto_merged` EXACTLY ONCE (the first tick that detects the
+  async merge), never every tick. An entry in BOTH `closed_issues` and
+  `auto_merged` ends terminal either way (idempotent). RECONCILE is advisory (emits
   only `OK`); a fault never blocks the tick. Tests inject fakes for every seam +
   a fake durable state — no network.
 - **Reject-disposition enactment at TRIAGE.** At the TRIAGE resume, after the

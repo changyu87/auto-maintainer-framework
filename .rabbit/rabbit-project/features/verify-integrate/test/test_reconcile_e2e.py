@@ -235,6 +235,7 @@ def test_reconcile_result_empty_round_trip():
     assert d["skipped"] == []
     assert d["errors"] == []
     assert d["deduped"] == []
+    assert d["auto_merged"] == []
     assert vi.ReconcileResult.from_dict(d) == r
 
 
@@ -249,9 +250,37 @@ def test_reconcile_result_deduped_round_trips():
     assert vi.ReconcileResult.from_dict(d) == r
 
 
-def test_reconcile_result_schema_version_is_1_1_0():
-    # Additive bump: the `deduped` list was added to the 1.0.0 shape (C).
-    assert vi.RECONCILE_RESULT_SCHEMA_VERSION == "1.1.0"
+def test_reconcile_result_auto_merged_round_trips():
+    # (A) auto_merged: every merged acted_ledger PR seen this tick — a pure
+    # observability record (no GitHub write), kept SEPARATE from closed_issues.
+    r = vi.ReconcileResult(
+        auto_merged=[{"pr_ref": "acme/widget#7", "issue_ref": "acme/widget#3"}])
+    d = r.to_dict()
+    assert d["auto_merged"] == [{"pr_ref": "acme/widget#7",
+                                 "issue_ref": "acme/widget#3"}]
+    assert vi.ReconcileResult.from_dict(d) == r
+
+
+def test_reconcile_result_1_1_0_dict_deserializes_auto_merged_empty():
+    # A 1.1.0-shaped dict has NO auto_merged key; from_dict defaults it to [] so a
+    # prior-version result deserializes unchanged (additive, back-compatible).
+    legacy = {
+        "schema_version": "1.1.0",
+        "closed_issues": [],
+        "rebased": [],
+        "relanded": [],
+        "deduped": [],
+        "skipped": [],
+        "errors": [],
+    }
+    r = vi.ReconcileResult.from_dict(legacy)
+    assert r.auto_merged == []
+
+
+def test_reconcile_result_schema_version_is_1_2_0():
+    # Additive bump: the `auto_merged` list was added to the 1.1.0 shape (which
+    # had added `deduped` to 1.0.0) — auto-merge-completion observability (A).
+    assert vi.RECONCILE_RESULT_SCHEMA_VERSION == "1.2.0"
 
 
 def test_reconcile_result_slot_descriptor_is_versioned():
@@ -297,10 +326,51 @@ def test_reconcile_e2e_merged_pr_open_issue_closes_issue():
                                      "pr_ref": "acme/widget#7"}]
     assert res["rebased"] == []
     assert res["relanded"] == []
+    # (A) auto_merged records the merged PR too — BOTH auto_merged and
+    # closed_issues carry it when the issue was still open and got closed.
+    assert res["auto_merged"] == [{"pr_ref": "acme/widget#7",
+                                   "issue_ref": "acme/widget#5"}]
     assert len(close.calls) == 1
     assert close.calls[0]["issue_ref"] == "acme/widget#5"
     # the close comment NAMES the merged PR (attributable convergence write).
     assert "acme/widget#7" in close.calls[0]["comment"]
+
+
+def test_reconcile_e2e_merged_pr_closed_issue_records_auto_merged_only():
+    # A MERGED PR whose issue is already CLOSED is recorded in auto_merged
+    # (observability of the async completion) but NOT in closed_issues (the
+    # still-open-issue close path is unchanged and never re-closes/comments).
+    pr = _pr_state_source({
+        "acme/widget#7": {"state": "MERGED", "merged": True,
+                          "mergeable": "UNKNOWN"}})
+    iss = _issue_state_source({"acme/widget#5": {"state": "CLOSED"}})
+    close = _recording_issue_close_sink()
+    reconcile = _auto_reconcile(pr_state_source=pr, issue_state_source=iss,
+                                issue_close_sink=close,
+                                worktree_helper=_never_helper())
+
+    res = _run(reconcile, [_entry(number=7, issue=5)])
+
+    assert res["auto_merged"] == [{"pr_ref": "acme/widget#7",
+                                   "issue_ref": "acme/widget#5"}]
+    assert res["closed_issues"] == []
+    # auto_merged drives NO GitHub write — the issue-close sink was never called.
+    assert close.calls == []
+
+
+def test_reconcile_e2e_open_pr_not_in_auto_merged():
+    # A non-merged (OPEN, mergeable) PR is not recorded in auto_merged — only a
+    # MERGED ledger PR is.
+    pr = _pr_state_source({
+        "acme/widget#8": {"state": "OPEN", "merged": False,
+                          "mergeable": "MERGEABLE"}})
+    reconcile = _auto_reconcile(pr_state_source=pr,
+                                issue_state_source=_issue_state_source({}),
+                                worktree_helper=_never_helper())
+
+    res = _run(reconcile, [_entry(number=8, issue=3)])
+
+    assert res["auto_merged"] == []
 
 
 def test_reconcile_e2e_merged_pr_closed_issue_untouched():
@@ -516,7 +586,7 @@ def test_reconcile_e2e_empty_ledger_is_ok_all_empty():
     assert res == {
         "schema_version": vi.RECONCILE_RESULT_SCHEMA_VERSION,
         "closed_issues": [], "rebased": [], "relanded": [],
-        "skipped": [], "errors": [], "deduped": [],
+        "skipped": [], "errors": [], "deduped": [], "auto_merged": [],
     }
 
 

@@ -2,6 +2,29 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.11.0 — 2026-07-30
+
+RECONCILE (A) auto-merge-completion observability: an auto-merge GitHub completed
+asynchronously between ticks is now surfaced with a tick-trace.
+
+- **`ReconcileResult.auto_merged`.** RECONCILE now records `{pr_ref, issue_ref}`
+  in a NEW `auto_merged` list for EVERY merged `acted_ledger` PR it sees this tick,
+  UNCONDITIONALLY — whether or not the source issue is still open. This closes the
+  observability gap where a PR that INTEGRATE `auto_merge_enabled` and GitHub then
+  completed between ticks left NO tick-trace confirmation the merge landed (a PR
+  whose issue was already auto-closed by its `Closes #<n>` keyword left `merged=0`
+  forever). `auto_merged` is a pure OBSERVABILITY record — it drives no GitHub
+  write and is INDEPENDENT of `closed_issues` (a merged PR whose issue is already
+  closed appears in `auto_merged` but NOT `closed_issues`); the existing (A)
+  still-open-issue close path is unchanged.
+- **Schema (additive, non-breaking).** `RECONCILE_RESULT_SCHEMA_VERSION`
+  `1.1.0` → `1.2.0`; `auto_merged` defaults to `[]` in `to_dict`/`from_dict`, so a
+  `1.1.0` result deserializes unchanged. `RECONCILE_MANIFEST` reads are unchanged.
+- **Cross-feature contract.** The field is exactly `auto_merged`, entries
+  `{pr_ref, issue_ref}`; scheduling (a paired cycle) reads
+  `reconcile_result.auto_merged` to surface the count and stamp those ledger
+  entries TERMINAL so the completion is reported exactly once.
+
 ## 0.10.0 — 2026-07-30
 
 RECONCILE (B) conflict-recovery: a genuinely-CONFLICTING loop PR is now recovered

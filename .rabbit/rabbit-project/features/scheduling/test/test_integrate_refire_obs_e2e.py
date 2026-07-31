@@ -528,6 +528,112 @@ def test_reconcile_empty_dedup_shows_deduped_zero_no_trace_token():
     assert "deduped=" not in trace, trace
 
 
+# ==========================================================================
+# Behaviour G — RECONCILE's `auto_merged` count + refs (acted_ledger PRs
+# RECONCILE detected MERGED this tick — an auto-merge GitHub completed
+# asynchronously BETWEEN ticks) are surfaced in the tick_end detail
+# (auto_merged=<n> always + auto_merged_refs) and the one-line trace
+# (auto_merged=<n> only when >0), mirroring deduped. verify-integrate's
+# ReconcileResult.auto_merged is consumed UNCHANGED.
+# ==========================================================================
+
+_AUTO_MERGED = [{"pr_ref": "acme/widget#42", "issue_ref": "acme/widget#7"}]
+
+
+class _AutoMergedReconcile:
+    """A fake vi.Reconcile whose run writes a reconcile_result carrying a
+    non-empty `auto_merged` list (one acted_ledger PR detected merged this tick).
+    No network, no git, no dependence on the def-time seams."""
+
+    _AM = _AUTO_MERGED
+
+    def __init__(self, *a, **k):
+        pass
+
+    def run(self, ctx):
+        return fc.StateResult(signal="OK", writes={"reconcile_result": {
+            "schema_version": vi.RECONCILE_RESULT_SCHEMA_VERSION,
+            "closed_issues": [], "rebased": [], "relanded": [], "deduped": [],
+            "auto_merged": [dict(e) for e in self._AM],
+            "skipped": [], "errors": [],
+        }})
+
+
+def _patch_reconcile_auto_merged(cls):
+    saved = {"R": vi.Reconcile, "branch": vi.gh_default_branch_source}
+    vi.Reconcile = cls
+    vi.gh_default_branch_source = lambda repo=None: "main"
+
+    def restore():
+        vi.Reconcile = saved["R"]
+        vi.gh_default_branch_source = saved["branch"]
+    return restore
+
+
+def test_reconcile_auto_merged_surfaced_in_tick_end_and_trace():
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "auto-merge", route=_RECONCILE_ROUTE)
+    restore = _patch_reconcile_auto_merged(_AutoMergedReconcile)
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            signal = rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                                 state_path=state_path,
+                                 journal_path=journal_path,
+                                 source=_stub_source())
+        trace = buf.getvalue()
+    finally:
+        restore()
+    assert signal == "idle", signal
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("auto_merged") == 1, detail
+    assert detail.get("auto_merged_refs") == ["acme/widget#42"], detail
+    # The trace shows the auto_merged token when >0.
+    assert "auto_merged=1" in trace, trace
+
+
+def test_route_without_reconcile_shows_auto_merged_zero_no_trace_token():
+    """A route with no RECONCILE state shows auto_merged=0 + auto_merged_refs=[]
+    in the tick_end detail and omits the trace token (mirroring deduped)."""
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "propose", route=rt.DEFAULT_ROUTE)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                    state_path=state_path, journal_path=journal_path,
+                    source=_stub_source())
+    trace = buf.getvalue()
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("auto_merged") == 0, detail
+    assert detail.get("auto_merged_refs") == [], detail
+    assert "auto_merged=" not in trace, trace
+
+
+def test_reconcile_empty_auto_merged_shows_zero_no_trace_token():
+    """A RECONCILE route with an empty auto_merged shows auto_merged=0 +
+    auto_merged_refs=[] and omits the trace token."""
+    project_dir, cfg, state_path, journal_path = _setup_project(
+        "auto-merge", route=_RECONCILE_ROUTE)
+
+    class _NoAutoMerged(_AutoMergedReconcile):
+        _AM = []
+
+    restore = _patch_reconcile_auto_merged(_NoAutoMerged)
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rt.run_tick(project_dir=project_dir, runtime_dir=cfg,
+                        state_path=state_path, journal_path=journal_path,
+                        source=_stub_source())
+        trace = buf.getvalue()
+    finally:
+        restore()
+    detail = _tick_end(cfg)["detail"]
+    assert detail.get("auto_merged") == 0, detail
+    assert detail.get("auto_merged_refs") == [], detail
+    assert "auto_merged=" not in trace, trace
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

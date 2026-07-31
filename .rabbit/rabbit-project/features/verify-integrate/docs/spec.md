@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.10.0
+version: 0.11.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
@@ -413,15 +413,33 @@ REPORT/work-intake's (contract `never`).
   GATE integration-worktree helper (fetch a PR head, merge/rebase onto a fresh
   base), reused for the tier-1 rebase.
 
-### (A) Merged-PR issue-close fallback
+### (A) Merged-PR issue-close fallback + auto-merge-completion record
 
 For each `opened` ledger entry, query `gh_pr_state_source`. If the PR is
-**MERGED** and its source issue is **still OPEN** (`gh_issue_state_source`), close
-the issue via `gh_issue_close_sink` with a comment naming the merged PR — a
-deterministic FALLBACK for when the PR's `Closes #<n>` keyword did not fire or the
-project opts out of keyword-closing. NEVER touch a human-closed issue: ONLY a
-MERGED-PR-with-still-OPEN-issue is closed. Idempotent — each close is reported so
-scheduling records it in the ledger and a later tick never re-comments.
+**MERGED**, RECORD `{pr_ref, issue_ref}` in `reconcile_result.auto_merged`
+**unconditionally** — every merged ledger PR seen this tick, WHETHER OR NOT its
+source issue is still open. This closes the observability gap for a PR that
+INTEGRATE `auto_merge_enabled` and GitHub then completed asynchronously *between*
+ticks: without this record, a merged PR whose issue was already auto-closed by
+its `Closes #<n>` keyword left NO tick-trace confirmation the merge landed
+(`merged=0` forever). `auto_merged` is a pure observability record — it drives no
+GitHub write.
+
+THEN, still for a MERGED PR, apply the existing issue-close fallback: if the
+source issue is **still OPEN** (`gh_issue_state_source`), close it via
+`gh_issue_close_sink` with a comment naming the merged PR — a deterministic
+FALLBACK for when the PR's `Closes #<n>` keyword did not fire or the project opts
+out of keyword-closing, recorded in `reconcile_result.closed_issues`. NEVER touch
+a human-closed issue: ONLY a MERGED-PR-with-still-OPEN-issue is closed. Idempotent
+— each close is reported so scheduling records it in the ledger and a later tick
+never re-comments. (The `auto_merged` record is independent of and additional to
+this close: a merged PR whose issue is already closed appears in `auto_merged`
+but NOT in `closed_issues`.)
+
+Scheduling stamps each `auto_merged` ledger entry to a TERMINAL outcome so
+`_reconcile_ledger_seed` (which seeds only `outcome == "opened"`) never re-seeds
+it — the completion is reported **exactly once** (the first tick that detects the
+async merge), never every tick.
 
 ### (B) Conflict-recovery ladder
 
@@ -512,15 +530,22 @@ and never wedges the tick.
 
 `{ schema_version, closed_issues: [{issue_ref, pr_ref}], rebased: [{pr_ref}],
 relanded: [{pr_ref, issue_ref}], deduped: [{pr_ref, issue_ref, kept_pr_ref}],
-skipped: [{ref, reason}], errors: [{ref, reason}] }`. `deduped` records the
+auto_merged: [{pr_ref, issue_ref}], skipped: [{ref, reason}],
+errors: [{ref, reason}] }`. `deduped` records the
 same-issue duplicate PRs (C) closed this tick — each entry names the closed
 `pr_ref`, its `issue_ref`, and the `kept_pr_ref` that superseded it — kept SEPARATE
-from `closed_issues`/`rebased`/`relanded`. `RECONCILE_MANIFEST` reads
+from `closed_issues`/`rebased`/`relanded`. `auto_merged` records EVERY merged
+acted_ledger PR seen this tick (A) — a pure observability record (no GitHub
+write), independent of `closed_issues` (a merged PR whose issue is already closed
+appears in `auto_merged` but not `closed_issues`), kept SEPARATE from the others.
+`RECONCILE_MANIFEST` reads
 `acted_ledger` and (OPTIONAL) `prior_verdicts`, writes `reconcile_result`, emits
 only `OK`. `prior_verdicts` (the previous tick's VERIFY verdicts, seeded by
 `scheduling`'s `make_reconcile`) is the (B)-ladder race-breaker — absent/empty ⇒
 today's live-read-only behavior. `RECONCILE_RESULT_SCHEMA_VERSION` is
-`1.1.0` (additive: the `deduped` list was added to the `1.0.0` shape).
+`1.2.0` (additive: the `auto_merged` list was added to the `1.1.0` shape, which
+had added `deduped` to `1.0.0`). `auto_merged` defaults to `[]` in
+`to_dict`/`from_dict`, so a `1.1.0` result deserializes unchanged.
 
 ## Guardrails (consumed from safety-governance)
 
@@ -539,6 +564,12 @@ CLEANUP → PERSIST → EXIT`.
 
 ## Invariants
 
+- **RECONCILE records every merged acted_ledger PR in `auto_merged`** (A) — a
+  pure observability record surfacing an auto-merge that GitHub completed
+  asynchronously between ticks. It is recorded UNCONDITIONALLY for a MERGED PR
+  (whether or not the source issue is still open), is independent of
+  `closed_issues`, drives NO GitHub write, and is stamped terminal by scheduling
+  so it reports EXACTLY ONCE. `RECONCILE_RESULT_SCHEMA_VERSION` 1.2.0 (additive).
 - **RECONCILE (B) conflict determination is live-preferred with a prior-verdict
   race-breaker.** A settled live `mergeable` (MERGEABLE or CONFLICTING) is always
   authoritative: live `MERGEABLE` is left alone (never force-pushed), live
