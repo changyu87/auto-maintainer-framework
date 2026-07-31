@@ -53,6 +53,7 @@ for _dep in ("fsm-contracts", "tick-orchestrator", "durable-state",
         sys.path.insert(0, _dep_src)
 
 import durable_state as ds  # noqa: E402
+import fsm_contracts as fc  # noqa: E402
 import work_intake as wi  # noqa: E402
 import adapter_wiring as aw  # noqa: E402
 import verify_integrate as vi  # noqa: E402
@@ -503,11 +504,9 @@ class _FakeReconcile:
     def run(self, ctx):
         _FakeReconcile.captured["prior_verdicts"] = ctx.read("prior_verdicts")
         _FakeReconcile.captured["acted_ledger"] = ctx.read("acted_ledger")
-
-        class _R:
-            writes = {"reconcile_result": vi.ReconcileResult().to_dict()}
-
-        return _R()
+        return fc.StateResult(
+            signal="OK",
+            writes={"reconcile_result": vi.ReconcileResult().to_dict()})
 
 
 def _make_reconcile_capture(state_path):

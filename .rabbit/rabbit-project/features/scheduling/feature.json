@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.43.0",
+  "version": "0.44.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -8,8 +8,8 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-green",
-  "updated": "2026-07-30",
+  "tdd_state": "test-red",
+  "updated": "2026-07-31",
   "spec_change_reason": "Consume verify-integrate's new reconcile_result.auto_merged (a List of {pr_ref, issue_ref} \u2014 acted_ledger PRs RECONCILE detected MERGED this tick, i.e. an auto-merge GitHub completed asynchronously BETWEEN ticks). (1) run_tick's tick_end event detail now carries auto_merged=len(reconcile_result.auto_merged) + auto_merged_refs (the merged pr_refs), mirroring the deduped count, and the one-line trace gains a compact auto_merged=<n> token shown only when >0. (2) _persist_reconcile_outcome stamps each acted_ledger entry named in reconcile_result.auto_merged to a TERMINAL outcome='merged' (applied before the closed_issues stamp so a both-case ends terminal as 'closed'), so _reconcile_ledger_seed (seeds only outcome=='opened') never re-seeds it \u2014 the completion is surfaced in tick_end.auto_merged EXACTLY ONCE. scheduling only CONSUMES the field + stamps the ledger; verify-integrate owns the Reconcile logic (separate cycle, same wave). Re-anchored the housekeep spec.md baseline 1420->1435 for the already-committed 0.43.0 spec growth (contract.md kept under its strictly-grew gate). Cross-feature contract: the field is exactly auto_merged, entries {pr_ref, issue_ref}.",
-  "spec_no_change_reason": "spec.md 0.43.0 for the auto_merged surfacing + terminal-stamp change landed in the dedicated spec commit cb0132a preceding this TDD cycle; this cycle syncs impl + tests + CHANGELOG 0.43.0 + re-anchored housekeep baseline + feature.json 0.43.0."
+  "spec_no_change_reason": "spec.md was already updated to 0.44.0 during cycle prep (make_reconcile canonical pr_ref + PRIOR_VERDICTS_KEY snapshot); this cycle lands the code, tests, feature.json version bump, and baseline re-anchor"
 }
