@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.10.0
+version: 0.11.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -240,6 +240,29 @@ the output path. Its rendered prompt is the complete handoff contract (the
   when it resolves the same issue as the PR being opened; no prior open PR for the
   issue ⇒ no-op. Complements Phase 2 park (work-intake) which bounds any residual
   non-convergence.
+- **Script-backed worktree setup + explicit PR base (deterministic; fixes
+  wrong-base stacking).** The worktree-creation and PR-open steps were previously
+  PROMPT-TIER prose (`git worktree add … origin/<default>` with a discretionary
+  "fetch first if needed", `gh pr create --base <default>` with `<default>` a
+  model-filled placeholder). During a back-to-back drain burst this let consecutive
+  implementer runs branch off the PREVIOUS loop branch instead of `main` and open
+  **wrong-base STACKED PRs** (e.g. #844 based on #831's head, #846 on #844's), which
+  INTEGRATE then refuses (never-merge-wrong-base) and nothing recovers — the loop
+  piles up unmergeable PRs and never converges. Per spec-rules §4 (Script-Backed
+  Orchestration), the order-critical git sequence now lives in a DETERMINISTIC
+  companion script shipped to `${CLAUDE_PLUGIN_ROOT}/lib/` (mirroring
+  `test_gate.py`), which the subagent INVOKES rather than hand-runs. The script
+  UNCONDITIONALLY: (1) resolves the repo default branch
+  (`gh repo view --json defaultBranchRef`), (2) `git fetch origin <default>`,
+  (3) `git worktree add <wt> -b <branch> origin/<default>` — start-point is the
+  FRESHLY-FETCHED remote ref, NEVER local `HEAD`/whatever is currently checked out,
+  and (4) opens the PR with an EXPLICIT `gh pr create --base <default>` (never an
+  inferred/tracked base). So the PR base can never drift to a sibling loop branch,
+  regardless of what a prior burst run left checked out. The script owns the
+  computed values (default branch, branch name, worktree path) with an injectable
+  runner for deterministic tests; the agent `.md` calls it in place of the raw
+  git/gh prose (agent version bumped). The subagent's own-worktree isolation intent
+  is preserved (its own worktree, main checkout undisturbed).
 - **Pre-handoff self-review (v2.3.0).** On the accept path, after committing and
   BEFORE `gh pr create`, the subagent runs a structured self-review against its
   OWN committed diff (it reads the actual diff, not its intent) and fixes any gap
