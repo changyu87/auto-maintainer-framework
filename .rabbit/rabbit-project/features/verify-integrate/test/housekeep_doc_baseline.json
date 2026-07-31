@@ -2,10 +2,10 @@
   "schema_version": "1.0.0",
   "owner": "changyu87",
   "deprecation_criterion": "Superseded by the next verify-integrate housekeep wave's baseline; single-use measured-reduction reference, re-captured whenever a feature wave legitimately extends the doc surface with load-bearing content.",
-  "description": "Line counts of verify-integrate doc surfaces. Re-anchored after the RECONCILE prior-verdict race-breaker wave legitimately extended the doc surface with load-bearing content: docs/spec.md gained the OPTIONAL prior_verdicts input description + the LIVE-PREFERRED (B)-ladder conflict-determination paragraph + the matching invariant (a settled live mergeable is authoritative; ONLY a live UNKNOWN consults a CONFIRMED-CONFLICTING prior verdict; absent/empty ⇒ today's behavior), growing spec.md from 569 to 616; docs/contract.md gained the prior_verdicts reads entry + the (B) live-preferred clause, growing from 56 to 57. The housekeep e2e test asserts the current docs are NOT LARGER than these baselines (a reduced|no-op verdict) and that the load-bearing tokens survived.",
+  "description": "Line counts of verify-integrate doc surfaces. Re-anchored after the RECONCILE auto-merge-completion observability wave legitimately extended the doc surface with load-bearing content: docs/spec.md gained the (A) auto_merged record description + the auto_merged field in the ReconcileResult slot shape + the RECONCILE_RESULT_SCHEMA_VERSION 1.2.0 bump + the matching invariant (auto_merged records every merged acted_ledger PR unconditionally, independent of closed_issues, drives no GitHub write, reported once), growing spec.md from 616 to 647; docs/contract.md is unchanged at 57. The housekeep e2e test asserts the current docs are NOT LARGER than these baselines (a reduced|no-op verdict) and that the load-bearing tokens survived.",
   "baseline_commit": "HEAD",
   "docs": {
-    "docs/spec.md": 616,
+    "docs/spec.md": 647,
     "docs/contract.md": 57
   }
 }

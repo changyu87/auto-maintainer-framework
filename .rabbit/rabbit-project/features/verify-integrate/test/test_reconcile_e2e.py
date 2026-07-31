@@ -586,7 +586,7 @@ def test_reconcile_e2e_empty_ledger_is_ok_all_empty():
     assert res == {
         "schema_version": vi.RECONCILE_RESULT_SCHEMA_VERSION,
         "closed_issues": [], "rebased": [], "relanded": [],
-        "skipped": [], "errors": [], "deduped": [],
+        "skipped": [], "errors": [], "deduped": [], "auto_merged": [],
     }
 
 
