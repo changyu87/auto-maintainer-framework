@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.18
+version: 0.7.19
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -130,6 +130,17 @@ durable persisted verdicts; `lib/status.py` heartbeat fallback now sources
 (config still schema 2.9.0, same values); this release only re-normalizes the
 affected libs from the updated source and bumps the version. No build change
 beyond `_PLUGIN_VERSION → 0.28.0`.
+
+**Plugin minor v0.29.0** — re-ship to carry the auto-merge-completion
+observability (verify-integrate 0.11.0 + scheduling 0.43.0):
+`lib/verify_integrate.py` (RECONCILE now records every merged acted_ledger PR in
+`reconcile_result.auto_merged`, surfacing an auto-merge GitHub completed
+asynchronously between ticks) and `lib/run_tick.py` (`tick_end` surfaces
+`auto_merged` + `auto_merged_refs`; `_persist_reconcile_outcome` stamps those
+ledger entries terminal `outcome="merged"` so the completion reports exactly
+once). The shipped `default-config/` CONTENT is unchanged (config still schema
+2.9.0, same values); this release only re-normalizes the affected libs and bumps
+the version. No build change beyond `_PLUGIN_VERSION → 0.29.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
