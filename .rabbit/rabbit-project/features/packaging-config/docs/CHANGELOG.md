@@ -1,5 +1,34 @@
 # Changelog — packaging-config
 
+## 0.32.0 — re-ship the audit-wave RECONCILE fixes; release v0.32.0
+
+- **Release v0.32.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.31.0 -> 0.32.0;
+  committed plugin tree regenerated so the shipped libs carry verify-integrate
+  0.12.0 + scheduling 0.46.0 + implement 0.11.1's sources:
+  - `lib/verify_integrate.py` — all disposable-worktree git ops in
+    `reconcile_rebase_worktree` + the GATE helper run
+    `-c core.hooksPath=/dev/null`, so the target repo's `post-checkout` hook can
+    no longer wedge tier-1 conflict recovery; `gh_closing_issue_ref` resolves the
+    closing-issue number via `gh api graphql`
+    (`closingIssuesReferences(first:1)`) with a `Closes #N` body-parse fallback,
+    instead of the unsupported `closingIssuesReferences` `--json` field.
+  - `lib/run_tick.py` — `_reconcile_ledger_seed` derives a canonical
+    `owner/repo#N` issue_ref by stripping the `-wo` suffix, so the RECONCILE
+    seed's `gh issue view` no longer fails every tick.
+  - `lib/open_pr.py` — the implementer worktree add runs hooks-free
+    (`-c core.hooksPath=/dev/null`), mirroring the reconcile/GATE hooks-off fix.
+- **No `_LIBS` change** — pure lib-refresh with no build change beyond the
+  version bump.
+- **Shipped `default-config/` CONTENT unchanged** — config still schema 2.9.0
+  with the same values; only the three affected libs and the version stamps
+  (`plugin.json` + `marketplace.json` -> 0.32.0) move.
+- Version-assertion test advanced to 0.32.0; an e2e test added asserting the
+  committed libs carry the v0.32.0 hooks-free-worktree + gh-graphql + `-wo`
+  issue_ref tokens; `test/release_lib_baseline.json` re-anchored (version ->
+  0.32.0, lib_digest -> the new committed-lib digest); the housekeep doc baseline
+  re-anchored to the grown spec (415 -> 427) so the drift, #355 monotonicity, and
+  doc-size guards stay green.
+
 ## 0.31.0 — re-ship RECONCILE worktree-robustness + recovery observability; release v0.31.0
 
 - **Release v0.31.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.30.0 -> 0.31.0;

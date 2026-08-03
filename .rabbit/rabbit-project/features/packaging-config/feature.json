@@ -1,12 +1,12 @@
 {
   "name": "packaging-config",
-  "version": "0.7.27",
+  "version": "0.7.28",
   "owner": "changyu87",
   "paths": [],
   "tdd_state": "test-green",
   "created": "2026-06-11T03:26:28Z",
   "deprecation_criterion": "Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.",
-  "updated": "2026-07-31",
-  "spec_change_reason": "Cut release v0.31.0 (minor, LIB-REFRESH \u2014 RECONCILE worktree-robustness + recovery observability): bump _PLUGIN_VERSION 0.30.0 -> 0.31.0 and regenerate the committed plugin tree so it carries verify-integrate 0.11.2 + scheduling 0.45.0's sources \u2014 lib/verify_integrate.py (reconcile_rebase_worktree now uses a UNIQUE per-invocation mkdtemp worktree + git worktree prune before add, so a tick killed mid-rebase can never wedge later tier-1 conflict recovery on a leftover worktree) and lib/run_tick.py (tick_end surfaces the RECONCILE recovery outcome \u2014 rebased/relanded/reconcile_errors counts + refs with >0-only trace tokens). No _LIBS change (open_pr.py already registered in v0.30.0) and no shipped default-config CONTENT change (still schema 2.9.0, same values). The version-assertion test advanced to 0.31.0, an e2e test added asserting the committed libs carry the v0.31.0 reconcile-worktree + observability tokens, test/release_lib_baseline.json re-anchored (version -> 0.31.0, lib_digest -> the new committed-lib digest), and the housekeep doc baseline re-anchored to the grown spec (403 -> 415) so the drift, #355 monotonicity, and doc-size guards stay green.",
-  "spec_no_change_reason": "spec already updated to 0.7.21 (v0.31.0 release note) in preceding commit b94fada; this cycle implements the version bump + tree regen"
+  "updated": "2026-08-03",
+  "spec_change_reason": "Cut release v0.32.0 (minor, LIB-REFRESH \u2014 audit-wave RECONCILE fixes): bump _PLUGIN_VERSION 0.31.0 -> 0.32.0 and regenerate the committed plugin tree so it carries verify-integrate 0.12.0 + scheduling 0.46.0 + implement 0.11.1's sources \u2014 lib/verify_integrate.py (all disposable-worktree git ops in reconcile_rebase_worktree + the GATE helper run -c core.hooksPath=/dev/null so the target repo's post-checkout hook can't wedge tier-1; gh_closing_issue_ref uses gh api graphql + a Closes #N body fallback instead of the unsupported closingIssuesReferences --json field), lib/run_tick.py (_reconcile_ledger_seed derives a canonical owner/repo#N issue_ref by stripping the -wo suffix), and lib/open_pr.py (implementer worktree add runs hooks-free). No _LIBS change and no shipped default-config CONTENT change (still schema 2.9.0, same values). The version-assertion test advanced to 0.32.0, an e2e test added asserting the committed libs carry the v0.32.0 hooks-free-worktree + gh-graphql + -wo issue_ref tokens, test/release_lib_baseline.json re-anchored (version -> 0.32.0, lib_digest -> the new committed-lib digest), and the housekeep doc baseline re-anchored to the grown spec (415 -> 427) so the drift, #355 monotonicity, and doc-size guards stay green.",
+  "spec_no_change_reason": "spec.md already updated to 0.7.22 (v0.32.0 release note) in a preceding commit; this cycle implements the _PLUGIN_VERSION bump + committed-tree regen"
 }

@@ -704,20 +704,30 @@ def _reconcile_ledger_seed(ledger):
     """Shape the durable acted-ledger's `opened` entries into the list Reconcile's
     `acted_ledger` slot expects: `[{work_order_id, pr_ref, issue_ref, repo}...]`.
 
-    The acted-ledger is keyed by work_order_id (`wo-<work_item_id>`) with value
+    The acted-ledger is keyed by work_order_id with value
     `{outcome, ref, acted_at_updated_at}`; `ref` is the opened PR ref (stored as a
     full GitHub URL). The seeded `pr_ref` is the CANONICAL `owner/repo#N` form
     derived from that URL (via `_canonical_pr_ref`), NOT the raw URL — this closes
     the tier-1 `int(<url>)` crash and aligns the `prior_by_ref` key form. The source
-    issue ref is the work_item_id (the work order id with the `wo-` prefix
-    stripped, e.g. `wo-acme/widget#7` -> `acme/widget#7`) and the repo is the
-    `owner/repo` portion of that ref. Only `opened` entries are seeded — a
-    `closed`/other outcome has nothing left to reconcile. Pure; no I/O."""
+    issue ref is the CANONICAL `owner/repo#N`, derived by stripping the work order
+    id's affix: the LIVE producer uses a `-wo` SUFFIX (`owner/repo#N-wo` ->
+    `owner/repo#N`), the deterministic dry-run producer uses a legacy `wo-` PREFIX
+    (`wo-acme/widget#7` -> `acme/widget#7`); an affix-free id is used as-is. Without
+    the suffix strip a `-wo`-suffixed id left `issue_ref = owner/repo#N-wo`, so
+    `gh issue view N-wo` (`issue_ref.split('#')[-1]`) failed every tick, breaking
+    RECONCILE's (A) merged-PR issue-close. The repo is the `owner/repo` portion of
+    that canonical ref. Only `opened` entries are seeded — a `closed`/other outcome
+    has nothing left to reconcile. Pure; no I/O."""
     seed = []
     for wo_id, entry in (ledger or {}).items():
         if entry.get("outcome") != "opened":
             continue
-        issue_ref = wo_id[3:] if wo_id.startswith("wo-") else wo_id
+        if wo_id.startswith("wo-"):
+            issue_ref = wo_id[3:]
+        elif wo_id.endswith("-wo"):
+            issue_ref = wo_id[:-3]
+        else:
+            issue_ref = wo_id
         repo = issue_ref.split("#")[0] if "#" in issue_ref else None
         seed.append({
             "work_order_id": wo_id,

@@ -15,9 +15,11 @@ hand-runs. It UNCONDITIONALLY:
 
   1. resolves the repo default branch (`gh repo view --json defaultBranchRef`),
   2. `git fetch origin <default>`,
-  3. `git worktree add <wt> -b <branch> origin/<default>` — the start-point is
-     the FRESHLY-FETCHED remote ref, NEVER local HEAD / whatever is currently
-     checked out, and
+  3. `git -c core.hooksPath=/dev/null worktree add <wt> -b <branch>
+     origin/<default>` — the start-point is the FRESHLY-FETCHED remote ref,
+     NEVER local HEAD / whatever is currently checked out, and the add runs
+     HOOKS-FREE so the target repo's post-checkout hook never fires in the
+     disposable worktree, and
   4. opens the PR with an EXPLICIT `gh pr create --base <default>` (never an
      inferred/tracked base).
 
@@ -84,8 +86,13 @@ def setup_worktree(runner, branch, worktree, repo=None):
     stack on a sibling loop branch."""
     default = resolve_default_branch(runner, repo=repo)
     _run(runner, ["git", "fetch", "origin", default])
-    _run(runner, ["git", "worktree", "add", worktree, "-b", branch,
-                  f"origin/{default}"])
+    # Hooks-free worktree add: `-c core.hooksPath=/dev/null` so the TARGET repo's
+    # post-checkout hook (e.g. ssbdci-grimlock's render_nested_components) never
+    # fires in the implementer's disposable worktree — the throwaway tree is only
+    # for mechanical edit/commit/push and never needs the repo's checkout-render
+    # hooks. Mirrors verify-integrate's reconcile/GATE hooks-off fix.
+    _run(runner, ["git", "-c", "core.hooksPath=/dev/null", "worktree", "add",
+                  worktree, "-b", branch, f"origin/{default}"])
     return default
 
 
