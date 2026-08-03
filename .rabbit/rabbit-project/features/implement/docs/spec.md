@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.11.1
+version: 0.12.0
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -52,7 +52,7 @@ the loop and any implementer).
 
 ```json
 {
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "work_order_id": "<id>",
   "status": "planned",
   "artifact": {"kind": "none", "ref": null},
@@ -63,10 +63,23 @@ the loop and any implementer).
 ```
 
 - `status` — `planned` for the dry-run rung. The schema's value space
-  anticipates the doer's `opened` / `blocked` / `partial`, but the dry-run
-  adapter only ever emits `planned`.
+  anticipates the doer's `opened` / `blocked` / `partial` / `already_done`, but
+  the dry-run adapter only ever emits `planned`.
+  - **`already_done` (v1.2.0) — TERMINAL already-satisfied outcome.** The doer
+    reports `already_done` when it determines the requested change is **already
+    present on `main`** (a genuine no-op — nothing to implement). It is DISTINCT
+    from `blocked`: `blocked` is a RETRYABLE cannot-proceed signal (missing
+    dependency, ambiguity, needs human) that scheduling re-dispatches until the
+    backoff/park threshold, whereas `already_done` is TERMINAL and lets
+    scheduling record the work item as resolved so it is **not re-dispatched**.
+    An `already_done` handoff opens NO PR and — this wave — does NOT close the
+    source issue (the issue is left OPEN; a config-gated auto-close is a separate
+    follow-on). The doer carries the EVIDENCE in `artifact` (below).
 - `artifact` — `{kind, ref}`. DESIGN §2.6 lists `branch|pr`; the dry-run rung
-  adds `none`, with `ref` null.
+  adds `none`, with `ref` null. An `already_done` handoff sets
+  `artifact = {"kind": "already-on-main", "ref": "<commit-sha>"}` — the commit
+  on `main` that already carries the fix — so scheduling records locatable
+  evidence of WHY the item was resolved without work.
 - `discovered_work` — follow-on items the implementer surfaces (DESIGN §1.3,
   §3.11.3). The dry-run adapter discovers nothing → always empty.
 - `concerns` — self-flagged doubts the implementer wants a reviewer/human to
@@ -82,6 +95,11 @@ the loop and any implementer).
 - `1.1.0` — **additive, backward-compatible**: adds the `concerns` list. A
   1.0.0 consumer reading a 1.1.0 handoff simply ignores the new field; nothing
   that existed in 1.0.0 changed.
+- `1.2.0` — **additive, backward-compatible**: adds `already_done` to the
+  `status` value space (a terminal already-satisfied outcome carrying its
+  evidence in `artifact.kind="already-on-main"` / `ref=<commit-sha>`). No
+  existing field or status changed; a prior consumer that does not recognize
+  `already_done` simply treats it as a non-`opened` handoff (which it is).
 
 ## Deterministic correctness gate (DESIGN §3.6.3, FT-A)
 
@@ -147,10 +165,13 @@ validity predicate `validate_handoff(handoff) -> ValidationResult(valid, reason)
 - An `opened` handoff (an `accepted` order that opened a PR) is VALID **only**
   when it carries a `test_verdict` whose `passed` is `True`. An opened handoff
   with a missing or failing verdict is INVALID.
-- A non-`opened` handoff (`planned` dry-run, `blocked`; legacy `closed`)
-  opened no PR and so requires no verdict to be valid. (The doer no longer emits
-  `closed` — reject disposition moved to TRIAGE — but `validate_handoff` stays
-  tolerant of a legacy `closed` handoff for backward compatibility.)
+- A non-`opened` handoff (`planned` dry-run, `blocked`, `already_done`; legacy
+  `closed`) opened no PR and so requires no verdict to be valid. An
+  `already_done` handoff resolved the item without acting (the fix was already on
+  `main`), so like `blocked`/`planned` it is VALID without a `test_verdict`. (The
+  doer no longer emits `closed` — reject disposition moved to TRIAGE — but
+  `validate_handoff` stays tolerant of a legacy `closed` handoff for backward
+  compatibility.)
 
 The pass embedded in an opened handoff is the SCRIPT's recorded result, never
 the model's claim — a fabricated "passed" cannot survive the gate because the
@@ -198,7 +219,8 @@ the output path. Its rendered prompt is the complete handoff contract (the
   scheduling), never by the doer.
 - **Never reports `planned`; enacts accepted-only orders (v2.9.0).** `planned` is
   the DRY-RUN adapter's status, NOT the agent's — the shipped implementer reports
-  only `opened` or `blocked`, never `planned` (and no longer `closed` — the
+  only `opened`, `blocked`, or `already_done` (v2.10.0 below), never `planned`
+  (and no longer `closed` — the
   reject→close branch is removed). PRIORITIZE fans out ACCEPTED-ONLY orders to
   IMPLEMENT, so the doer only ever sees an accepted order; a rejected order never
   reaches it. ROBUSTNESS: if the `## Inputs` work order lacks the source issue's
@@ -207,6 +229,19 @@ the output path. Its rendered prompt is the complete handoff contract (the
   title,body,comments`) before enacting rather than bailing — an under-informed
   envelope becomes real work or an honest `blocked`, never a silent `planned`
   no-op.
+- **Reports `already_done` when the fix is already on `main` (v2.10.0).** Before
+  (or during) enacting, if the subagent determines the requested change is
+  **already present on `main`** — the code/behaviour the order asks for is
+  already there, so there is genuinely nothing to implement — it MUST report
+  `status: already_done` (NOT `blocked`), opening no PR, and set
+  `artifact = {"kind": "already-on-main", "ref": "<commit-sha>"}` naming the
+  commit on `main` that already carries the fix (resolve it with e.g.
+  `git log`/`git blame` on the relevant path). `already_done` is a TERMINAL
+  already-satisfied outcome: scheduling records the item resolved so it is not
+  re-dispatched. It is reserved for the genuinely-already-satisfied case — a real
+  cannot-proceed situation (missing dependency, ambiguity, needs human) is still
+  `blocked` (retryable), and an order with real work to do is still `opened`. The
+  issue is LEFT OPEN (this wave does not close it).
 - **Deterministic test-gate on the accept path (v2.6.0, DESIGN §3.6.3).** After
   committing and BEFORE `gh pr create`, the subagent MUST invoke the gate script
   at its deployed location `${CLAUDE_PLUGIN_ROOT}/lib/test_gate.py` against the touched target feature; the gate runs `run.py` and

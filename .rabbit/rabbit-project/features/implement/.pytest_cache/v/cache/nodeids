@@ -1,0 +1,8 @@
+[
+  "test/test_implementer_agent.py::test_shipped_implementer_agent_exists",
+  "test/test_implementer_agent.py::test_shipped_implementer_body_has_self_review_checklist",
+  "test/test_implementer_agent.py::test_shipped_implementer_body_stamps_auto_maintainer_label",
+  "test/test_implementer_agent.py::test_shipped_implementer_frontmatter_has_lifecycle_keys",
+  "test/test_implementer_agent.py::test_shipped_implementer_model_is_opus",
+  "test/test_implementer_agent.py::test_shipped_implementer_tools_include_bash_and_write"
+]
