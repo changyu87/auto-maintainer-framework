@@ -11,6 +11,8 @@
     "MAX_COMMENT_BODY_CHARS",
     "is_loop_filed",
     "is_parked",
+    "is_in_flight",
+    "in_flight_issue_refs",
     "PARK_THRESHOLD",
     "pr_ref",
     "GATE_FAIL_MARKER",
