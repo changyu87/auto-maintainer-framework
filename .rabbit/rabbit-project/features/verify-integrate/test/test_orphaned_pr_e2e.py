@@ -19,6 +19,7 @@ registered slots, and the StateResult committed through fc.apply_result.
 Owner: changyu87
 """
 
+import json
 import os
 import sys
 
@@ -187,13 +188,20 @@ class _FakeCompleted:
         self.returncode = returncode
 
 
+def _graphql_closing_refs(nodes):
+    """The `gh api graphql` closingIssuesReferences payload the resolver parses."""
+    return json.dumps({"data": {"repository": {"pullRequest": {
+        "closingIssuesReferences": {"nodes": nodes}}}}})
+
+
 def test_gh_closing_issue_state_returns_state():
     cmds = []
 
     def fake_runner(cmd, **kwargs):  # noqa: ARG001
         cmds.append(cmd)
-        if "pr" in cmd and "view" in cmd:
-            return _FakeCompleted('[{"number": 42}]')
+        # closing-issue ref resolved via `gh api graphql` (FIX 2).
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return _FakeCompleted(_graphql_closing_refs([{"number": 42}]))
         # gh issue view <n> --json state
         return _FakeCompleted("CLOSED\n")
 
@@ -210,18 +218,23 @@ def test_gh_closing_issue_state_returns_state():
 
 def test_gh_closing_issue_state_open():
     def fake_runner(cmd, **kwargs):  # noqa: ARG001
-        if "pr" in cmd and "view" in cmd:
-            return _FakeCompleted('[{"number": 3}]')
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return _FakeCompleted(_graphql_closing_refs([{"number": 3}]))
         return _FakeCompleted("OPEN\n")
 
-    assert vi.gh_closing_issue_state("#7", runner=fake_runner) == "OPEN"
+    assert vi.gh_closing_issue_state("acme/widget#7", repo="acme/widget",
+                                     runner=fake_runner) == "OPEN"
 
 
 def test_gh_closing_issue_state_no_closing_issue_returns_none():
     def fake_runner(cmd, **kwargs):  # noqa: ARG001
-        return _FakeCompleted("[]")
+        # graphql yields no closing ref; body fallback finds no keyword.
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return _FakeCompleted(_graphql_closing_refs([]))
+        return _FakeCompleted("no keyword\n")
 
-    assert vi.gh_closing_issue_state("#7", runner=fake_runner) is None
+    assert vi.gh_closing_issue_state("acme/widget#7", repo="acme/widget",
+                                     runner=fake_runner) is None
 
 
 # ==========================================================================

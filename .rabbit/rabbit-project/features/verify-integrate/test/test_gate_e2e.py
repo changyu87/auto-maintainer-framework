@@ -30,6 +30,7 @@ recording it under IntegrationResult.gate_failed (never merged).
 Owner: changyu87
 """
 
+import json
 import os
 import sys
 
@@ -145,9 +146,10 @@ class _FakeGit:
 
     @staticmethod
     def _git_sub(cmd):
-        """The git subcommand, skipping a leading `-C <dir>` (and `git`)."""
+        """The git subcommand, skipping a leading `-c <val>` / `-C <dir>` pair
+        (and `git`) — the hooks-free ops carry `-c core.hooksPath=/dev/null`."""
         i = 1
-        while i < len(cmd) and cmd[i] == "-C":
+        while i < len(cmd) and cmd[i] in ("-c", "-C"):
             i += 2
         return cmd[i] if i < len(cmd) else ""
 
@@ -182,7 +184,7 @@ def _is_git_sub(cmd, sub):
     if not cmd or cmd[0] != "git":
         return False
     i = 1
-    while i < len(cmd) and cmd[i] == "-C":
+    while i < len(cmd) and cmd[i] in ("-c", "-C"):
         i += 2
     return i < len(cmd) and cmd[i] == sub
 
@@ -311,7 +313,7 @@ def test_gate_e2e_cumulative_all_pass_in_order():
     assert all(r["reason"] is None for r in results)
 
     # A disposable worktree was created and removed.
-    assert any(c[:2] == ["git", "worktree"] and "add" in c
+    assert any(_is_git_sub(c, "worktree") and "add" in c
                for c in fake.commands)
     assert any(c[:2] == ["git", "worktree"] and "remove" in c
                for c in fake.commands)
@@ -704,26 +706,92 @@ def test_make_gate_exported_and_returns_manifest_and_callable():
 # assemble the exact gh commands via injected fake runners (no network).
 # ==========================================================================
 
-def test_gh_closing_issue_ref_assembles_command():
+def _graphql_closing_refs(nodes):
+    """The `gh api graphql` closingIssuesReferences payload the resolver parses."""
+    return json.dumps({"data": {"repository": {"pullRequest": {
+        "closingIssuesReferences": {"nodes": nodes}}}}})
+
+
+def test_gh_closing_issue_ref_uses_graphql_not_json_field():
+    # FIX 2: the resolver uses `gh api graphql` (the closingIssuesReferences
+    # --json field is unsupported on gh 2.69.0 and fails every call), NOT
+    # `gh pr view --json closingIssuesReferences`.
     captured = {}
 
     def fake_runner(cmd, **kwargs):
         captured["cmd"] = cmd
-        return _FakeCompleted(returncode=0, stdout='[{"number": 42}]')
+        return _FakeCompleted(returncode=0,
+                              stdout=_graphql_closing_refs([{"number": 42}]))
 
     ref = vi.gh_closing_issue_ref("acme/widget#3", repo="acme/widget",
                                   runner=fake_runner)
     cmd = captured["cmd"]
-    assert cmd[:3] == ["gh", "pr", "view"]
+    assert cmd[:3] == ["gh", "api", "graphql"]
+    assert "closingIssuesReferences" not in " ".join(
+        c for c in cmd if c == "--json")
     assert ref == "acme/widget#42"
 
 
+def test_gh_closing_issue_ref_body_keyword_fallback():
+    # FIX 2 fallback: graphql yields no closing ref -> parse the PR body for a
+    # Closes/Fixes/Resolves #N keyword.
+    seen = []
+
+    def fake_runner(cmd, **kwargs):
+        seen.append(cmd)
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return _FakeCompleted(returncode=0,
+                                  stdout=_graphql_closing_refs([]))
+        # gh pr view <n> --json body
+        return _FakeCompleted(returncode=0, stdout="Closes #806\n")
+
+    ref = vi.gh_closing_issue_ref("acme/widget#3", repo="acme/widget",
+                                  runner=fake_runner)
+    assert ref == "acme/widget#806"
+    # the fallback shells `gh pr view --json body` (NOT closingIssuesReferences).
+    view = [c for c in seen if c[:3] == ["gh", "pr", "view"]]
+    assert len(view) == 1
+    assert "body" in view[0]
+    assert "closingIssuesReferences" not in view[0]
+
+
 def test_gh_closing_issue_ref_none_when_no_closing_issue():
+    # neither graphql nor the body keyword yields an issue -> None.
     def fake_runner(cmd, **kwargs):  # noqa: ARG001
-        return _FakeCompleted(returncode=0, stdout='[]')
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return _FakeCompleted(returncode=0,
+                                  stdout=_graphql_closing_refs([]))
+        return _FakeCompleted(returncode=0, stdout="no keyword here\n")
     ref = vi.gh_closing_issue_ref("acme/widget#3", repo="acme/widget",
                                   runner=fake_runner)
     assert ref is None
+
+
+def test_gate_worktree_ops_run_hooks_free():
+    # Repo-hook robustness: the GATE integration-worktree helper's hook-firing
+    # git ops (worktree add --detach, merge --no-ff) carry
+    # `-c core.hooksPath=/dev/null` so a target repo's post-checkout/post-merge
+    # hook never fires in the loop's disposable worktree (the live
+    # render_nested_components wedge).
+    fake = _FakeGit(regression_command="pytest")
+    gate = vi.Gate(regression_command="pytest", runner=fake,
+                   repo="acme/widget", default_branch=_DEFAULT_BRANCH,
+                   issue_resolver=_fake_issue_resolver({}))
+    ctx = _fresh_ctx()
+    ctx.write("verdicts", [_verdict(number=1)])
+    _run_gate(gate, ctx)
+
+    def _hooks_off(cmd):
+        return any(cmd[i] == "-c" and i + 1 < len(cmd)
+                   and cmd[i + 1] == "core.hooksPath=/dev/null"
+                   for i in range(len(cmd)))
+
+    adds = [c for c in fake.commands
+            if _is_git_sub(c, "worktree") and "add" in c]
+    merges = [c for c in fake.commands if _is_git_sub(c, "merge")
+              and "--no-ff" in c]
+    assert adds and all(_hooks_off(c) for c in adds)
+    assert merges and all(_hooks_off(c) for c in merges)
 
 
 def test_gh_issue_comment_sink_assembles_command():

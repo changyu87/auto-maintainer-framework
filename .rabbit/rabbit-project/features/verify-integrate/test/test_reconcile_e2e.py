@@ -699,14 +699,53 @@ def _scripted_git_runner(rebase_rc):
         # _gh_pr_head_ref
         if cmd[:3] == ["gh", "pr", "view"]:
             return _proc(stdout="feature-branch\n")
-        # git rebase origin/<default> (not the --abort form)
-        if len(cmd) >= 5 and cmd[3] == "rebase" and "--abort" not in cmd:
+        # git rebase origin/<default> (not the --abort form) — tolerant of the
+        # `-c core.hooksPath=/dev/null` prefix the hooks-free ops carry.
+        if "rebase" in cmd and "--abort" not in cmd:
             return _proc(returncode=rebase_rc, stdout="CONFLICT" if rebase_rc
                          else "")
         return _proc(returncode=0)
 
     runner.seen = seen
     return runner
+
+
+def _hooks_off(cmd):
+    """Whether a git argv carries `-c core.hooksPath=/dev/null` (as an adjacent
+    `-c`/value pair) so the target repo's hooks never fire in a disposable tree."""
+    return any(cmd[i] == "-c" and i + 1 < len(cmd)
+               and cmd[i + 1] == "core.hooksPath=/dev/null"
+               for i in range(len(cmd)))
+
+
+def _is_git_sub(cmd, sub):
+    """Whether a recorded git argv is `git [-c v]... [-C dir]... <sub> ...`."""
+    if not cmd or cmd[0] != "git":
+        return False
+    i = 1
+    while i < len(cmd) and cmd[i] in ("-c", "-C"):
+        i += 2
+    return i < len(cmd) and cmd[i] == sub
+
+
+def test_reconcile_rebase_worktree_ops_run_hooks_free():
+    # Repo-hook robustness: EVERY hook-firing git op in the tier-1 rebase helper
+    # (worktree add --detach, checkout -B, rebase, push --force) carries
+    # `-c core.hooksPath=/dev/null` so a target repo's post-checkout/post-merge/
+    # pre-push hook never fires in the loop's disposable worktree (the live
+    # render_nested_components wedge).
+    runner = _scripted_git_runner(rebase_rc=0)
+    vi.reconcile_rebase_worktree(
+        "acme/widget#8", _DEFAULT_BRANCH, repo="acme/widget", runner=runner,
+        worktree_dir="/tmp/am-reconcile-test")
+    adds = [c for c in runner.seen if _is_git_sub(c, "worktree") and "add" in c]
+    checkouts = [c for c in runner.seen if _is_git_sub(c, "checkout")]
+    rebases = [c for c in runner.seen if _is_git_sub(c, "rebase")]
+    pushes = [c for c in runner.seen if _is_git_sub(c, "push")]
+    assert adds and all(_hooks_off(c) for c in adds)
+    assert checkouts and all(_hooks_off(c) for c in checkouts)
+    assert rebases and all(_hooks_off(c) for c in rebases)
+    assert pushes and all(_hooks_off(c) for c in pushes)
 
 
 def test_reconcile_rebase_worktree_clean_force_pushes():
@@ -875,18 +914,23 @@ def test_reconcile_e2e_dedup_close_fault_recorded_in_errors():
     assert "gh pr close 403" in res["errors"][0]["reason"]
 
 
-def _dedup_source_runner(list_payload, view_by_number):
+def _dedup_source_runner(list_payload, refs_by_number):
     """A fake runner scripting the (C) dedup source's TWO gh command shapes: the
-    `gh pr list` (supported fields only) and the per-PR `gh pr view <n> --json
-    closingIssuesReferences` delegation to gh_closing_issue_ref. Records argv."""
+    `gh pr list` (supported fields only) and the per-PR `gh api graphql`
+    closing-issue resolution delegated to gh_closing_issue_ref. Records argv.
+    `refs_by_number` maps a PR number (str) to its graphql node list."""
     seen = []
 
     def runner(cmd, capture_output=None, text=None, check=None):  # noqa: ARG001
         seen.append(cmd)
         if cmd[:3] == ["gh", "pr", "list"]:
             return _proc(stdout=list_payload)
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return _proc(stdout=view_by_number[cmd[3]])
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            number = next(a.split("=", 1)[1] for a in cmd
+                          if a.startswith("number="))
+            return _proc(stdout=json.dumps({"data": {"repository": {
+                "pullRequest": {"closingIssuesReferences": {
+                    "nodes": refs_by_number[number]}}}}}))
         raise AssertionError(f"unexpected gh command {cmd}")
 
     runner.seen = seen
@@ -895,16 +939,16 @@ def _dedup_source_runner(list_payload, view_by_number):
 
 def test_gh_open_pr_closing_issue_source_shape():
     # FIX 1 — the LIST requests only SUPPORTED `gh pr list --json` fields
-    # (number,url); closingIssuesReferences is resolved per-PR via `gh pr view`.
+    # (number,url); the closing-issue ref is resolved per-PR via `gh api graphql`.
     list_payload = json.dumps([
         {"number": 7, "url": "https://github.com/acme/widget/pull/7"},
         {"number": 9, "url": "https://github.com/acme/widget/pull/9"},  # no issue
     ])
-    view_by_number = {
-        "7": json.dumps([{"number": 3}, {"number": 99}]),  # first ref -> #3
-        "9": json.dumps([]),                               # closes no issue
+    refs_by_number = {
+        "7": [{"number": 3}],   # first ref -> #3
+        "9": [],                # closes no issue
     }
-    runner = _dedup_source_runner(list_payload, view_by_number)
+    runner = _dedup_source_runner(list_payload, refs_by_number)
 
     out = vi.gh_open_pr_closing_issue_source(repo="acme/widget", runner=runner)
     # only the PR WITH a closing issue is returned, mapped to its FIRST ref.
@@ -925,21 +969,23 @@ def test_gh_open_pr_closing_issue_source_shape():
 # HOTFIX v0.25.1 — (C) dedup source uses SUPPORTED gh pr list fields + the
 # whole dedup step is fault-isolated (the v0.25.0 dedup crashed the tick on
 # gh 2.69.0 by requesting closingIssuesReferences on `gh pr list`).
+# v0.15.0 — the per-PR closing-issue ref is resolved via `gh api graphql`, NOT
+# the closingIssuesReferences --json field (unsupported on gh 2.69.0).
 # ==========================================================================
 
 def test_gh_open_pr_closing_issue_source_never_requests_closing_refs_on_list():
-    # FIX 1 command-shape: the `gh pr list` argv requests number,url and does NOT
+    # command-shape: the `gh pr list` argv requests number,url and does NOT
     # contain closingIssuesReferences anywhere; the closing-issue ref is resolved
-    # by a SUBSEQUENT `gh pr view <n> --json closingIssuesReferences` per PR.
+    # by a SUBSEQUENT `gh api graphql` call per PR.
     list_payload = json.dumps([
         {"number": 7, "url": "https://github.com/acme/widget/pull/7"},
         {"number": 9, "url": "https://github.com/acme/widget/pull/9"},
     ])
-    view_by_number = {
-        "7": json.dumps([{"number": 3}]),
-        "9": json.dumps([]),  # closes no issue -> excluded
+    refs_by_number = {
+        "7": [{"number": 3}],
+        "9": [],  # closes no issue -> excluded
     }
-    runner = _dedup_source_runner(list_payload, view_by_number)
+    runner = _dedup_source_runner(list_payload, refs_by_number)
 
     out = vi.gh_open_pr_closing_issue_source(repo="acme/widget", runner=runner)
 
@@ -958,12 +1004,16 @@ def test_gh_open_pr_closing_issue_source_never_requests_closing_refs_on_list():
     assert "closingIssuesReferences" not in list_json_fields
     assert "number" in list_json_fields and "url" in list_json_fields
 
-    # per-PR closing-issue resolution DID happen via `gh pr view ... --json
-    # closingIssuesReferences` (the supported form) for EACH listed PR.
-    view_cmds = [c for c in runner.seen if c[:3] == ["gh", "pr", "view"]]
-    assert [c[3] for c in view_cmds] == ["7", "9"]
-    for c in view_cmds:
-        assert "closingIssuesReferences" in c
+    # the invalid --json field must NEVER be requested on ANY command.
+    for c in runner.seen:
+        assert "closingIssuesReferences" not in c
+
+    # per-PR closing-issue resolution DID happen via `gh api graphql` for EACH
+    # listed PR (the supported form on gh 2.69.0).
+    graphql_cmds = [c for c in runner.seen if c[:3] == ["gh", "api", "graphql"]]
+    numbers = sorted(next(a.split("=", 1)[1] for a in c
+                          if a.startswith("number=")) for c in graphql_cmds)
+    assert numbers == ["7", "9"]
 
 
 def _raising_open_pr_source(exc):
@@ -1455,11 +1505,11 @@ def test_reconcile_rebase_worktree_url_form_ref_reaches_worktree():
 # ==========================================================================
 
 def _worktree_add_path(seen):
-    """The path passed to `git worktree add` in a recorded command list."""
+    """The path passed to `git worktree add` in a recorded command list (tolerant
+    of the `-c core.hooksPath=/dev/null` prefix the hooks-free op carries)."""
     for c in seen:
-        if c[:3] == ["git", "worktree", "add"]:
-            # ["git","worktree","add","--detach",<worktree>,"origin/<default>"]
-            return c[4]
+        if _is_git_sub(c, "worktree") and "add" in c and "--detach" in c:
+            return c[c.index("--detach") + 1]
     return None
 
 
@@ -1491,7 +1541,7 @@ def test_reconcile_rebase_worktree_prunes_before_add():
     prune_idx = next(i for i, c in enumerate(runner.seen)
                      if c[:3] == ["git", "worktree", "prune"])
     add_idx = next(i for i, c in enumerate(runner.seen)
-                   if c[:3] == ["git", "worktree", "add"])
+                   if _is_git_sub(c, "worktree") and "add" in c)
     assert prune_idx < add_idx
 
 
