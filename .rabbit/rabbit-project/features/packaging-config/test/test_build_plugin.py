@@ -560,19 +560,19 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.31.0, RECONCILE worktree-robustness + recovery observability):
-# version bumped to 0.31.0 in BOTH plugin.json and marketplace.json, and the two
-# are consistent. v0.31.0 rebuilds the committed plugin tree so it ships the
-# verify-integrate 0.11.2 + scheduling 0.45.0 sources: lib/verify_integrate.py
-# (reconcile_rebase_worktree uses a UNIQUE per-invocation mkdtemp worktree +
-# `git worktree prune` before add, so a tick killed mid-rebase can never wedge
-# later tier-1 conflict recovery on a leftover worktree) and lib/run_tick.py
-# (tick_end surfaces the RECONCILE recovery outcome — rebased/relanded/
-# reconcile_errors counts + refs with >0-only trace tokens). No _LIBS change
-# (open_pr.py already registered in v0.30.0) and no shipped default-config
-# CONTENT change (still schema 2.9.0, same values).
+# Release (v0.32.0, audit-wave RECONCILE fixes): version bumped to 0.32.0 in
+# BOTH plugin.json and marketplace.json, and the two are consistent. v0.32.0
+# rebuilds the committed plugin tree so it ships the verify-integrate 0.12.0 +
+# scheduling 0.46.0 + implement 0.11.1 sources: lib/verify_integrate.py (all
+# disposable-worktree git ops in reconcile_rebase_worktree + the GATE helper run
+# `-c core.hooksPath=/dev/null` so the target repo's post-checkout hook can't
+# wedge tier-1; gh_closing_issue_ref uses `gh api graphql` + a `Closes #N` body
+# fallback), lib/run_tick.py (_reconcile_ledger_seed derives a canonical
+# owner/repo#N issue_ref by stripping the `-wo` suffix), and lib/open_pr.py
+# (implementer worktree add runs hooks-free). No _LIBS change and no shipped
+# default-config CONTENT change (still schema 2.9.0, same values).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_31_0_and_consistent():
+def test_version_bumped_to_0_32_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -584,10 +584,10 @@ def test_version_bumped_to_0_31_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.31.0", \
-            f"plugin.json version must be 0.31.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.31.0", \
-            "marketplace.json plugin entry version must be 0.31.0"
+        assert pdata.get("version") == "0.32.0", \
+            f"plugin.json version must be 0.32.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.32.0", \
+            "marketplace.json plugin entry version must be 0.32.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2415,6 +2415,56 @@ def test_committed_libs_carry_v0_31_0_reconcile_worktree_and_observability():
         "committed run_tick must surface the v0.31.0 relanded recovery token"
     assert "reconcile_errors={reconcile_errors_count}" in rt_body, \
         "committed run_tick must surface the v0.31.0 reconcile_errors token"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.32.0 (audit-wave RECONCILE fixes) deploy confirmation: the whole
+# point of this release is that the committed (shipped) libs carry the
+# verify-integrate 0.12.0 hooks-free-worktree + gh-graphql closing-issue fixes,
+# scheduling 0.46.0's -wo issue_ref canonicalization, and implement 0.11.1's
+# hooks-free implementer worktree add. Assert the COMMITTED libs — the bytes an
+# installed plugin runs — carry each.
+# ---------------------------------------------------------------------------
+def test_committed_libs_carry_v0_32_0_audit_wave_reconcile_fixes():
+    lib = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer", "lib")
+
+    # verify-integrate 0.12.0: disposable-worktree git ops + GATE helper run
+    # hooks-free so the target repo's post-checkout hook can't wedge tier-1;
+    # gh_closing_issue_ref uses `gh api graphql` + a `Closes #N` body fallback.
+    vi = os.path.join(lib, "verify_integrate.py")
+    assert os.path.isfile(vi), \
+        "committed lib/verify_integrate.py must ship in the plugin tree"
+    with open(vi, encoding="utf-8") as fh:
+        vi_body = fh.read()
+    assert "core.hooksPath=/dev/null" in vi_body, \
+        "committed verify_integrate must run its disposable-worktree/GATE git " \
+        "ops hooks-free (core.hooksPath=/dev/null)"
+    assert '"gh", "api", "graphql"' in vi_body, \
+        "committed verify_integrate must resolve the closing-issue ref via " \
+        "`gh api graphql`"
+    assert "closingIssuesReferences(first:1)" in vi_body, \
+        "committed verify_integrate must query closingIssuesReferences via graphql"
+
+    # scheduling 0.46.0: _reconcile_ledger_seed derives a canonical owner/repo#N
+    # issue_ref by stripping the `-wo` suffix.
+    rt = os.path.join(lib, "run_tick.py")
+    assert os.path.isfile(rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(rt, encoding="utf-8") as fh:
+        rt_body = fh.read()
+    assert 'endswith("-wo")' in rt_body, \
+        "committed run_tick must strip the `-wo` suffix when deriving the " \
+        "canonical RECONCILE seed issue_ref"
+
+    # implement 0.11.1: the implementer worktree add runs hooks-free.
+    op = os.path.join(lib, "open_pr.py")
+    assert os.path.isfile(op), \
+        "committed lib/open_pr.py must ship in the plugin tree"
+    with open(op, encoding="utf-8") as fh:
+        op_body = fh.read()
+    assert "core.hooksPath=/dev/null" in op_body, \
+        "committed open_pr must run its implementer worktree add hooks-free " \
+        "(core.hooksPath=/dev/null)"
 
 
 # ---------------------------------------------------------------------------
