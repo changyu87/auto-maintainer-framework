@@ -1,0 +1,6 @@
+{
+  "test/test_scheduling_e2e.py::test_start_print_interval_emits_default_three": true,
+  "test/test_scheduling_housekeep_e2e.py::test_spec_not_larger_than_reanchored_baseline": true,
+  "test/test_status_pretty_e2e.py::test_status_data_heartbeat_interval_default": true,
+  "test/test_scheduling_e2e.py::test_start_heartbeat_interval_helper_reads_config": true
+}

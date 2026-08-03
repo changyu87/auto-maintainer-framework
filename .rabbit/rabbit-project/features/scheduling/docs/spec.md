@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.46.0
+version: 0.47.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -998,6 +998,45 @@ ONLY in `make_pull`. Default no-filter → the bound `Pull` pulls every open iss
 issues by the DNF labels (server-side per-AND-group `gh --label` union) and the
 `title_pattern` regex (the filtering logic is work-intake's, consumed unchanged).
 
+## In-flight exclusion wiring — PULL honors `in_flight_issue_refs` (convergence)
+
+`make_pull(runtime)` ALSO computes the set of issue refs that already have an
+**OPEN loop PR** and threads it into work-intake's `Pull` as
+`in_flight_issue_refs=<set>` (work-intake's new in-flight guard, consumed
+unchanged). An issue already being worked by an open auto-maintainer PR must NOT
+be re-triaged/re-implemented; the open PR's own lifecycle resolves it
+(INTEGRATE/auto-merge on success, RECONCILE on conflict). scheduling — not
+work-intake — computes the set, because it requires PR-side reads outside
+work-intake's issue-I/O scope, and it does so by REUSING EXISTING seams (no new
+gh plumbing):
+
+- **`_in_flight_issue_refs(state_path, pr_state_source)` — a deterministic
+  helper.** It reads the durable `ACTED_LEDGER_KEY` and takes each entry with
+  `outcome == "opened"` (a loop PR the doer opened — a `merged`/`closed`/absent
+  outcome is NOT in-flight). For each such entry it derives the CANONICAL issue
+  ref `owner/repo#N` from the `work_order_id` (the `-wo` SUFFIX stripped, or a
+  legacy `wo-` PREFIX stripped — the SAME canonicalization
+  `_reconcile_ledger_seed` uses) and LIVE-CONFIRMS the recorded PR `ref` is still
+  OPEN via the EXISTING injectable `gh_pr_state_source` / `DEFAULT_PR_STATE_SOURCE`
+  seam (the same one the §3.8.5 re-entry gate uses): a PR that is MERGED or
+  CLOSED is NOT added (its issue flows through PULL normally). A raising/malformed
+  PR-state read for one entry is tolerated (that entry is skipped, never crashes
+  the tick), consistent with the re-entry gate. Returns the set of confirmed
+  in-flight `owner/repo#N` refs (empty when the ledger has no live `opened`
+  entries).
+- **`make_pull` threads it in.** `wi.Pull(source=source, work_own_filings=…,
+  issue_filter=…, in_flight_issue_refs=_in_flight_issue_refs(state_path,
+  pr_state_source))`. The `pr_state_source` binding is the injectable seam
+  (`run_tick(pr_state_source=…)`), so tests drive it with a fake + a fake durable
+  acted-ledger — no network. work-intake + safety-governance are consumed
+  UNCHANGED; the edit lives only in `make_pull` + the helper.
+- **Non-breaking.** An empty acted-ledger (no open loop PRs) yields the empty set
+  ⇒ `Pull` pulls every open issue exactly as before. A merged/closed loop PR is
+  never in the set. Because in-flight items never enter `work_items`, the
+  §3.3.3 `_work_remains` refire predicate does not refire on an in-flight issue —
+  the loop converges instead of re-pulling it every tick while its PR is in
+  flight.
+
 ## Backoff: bounded-retry → escalate → defer for blocked work orders (§3.8.5)
 
 A valid work order the doer reports `blocked` must be **worked toward an end, not
@@ -1053,7 +1092,9 @@ the loop only re-triages NEW or CHANGED issues. Edits live ONLY in scheduling
 
 - **Triage memory (durable, keyed on `work_item_id`).** `TRIAGE_MEMORY_KEY =
   "triage_memory"` maps `{work_item_id: {updated_at, status}}`, where `status` is
-  `done` (the doer opened/closed it), `deferred` (backoff), or `rejected` (the
+  `done` (the doer opened/closed it), `already_done` (the doer found the fix
+  already present on `main` — a terminal no-op, see below), `deferred` (backoff),
+  or `rejected` (the
   triager judged the issue invalid — see reject enactment below). It is recorded at
   the acting-state resume, alongside the acted/backoff ledgers, from the same
   `work_order_id → work_item_id` mapping + the item's current issue `updated_at`
@@ -1062,12 +1103,32 @@ the loop only re-triages NEW or CHANGED issues. Edits live ONLY in scheduling
 - **Filter at TRIAGE dispatch.** When `run_tick` builds the dispatch for an
   agent-state whose read slots include `work_items` (i.e. TRIAGE), it FILTERS the
   `work_items` fed to the subagent: an item is dropped iff
-  `triage_memory[work_item_id].status ∈ {done, deferred, rejected}` AND its current
+  `triage_memory[work_item_id].status ∈ {done, already_done, deferred, rejected}`
+  AND its current
   `updated_at` EQUALS the remembered `updated_at` (handled + unchanged). NEW
   items (not in memory), CHANGED items (advanced `updated_at`), and `active`
   items (accepted but not yet done — still being worked) are ALWAYS re-triaged,
   so a valid issue in flight is never starved. The SAME `updated_at` change
-  signal that re-enters a deferred item (§3.8.5 backoff) also re-triages it.
+  signal that re-enters a deferred item (§3.8.5 backoff) also re-triages it (and
+  likewise an `already_done` item whose issue later changes IS re-triaged). This
+  single skip set is applied by `_filter_triage_work_items`, which both the TRIAGE
+  dispatch filter and the §3.3.3 `_work_remains` refire predicate consume, so an
+  `already_done`-unchanged item is excluded from re-triage AND does not refire.
+- **IMPLEMENT `already_done` → terminal-resolved skip (convergence).** When
+  run_tick collects an acting-state (IMPLEMENT) handoff whose `status` is
+  `already_done` (implement's v1.2.0 terminal already-satisfied outcome — the
+  requested fix is already on `main`, evidence in `artifact.ref`), it records
+  `triage_memory[work_item_id] = {updated_at: <the item's current issue
+  updated_at>, status: "already_done"}` (optionally carrying the evidence commit
+  ref for observability) so the NEXT tick's skip-unchanged filter excludes it —
+  the grind stops on the FIRST detection instead of after the backoff/park
+  threshold. An `already_done` handoff is TERMINAL, NOT a retryable block: run_tick
+  does **NOT** increment the `backoff` ledger for it (contrast a genuine `blocked`
+  handoff, which still increments backoff exactly as before, §3.8.5), and it is
+  NOT recorded in the acted-ledger as `opened` (it opened no PR — the
+  acted-ledger records only `opened`/`closed`, unchanged). The source issue is
+  LEFT OPEN (this wave does not close it; a config-gated auto-close is a separate
+  follow-on).
 - **Surfacing.** The persisted `work_items` read product stays the full PULL set
   (accurate); the trace adds a `triaged=<judged>/<pulled>` token so the skip is
   visible.
