@@ -219,7 +219,7 @@ the output path. Its rendered prompt is the complete handoff contract (the
   scheduling), never by the doer.
 - **Never reports `planned`; enacts accepted-only orders (v2.9.0).** `planned` is
   the DRY-RUN adapter's status, NOT the agent's — the shipped implementer reports
-  only `opened`, `blocked`, or `already_done` (v2.10.0 below), never `planned`
+  only `opened`, `blocked`, or `already_done` (v2.12.0 below), never `planned`
   (and no longer `closed` — the
   reject→close branch is removed). PRIORITIZE fans out ACCEPTED-ONLY orders to
   IMPLEMENT, so the doer only ever sees an accepted order; a rejected order never
@@ -229,7 +229,7 @@ the output path. Its rendered prompt is the complete handoff contract (the
   title,body,comments`) before enacting rather than bailing — an under-informed
   envelope becomes real work or an honest `blocked`, never a silent `planned`
   no-op.
-- **Reports `already_done` when the fix is already on `main` (v2.10.0).** Before
+- **Reports `already_done` when the fix is already on `main` (v2.12.0).** Before
   (or during) enacting, if the subagent determines the requested change is
   **already present on `main`** — the code/behaviour the order asks for is
   already there, so there is genuinely nothing to implement — it MUST report

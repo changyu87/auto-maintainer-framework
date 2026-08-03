@@ -3,6 +3,38 @@
 All notable changes to this feature are recorded here. Versions follow the
 spec/contract `version:` frontmatter. Owner: changyu87.
 
+## 0.12.0 — 2026-08-03
+
+`already_done` — a TERMINAL already-satisfied Handoff outcome.
+
+- **Handoff schema 1.1.0 -> 1.2.0 (additive, backward-compatible).** Adds
+  `already_done` to the `status` value space — a TERMINAL already-satisfied
+  outcome the doer emits when the requested change is already present on `main`
+  (a genuine no-op, nothing to implement). It is DISTINCT from the retryable
+  `blocked`: `blocked` is a cannot-proceed signal scheduling re-dispatches,
+  whereas `already_done` is terminal and lets scheduling record the item resolved
+  so it is not re-dispatched. Evidence is carried in the existing `artifact` slot
+  as `{kind: "already-on-main", ref: <commit-sha>}` — the commit on `main` that
+  already carries the fix. An `already_done` handoff opens NO PR and, this wave,
+  does NOT close the source issue (left OPEN). No existing field or status
+  changed; a prior consumer that does not recognize `already_done` treats it as a
+  non-`opened` handoff (which it is).
+- **`validate_handoff` accepts `already_done` without a `test_verdict`.** Like
+  `blocked`/`planned`/legacy `closed`, an `already_done` handoff opened no PR, so
+  it is VALID without a verdict; only `opened` requires a passing
+  script-produced verdict. No logic change was needed (the predicate already
+  treats every non-`opened` status as verdict-free) — the docstring now names
+  `already_done` explicitly.
+- **Shipped implementer subagent v2.11.0 -> v2.12.0.** Instructs the doer to
+  report `status: already_done` (NOT `blocked`) when it determines the requested
+  change is already present on `main`, opening no PR and setting
+  `artifact = {kind: already-on-main, ref: <commit-sha>}` (resolved via
+  `git log`/`git blame`), leaving the source issue open. `blocked` stays for
+  genuine cannot-proceed cases and `opened` for real work.
+- **Housekeep doc baseline re-anchored** spec.md 386 -> 421 to absorb the
+  load-bearing `already_done` content; `already_done` and `already-on-main` added
+  to the load-bearing token survival set.
+
 ## 0.11.1 — 2026-08-03
 
 Hooks-free worktree add (implementer's disposable worktree).
