@@ -2,6 +2,32 @@
 
 All notable changes to this feature are recorded here. Owner: rabbit-workflow team.
 
+## 0.12.0 — 2026-08-03
+
+Disable-repo-hooks in the loop's disposable worktrees + a gh-2.69.0-safe
+closing-issue resolver. Two live wedges closed.
+
+- **Hooks-free disposable-tree git ops.** EVERY hook-firing git op in
+  `reconcile_rebase_worktree` (`git worktree add --detach`, `git checkout -B`,
+  `git rebase`, `git push --force`) AND the GATE integration-worktree helper
+  (`git worktree add --detach`, `git merge --no-ff`) now carries
+  `-c core.hooksPath=/dev/null` (inserted immediately after `git`), so the TARGET
+  repo's `post-checkout`/`post-merge`/`post-rewrite`/`pre-push` hooks never fire in
+  the loop's throwaway worktrees. Previously a repo whose `post-checkout` hook
+  fails in a fresh worktree (observed live: ssbdci-grimlock's
+  `render_nested_components`) made tier-1's checkout/rebase throw every tick, so a
+  CONFLICTING loop PR was detected but never recovered. RECONCILE/GATE now work
+  against ANY repo regardless of its hooks.
+- **`gh_closing_issue_ref` no longer uses the `closingIssuesReferences` `--json`
+  field.** It now resolves the closing-issue number via `gh api graphql`
+  (`repository.pullRequest(number).closingIssuesReferences(first:1).nodes[].number`)
+  with a `Closes/Fixes/Resolves #N` PR-body-parse fallback. The installed gh
+  (2.69.0) does NOT support the `--json closingIssuesReferences` field — it failed
+  every call, silently disabling same-issue dedup (C), VERIFY orphan detection, and
+  the GATE gate-fail issue comment. The single resolver fix repairs all three
+  consumers. Injectable runner preserved; RECONCILE stays advisory; tier-1/tier-2,
+  GATE, and orphan-detection behavior are otherwise unchanged.
+
 ## 0.11.2 — 2026-07-31
 
 RECONCILE tier-1 unique-worktree robustness: a leftover worktree from an abrupt

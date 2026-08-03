@@ -112,7 +112,7 @@ class _ScriptedGit:
     @staticmethod
     def _git_sub(cmd):
         i = 1
-        while i < len(cmd) and cmd[i] == "-C":
+        while i < len(cmd) and cmd[i] in ("-c", "-C"):
             i += 2
         return cmd[i] if i < len(cmd) else ""
 
@@ -137,7 +137,7 @@ def _is_git_sub(cmd, sub):
     if not cmd or cmd[0] != "git":
         return False
     i = 1
-    while i < len(cmd) and cmd[i] == "-C":
+    while i < len(cmd) and cmd[i] in ("-c", "-C"):
         i += 2
     return i < len(cmd) and cmd[i] == sub
 
