@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.45.0
+version: 0.46.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -1096,7 +1096,16 @@ work-intake seams landed in the providers wave. Both are deterministic, live in
   URL-form `pr_ref` (a) crashed verify-integrate's tier-1 `_pr_number` (`int(<url>)`
   threw every tick, so a CONFLICTING loop PR was detected but never rebased/
   re-landed) and (b) mismatched the `prior_by_ref` key form (VERIFY verdicts key on
-  `owner/repo#N`). Seeding the canonical form fixes both. The factory injects the
+  `owner/repo#N`). Seeding the canonical form fixes both. **The seeded `issue_ref`
+  is likewise the CANONICAL `owner/repo#N`.** The work_order_id uses a `-wo`
+  SUFFIX (`owner/repo#N-wo`, the live producer's form), so `_reconcile_ledger_seed`
+  derives `issue_ref` by stripping that suffix: `wo_id[3:]` when it starts with a
+  legacy `wo-` PREFIX (the deterministic dry-run producer), else `wo_id[:-3]` when
+  it ends with `-wo`, else `wo_id` as-is; `repo` is the `owner/repo` before `#`.
+  This closes a real regression: the seed previously stripped only the `wo-`
+  prefix, so a `-wo`-suffixed id left `issue_ref = owner/repo#N-wo`, and
+  `gh issue view N-wo` (`issue_ref.split('#')[-1]`) failed every time — breaking
+  RECONCILE's (A) merged-PR issue-close. The factory injects the
   production seams (`gh_pr_state_source`, `gh_issue_state_source`,
   `gh_issue_close_sink`, PR-close + comment sinks, `reconcile_rebase_worktree`)
   plus the resolved `mode` (so `permits('merge', mode)` gates the mutating tiers)

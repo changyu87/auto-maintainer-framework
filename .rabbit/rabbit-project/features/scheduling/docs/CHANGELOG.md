@@ -1,5 +1,19 @@
 # scheduling — Changelog
 
+## feature 0.46.0 — 2026-08-03
+
+- **Fixed `_reconcile_ledger_seed`'s malformed `issue_ref`.** The live producer's
+  `work_order_id` uses a `-wo` SUFFIX (`owner/repo#N-wo`), but the seed stripped
+  only a legacy `wo-` PREFIX, leaving `issue_ref = owner/repo#N-wo` so
+  `gh issue view N-wo` (`issue_ref.split('#')[-1]`) failed every tick — breaking
+  RECONCILE's (A) merged-PR issue-close. `_reconcile_ledger_seed` now derives the
+  CANONICAL `owner/repo#N` by stripping the `wo-` prefix (dry-run producer) OR the
+  `-wo` suffix (live producer), else the id as-is; `repo` is the `owner/repo`
+  before `#`. The `pr_ref` URL->`owner/repo#N` canonicalization from the prior
+  wave is unchanged, and there is no verify-integrate change.
+- **Housekeep baseline re-anchored `spec.md` 1462->1471** for the already-committed
+  0.46.0 spec growth (contract.md kept under its strictly-grew gate).
+
 ## feature 0.45.0 — 2026-07-31
 
 - **RECONCILE recovery outcome surfaced in observability.** `run_tick`'s

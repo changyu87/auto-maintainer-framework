@@ -740,6 +740,78 @@ def test_reconcile_ledger_seed_url_ref_none_stays_none():
 
 
 # ==========================================================================
+# _reconcile_ledger_seed issue_ref affix stripping (malformed-issue_ref fix):
+# the LIVE producer's work_order_id uses a `-wo` SUFFIX (owner/repo#N-wo). The
+# seed must strip that suffix so issue_ref = owner/repo#N — else `gh issue view
+# N-wo` (issue_ref.split('#')[-1]) fails every tick, breaking RECONCILE's (A)
+# merged-PR issue-close. The legacy `wo-` PREFIX (dry-run producer) and an
+# affix-free ref are still handled.
+# ==========================================================================
+
+_WO_ID_SUFFIX = "acme/widget#7-wo"
+
+
+def test_reconcile_ledger_seed_strips_wo_suffix():
+    ledger = {_WO_ID_SUFFIX: {"outcome": "opened", "ref": _PR_URL,
+                              "acted_at_updated_at": _UPDATED}}
+    seed = rt._reconcile_ledger_seed(ledger)
+    assert len(seed) == 1, seed
+    # The -wo suffix is stripped: issue_ref is the canonical owner/repo#N, NOT
+    # the malformed owner/repo#N-wo that broke `gh issue view N-wo`.
+    assert seed[0]["issue_ref"] == _ISSUE_REF, seed
+    assert seed[0]["repo"] == "acme/widget", seed
+    # work_order_id is preserved verbatim; pr_ref is canonicalized from the URL.
+    assert seed[0]["work_order_id"] == _WO_ID_SUFFIX, seed
+    assert seed[0]["pr_ref"] == _PR_REF, seed
+
+
+def test_reconcile_ledger_seed_strips_wo_prefix_back_compat():
+    # The legacy dry-run producer's `wo-` PREFIX still yields the canonical ref.
+    ledger = {_WO_ID: {"outcome": "opened", "ref": _PR_URL,
+                       "acted_at_updated_at": _UPDATED}}
+    seed = rt._reconcile_ledger_seed(ledger)
+    assert seed[0]["issue_ref"] == _ISSUE_REF, seed
+    assert seed[0]["repo"] == "acme/widget", seed
+
+
+def test_reconcile_ledger_seed_affix_free_ref_unchanged():
+    # An affix-free key (no wo- prefix, no -wo suffix) is used as-is.
+    ledger = {_ISSUE_REF: {"outcome": "opened", "ref": _PR_URL,
+                           "acted_at_updated_at": _UPDATED}}
+    seed = rt._reconcile_ledger_seed(ledger)
+    assert seed[0]["issue_ref"] == _ISSUE_REF, seed
+    assert seed[0]["repo"] == "acme/widget", seed
+
+
+def test_merged_pr_closes_issue_with_wo_suffixed_work_order_id():
+    """E2E: a `-wo`-suffixed acted-ledger entry runs the full RECONCILE tick and
+    closes the merged PR's issue at the CANONICAL owner/repo#N ref (not #N-wo)."""
+    project_dir = tempfile.mkdtemp(prefix="sched-recsuffix-")
+    state_path = os.path.join(project_dir, ".auto-maintainer",
+                              "durable-state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    ds.DurableState(state_path).save({
+        "schema_version": ds.SCHEMA_VERSION,
+        "counter": 0,
+        rt.ACTED_LEDGER_KEY: {_WO_ID_SUFFIX: {
+            "outcome": "opened", "ref": _PR_REF,
+            "acted_at_updated_at": _UPDATED}},
+    })
+    result, caps = _run(
+        project_dir, state_path, "auto-merge",
+        pr_state={"merged": True, "state": "MERGED", "mergeable": "MERGEABLE"},
+        issue_state={"state": "OPEN"})
+    assert result.final_state == "DONE", result.path
+    # The issue was queried + closed at the CANONICAL ref, never `acme/widget#7-wo`.
+    assert caps.issue_state and caps.issue_state[0][0] == _ISSUE_REF, \
+        caps.issue_state
+    assert [c[0] for c in caps.closes] == [_ISSUE_REF], caps.closes
+    # The ledger entry (keyed by the -wo work_order_id) is stamped closed.
+    ledger = rt.persisted_acted_ledger(state_path)
+    assert ledger[_WO_ID_SUFFIX]["outcome"] == "closed", ledger
+
+
+# ==========================================================================
 # Durable PRIOR_VERDICTS_KEY snapshot (race-breaker fix): written at tick end,
 # EXEMPT from _reset_ephemeral_read_products, verdict pr_refs normalized to
 # owner/repo#N. make_reconcile seeds prior_verdicts from THIS snapshot, so a

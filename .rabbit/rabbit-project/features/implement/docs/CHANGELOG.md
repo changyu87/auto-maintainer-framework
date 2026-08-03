@@ -3,6 +3,25 @@
 All notable changes to this feature are recorded here. Versions follow the
 spec/contract `version:` frontmatter. Owner: changyu87.
 
+## 0.11.1 — 2026-08-03
+
+Hooks-free worktree add (implementer's disposable worktree).
+
+- **`src/open_pr.py` `setup_worktree` runs the worktree add HOOKS-FREE.** The
+  `git worktree add` invocation now inserts `-c core.hooksPath=/dev/null`
+  immediately after `git`
+  (`git -c core.hooksPath=/dev/null worktree add <wt> -b <branch>
+  origin/<default>`), so the TARGET repo's `post-checkout` hook (e.g.
+  ssbdci-grimlock's `render_nested_components`) never fires in the implementer's
+  disposable worktree — the throwaway tree is only for mechanical
+  edit/commit/push and never needs the repo's checkout-render hooks. Mirrors
+  verify-integrate's reconcile/GATE hooks-off fix.
+- **Everything else unchanged.** Resolve default branch
+  (`gh repo view --json defaultBranchRef`), `git fetch origin <default>`,
+  worktree start-point ALWAYS `origin/<default>` (never local HEAD), and
+  `gh pr create --base <default>` (explicit base) are untouched. The injectable
+  runner is preserved.
+
 ## 0.11.0 — 2026-07-31
 
 Script-backed worktree setup + explicit PR base (fixes wrong-base PR stacking).

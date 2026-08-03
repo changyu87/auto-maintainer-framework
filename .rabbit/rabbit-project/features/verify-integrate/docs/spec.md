@@ -1,6 +1,6 @@
 ---
 feature: verify-integrate
-version: 0.11.2
+version: 0.12.0
 owner: changyu87
 deprecation_criterion: Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReconcileResult schemas reach a breaking major version.
 ---
@@ -404,11 +404,13 @@ REPORT/work-intake's (contract `never`).
   PR's first closing-issue ref. Production: LIST with only supported fields — `gh
   pr list --label auto-maintainer --state open --json number,url` — then for each
   listed PR resolve its first closing-issue ref by delegating to the EXISTING
-  `gh_closing_issue_ref` (which uses `gh pr view <n> --json closingIssuesReferences`,
-  the supported form). `closingIssuesReferences` is NOT a valid `gh pr list` `--json`
-  field (only `gh pr view` supports it), so requesting it on the list would abort
-  the tick on stock `gh` — hence list-then-per-PR-view. A PR whose closing-issue ref
-  is None (closes no issue) is EXCLUDED. Runner injectable; no network in tests.
+  `gh_closing_issue_ref`. That resolver uses `gh api graphql`
+  (`repository.pullRequest(number).closingIssuesReferences(first:1).nodes[].number`)
+  — NOT `gh pr view --json closingIssuesReferences`, which the installed `gh`
+  (2.69.0) does NOT support as a `--json` field (it fails every call) — with a
+  fallback that parses the PR body for a `Closes/Fixes/Resolves #N` keyword. A PR
+  whose closing-issue ref is None (closes no issue) is EXCLUDED. Runner injectable;
+  no network in tests.
 - the EXISTING injectable PR-close sink and issue-comment sink, and the EXISTING
   GATE integration-worktree helper (fetch a PR head, merge/rebase onto a fresh
   base), reused for the tier-1 rebase.
@@ -474,6 +476,22 @@ For each `opened` entry whose PR is CONFLICTING per the determination above:
   onto fresh `origin/<default-branch>`. If it rebases CLEAN, force-push the rebased
   branch so the PR is mergeable again and re-enters VERIFY/GATE/INTEGRATE next tick
   with NO implementer run. Recorded in `reconcile_result.rebased`.
+  **Hooks-free disposable-tree git ops (repo-hook robustness).** EVERY hook-firing
+  git invocation the loop issues in its disposable worktrees — in
+  `reconcile_rebase_worktree` (`git worktree add --detach`, `git checkout -B`,
+  `git rebase`, `git push --force`) AND in the GATE integration-worktree helper
+  (`git worktree add --detach`, `git merge --no-ff`) — MUST run with
+  `-c core.hooksPath=/dev/null` (inserted immediately after `git`) so the TARGET
+  repo's `post-checkout`/`post-merge`/`post-rewrite`/`pre-push` hooks do NOT fire.
+  The loop's mechanical trees never need the repo's checkout-render hooks; running
+  them is a real regression source — a repo whose `post-checkout` hook fails in a
+  throwaway worktree (observed live: ssbdci-grimlock's `render_nested_components`)
+  made tier-1's checkout/rebase throw every tick, so a CONFLICTING loop PR was
+  detected but never recovered. Disabling hooks makes RECONCILE/GATE work against
+  ANY repo regardless of its hooks. (CAVEAT for a project that ARMS a
+  `regression_command`: a disposable GATE worktree lacks any repo-hook-rendered
+  artifacts, so a regression referencing them could false-fail — a known,
+  documented limitation, not gated here.)
   **`pr_ref` form robustness.** The tier-1 helper derives the PR number from the
   `pr_ref` via the internal `_pr_number(pr_ref)`, which MUST tolerate BOTH the
   canonical `owner/repo#N` ref AND a full GitHub PR URL (`…/pull/N`): it takes the
@@ -522,10 +540,12 @@ the latest `opened` entry per work order and would miss a re-dispatch's orphaned
 first-run PR) via an INJECTABLE source (production: LIST the open loop PRs with only
 supported `--json` fields — `gh pr list --label auto-maintainer --state open --json
 number,url` — then resolve EACH PR's FIRST closing-issue ref via the EXISTING
-`gh_closing_issue_ref` (`gh pr view <n> --json closingIssuesReferences`); a PR that
-closes no issue is excluded from dedup). `closingIssuesReferences` is a `gh pr
-view`-only field — it is NOT valid on `gh pr list`, so it must NEVER be requested on
-the list (doing so aborts the whole tick on stock `gh`). It GROUPS the open PRs by
+`gh_closing_issue_ref` (via `gh api graphql`, with a `Closes/Fixes/Resolves #N`
+body-parse fallback — see above); a PR that
+closes no issue is excluded from dedup). `closingIssuesReferences` must NEVER be
+requested as a `gh pr view`/`gh pr list` `--json` field (the installed `gh` 2.69.0
+does not support it — it fails the call); the GraphQL resolver is the supported
+path. It GROUPS the open PRs by
 closing-issue ref and, for each group with **more
 than one** open PR whose **source issue is still OPEN** (`gh_issue_state_source`),
 KEEPS exactly one — the **highest PR number** (the loop-tracked / newest re-land) —
@@ -588,6 +608,18 @@ CLEANUP → PERSIST → EXIT`.
 
 ## Invariants
 
+- **Disposable-tree git ops run hooks-free.** Every hook-firing git invocation in
+  `reconcile_rebase_worktree` and the GATE integration-worktree helper carries
+  `-c core.hooksPath=/dev/null`, so the target repo's checkout/merge/push hooks
+  never fire in the loop's throwaway worktrees. A repo whose `post-checkout` hook
+  fails in a fresh worktree can no longer wedge tier-1 recovery (the live
+  `render_nested_components` regression).
+- **`gh_closing_issue_ref` never uses the `closingIssuesReferences` `--json`
+  field.** It resolves the closing-issue number via `gh api graphql` (with a
+  `Closes/Fixes/Resolves #N` body-parse fallback), because the installed `gh`
+  (2.69.0) does not support that `--json` field — the prior form failed every call,
+  silently disabling same-issue dedup, VERIFY orphan detection, and the GATE
+  gate-fail issue comment. All three consumers are repaired by the one resolver.
 - **`_pr_number(pr_ref)` tolerates both ref forms.** It parses the PR number from
   a canonical `owner/repo#N` ref (digits after the last `#`) OR a full GitHub PR
   URL (`…/pull/N`, trailing slash/query stripped), raising `ValueError` only when
@@ -658,9 +690,10 @@ CLEANUP → PERSIST → EXIT`.
   NEVER crosses issues; it is trust-gated (`auto-merge` only) and records closures
   in `reconcile_result.deduped`. Its open-PR source LISTS with only supported
   `gh pr list` `--json` fields (`number,url`) and resolves each closing-issue ref
-  via `gh_closing_issue_ref` (`gh pr view`) — it NEVER requests
-  `closingIssuesReferences` on `gh pr list` (an invalid field that would abort the
-  tick). The entire dedup step is fault-isolated: any fault is recorded under
+  via `gh_closing_issue_ref` (`gh api graphql` + body-keyword fallback) — it NEVER
+  requests the `closingIssuesReferences` `--json` field on `gh pr view` OR
+  `gh pr list` (the installed `gh` 2.69.0 rejects it, failing the call). The entire
+  dedup step is fault-isolated: any fault is recorded under
   `errors` and the tick CONTINUES (RECONCILE never crashes on a dedup fault).
 
 ## Deferred (NOT v1)

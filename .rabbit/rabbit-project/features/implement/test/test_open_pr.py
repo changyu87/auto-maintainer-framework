@@ -92,14 +92,33 @@ def test_setup_worktree_start_point_is_origin_default_never_head():
     m = _load()
     r = FakeRunner(default_branch="main")
     m.setup_worktree(r, branch="loop/x", worktree="/tmp/wt")
-    adds = r._argv_for(["git", "worktree", "add"])
+    adds = r._argv_for(["git", "-c", "core.hooksPath=/dev/null", "worktree",
+                        "add"])
     assert len(adds) == 1
     argv = adds[0]
-    assert argv == ["git", "worktree", "add", "/tmp/wt", "-b", "loop/x",
+    assert argv == ["git", "-c", "core.hooksPath=/dev/null", "worktree", "add",
+                    "/tmp/wt", "-b", "loop/x",
                     "origin/main"], f"unexpected worktree add argv: {argv}"
     # explicit start-point present, and never HEAD or a bare local ref
     assert "origin/main" in argv
     assert "HEAD" not in argv
+
+
+def test_setup_worktree_add_runs_hooks_free():
+    """The worktree add (and any checkout it does) runs HOOKS-FREE via
+    `-c core.hooksPath=/dev/null` immediately after `git`, so the TARGET repo's
+    post-checkout hook (e.g. ssbdci-grimlock's render_nested_components) never
+    fires in the implementer's disposable worktree — mirroring verify-integrate's
+    reconcile/GATE hooks-off fix."""
+    m = _load()
+    r = FakeRunner(default_branch="main")
+    m.setup_worktree(r, branch="loop/x", worktree="/tmp/wt")
+    adds = [c for c in r.calls if "worktree" in c and "add" in c]
+    assert len(adds) == 1, "exactly one worktree add"
+    argv = adds[0]
+    assert argv[:3] == ["git", "-c", "core.hooksPath=/dev/null"], (
+        f"worktree add must run hooks-free (`git -c core.hooksPath=/dev/null` "
+        f"first), got {argv}")
 
 
 def test_second_consecutive_setup_still_branches_from_origin_default():
@@ -110,7 +129,8 @@ def test_second_consecutive_setup_still_branches_from_origin_default():
     r = FakeRunner(default_branch="main")
     m.setup_worktree(r, branch="loop/first", worktree="/tmp/wt1")
     m.setup_worktree(r, branch="loop/second", worktree="/tmp/wt2")
-    adds = r._argv_for(["git", "worktree", "add"])
+    adds = r._argv_for(["git", "-c", "core.hooksPath=/dev/null", "worktree",
+                        "add"])
     assert len(adds) == 2
     for argv in adds:
         assert argv[-1] == "origin/main", (
@@ -150,7 +170,8 @@ def test_setup_worktree_returns_the_default_branch():
     m = _load()
     r = FakeRunner(default_branch="develop")
     assert m.setup_worktree(r, branch="b", worktree="/tmp/wt") == "develop"
-    adds = r._argv_for(["git", "worktree", "add"])
+    adds = r._argv_for(["git", "-c", "core.hooksPath=/dev/null", "worktree",
+                        "add"])
     assert adds[0][-1] == "origin/develop"
 
 
@@ -162,7 +183,8 @@ def test_cli_setup_uses_injected_runner():
     rc = m.main(["setup", "--branch", "loop/x", "--worktree", "/tmp/wt"],
                 runner=r)
     assert rc == 0
-    adds = r._argv_for(["git", "worktree", "add"])
+    adds = r._argv_for(["git", "-c", "core.hooksPath=/dev/null", "worktree",
+                        "add"])
     assert adds and adds[0][-1] == "origin/main"
 
 
