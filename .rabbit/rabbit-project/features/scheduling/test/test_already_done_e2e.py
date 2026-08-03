@@ -351,8 +351,9 @@ def test_filter_triage_work_items_drops_already_done_unchanged():
 
 def test_work_remains_false_for_already_done_unchanged():
     items = [{"id": "acme/widget#7", "number": 7, "state": "OPEN",
-              "title": "x", "url": "https://github.com/acme/widget/issues/7",
-              "updated_at": _UPDATED_7,
+              "title": "x", "body": "...",
+              "url": "https://github.com/acme/widget/issues/7",
+              "author": "octocat", "updated_at": _UPDATED_7,
               "created_at": "2026-05-01T10:00:00Z", "labels": []}]
     memory = {"acme/widget#7": {"status": "already_done",
                                 "updated_at": _UPDATED_7}}

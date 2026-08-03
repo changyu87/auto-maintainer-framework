@@ -316,7 +316,7 @@ TRIAGE_MEMORY_KEY = "triage_memory"
 # invalid, enacted via the reject-disposition sink) is skipped-while-unchanged
 # too: a human removing the label / touching the issue advances its updated_at and
 # re-admits it.
-_TRIAGE_SKIP_STATUSES = ("done", "deferred", "rejected")
+_TRIAGE_SKIP_STATUSES = ("done", "already_done", "deferred", "rejected")
 
 # The production escalation sink: observability's live `gh issue comment` adapter
 # (mirrors DEFAULT_PULL_SOURCE / DEFAULT_REPORT_SINK). When a work_item reaches
@@ -535,12 +535,21 @@ def make_pull(runtime):
     `{labels, title_pattern}` object (default no-filter when absent, so PULL
     pulls every open issue), threaded onto the Pull exactly as work_own_filings
     is; the DNF-label + title_pattern filtering logic is work-intake's, consumed
-    unchanged. safety-governance + work-intake are consumed UNCHANGED."""
+    unchanged. safety-governance + work-intake are consumed UNCHANGED.
+
+    It ALSO computes the set of issue refs that already have an OPEN loop PR
+    (`_in_flight_issue_refs`, from the durable acted-ledger + the injectable
+    `pr_state_source`, both threaded onto the runtime dict) and binds it onto the
+    Pull as `in_flight_issue_refs=<set>` so an issue already in flight is EXCLUDED
+    from PULL (its open PR's own lifecycle resolves it). An empty ledger yields the
+    empty set (non-breaking)."""
     source = runtime.get("source") or DEFAULT_PULL_SOURCE
     pull = wi.Pull(
         source=source,
         work_own_filings=sg.work_own_filings(runtime.get("governance") or {}),
-        issue_filter=sg.issue_filter(runtime.get("governance") or {}))
+        issue_filter=sg.issue_filter(runtime.get("governance") or {}),
+        in_flight_issue_refs=_in_flight_issue_refs(
+            runtime.get("state_path"), runtime.get("pr_state_source")))
     return wi.PULL_MANIFEST, pull.run
 
 
@@ -696,6 +705,21 @@ def _snapshot_prior_verdicts(verdicts):
     return snap
 
 
+def _issue_ref_from_wo_id(wo_id):
+    """Derive the CANONICAL source issue ref `owner/repo#N` from a work_order_id
+    by stripping its affix: the LIVE producer uses a `-wo` SUFFIX
+    (`owner/repo#N-wo` -> `owner/repo#N`), the deterministic dry-run producer uses
+    a legacy `wo-` PREFIX (`wo-acme/widget#7` -> `acme/widget#7`); an affix-free id
+    is returned as-is. Pure; no I/O. Shared by `_reconcile_ledger_seed` (RECONCILE
+    acted_ledger seed) and `_in_flight_issue_refs` (PULL in-flight exclusion) so
+    both canonicalize identically."""
+    if wo_id.startswith("wo-"):
+        return wo_id[3:]
+    if wo_id.endswith("-wo"):
+        return wo_id[:-3]
+    return wo_id
+
+
 def _reconcile_ledger_seed(ledger):
     """Shape the durable acted-ledger's `opened` entries into the list Reconcile's
     `acted_ledger` slot expects: `[{work_order_id, pr_ref, issue_ref, repo}...]`.
@@ -718,12 +742,7 @@ def _reconcile_ledger_seed(ledger):
     for wo_id, entry in (ledger or {}).items():
         if entry.get("outcome") != "opened":
             continue
-        if wo_id.startswith("wo-"):
-            issue_ref = wo_id[3:]
-        elif wo_id.endswith("-wo"):
-            issue_ref = wo_id[:-3]
-        else:
-            issue_ref = wo_id
+        issue_ref = _issue_ref_from_wo_id(wo_id)
         repo = issue_ref.split("#")[0] if "#" in issue_ref else None
         seed.append({
             "work_order_id": wo_id,
@@ -732,6 +751,45 @@ def _reconcile_ledger_seed(ledger):
             "repo": repo,
         })
     return seed
+
+
+def _in_flight_issue_refs(state_path, pr_state_source):
+    """The set of CANONICAL `owner/repo#N` issue refs that already have an OPEN
+    loop PR (PULL in-flight exclusion, convergence). An issue being worked by an
+    OPEN auto-maintainer PR must NOT be re-triaged / re-implemented — the open
+    PR's own lifecycle resolves it (INTEGRATE/auto-merge on success, RECONCILE on
+    conflict).
+
+    Reads the durable ACTED_LEDGER_KEY and takes each entry with
+    `outcome == "opened"` (a loop PR the doer opened — a `merged`/`closed`/absent
+    outcome is NOT in-flight). For each, it derives the canonical issue ref from
+    the work_order_id (the SAME `_issue_ref_from_wo_id` canonicalization
+    `_reconcile_ledger_seed` uses) and LIVE-CONFIRMS the recorded PR `ref` is
+    still OPEN via the injectable `pr_state_source` (the same seam the §3.8.5
+    re-entry gate uses): a PR that is MERGED or CLOSED is NOT added (its issue
+    flows through PULL normally). A raising/malformed PR-state read for one entry
+    is tolerated (that entry skipped, never crashes the tick). Returns the set of
+    confirmed in-flight refs (empty when the ledger has no live `opened` entries,
+    or when `pr_state_source`/`state_path` is absent — non-breaking)."""
+    refs = set()
+    if not state_path or pr_state_source is None:
+        return refs
+    ledger = persisted_acted_ledger(state_path)
+    for wo_id, entry in (ledger or {}).items():
+        if entry.get("outcome") != "opened":
+            continue
+        pr_ref = entry.get("ref")
+        if not pr_ref:
+            continue
+        try:
+            pr = pr_state_source(pr_ref)
+        except Exception:
+            continue  # fetch failed — skip this entry, never crash
+        if not isinstance(pr, dict):
+            continue
+        if pr.get("state") == "OPEN":
+            refs.add(_issue_ref_from_wo_id(wo_id))
+    return refs
 
 
 def _persist_reconcile_outcome(state_path, seed, recon):
@@ -2094,6 +2152,13 @@ def _record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at):
     `wo_to_wi`:
 
       - a COMPLETED outcome (`opened`/`closed`) records status='done'.
+      - an `already_done` outcome (implement's v1.2.0 terminal already-satisfied
+        outcome — the requested fix is already on `main`) records
+        status='already_done' so the next tick's skip-unchanged filter excludes
+        the unchanged item on the FIRST detection. It is TERMINAL, NOT a retryable
+        block: the backoff ledger is NOT incremented for it (see
+        _record_backoff_outcomes) and it is NOT recorded in the acted-ledger (it
+        opened no PR).
       - a `blocked` outcome that just reached the backoff DEFERRAL (its post-update
         backoff entry has a truthy `deferred_at_updated_at`) records
         status='deferred'.
@@ -2117,6 +2182,8 @@ def _record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at):
         status = h.get("status")
         if status in _COMPLETED_OUTCOMES:
             new_status = "done"
+        elif status == "already_done":
+            new_status = "already_done"
         elif status == "blocked" and backoff.get(wi_id, {}).get(
                 "deferred_at_updated_at"):
             new_status = "deferred"
@@ -3244,6 +3311,11 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         "source": source,
         "now": now,
         "governance": gov,
+        # PULL's in-flight exclusion needs the durable acted-ledger location +
+        # the injectable PR-state seam (the same one the §3.8.5 re-entry gate
+        # uses) so make_pull can compute _in_flight_issue_refs at factory time.
+        "state_path": state_path,
+        "pr_state_source": pr_state_source or DEFAULT_PR_STATE_SOURCE,
     }
 
     # The budget readiness gate is evaluated at FRESH tick start ONLY, not on
