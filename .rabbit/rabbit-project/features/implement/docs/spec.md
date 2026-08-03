@@ -1,6 +1,6 @@
 ---
 feature: implement
-version: 0.11.0
+version: 0.11.1
 owner: changyu87
 deprecation_criterion: Superseded when the model-backed implement-then-PR doer (DESIGN §3.6.2/§3.6.3) replaces the dry-run reference adapter, or when the Handoff schema reaches a breaking major version.
 ---
@@ -254,11 +254,19 @@ the output path. Its rendered prompt is the complete handoff contract (the
   `test_gate.py`), which the subagent INVOKES rather than hand-runs. The script
   UNCONDITIONALLY: (1) resolves the repo default branch
   (`gh repo view --json defaultBranchRef`), (2) `git fetch origin <default>`,
-  (3) `git worktree add <wt> -b <branch> origin/<default>` — start-point is the
+  (3) `git -c core.hooksPath=/dev/null worktree add <wt> -b <branch> origin/<default>`
+  — start-point is the
   FRESHLY-FETCHED remote ref, NEVER local `HEAD`/whatever is currently checked out,
   and (4) opens the PR with an EXPLICIT `gh pr create --base <default>` (never an
   inferred/tracked base). So the PR base can never drift to a sibling loop branch,
-  regardless of what a prior burst run left checked out. The script owns the
+  regardless of what a prior burst run left checked out. **The worktree add (and
+  any checkout it does) runs HOOKS-FREE via `-c core.hooksPath=/dev/null`** so the
+  TARGET repo's `post-checkout` hook does NOT fire in the disposable worktree — the
+  implementer's throwaway tree is for mechanical edit/commit/push and never needs
+  the repo's checkout-render hooks (a repo whose `post-checkout` fails in a fresh
+  worktree, e.g. ssbdci-grimlock's `render_nested_components`, would otherwise be a
+  fragility/failure source; this mirrors verify-integrate's reconcile/GATE
+  hooks-free fix). The script owns the
   computed values (default branch, branch name, worktree path) with an injectable
   runner for deterministic tests; the agent `.md` calls it in place of the raw
   git/gh prose (agent version bumped). The subagent's own-worktree isolation intent
