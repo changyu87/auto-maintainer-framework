@@ -1,6 +1,6 @@
 {
   "name": "work-intake",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/work-intake/src/**",
@@ -8,8 +8,8 @@
   ],
   "created": "2026-06-11T07:47:37Z",
   "deprecation_criterion": "Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version).",
-  "tdd_state": "test-green",
-  "updated": "2026-07-27",
-  "spec_change_reason": "Deterministic reject disposition + triager authoritative target_feature + PULL exclude_labels: added REJECTED_LABEL/REJECT_MARKER, the pure reject_dispositions(work_orders) selector, and the injectable gh_issue_reject_sink (ensure-label + one marked comment carrying the reason + add-label; NEVER closes; idempotent no-op when already labeled); gh_issue_source now drops any fetched issue carrying a listed issue_filter.exclude_labels label post-fetch (empty = no-op); the shipped triager (v1.4.0) stamps an authoritative target_feature on accepted orders and emits rejected orders (decision=rejected + reason + work_item_id/issue ref).",
-  "spec_no_change_reason": "spec.md already committed at 0.11.0 in spec-update commit 7190b70 (reject disposition + exclude_labels + triager target_feature/reject emission); this cycle implements src+triager+contract+feature.json against that committed spec"
+  "tdd_state": "impl",
+  "updated": "2026-08-03",
+  "spec_change_reason": "In-flight guard (convergence): added the pure is_in_flight(item, in_flight_issue_refs) predicate and the Pull(in_flight_issue_refs=...) injected-set param that UNCONDITIONALLY EXCLUDES any candidate work_item whose issue ref (owner/repo#N) already has an OPEN loop PR, so the loop does not re-triage/re-implement work already in flight (the excluded issue is left open + untouched; a PULL exclusion, not a TRIAGE reject). Bounded scope: work-intake CONSUMES the set (threaded in by scheduling from existing verify-integrate open-PR / acted-ledger seams), adds no gh plumbing; default empty set = no-op (non-breaking).",
+  "spec_no_change_reason": "spec.md already committed at 0.12.0 in spec-update commit c067967 (in-flight guard: is_in_flight + Pull(in_flight_issue_refs)); this cycle implements src+tests+baseline re-anchor against that committed spec"
 }
