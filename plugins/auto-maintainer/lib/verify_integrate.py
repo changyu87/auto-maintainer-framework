@@ -1039,25 +1039,71 @@ GATE_MANIFEST = fc.StateManifest(reads=["verdicts"],
                                  emits=GATE_SIGNALS)
 
 
+# The PR-body closing-keyword pattern the resolver's fallback parses (a
+# `Closes/Fixes/Resolves #N` reference, case-insensitive). Compiled once.
+_CLOSING_KEYWORD_RE = re.compile(
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)")
+
+
 def gh_closing_issue_ref(pr_ref, repo=None, runner=subprocess.run):
-    """Production issue-ref resolver: shell `gh pr view <n> --json
-    closingIssuesReferences` and return the first closing issue's ref
+    """Production issue-ref resolver: return the PR's FIRST closing-issue ref
     (`owner/repo#number` when `repo` is given, else `#number`), or None when the
-    PR closes no issue. Injectable `runner` for deterministic tests (no network).
-    """
-    number = pr_ref.split("#")[-1]
-    cmd = ["gh", "pr", "view", number, "--json", "closingIssuesReferences",
-           "-q", ".closingIssuesReferences"]
+    PR closes no issue.
+
+    The closing-issue number is resolved via `gh api graphql`
+    (repository.pullRequest(number).closingIssuesReferences(first:1).nodes[].number),
+    NOT the `closingIssuesReferences` `--json` field — the installed gh (2.69.0)
+    does NOT support that field and fails every call, which silently disabled
+    same-issue dedup, VERIFY orphan detection, and the GATE gate-fail comment. When
+    graphql yields no ref (or cannot run), it FALLS BACK to parsing the PR body for
+    a `Closes/Fixes/Resolves #N` keyword. Injectable `runner` for deterministic
+    tests (no network)."""
+    number = _pr_number(pr_ref)
+    owner, name = _parse_owner_repo(pr_ref, repo)
+
+    def _fmt(issue_number):
+        return f"{repo}#{issue_number}" if repo else f"#{issue_number}"
+
+    # PRIMARY: gh api graphql closingIssuesReferences (the supported form).
+    if owner and name:
+        query = (
+            "query($owner:String!,$name:String!,$number:Int!){"
+            "repository(owner:$owner,name:$name){"
+            "pullRequest(number:$number){"
+            "closingIssuesReferences(first:1){nodes{number}}}}}")
+        cmd = ["gh", "api", "graphql",
+               "-f", "query=" + query,
+               "-f", "owner=" + owner,
+               "-f", "name=" + name,
+               "-F", "number=" + str(number)]
+        try:
+            proc = runner(cmd, capture_output=True, text=True)
+            if getattr(proc, "returncode", 0) == 0:
+                data = json.loads(getattr(proc, "stdout", "") or "{}")
+                pr = (((data.get("data") or {}).get("repository") or {})
+                      .get("pullRequest") or {})
+                nodes = (pr.get("closingIssuesReferences") or {}).get(
+                    "nodes") or []
+                if nodes:
+                    issue_number = nodes[0].get("number")
+                    if issue_number is not None:
+                        return _fmt(issue_number)
+        except Exception:  # noqa: BLE001 — fall through to the body fallback
+            pass
+
+    # FALLBACK: parse the PR body for a Closes/Fixes/Resolves #N keyword.
+    body_cmd = ["gh", "pr", "view", str(number), "--json", "body", "-q", ".body"]
     if repo:
-        cmd += ["--repo", repo]
-    out = runner(cmd, capture_output=True, text=True, check=True)
-    refs = json.loads(out.stdout or "[]")
-    if not refs:
-        return None
-    issue_number = refs[0].get("number")
-    if issue_number is None:
-        return None
-    return f"{repo}#{issue_number}" if repo else f"#{issue_number}"
+        body_cmd += ["--repo", repo]
+    try:
+        out = runner(body_cmd, capture_output=True, text=True)
+        if getattr(out, "returncode", 0) == 0:
+            match = _CLOSING_KEYWORD_RE.search(getattr(out, "stdout", "") or "")
+            if match:
+                return _fmt(match.group(1))
+    except Exception:  # noqa: BLE001 — no resolvable closing issue
+        pass
+    return None
 
 
 def _bounded_tail(text, max_bytes=_FAILURE_SUMMARY_MAX_BYTES):
@@ -1311,7 +1357,8 @@ class Gate:
         # marker — the tick converges to idle and retries cleanly next tick,
         # rather than false-failing every PR into the park threshold. Do NOT
         # enter the try/finally (a failed add created nothing to remove).
-        add = self._runner(["git", "worktree", "add", "--detach", worktree,
+        add = self._runner(["git", "-c", "core.hooksPath=/dev/null",
+                            "worktree", "add", "--detach", worktree,
                             self._default_branch],
                            capture_output=True, text=True)
         if add.returncode != 0:
@@ -1357,7 +1404,8 @@ class Gate:
                 reason="fetch-failed",
                 failure_summary=_bounded_tail(fetch.stderr or fetch.stdout))
         merge = self._runner(
-            ["git", "-C", worktree, "merge", "--no-ff", "--no-edit",
+            ["git", "-c", "core.hooksPath=/dev/null", "-C", worktree,
+             "merge", "--no-ff", "--no-edit",
              "-m", f"gate-integrate {pr_ref}", "FETCH_HEAD"],
             capture_output=True, text=True)
         if merge.returncode != 0:
@@ -2150,16 +2198,16 @@ def gh_open_pr_closing_issue_source(repo=None, runner=subprocess.run):
     `[{pr_ref, url, issue_ref}]`, each PR mapped to its FIRST closing-issue ref
     (`owner/repo#number` when `repo` is given, else `#number`).
 
-    `closingIssuesReferences` is a `gh pr view`-only `--json` field — it is NOT
-    valid on `gh pr list` (requesting it there aborts the whole tick on stock gh),
+    `closingIssuesReferences` is NOT a valid `--json` field on the installed gh
+    (2.69.0 rejects it on `gh pr list` AND `gh pr view`, aborting the whole tick),
     so this LISTS the open loop PRs with only SUPPORTED fields
     (`gh pr list --json number,url`) and then resolves EACH PR's first
     closing-issue ref by delegating to the EXISTING `gh_closing_issue_ref` (which
-    uses the supported `gh pr view <n> --json closingIssuesReferences`). A PR that
-    closes NO issue (gh_closing_issue_ref returns None) is EXCLUDED (it cannot be a
-    same-issue duplicate). The `runner` is INJECTABLE (threaded into BOTH the list
-    call AND the per-PR gh_closing_issue_ref delegation) for deterministic tests
-    (no network), mirroring the sibling gh sources."""
+    uses `gh api graphql` + a `Closes/Fixes/Resolves #N` body-parse fallback). A PR
+    that closes NO issue (gh_closing_issue_ref returns None) is EXCLUDED (it cannot
+    be a same-issue duplicate). The `runner` is INJECTABLE (threaded into BOTH the
+    list call AND the per-PR gh_closing_issue_ref delegation) for deterministic
+    tests (no network), mirroring the sibling gh sources."""
     cmd = ["gh", "pr", "list", "--label", LOOP_PR_LABEL, "--state", "open",
            "--json", "number,url"]
     if repo:
@@ -2245,7 +2293,14 @@ def reconcile_rebase_worktree(pr_ref, default_branch, repo=None,
     if getattr(fetch_base, "returncode", 0) != 0:
         raise RuntimeError((getattr(fetch_base, "stderr", "") or "").strip()
                            or "git fetch origin <default> failed")
-    add = runner(["git", "worktree", "add", "--detach", worktree,
+    # Hooks-free (repo-hook robustness): the hook-firing ops below — worktree add
+    # (post-checkout), checkout (post-checkout), rebase (post-rewrite), push
+    # (pre-push) — carry `-c core.hooksPath=/dev/null` so the TARGET repo's hooks
+    # never fire in the loop's disposable worktree. A repo whose post-checkout hook
+    # fails in a throwaway worktree (the live render_nested_components wedge) can no
+    # longer make tier-1 throw.
+    add = runner(["git", "-c", "core.hooksPath=/dev/null",
+                  "worktree", "add", "--detach", worktree,
                   f"origin/{default_branch}"], capture_output=True, text=True)
     if getattr(add, "returncode", 0) != 0:
         raise RuntimeError((getattr(add, "stderr", "") or "").strip()
@@ -2256,11 +2311,11 @@ def reconcile_rebase_worktree(pr_ref, default_branch, repo=None,
         if getattr(fetch, "returncode", 0) != 0:
             raise RuntimeError((getattr(fetch, "stderr", "") or "").strip()
                                or "git fetch pr head failed")
-        runner(["git", "-C", worktree, "checkout", "-B",
-                f"reconcile-{number}", "FETCH_HEAD"],
+        runner(["git", "-c", "core.hooksPath=/dev/null", "-C", worktree,
+                "checkout", "-B", f"reconcile-{number}", "FETCH_HEAD"],
                capture_output=True, text=True)
-        rebase = runner(["git", "-C", worktree, "rebase",
-                         f"origin/{default_branch}"],
+        rebase = runner(["git", "-c", "core.hooksPath=/dev/null", "-C", worktree,
+                         "rebase", f"origin/{default_branch}"],
                         capture_output=True, text=True)
         if getattr(rebase, "returncode", 0) != 0:
             runner(["git", "-C", worktree, "rebase", "--abort"],
@@ -2272,7 +2327,8 @@ def reconcile_rebase_worktree(pr_ref, default_branch, repo=None,
         head_ref = _gh_pr_head_ref(pr_ref, repo=repo, runner=runner)
         if not head_ref:
             raise RuntimeError("could not resolve PR head branch for force-push")
-        push = runner(["git", "-C", worktree, "push", "--force", "origin",
+        push = runner(["git", "-c", "core.hooksPath=/dev/null", "-C", worktree,
+                       "push", "--force", "origin",
                        f"HEAD:{head_ref}"], capture_output=True, text=True)
         if getattr(push, "returncode", 0) != 0:
             raise RuntimeError((getattr(push, "stderr", "") or "").strip()
