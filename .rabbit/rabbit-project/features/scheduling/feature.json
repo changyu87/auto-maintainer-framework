@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -8,8 +8,8 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-green",
-  "updated": "2026-07-31",
-  "spec_change_reason": "Surface verify-integrate's RECONCILE RECOVERY outcome in observability. run_tick's tick_end event detail now also carries rebased=len(reconcile_result.rebased) + rebased_refs, relanded=len(reconcile_result.relanded) + relanded_refs, and reconcile_errors=len(reconcile_result.errors), derived from the reconcile_result read product EXACTLY like the existing deduped/auto_merged, and the one-line trace gains compact rebased=<n>/relanded=<n>/reconcile_errors=<n> tokens shown only when >0. 0/[] when reconcile_result is absent (a route without RECONCILE) \u2014 non-breaking. This closes the observability gap where a RECONCILE that silently errored on every conflicting PR (the fixed-worktree wedge) was invisible in the trace, since only deduped/auto_merged were surfaced. scheduling only READS existing ReconcileResult fields into the trace; no schema change and no verify-integrate change. Re-anchored the housekeep spec.md baseline 1450->1462 for the already-committed 0.45.0 spec growth (contract.md kept under its strictly-grew gate).",
-  "spec_no_change_reason": null
+  "tdd_state": "test-red",
+  "updated": "2026-08-03",
+  "spec_change_reason": "Fix _reconcile_ledger_seed's malformed issue_ref. The live producer's work_order_id uses a -wo SUFFIX (owner/repo#N-wo), but the seed stripped only a legacy wo- PREFIX, leaving issue_ref=owner/repo#N-wo so `gh issue view N-wo` (issue_ref.split('#')[-1]) failed every tick, breaking RECONCILE's (A) merged-PR issue-close. _reconcile_ledger_seed now derives the CANONICAL owner/repo#N by stripping the wo- prefix (dry-run producer) OR the -wo suffix (live producer), else the id as-is; repo is the owner/repo before #. The pr_ref URL->owner/repo#N canonicalization from the prior wave is unchanged, and there is no verify-integrate change. Re-anchored the housekeep spec.md baseline 1462->1471 for the already-committed 0.46.0 spec growth (contract.md kept under its strictly-grew gate).",
+  "spec_no_change_reason": "spec.md was updated pre-dispatch in commit d510c49 (scheduling 0.46.0) documenting the -wo suffix issue_ref stripping; this cycle implements that spec in run_tick.py"
 }
