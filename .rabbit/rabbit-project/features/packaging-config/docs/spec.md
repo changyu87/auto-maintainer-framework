@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.21
+version: 0.7.22
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -169,6 +169,18 @@ never invisible). No `_LIBS` change (open_pr.py already registered in v0.30.0) a
 shipped `default-config/` CONTENT change (schema 2.9.0); this release re-normalizes
 the two libs from source and bumps the version. No build change beyond
 `_PLUGIN_VERSION → 0.31.0`.
+
+**Plugin minor v0.32.0** — re-ship the audit-wave RECONCILE fixes (verify-integrate
+0.12.0 + scheduling 0.46.0 + implement 0.11.1): `lib/verify_integrate.py` (all
+disposable-worktree git ops in `reconcile_rebase_worktree` + the GATE helper run
+`-c core.hooksPath=/dev/null` so the target repo's `post-checkout` hook can't wedge
+tier-1; `gh_closing_issue_ref` uses `gh api graphql` + a `Closes #N` body fallback
+instead of the unsupported `closingIssuesReferences` `--json` field), `lib/run_tick.py`
+(`_reconcile_ledger_seed` derives a canonical `owner/repo#N` issue_ref by stripping
+the `-wo` suffix), and `lib/open_pr.py` (implementer worktree add runs hooks-free).
+No `_LIBS` change and no shipped `default-config/` CONTENT change (schema 2.9.0);
+this release re-normalizes the three libs from source and bumps the version. No
+build change beyond `_PLUGIN_VERSION → 0.32.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
