@@ -182,7 +182,7 @@ def test_status_data_has_every_field():
     """status_data() returns a dict with EVERY surfaced field, including the
     route sub-dict {source, states, chain}."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
-    data = _with_project_dir(project_dir, st.status_data)
+    data = _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     for key in ("plugin_version", "disposition", "awaiting", "mode",
                 "budget", "work_items", "work_orders", "execution_plan",
                 "handoffs", "reported", "route", "runtime_dir"):
@@ -199,7 +199,7 @@ def test_status_data_has_every_field():
 def test_status_data_route_listed_when_default():
     """The route is listed EVEN WHEN it is the default (no override)."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
-    data = _with_project_dir(project_dir, st.status_data)
+    data = _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     assert data["route"]["source"] == "default", data["route"]
     assert data["route"]["states"] == rt.DEFAULT_ROUTE["states"]
     assert data["route"]["chain"] == ["GUARD", "DRAIN", "PULL", "PERSIST",
@@ -211,7 +211,7 @@ def test_status_data_route_reflects_override():
     source is override:<path>."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
     _write_project_route(project_dir, _ACTING_ROUTE)
-    data = _with_project_dir(project_dir, st.status_data)
+    data = _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     assert data["route"]["source"].startswith("override:"), data["route"]
     assert "IMPLEMENT" in data["route"]["states"], data["route"]["states"]
     assert "IMPLEMENT" in data["route"]["chain"], data["route"]["chain"]
@@ -220,7 +220,7 @@ def test_status_data_route_reflects_override():
 def test_status_data_non_mutating():
     """status_data must NOT create the runtime dir."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
-    _with_project_dir(project_dir, st.status_data)
+    _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     assert not os.path.exists(os.path.join(project_dir, ".auto-maintainer")), \
         "status_data created the runtime dir"
 
@@ -239,7 +239,7 @@ def test_status_data_heartbeat_interval_default():
     it is the shipped default 10 (same source start.py's
     heartbeat_interval_minutes() reads)."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
-    data = _with_project_dir(project_dir, st.status_data)
+    data = _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     assert "heartbeat_interval_minutes" in data, sorted(data)
     assert data["heartbeat_interval_minutes"] == 10, data
 
@@ -249,7 +249,7 @@ def test_status_data_heartbeat_interval_reflects_config():
     status_data (it reads config, not a hardcoded constant)."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
     _write_project_config(project_dir, {"heartbeat": {"interval_minutes": 30}})
-    data = _with_project_dir(project_dir, st.status_data)
+    data = _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     assert data["heartbeat_interval_minutes"] == 30, data
 
 
@@ -258,7 +258,7 @@ def test_render_status_shows_heartbeat_line():
     interval (a NON-default value proves it is config-driven)."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
     _write_project_config(project_dir, {"heartbeat": {"interval_minutes": 30}})
-    data = _with_project_dir(project_dir, st.status_data)
+    data = _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     out = st.render_status(data)
     assert "heartbeat" in out, out
     # The configured value (30) and the `min` unit appear on the heartbeat line.
@@ -275,7 +275,7 @@ def test_render_status_contains_version_disposition_chain():
     """render_status emphasizes the version, shows the disposition, and renders
     the happy-path chain with arrows."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
-    data = _with_project_dir(project_dir, st.status_data)
+    data = _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     data["plugin_version"] = "1.2.3"
     out = st.render_status(data)
     assert "1.2.3" in out, out
@@ -291,7 +291,7 @@ def test_render_status_dev_fallback_when_no_version():
     """A None plugin_version (source tree) renders a dev fallback in the
     header, and render_status survives a not-started state."""
     project_dir = tempfile.mkdtemp(prefix="sched-status-")
-    data = _with_project_dir(project_dir, st.status_data)
+    data = _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     assert data["plugin_version"] is None, data["plugin_version"]
     out = st.render_status(data)
     assert "dev" in out.lower(), out
