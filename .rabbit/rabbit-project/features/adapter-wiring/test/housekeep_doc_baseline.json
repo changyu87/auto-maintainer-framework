@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded when adapter-wiring's docs are restructured by a later wave that re-baselines this fixture; until then it is the measured-reduction reference for the housekeep doc-slim wave.",
+  "description": "Reference line counts of adapter-wiring docs. Re-baselined by the measured doc-reduction wave (auto-maintainer-framework#360), which slimmed redundant/restated rationale and decorative prose from spec.md while preserving every load-bearing token; contract.md was already lean (no-op). The housekeep e2e test asserts the current docs are no LARGER than these baselines (no doc growth past the reference) and that the load-bearing tokens survived.",
+  "baseline_commit": "housekeep/adapter-wiring-doc-reduction-360",
+  "docs": {
+    "docs/spec.md": 207,
+    "docs/contract.md": 81
+  }
+}

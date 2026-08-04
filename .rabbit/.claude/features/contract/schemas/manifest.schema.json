@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "manifest.schema.json",
+  "schema_version": "1.0.0",
+  "owner": "rabbit-workflow team",
+  "deprecation_criterion": "when Claude Code exposes a native feature manifest mechanism that subsumes this schema",
+  "title": "Feature MANIFEST",
+  "description": "Declarative list of publish API calls a feature contributes at install time. The dispatcher reads this array and invokes each call in declaration order.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["api", "args"],
+    "additionalProperties": false,
+    "properties": {
+      "api": {
+        "type": "string",
+        "enum": [
+          "publish_skill",
+          "publish_command",
+          "publish_agent",
+          "publish_hook",
+          "publish_settings",
+          "publish_file",
+          "publish_generated"
+        ]
+      },
+      "args": {"type": "object"}
+    }
+  }
+}

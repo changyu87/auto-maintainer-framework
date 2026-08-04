@@ -1,0 +1,14 @@
+# Rabbit Plugin Mode
+
+> Install rabbit. `cd .rabbit/ && claude`. Your AI now reads policy on
+> every action — no speculative refactors, no orphan files, no
+> documentation you didn't ask for. When you want spec-as-memory for a
+> slice of code, run `rabbit-feature-new <name> <path-glob>` — and now
+> that slice has durable intent that survives every session.
+
+You are operating on the user project at the parent directory.
+Edit files at `../`, not inside `.rabbit/`.
+
+@.claude/features/policy/philosophy.md
+@.claude/features/policy/spec-rules.md
+@.claude/features/policy/coding-rules.md

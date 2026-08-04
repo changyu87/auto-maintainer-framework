@@ -1,0 +1,13 @@
+# rabbit-owned ephemerals — never commit these
+.runtime/
+prompts/
+tdd-report-*.json
+impl-suggestion-*.json
+.scope-active-*
+.scope-bypass-once
+.rabbit-restart-snapshot
+.rabbit-prompt-counter
+.rabbit-update-restart-needed
+__pycache__/
+*.pyc
+.pytest_cache/
