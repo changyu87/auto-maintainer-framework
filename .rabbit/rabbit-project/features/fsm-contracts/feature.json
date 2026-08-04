@@ -1,0 +1,13 @@
+{
+  "name": "fsm-contracts",
+  "version": "0.1.0",
+  "owner": "changyu87",
+  "tdd_state": "test-green",
+  "paths": [
+    "rabbit-project/features/fsm-contracts/src/**"
+  ],
+  "created": "2026-06-10T05:44:01Z",
+  "deprecation_criterion": "Superseded when the tick-FSM contract schema reaches a breaking major version \u2014 e.g. when the v2 parallelism tier (DESIGN \u00a72.2) introduces scope/conflict slots that change the TickContext shape.",
+  "updated": "2026-06-21",
+  "spec_no_change_reason": "spec.md doc reduction (106->101) already committed earlier this wave in 4fa65f3; no uncommitted spec diff remains, this cycle adds the gating housekeep e2e test"
+}

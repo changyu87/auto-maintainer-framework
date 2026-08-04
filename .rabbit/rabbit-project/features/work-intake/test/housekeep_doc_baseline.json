@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded by the next work-intake housekeep wave's baseline; a re-bloat regression guard for the post-#359 doc surfaces.",
+  "description": "Re-anchored for the already_done disposition + strong-reason guard spec change (v0.13.0): spec.md additively documents the already_done on-issue disposition (ALREADY_DONE_MARKER distinct from REJECT_MARKER, gh_issue_already_done_sink mirroring the reject sink, reusing REJECTED_LABEL, never closing, idempotent on the marker) and the pure is_strong_reason guard (>=40 chars stripped + no reflexive-deferral boilerplate). This is legitimate new behaviour (mirrors the reject-disposition precedent), not re-bloat. This baseline records the post-v0.13.0 doc line counts plus a one-line margin, so the housekeep gate continues as a re-bloat regression guard (current docs must stay STRICTLY smaller than this) while the load-bearing-token + cleanup gates remain intact.",
+  "baseline_commit": "post-already-done-guard",
+  "docs": {
+    "docs/spec.md": 496,
+    "docs/contract.md": 53
+  }
+}

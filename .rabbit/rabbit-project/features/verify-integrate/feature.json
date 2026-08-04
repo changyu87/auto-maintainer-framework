@@ -1,0 +1,14 @@
+{
+  "name": "verify-integrate",
+  "version": "0.12.0",
+  "owner": "changyu87",
+  "paths": [
+    "rabbit-project/features/verify-integrate/src/**"
+  ],
+  "created": "2026-06-14T16:35:52Z",
+  "deprecation_criterion": "Superseded when the loop adopts a non-git VCS backend, or a model-backed verify/integrate policy replaces the deterministic gh-based gates, or when the Verdict / IntegrationResult / ReviewVerdict / ReconcileResult schemas reach a breaking major version.",
+  "tdd_state": "test-green",
+  "updated": "2026-08-03",
+  "spec_change_reason": "Disable-repo-hooks + gh-graphql-closing-issue wave. FIX 1 (hooks-free disposable-tree git ops): EVERY hook-firing git op in reconcile_rebase_worktree (worktree add --detach, checkout -B, rebase, push --force) AND the GATE integration-worktree helper (worktree add --detach, merge --no-ff) now carries `-c core.hooksPath=/dev/null` (inserted immediately after `git`), so the TARGET repo's post-checkout/post-merge/post-rewrite/pre-push hooks never fire in the loop's throwaway worktrees. This closes the live wedge where ssbdci-grimlock's post-checkout hook (render_nested_components) made tier-1's checkout/rebase throw every tick, so a CONFLICTING loop PR was detected but never recovered. FIX 2 (gh_closing_issue_ref): rewritten to resolve the closing-issue number via `gh api graphql` (repository.pullRequest(number).closingIssuesReferences(first:1).nodes[].number) with a `Closes/Fixes/Resolves #N` PR-body-parse fallback, NOT the `closingIssuesReferences` `--json` field \u2014 the installed gh (2.69.0) does NOT support that field and fails every call, which silently disabled same-issue dedup (C), VERIFY orphan detection, and the GATE gate-fail issue comment; the one resolver repairs all three consumers. Both fixes preserve the injectable runner and keep RECONCILE advisory; tier-1/tier-2, GATE, and orphan-detection behavior are otherwise unchanged. spec.md 0.11.2 -> 0.12.0 added the `Hooks-free disposable-tree git ops` tier-1 paragraph + the `Disposable-tree git ops run hooks-free` invariant + the gh-graphql resolver rewrite. Re-anchored the housekeep doc baseline (spec.md 685 -> 718, contract.md unchanged at 57).",
+  "spec_no_change_reason": "spec 0.12.0 hooks-free + gh-graphql closing-issue content already committed (b516497) before this TDD cycle was dispatched; this cycle implements the code + tests"
+}

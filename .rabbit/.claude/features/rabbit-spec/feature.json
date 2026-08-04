@@ -1,0 +1,56 @@
+{
+  "name": "rabbit-spec",
+  "version": "1.21.0",
+  "owner": "rabbit-workflow team",
+  "housekeeping_clean": true,
+  "contiguous_invariants": true,
+  "tdd_state": "test-green",
+  "status": "active",
+  "summary": "Owner of the rabbit workflow's spec-lifecycle surface. Hosts the rabbit-spec-creator subagent (drafts AND writes a new feature's initial docs/spec.md, returning a {path_written, summary} handoff) with its input assembler scripts/dispatch-spec-creator.py, and the rabbit-spec-update skill (revises existing specs; absorbed from rabbit-feature/rabbit-feature-spec).",
+  "surface": {
+    "skills": [
+      "skills/rabbit-spec-update/SKILL.md"
+    ],
+    "agents": [
+      "agents/rabbit-spec-creator.md"
+    ],
+    "hooks": [],
+    "commands": [],
+    "scripts": [
+      "scripts/dispatch-spec-creator.py"
+    ]
+  },
+  "deprecation_criterion": "when Claude Code exposes native spec-lifecycle skills that supersede this feature",
+  "updated": "2026-06-13",
+  "manifest": [
+    {
+      "api": "publish_skill",
+      "args": {
+        "source": "skills/rabbit-spec-update/SKILL.md"
+      }
+    },
+    {
+      "api": "publish_agent",
+      "args": {
+        "source": "agents/rabbit-spec-creator.md"
+      }
+    }
+  ],
+  "runtime": {},
+  "configuration": [],
+  "prompts": [
+    {
+      "id": "spec-create",
+      "kind": "subagent",
+      "inject": [
+        ".claude/features/policy/philosophy.md",
+        ".claude/features/policy/coding-rules.md"
+      ],
+      "slots": [
+        "feature_name",
+        "paths_globs",
+        "paths_resolved"
+      ]
+    }
+  ]
+}

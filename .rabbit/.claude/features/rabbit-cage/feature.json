@@ -1,0 +1,434 @@
+{
+  "name": "rabbit-cage",
+  "version": "5.94.1",
+  "contiguous_invariants": true,
+  "owner": "rabbit-workflow team",
+  "tdd_state": "test-green",
+  "housekeeping_clean": true,
+  "summary": "Service dispatcher of the rabbit workflow. Owns four Claude Code event hooks (PreToolUse, Stop, SessionStart, UserPromptSubmit) and the bootstrap installer. The three event-dispatcher hooks enumerate every feature's runtime[<event>] declarations and invoke each via contract.lib.runtime; install.py enumerates every feature's manifest and invokes each via contract.lib.publish. PreToolUse is owned outright by scope-guard.py.",
+  "surface": {
+    "hooks": [],
+    "commands": [],
+    "skills": [],
+    "settings": []
+  },
+  "deprecation_criterion": "when Claude Code exposes native event dispatchers and artifact publishing that subsume this role",
+  "status": "active",
+  "updated": "2026-06-21",
+  "manifest": [
+    {
+      "api": "publish_settings",
+      "args": {
+        "source": "settings.json"
+      }
+    },
+    {
+      "api": "publish_hook",
+      "args": {
+        "event": "PreToolUse",
+        "source": "hooks/scope-guard.py",
+        "matcher": "Write|Edit|Bash"
+      }
+    },
+    {
+      "api": "publish_hook",
+      "args": {
+        "event": "Stop",
+        "source": "hooks/stop-dispatcher.py"
+      }
+    },
+    {
+      "api": "publish_hook",
+      "args": {
+        "event": "SessionStart",
+        "source": "hooks/session-start-dispatcher.py",
+        "matcher": "startup|resume|clear|compact"
+      }
+    },
+    {
+      "api": "publish_hook",
+      "args": {
+        "event": "UserPromptSubmit",
+        "source": "hooks/user-prompt-submit-dispatcher.py"
+      }
+    },
+    {
+      "api": "publish_file",
+      "args": {
+        "source": "hooks/_dispatcher_lib.py",
+        "dest": ".claude/hooks/_dispatcher_lib.py"
+      }
+    },
+    {
+      "api": "publish_file",
+      "args": {
+        "source": "hooks/restart_snapshot.py",
+        "dest": ".claude/hooks/restart_snapshot.py"
+      }
+    },
+    {
+      "api": "publish_generated",
+      "args": {
+        "target": "CLAUDE.md",
+        "producer": "generate-claude-md",
+        "args": {
+          "policy_source": ".claude/features/policy",
+          "header_source": "policy-header.json"
+        }
+      }
+    },
+    {
+      "api": "publish_file",
+      "args": {
+        "source": "README.md",
+        "dest": "README.md"
+      }
+    },
+    {
+      "api": "publish_file",
+      "args": {
+        "source": "install.py",
+        "dest": "install.py"
+      }
+    },
+    {
+      "api": "publish_command",
+      "args": {
+        "source": "commands/rabbit-refresh.md"
+      }
+    },
+    {
+      "api": "publish_command",
+      "args": {
+        "source": "commands/rabbit-project.md"
+      }
+    },
+    {
+      "api": "publish_command",
+      "args": {
+        "source": "commands/rabbit-update.md"
+      }
+    },
+    {
+      "api": "publish_command",
+      "args": {
+        "source": "commands/rabbit-cage-config.md"
+      }
+    }
+  ],
+  "runtime": {
+    "Stop": [
+      {
+        "api": "check_drift_regenerate",
+        "args": {
+          "target": "CLAUDE.md",
+          "producer": "generate-claude-md",
+          "args": {
+            "policy_source": ".claude/features/policy",
+            "header_source": "policy-header.json"
+          },
+          "alert": {
+            "text": "CLAUDE.md regenerated from policy drift",
+            "icon": "\u26a0\ufe0f",
+            "color": "red"
+          }
+        }
+      },
+      {
+        "api": "check_manifest_drift",
+        "args": {
+          "alert": {
+            "text": "Surface drift detected - rebuilt: {names}",
+            "icon": "\ud83d\udd04",
+            "color": "red"
+          }
+        }
+      },
+      {
+        "api": "check_marker_alert",
+        "args": {
+          "path": ".rabbit-scope-override",
+          "content": "session",
+          "alert": {
+            "text": "SCOPE GUARD OFF (session override active) \u2014 revoke: /rabbit-cage-config scope-guard on",
+            "icon": "\ud83d\udd13",
+            "color": "red"
+          }
+        }
+      },
+      {
+        "api": "check_marker_alert",
+        "args": {
+          "path": ".rabbit/.rabbit-scope-override",
+          "content": "session",
+          "alert": {
+            "text": "SCOPE GUARD OFF (session override active) \u2014 revoke: /rabbit-cage-config scope-guard on",
+            "icon": "\ud83d\udd13",
+            "color": "red"
+          }
+        }
+      },
+      {
+        "api": "emit_configurable_alert",
+        "args": {
+          "feature_name": "rabbit-cage",
+          "configurable_id": "bypass-permissions"
+        }
+      },
+      {
+        "api": "check_marker_consume_alert",
+        "args": {
+          "path": ".rabbit-scope-override-used",
+          "alert": {
+            "text": "SCOPE GUARD BYPASSED (one-time override consumed)",
+            "icon": "\ud83d\udd13",
+            "color": "red"
+          }
+        }
+      },
+      {
+        "api": "check_marker_consume_alert",
+        "args": {
+          "path": ".rabbit-skills-updated",
+          "alert": {
+            "text": "Skills updated: {marker-content}",
+            "icon": "\u2728",
+            "color": "green"
+          }
+        }
+      },
+      {
+        "api": "emit_stop_timestamp",
+        "args": {}
+      }
+    ],
+    "SessionStart": [
+      {
+        "api": "welcome_with_policy",
+        "args": {
+          "policy_source": ".claude/features/policy",
+          "sublines": [
+            {
+              "text": "philosophy.md    \u2014 machine-first \u00b7 bounded scope \u00b7 designed deprecation"
+            },
+            {
+              "text": "spec-rules.md    \u2014 determinism first; schema contracts; lifecycle ownership"
+            },
+            {
+              "text": "coding-rules.md  \u2014 think first; simplicity; surgical edits; goal-driven TDD"
+            }
+          ]
+        }
+      },
+      {
+        "api": "write_mode_marker",
+        "args": {}
+      },
+      {
+        "api": "check_release_update",
+        "args": {}
+      },
+      {
+        "api": "check_marker_alert",
+        "args": {
+          "path": ".rabbit-scope-override",
+          "content": "session",
+          "alert": {
+            "text": "SCOPE GUARD OFF (session override active) \u2014 revoke: /rabbit-cage-config scope-guard on",
+            "icon": "\ud83d\udd13",
+            "color": "red"
+          }
+        }
+      },
+      {
+        "api": "check_marker_alert",
+        "args": {
+          "path": ".rabbit/.rabbit-scope-override",
+          "content": "session",
+          "alert": {
+            "text": "SCOPE GUARD OFF (session override active) \u2014 revoke: /rabbit-cage-config scope-guard on",
+            "icon": "\ud83d\udd13",
+            "color": "red"
+          }
+        }
+      },
+      {
+        "api": "emit_configurable_alert",
+        "args": {
+          "feature_name": "rabbit-cage",
+          "configurable_id": "bypass-permissions"
+        }
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "api": "check_counter_threshold_refresh",
+        "args": {
+          "counter": ".rabbit-prompt-counter",
+          "env_var": "RABBIT_REFRESH_EVERY",
+          "source": ".claude/features/policy"
+        }
+      }
+    ]
+  },
+  "configuration": [
+    {
+      "id": "scope-guard",
+      "subcommand": "scope-guard",
+      "command": "rabbit-cage-config",
+      "storage": {
+        "type": "marker-file",
+        "path": ".rabbit-scope-override"
+      },
+      "values": {
+        "on": {
+          "api": "delete_marker",
+          "args": {
+            "path": ".rabbit-scope-override"
+          }
+        }
+      },
+      "default": "on"
+    },
+    {
+      "id": "bypass-permissions",
+      "subcommand": "bypass-permissions",
+      "command": "rabbit-cage-config",
+      "storage": {
+        "type": "json-key",
+        "file": ".claude/settings.local.json",
+        "key": "permissions.defaultMode"
+      },
+      "values": {
+        "true": {
+          "api": "set_json_key",
+          "args": {
+            "file": ".claude/settings.local.json",
+            "key": "permissions.defaultMode",
+            "value": "bypassPermissions"
+          }
+        },
+        "false": {
+          "api": "delete_json_key",
+          "args": {
+            "file": ".claude/settings.local.json",
+            "key": "permissions.defaultMode"
+          }
+        }
+      },
+      "default": "false",
+      "alert-on": "true",
+      "alert-message": {
+        "text": "BYPASS-PERMISSIONS MODE ACTIVE \u2014 revoke: /rabbit-cage-config bypass-permissions false",
+        "icon": "\ud83d\udea8",
+        "color": "red"
+      },
+      "restart_required": true
+    },
+    {
+      "id": "prompt-threshold",
+      "subcommand": "prompt-threshold",
+      "command": "rabbit-cage-config",
+      "storage": {
+        "type": "json-key",
+        "file": ".claude/settings.local.json",
+        "key": "env.RABBIT_REFRESH_EVERY"
+      },
+      "actions": {
+        "set": {
+          "api": "set_json_key",
+          "args": {
+            "file": ".claude/settings.local.json",
+            "key": "env.RABBIT_REFRESH_EVERY",
+            "value": "{value}"
+          }
+        }
+      },
+      "default": "20"
+    },
+    {
+      "id": "allowed-tools",
+      "subcommand": "allowed-tools",
+      "command": "rabbit-cage-config",
+      "storage": {
+        "type": "json-array",
+        "file": ".claude/settings.local.json",
+        "key": "permissions.allow"
+      },
+      "actions": {
+        "add": {
+          "api": "append_json_array",
+          "args": {
+            "file": ".claude/settings.local.json",
+            "key": "permissions.allow",
+            "value": "{tool}"
+          }
+        },
+        "remove": {
+          "api": "remove_json_array_value",
+          "args": {
+            "file": ".claude/settings.local.json",
+            "key": "permissions.allow",
+            "value": "{tool}"
+          }
+        }
+      },
+      "validation": {
+        "reject_prefix": "Bash("
+      }
+    },
+    {
+      "id": "bash-allow",
+      "subcommand": "bash-allow",
+      "command": "rabbit-cage-config",
+      "storage": {
+        "type": "json-array-templated",
+        "file": ".claude/settings.local.json",
+        "key": "permissions.allow",
+        "template": "Bash({value}:*)"
+      },
+      "actions": {
+        "add": {
+          "api": "append_json_array",
+          "args": {
+            "file": ".claude/settings.local.json",
+            "key": "permissions.allow",
+            "value": "Bash({command}:*)"
+          }
+        },
+        "remove": {
+          "api": "remove_json_array_value",
+          "args": {
+            "file": ".claude/settings.local.json",
+            "key": "permissions.allow",
+            "value": "Bash({command}:*)"
+          }
+        }
+      },
+      "validation": {
+        "reject_chars": "():\\s"
+      }
+    },
+    {
+      "id": "display-timezone",
+      "subcommand": "display-timezone",
+      "command": "rabbit-cage-config",
+      "storage": {
+        "type": "json-key",
+        "file": ".claude/settings.local.json",
+        "key": "env.RABBIT_DISPLAY_TIMEZONE"
+      },
+      "actions": {
+        "set": {
+          "api": "set_json_key",
+          "args": {
+            "file": ".claude/settings.local.json",
+            "key": "env.RABBIT_DISPLAY_TIMEZONE",
+            "value": "{value}"
+          }
+        }
+      },
+      "default": "local"
+    }
+  ]
+}

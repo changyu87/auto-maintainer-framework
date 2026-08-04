@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded by the next fsm-contracts housekeep wave's baseline; single-use measured-reduction reference for this doc-slim wave.",
+  "description": "Pre-wave line counts of fsm-contracts doc surfaces, captured at commit b4f1ba4 (before the housekeep measured doc-reduction wave). The housekeep e2e test asserts the current docs are STRICTLY smaller than these baselines, and that the load-bearing tokens survived the slim.",
+  "baseline_commit": "b4f1ba4",
+  "docs": {
+    "docs/spec.md": 106,
+    "docs/contract.md": 31
+  }
+}

@@ -1,0 +1,45 @@
+name: Issue Form auto-label
+# Native auto-label primitive for the human filing boundary (rabbit-issue).
+# The Issue Form (.github/ISSUE_TEMPLATE/file-item.yml) makes Feature and
+# Priority REQUIRED selections; this workflow reads those answers from the
+# submitted issue body and stamps feature:<x> / priority:<y> labels, mirroring
+# the enforcement file-item.py applies to bot/loop filings.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  autolabel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Derive feature/priority labels from the form answers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BODY: ${{ github.event.issue.body }}
+          NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The Issue Form renders each dropdown as a "### <Label>" heading
+          # followed by the chosen value on the next non-empty line. Extract the
+          # Feature and Priority answers.
+          extract() {
+            awk -v h="### $1" '
+              $0==h {grab=1; next}
+              grab && NF {gsub(/^[ \t]+|[ \t]+$/,""); print; exit}
+            ' <<<"$BODY"
+          }
+          feature="$(extract Feature)"
+          priority="$(extract Priority)"
+          labels=""
+          if [ -n "$feature" ]; then labels="feature:${feature}"; fi
+          if [ -n "$priority" ]; then
+            if [ -n "$labels" ]; then labels="${labels},priority:${priority}"; else labels="priority:${priority}"; fi
+          fi
+          if [ -n "$labels" ]; then
+            gh issue edit "$NUMBER" -R "$REPO" --add-label "$labels"
+          fi

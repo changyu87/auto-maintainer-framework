@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "changyu87",
+  "deprecation_criterion": "Superseded by the next prioritize housekeep wave's baseline; single-use measured-reduction reference, re-captured whenever a feature change legitimately alters the doc surfaces.",
+  "description": "Line counts of prioritize doc surfaces, re-captured after the bracket-prefix hardening (v0.5.0) legitimately grew docs/spec.md. The prior baseline (spec.md=154, contract.md=31, captured post-#258) recorded an honest doc-reduction NO-OP; this revision moves spec.md to the post-bracket-prefix surface (spec.md=162, contract.md unchanged at 31 — the bracket signal was folded into an existing enumeration line) because adding the [scope@team]/[scope] fallback title convention is a genuine behaviour change (a new fallback signal bullet), not silent doc bloat. The housekeep e2e gates continue to assert behavior preserved, no load-bearing token dropped, and that the docs do not drift PAST this new baseline.",
+  "baseline_commit": "post-bracket-prefix",
+  "verdict": "no-op",
+  "docs": {
+    "docs/spec.md": 162,
+    "docs/contract.md": 31
+  }
+}

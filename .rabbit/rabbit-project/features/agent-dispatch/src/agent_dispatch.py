@@ -1,0 +1,503 @@
+#!/usr/bin/env python3
+"""agent-dispatch — the deterministic helper library for the agent-adapter
+mechanism (DESIGN §2.8, §3.4.6).
+
+It owns the agent-adapter schema and every *deterministic* step around an
+in-session subagent dispatch: classify an adapter-map entry, validate the
+agent-adapter schema, build invocation envelope(s), render an envelope to a
+structured-markdown prompt, validate the subagent's returned text against the
+target slot schema, collect dispatch outputs into the target slot value, and
+compute the closed-vocabulary route signal.
+
+It dispatches NOTHING. Issuing the `Agent` call is the session's job (the
+executor, DESIGN §2.8 — a later slice). Every function here is a PURE,
+deterministic, effect-free function of its arguments: no `Agent` dispatch, no
+model call, no network, no filesystem, no wall clock, no randomness. The
+`tick_id` / `mode` carried in an envelope's `context` are passed in, not read.
+
+Public surface:
+  - AGENT_ADAPTER_SCHEMA_VERSION — the agent-adapter schema version string.
+  - is_agent_entry(entry) -> bool — string entry = script factory (False);
+    dict with kind == "agent" = agent-adapter (True).
+  - validate_agent_adapter(entry) — raise ValueError on any schema violation.
+  - build_envelopes(adapter, slot_values, tick_context, state, output_dir)
+    -> [envelope] (each carries output_contract{slot, schema, output_path}).
+  - render(envelope) -> str — deterministic structured-markdown prompt whose
+    self-contained ## Handoff section embeds a concrete output example to mimic
+    + mandates write-to-file + a one-line ack.
+  - validate_output(file_content, schema) -> (ok, parsed | error).
+  - collect_outputs(adapter_entry, outputs) -> slot_value.
+  - compute_signal(rule, slot_value) -> signal.
+
+Version: 0.3.2
+Owner: changyu87
+Deprecation criterion: Superseded when the agent-adapter schema or
+  invocation-envelope reaches a breaking major version, or when subagent
+  dispatch moves to a transport other than the in-session Agent tool. See
+  docs/spec.md.
+"""
+
+import json
+import os
+
+# The versioned agent-adapter schema. Distinct from the feature version; bumped
+# on a breaking change to the adapter / envelope field set.
+AGENT_ADAPTER_SCHEMA_VERSION = "1.0.0"
+
+# Closed vocabulary for signal.rule (spec §"The agent-adapter schema").
+_SIGNAL_RULES = ("nonempty_else_empty", "blocked_if_any", "always_ok")
+
+# A blocked element carries one of these status values.
+_BLOCKED_STATUSES = ("blocked",)
+
+# JSON-Schema type-name vocabulary used by the descriptor guard (#119). A dict
+# example whose "type" is one of these AND which also carries "items" or
+# "properties" is a JSON-Schema descriptor, not a concrete example.
+_JSON_SCHEMA_TYPES = ("object", "array", "string", "number", "integer",
+                      "boolean", "null")
+
+
+def is_agent_entry(entry):
+    """A string adapter-map entry is a script factory address; a dict with
+    `kind == "agent"` is an agent-adapter. Anything else is not an agent
+    entry."""
+    if isinstance(entry, str):
+        return False
+    if isinstance(entry, dict):
+        return entry.get("kind") == "agent"
+    return False
+
+
+def validate_agent_adapter(entry):
+    """Validate the well-formedness of an agent-adapter object. Raise a clear,
+    locatable ValueError on any violation. Returns None on success.
+
+    Requires: a `manifest` with non-empty `reads`/`writes`/`emits` lists; at
+    least one `dispatch` entry; each dispatch entry has a str `subagent_type`,
+    a list `inputs`, a `cardinality` in the closed vocabulary, and a str
+    `writes`; an optional str `task`; a `signal.rule` in the closed set. An
+    optional `output_example` (or the DEPRECATED `output_schema` alias) holding a
+    concrete example value is accepted; its absence is valid. It is REJECTED when
+    authored as a JSON-Schema descriptor (the #119 descriptor guard).
+    """
+    if not isinstance(entry, dict):
+        raise ValueError("agent-adapter must be a dict")
+    if entry.get("kind") != "agent":
+        raise ValueError("agent-adapter must have kind == 'agent'")
+
+    manifest = entry.get("manifest")
+    if not isinstance(manifest, dict):
+        raise ValueError("agent-adapter requires a 'manifest' dict")
+    for field in ("reads", "writes", "emits"):
+        val = manifest.get(field)
+        if not isinstance(val, list) or not val:
+            raise ValueError(
+                f"manifest.{field} must be a non-empty list")
+
+    dispatch = entry.get("dispatch")
+    if not isinstance(dispatch, list) or not dispatch:
+        raise ValueError(
+            "agent-adapter requires at least one 'dispatch' entry")
+    for i, d in enumerate(dispatch):
+        if not isinstance(d, dict):
+            raise ValueError(f"dispatch[{i}] must be a dict")
+        if not isinstance(d.get("subagent_type"), str):
+            raise ValueError(
+                f"dispatch[{i}].subagent_type must be a str")
+        if not isinstance(d.get("inputs"), list):
+            raise ValueError(f"dispatch[{i}].inputs must be a list")
+        if not isinstance(d.get("writes"), str):
+            raise ValueError(f"dispatch[{i}].writes must be a str")
+        if "task" in d and not isinstance(d["task"], str):
+            raise ValueError(f"dispatch[{i}].task must be a str when present")
+        _validate_cardinality(d.get("cardinality"), i)
+        _reject_schema_descriptor(d, i)
+
+    signal = entry.get("signal")
+    if not isinstance(signal, dict):
+        raise ValueError("agent-adapter requires a 'signal' dict")
+    rule = signal.get("rule")
+    if rule not in _SIGNAL_RULES:
+        raise ValueError(
+            f"signal.rule {rule!r} is not in the closed vocabulary "
+            f"{_SIGNAL_RULES}")
+
+
+def _validate_cardinality(cardinality, i):
+    """Validate a dispatch entry's cardinality. Closed vocabulary: the string
+    "once", or a single-key dict {"per_item": "<dotted path str>"}."""
+    if cardinality == "once":
+        return
+    if isinstance(cardinality, dict):
+        if set(cardinality.keys()) != {"per_item"}:
+            raise ValueError(
+                f"dispatch[{i}].cardinality dict must have exactly the "
+                "key 'per_item'")
+        if not isinstance(cardinality["per_item"], str) \
+                or not cardinality["per_item"]:
+            raise ValueError(
+                f"dispatch[{i}].cardinality.per_item must be a non-empty "
+                "dotted-path str")
+        return
+    raise ValueError(
+        f"dispatch[{i}].cardinality {cardinality!r} is not in the closed "
+        "vocabulary ('once' | {{'per_item': '<path>'}})")
+
+
+def _is_schema_descriptor(value):
+    """A JSON-Schema descriptor (#119): a dict whose `"type"` is a JSON-Schema
+    type name AND which also has an `"items"` or `"properties"` key. A concrete
+    example (a list, or a dict without that combination) is NOT a descriptor."""
+    return (
+        isinstance(value, dict)
+        and value.get("type") in _JSON_SCHEMA_TYPES
+        and ("items" in value or "properties" in value)
+    )
+
+
+def _reject_schema_descriptor(entry, i):
+    """Reject a dispatch entry whose `output_example` (or the deprecated
+    `output_schema` alias) is a JSON-Schema descriptor rather than a concrete
+    example value. Protocol-naive subagents copy a concrete example reliably but
+    are confused into writing the descriptor verbatim (#119)."""
+    for field in ("output_example", "output_schema"):
+        if field in entry and _is_schema_descriptor(entry[field]):
+            raise ValueError(
+                f"dispatch[{i}].{field} must be a concrete example value "
+                "(a sample valid output to mimic), not a JSON-Schema "
+                "descriptor; e.g. for an array slot, a bare list like [{...}]")
+
+
+def _resolve_path(slot_values, dotted):
+    """Resolve a dotted path (e.g. "execution_plan.ordered") against the
+    slot_values mapping. Pure dict/attr traversal — no eval, no I/O."""
+    cur = slot_values
+    for part in dotted.split("."):
+        cur = cur[part]
+    return cur
+
+
+def _output_example(entry):
+    """The concrete example value an envelope's output_contract embeds (carried
+    into the internal `schema` key, name unchanged for run_tick / scheduling):
+    the dispatch entry's `output_example` when present; else the DEPRECATED
+    `output_schema` alias (#119); else a coarse `{"type": "array"}` fallback so
+    a protocol-naive subagent still sees a concrete shape to mimic. When both
+    `output_example` and the alias are present, `output_example` wins."""
+    if "output_example" in entry:
+        return entry["output_example"]
+    if "output_schema" in entry:
+        return entry["output_schema"]
+    return {"type": "array"}
+
+
+def build_envelopes(adapter, slot_values, tick_context, state, output_dir):
+    """Produce the invocation envelope(s) the executor will dispatch.
+
+    `slot_values` is a {slot_name: value} mapping for the slots the adapter
+    reads. `tick_context` is {"tick_id": ..., "mode": ...}. `state` is the FSM
+    state name the dispatch runs under. `output_dir` is the directory each
+    envelope's `output_path` is computed under.
+
+    For each dispatch entry: `cardinality == "once"` yields ONE envelope;
+    `{"per_item": path}` resolves `path` against `slot_values` and yields ONE
+    envelope per element of the resolved collection, in order, each carrying
+    its `item`.
+
+    Each envelope carries a deterministic, unique `output_path` =
+    os.path.join(output_dir, f"{state}-{dispatch_index}-{item_index}.json")
+    (`item_index` is 0 for `once`). `output_path` is a computed string only;
+    the file is written by the subagent and read by the executor, never here.
+
+    Envelope shape:
+      { "state", "task", "inputs", "item"?, "output_contract": {"slot",
+        "schema", "output_path"}, "context": {"tick_id", "mode"} }
+    The `item` key is omitted for `once` dispatches.
+    """
+    context = {
+        "tick_id": tick_context["tick_id"],
+        "mode": tick_context["mode"],
+    }
+    envelopes = []
+    for dispatch_index, entry in enumerate(adapter["dispatch"]):
+        inputs = {slot: slot_values[slot] for slot in entry["inputs"]}
+        schema = _output_example(entry)
+        base = {
+            "state": state,
+            "task": entry.get("task", ""),
+            "inputs": inputs,
+            "context": context,
+        }
+        cardinality = entry["cardinality"]
+        if cardinality == "once":
+            env = dict(base)
+            env["output_contract"] = {
+                "slot": entry["writes"],
+                "schema": schema,
+                "output_path": os.path.join(
+                    output_dir, f"{state}-{dispatch_index}-0.json"),
+            }
+            envelopes.append(env)
+        else:
+            collection = _resolve_path(slot_values, cardinality["per_item"])
+            # Per-item id->record join: when an element is a BARE id string and
+            # a `work_orders` list of {id, ...} records is a read slot, enrich
+            # the item to its matching work_orders record so the subagent gets
+            # the full work order. Deterministic (id index), built once per
+            # dispatch entry. Backward-compatible: an object element, an id with
+            # no match, or an absent work_orders slot leaves the item unchanged.
+            work_orders = slot_values.get("work_orders")
+            work_order_index = {}
+            if isinstance(work_orders, list):
+                work_order_index = {
+                    wo["id"]: wo for wo in work_orders
+                    if isinstance(wo, dict) and "id" in wo
+                }
+            for item_index, element in enumerate(collection):
+                env = dict(base)
+                if isinstance(element, str):
+                    env["item"] = work_order_index.get(element, element)
+                else:
+                    env["item"] = element
+                env["output_contract"] = {
+                    "slot": entry["writes"],
+                    "schema": schema,
+                    "output_path": os.path.join(
+                        output_dir,
+                        f"{state}-{dispatch_index}-{item_index}.json"),
+                }
+                envelopes.append(env)
+    return envelopes
+
+
+# --- render: structured-markdown derivative view --------------------------
+
+def _is_free_text(value):
+    """Heuristic: a string is free-text (needs fencing) when it is multi-line
+    or long, so its own markdown can't break the prompt layout."""
+    return isinstance(value, str) and ("\n" in value or len(value) > 80)
+
+
+def _fence(content):
+    """A CommonMark-correct DYNAMIC-LENGTH fence for free-text content (#126).
+
+    Scan `content` for the longest run of consecutive backticks and wrap it in a
+    fence of (longest_run + 1) backticks, minimum 3. Content that itself contains
+    a ```-fenced code block (e.g. a GitHub issue body) thus cannot terminate the
+    wrapper early; the whole body stays inside one fence. The opening and closing
+    fences use the same (longer) length. Pure function of `content` — the same
+    content always yields the same fence."""
+    longest = 0
+    run = 0
+    for ch in content:
+        if ch == "`":
+            run += 1
+            if run > longest:
+                longest = run
+        else:
+            run = 0
+    ticks = "`" * max(3, longest + 1)
+    return "\n" + ticks + "\n" + content + "\n" + ticks + "\n"
+
+
+def _render_scalar(value):
+    """Render a scalar as inline markdown. Free-text strings are fenced so
+    their embedded markdown cannot break the layout. The fence length is
+    dynamic (#126) so content containing its own code fence cannot break out."""
+    if _is_free_text(value):
+        return _fence(value)
+    return f"`{value}`" if not isinstance(value, str) else value
+
+
+def _render_value(value, depth):
+    """Generic value -> markdown renderer: headings / key-value / bulleted
+    lists for dicts / lists / scalars. Emits NO raw JSON. Deterministic:
+    dict keys are emitted in insertion order (envelope dicts are built
+    deterministically)."""
+    lines = []
+    indent = "  " * depth
+    if isinstance(value, dict):
+        for key in value:
+            sub = value[key]
+            if isinstance(sub, (dict, list)):
+                lines.append(f"{indent}- **{key}:**")
+                lines.extend(_render_value(sub, depth + 1))
+            else:
+                lines.append(f"{indent}- **{key}:** {_render_scalar(sub)}")
+    elif isinstance(value, list):
+        for element in value:
+            if isinstance(element, (dict, list)):
+                lines.append(f"{indent}-")
+                lines.extend(_render_value(element, depth + 1))
+            else:
+                lines.append(f"{indent}- {_render_scalar(element)}")
+    else:
+        lines.append(f"{indent}{_render_scalar(value)}")
+    return lines
+
+
+def render(envelope):
+    """Render an envelope to a deterministic structured-markdown prompt
+    (DESIGN §3.4.6).
+
+    `## Inputs` is a readable DERIVATIVE VIEW (generic slot -> markdown; free-
+    text fields fenced) — NO raw JSON. `## Handoff` is the SELF-CONTAINED
+    contract: it embeds the concrete output EXAMPLE (pretty-printed JSON),
+    framed as a value to MIMIC ("shaped EXACTLY like this example -- copy its
+    structure") and never called a "schema" (#119), instructs the subagent to
+    write that JSON to `output_contract.output_path` using its file-writing
+    tool, then to reply with ONLY a one-line acknowledgement and NOT include the
+    JSON in the reply. The output file is the machine-first artifact the next
+    state consumes; subagents stay protocol-free.
+
+    Deterministic: the same envelope renders to a byte-identical string.
+    """
+    ctx = envelope["context"]
+    out = []
+    out.append(
+        f"# Dispatch: {envelope['state']} "
+        f"(mode={ctx['mode']}, tick_id={ctx['tick_id']})")
+    out.append("")
+
+    out.append("## Task")
+    out.append(envelope.get("task", "") or "(no task)")
+    out.append("")
+
+    out.append("## Inputs")
+    if "item" in envelope:
+        out.append("### item")
+        out.extend(_render_value(envelope["item"], 0))
+        out.append("")
+    for slot in envelope["inputs"]:
+        out.append(f"### {slot}")
+        out.extend(_render_value(envelope["inputs"][slot], 0))
+        out.append("")
+
+    oc = envelope["output_contract"]
+    example_text = json.dumps(oc["schema"], indent=2, sort_keys=True)
+    out.append("## Handoff")
+    out.append(
+        f"Produce the output for slot `{oc['slot']}` as a JSON value shaped "
+        f"EXACTLY like this example -- copy its structure and replace the "
+        f"placeholder values with real ones:")
+    out.append("")
+    out.append("```json")
+    out.append(example_text)
+    out.append("```")
+    out.append("")
+    out.append(
+        f"Write that JSON to this file using your file-writing tool: "
+        f"`{oc['output_path']}`")
+    out.append("")
+    out.append(
+        "Then reply with ONLY a one-line acknowledgement (e.g. "
+        f"`wrote {oc['slot']}`). Do NOT include the JSON in your reply.")
+
+    return "\n".join(out)
+
+
+# --- validate_output ------------------------------------------------------
+
+def _strip_fences(text):
+    """Strip an optional surrounding ```json ... ``` or ``` ... ``` fence."""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    # Drop the opening fence line (``` or ```json) and a trailing fence line.
+    lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _expected_type(schema):
+    """Derive the expected top-level type name from `schema`. A {"type": ...}
+    dict names it directly; otherwise a rich EXAMPLE shape derives it (a list
+    -> "array", any NON-EMPTY dict -> "object"). An EMPTY dict {} is the
+    "no schema / accept-as-is" sentinel (the _SLOT_SCHEMAS.get(writes, {})
+    miss) and derives no type. Returns None when no top-level type can be
+    derived (the content is then accepted as-is)."""
+    if isinstance(schema, dict) and "type" in schema:
+        return schema["type"]
+    if isinstance(schema, list):
+        return "array"
+    if isinstance(schema, dict) and schema:
+        return "object"
+    return None
+
+
+def validate_output(file_content, schema):
+    """Parse the JSON content the subagent wrote to its output file (tolerating
+    code fences), then check that its top-level type matches `schema`. `schema`
+    may be a {"type": ...} dict (e.g. {"type": "array"} -> list) or a rich
+    example shape (a list means array, a dict means object).
+
+    Returns (True, parsed) on success or (False, "<locatable reason>") on a
+    parse / type mismatch. NEVER raises on bad model output — the executor
+    re-dispatches on a (False, reason) result.
+    """
+    body = _strip_fences(file_content)
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError) as e:
+        return False, f"output file content is not valid JSON: {e}"
+
+    expected = _expected_type(schema)
+    type_map = {"object": dict, "array": list, "string": str,
+                "number": (int, float), "boolean": bool}
+    if expected in type_map:
+        if not isinstance(parsed, type_map[expected]):
+            return False, (
+                f"expected top-level type {expected!r}, got "
+                f"{type(parsed).__name__}")
+    return True, parsed
+
+
+# --- collect_outputs ------------------------------------------------------
+
+def collect_outputs(adapter_entry, outputs):
+    """Assemble dispatch outputs into the target slot value. `once` -> the
+    single output value; `{per_item: ...}` -> the ordered list of element
+    outputs."""
+    if adapter_entry["cardinality"] == "once":
+        return outputs[0]
+    return list(outputs)
+
+
+# --- compute_signal -------------------------------------------------------
+
+def _is_blocked_element(element):
+    if not isinstance(element, dict):
+        return False
+    if element.get("status") in _BLOCKED_STATUSES:
+        return True
+    if element.get("blocked_reason"):
+        return True
+    return False
+
+
+def compute_signal(rule, slot_value):
+    """Apply a closed-vocabulary signal rule deterministically. The model never
+    selects control flow.
+
+    - nonempty_else_empty: "OK" if `slot_value` is truthy / non-empty else
+      "EMPTY".
+    - blocked_if_any: "BLOCKED" if any element is a dict with a blocked status
+      or a blocked_reason, else "OK".
+    - always_ok: "OK".
+
+    An unknown rule raises ValueError.
+    """
+    if rule == "nonempty_else_empty":
+        return "OK" if slot_value else "EMPTY"
+    if rule == "blocked_if_any":
+        elements = slot_value if isinstance(slot_value, list) else []
+        if any(_is_blocked_element(e) for e in elements):
+            return "BLOCKED"
+        return "OK"
+    if rule == "always_ok":
+        return "OK"
+    raise ValueError(
+        f"signal rule {rule!r} is not in the closed vocabulary "
+        f"{_SIGNAL_RULES}")

@@ -1,0 +1,50 @@
+{
+  "template_version": "2.0.0",
+  "name": "rabbit-issue",
+  "version": "1.16.0",
+  "owner": "rabbit-workflow team",
+  "tdd_state": "test-green",
+  "housekeeping_clean": true,
+  "summary": "GitHub Issues wrapper for filing, listing, and lifecycle-managing bugs and enhancements via the `gh` CLI. Replaces rabbit-file's retired branch-backed item store with native GH Issues; an actionability guard (valid `feature:` label required) gates rabbit's automation from touching raw human-filed issues, and the `filed-by:` provenance scheme is a fixed enum {rabbit, autonomous-evolve} with human as the untagged default.",
+  "surface": {
+    "hooks": [],
+    "commands": [],
+    "agents": [],
+    "skills": [
+      "rabbit-issue"
+    ],
+    "scripts": [
+      "scripts/file-item.py",
+      "scripts/item-status.py",
+      "scripts/list-items.py",
+      "scripts/_gh.py"
+    ]
+  },
+  "deprecation_criterion": "when GH Issues is replaced or the workflow moves to a different tracker; revisit when claude-plugins-official ships a GH Issues skill",
+  "updated": "2026-06-06",
+  "manifest": [
+    {
+      "api": "publish_skill",
+      "args": {
+        "source": "skills/rabbit-issue/SKILL.md"
+      }
+    },
+    {
+      "api": "publish_file",
+      "args": {
+        "source": "github/ISSUE_TEMPLATE/file-item.yml",
+        "dest": ".github/ISSUE_TEMPLATE/file-item.yml"
+      }
+    },
+    {
+      "api": "publish_file",
+      "args": {
+        "source": "github/workflows/issue-form-autolabel.yml",
+        "dest": ".github/workflows/issue-form-autolabel.yml"
+      }
+    }
+  ],
+  "runtime": {},
+  "configuration": [],
+  "prompts": []
+}

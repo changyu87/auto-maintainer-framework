@@ -1,0 +1,21 @@
+{
+  "schema_version": "2.9.0",
+  "mode": "auto-merge",
+  "work_own_filings": true,
+  "features_root": null,
+  "issue_filter": {
+    "include_labels": [],
+    "with_title_regex": null,
+    "exclude_labels": []
+  },
+  "budget": {
+    "per_day_tokens": null,
+    "window_tz": "local"
+  },
+  "heartbeat": {
+    "interval_minutes": 10
+  },
+  "backoff": {
+    "threshold": 5
+  }
+}

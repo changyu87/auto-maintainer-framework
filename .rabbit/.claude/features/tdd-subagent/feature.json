@@ -1,0 +1,64 @@
+{
+  "name": "tdd-subagent",
+  "version": "5.29.1",
+  "owner": "rabbit-workflow team",
+  "status": "active",
+  "housekeeping_clean": true,
+  "tdd_state": "test-green",
+  "summary": "Provides dispatch-tdd-subagent.py (per-feature TDD-cycle prompt assembler), tdd-step.py (forward-only TDD state machine, absorbed from the retired tdd-state-machine feature at v4.0.0), and the tdd-subagent agent definition. The rabbit-feature-touch orchestration skill is owned by rabbit-feature.",
+  "surface": {
+    "hooks": [],
+    "commands": [],
+    "skills": []
+  },
+  "manifest": [
+    {
+      "api": "publish_agent",
+      "args": {
+        "source": "agents/rabbit-tdd-subagent.md"
+      }
+    },
+    {
+      "api": "publish_file",
+      "args": {
+        "source": "scripts/dispatch-tdd-subagent.py",
+        "dest": ".claude/agents/tdd-subagent/scripts/dispatch-tdd-subagent.py"
+      }
+    },
+    {
+      "api": "publish_file",
+      "args": {
+        "source": "scripts/tdd-step.py",
+        "dest": ".claude/agents/tdd-subagent/scripts/tdd-step.py"
+      }
+    }
+  ],
+  "runtime": {},
+  "configuration": [],
+  "prompts": [
+    {
+      "id": "tdd-subagent",
+      "kind": "subagent",
+      "inject": [
+        ".claude/features/policy/philosophy.md",
+        ".claude/features/policy/spec-rules.md",
+        ".claude/features/policy/coding-rules.md"
+      ],
+      "slots": [
+        "feature_name",
+        "spec_content",
+        "impl_suggestion_block",
+        "bypass_preamble_note",
+        "feature_dir",
+        "tdd_step_py",
+        "repo_root",
+        "max_iterations",
+        "code_review_loop_note",
+        "scope_marker_path",
+        "tdd_report_path"
+      ]
+    }
+  ],
+  "deprecation_criterion": "When the TDD cycle is natively supported by the rabbit CLI.",
+  "updated": "2026-06-21"
+}
