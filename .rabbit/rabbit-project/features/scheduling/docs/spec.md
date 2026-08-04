@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.47.0
+version: 0.48.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -1129,6 +1129,31 @@ the loop only re-triages NEW or CHANGED issues. Edits live ONLY in scheduling
   acted-ledger records only `opened`/`closed`, unchanged). The source issue is
   LEFT OPEN (this wave does not close it; a config-gated auto-close is a separate
   follow-on).
+- **`already_done` ON-ISSUE enactment (visible disposition).** In ADDITION to the
+  durable `triage_memory` skip above, run_tick now ENACTS an on-issue disposition
+  so a human reading the tracker sees the loop's already-fixed verdict (before,
+  `already_done` was silent on the issue). It composes a `reason` from the
+  handoff's `artifact.ref` (the on-`main` evidence commit) plus a short
+  explanation that the requested change is already present on main, and calls
+  `work_intake.gh_issue_already_done_sink(issue_ref, repo, reason)` — which applies
+  the shared `REJECTED_LABEL` and posts a comment behind the DISTINCT
+  `ALREADY_DONE_MARKER`, never closing the issue. `issue_ref`/`repo` come from the
+  SAME `work_order_id → work_item` mapping used to record `triage_memory`. The
+  enactment is **trust-gated by `sg.permits('file', mode)`** (same rung as the
+  reject enactment + REPORT filing): at `dry-run` the intent is logged and the
+  sink is NOT called; at `propose`/`auto-merge` it posts. The sink seam is
+  injectable (mirrors `DEFAULT_REPORT_SINK`) so tests drive it with no network.
+- **Strong-reason guard on BOTH dispositions (`is_strong_reason`).** BEFORE
+  enacting an `already_done` on-issue disposition (or a reject, below) AND before
+  recording its terminal `triage_memory` status, run_tick checks
+  `work_intake.is_strong_reason(reason)`. If the reason is WEAK — or an
+  `already_done` handoff carries NO evidence commit in `artifact.ref`, so no
+  strong reason can be composed — run_tick does **NOT** enact (no sink call, no
+  comment/label) and does **NOT** record the terminal `already_done`/`rejected`
+  status. The item then RE-ENTERS on the next tick (re-triaged / re-dispatched) so
+  the model must produce a substantive reason; the existing backoff/park threshold
+  still bounds any pathological loop. A STRONG reason enacts + records exactly as
+  today.
 - **Surfacing.** The persisted `work_items` read product stays the full PULL set
   (accurate); the trace adds a `triaged=<judged>/<pulled>` token so the skip is
   visible.
@@ -1214,6 +1239,15 @@ work-intake seams landed in the providers wave. Both are deterministic, live in
   `permits('file', mode)` (same rung as REPORT filing — at `dry-run` the intent
   is logged, not written) and idempotent (the sink no-ops when the label is
   already present). Closing a reject stays an explicit opt-in, never the default.
+  - **Strong-reason guard (`is_strong_reason`).** BEFORE calling
+    `gh_issue_reject_sink` and BEFORE recording the `rejected` `triage_memory`
+    status, run_tick checks `work_intake.is_strong_reason(order_reason)`. If the
+    reason is WEAK/boilerplate, run_tick does NOT enact (no comment/label) and
+    does NOT record `rejected`, so the item is RE-TRIAGED next tick and the
+    triager must produce a substantive reason (the shipped triager mandates one,
+    so this rarely bounces; backoff/park bounds any loop). A STRONG reason enacts
+    + records exactly as before. This is the same guard applied to the
+    `already_done` enactment above.
 
 ## Wiring config CLIs (route + adapter-map) — §3.4.3 / §3.10.2
 
