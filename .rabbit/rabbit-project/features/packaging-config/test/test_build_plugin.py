@@ -560,18 +560,19 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.34.0, disposition-visibility wave): version bumped to 0.34.0 in
-# BOTH plugin.json and marketplace.json, and the two are consistent. v0.34.0
-# rebuilds the committed plugin tree so it ships the work-intake 0.13.0 +
-# scheduling 0.48.0 sources: lib/work_intake.py (the new ALREADY_DONE_MARKER +
-# gh_issue_already_done_sink on-issue disposition reusing REJECTED_LABEL, NEVER
-# closing; plus the pure is_strong_reason guard), lib/run_tick.py (enacts the
-# already_done on-issue disposition trust-gated by permits('file', mode) leaving
-# the issue open, and gates BOTH reject and already_done dispositions on
-# is_strong_reason), plus the shipped triager agent v1.5.0. No _LIBS change and
-# no shipped default-config CONTENT change (schema unchanged).
+# Release (v0.35.0, operator/debug wave): version bumped to 0.35.0 in
+# BOTH plugin.json and marketplace.json, and the two are consistent. v0.35.0
+# rebuilds the committed plugin tree so it ships the scheduling 0.49.0 sources:
+# lib/run_tick.py (the tick_start event now carries a version+file provenance
+# block — plugin_version + a plugin_version=<v> trace token, lib_dir,
+# runtime_dir, and the resolved config/route/adapter-map file paths with their
+# default-vs-override source) and lib/status.py (a new injectable, tolerant
+# release-check probe DEFAULT_RELEASE_PROBE; status_data() gains
+# latest_version/update_available/release_check_error and render_status shows an
+# update-available / up-to-date / check-errored line). No _LIBS change and no
+# shipped default-config CONTENT change (schema unchanged).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_34_0_and_consistent():
+def test_version_bumped_to_0_35_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -583,10 +584,10 @@ def test_version_bumped_to_0_34_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.34.0", \
-            f"plugin.json version must be 0.34.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.34.0", \
-            "marketplace.json plugin entry version must be 0.34.0"
+        assert pdata.get("version") == "0.35.0", \
+            f"plugin.json version must be 0.35.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.35.0", \
+            "marketplace.json plugin entry version must be 0.35.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2582,6 +2583,51 @@ def test_committed_libs_carry_v0_34_0_disposition_visibility_wave():
         agent_body = fh.read()
     assert "\nversion: 1.5.0\n" in agent_body, \
         "committed triager agent must be v1.5.0"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.35.0 (operator/debug wave) deploy confirmation: the whole point of
+# this release is that the committed (shipped) libs carry scheduling 0.49.0's
+# operator/debug enhancements — run_tick.py's tick_start version+file provenance
+# block (plugin_version + a plugin_version=<v> trace token, lib_dir, runtime_dir,
+# and the resolved config/route/adapter-map file paths with their
+# default-vs-override source) and status.py's injectable, tolerant release-check
+# probe (DEFAULT_RELEASE_PROBE; status_data gains latest_version /
+# update_available / release_check_error and render_status shows an update line).
+# Assert the COMMITTED libs — the bytes an installed plugin runs — carry each.
+# ---------------------------------------------------------------------------
+def test_committed_libs_carry_v0_35_0_operator_debug_wave():
+    lib = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer", "lib")
+
+    # scheduling 0.49.0: run_tick.py's tick_start version+file provenance block.
+    rt = os.path.join(lib, "run_tick.py")
+    assert os.path.isfile(rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(rt, encoding="utf-8") as fh:
+        rt_body = fh.read()
+    assert "_tick_provenance(" in rt_body, \
+        "committed run_tick must carry the v0.35.0 tick_start provenance builder"
+    assert '"plugin_version"' in rt_body, \
+        "committed run_tick provenance must carry plugin_version"
+    assert "plugin_version=" in rt_body, \
+        "committed run_tick must emit the plugin_version=<v> trace token"
+    assert '"provenance": provenance' in rt_body, \
+        "committed run_tick must attach provenance to the tick_start event"
+
+    # scheduling 0.49.0: status.py's injectable, tolerant release-check probe.
+    st = os.path.join(lib, "status.py")
+    assert os.path.isfile(st), \
+        "committed lib/status.py must ship in the plugin tree"
+    with open(st, encoding="utf-8") as fh:
+        st_body = fh.read()
+    assert "def DEFAULT_RELEASE_PROBE(" in st_body, \
+        "committed status must carry the v0.35.0 DEFAULT_RELEASE_PROBE"
+    assert "update_available" in st_body, \
+        "committed status must surface update_available"
+    assert "release_check_error" in st_body, \
+        "committed status must surface release_check_error (never crash)"
+    assert "latest_version" in st_body, \
+        "committed status must surface latest_version"
 
 
 # ---------------------------------------------------------------------------

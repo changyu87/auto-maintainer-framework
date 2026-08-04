@@ -27,7 +27,7 @@ legacy ``status_line()`` for back-compat + machine parsing.
 scheduling CONSUMES run_tick + lifecycle-dispositions UNCHANGED; it never edits
 or forks them.
 
-Version: 0.2.0
+Version: 0.3.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the control surface is replaced.
@@ -36,6 +36,7 @@ Deprecation criterion: Superseded when scheduling moves to a different clock
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 # Resolve sibling modules via sys.path exactly as run_tick does. In the worktree
@@ -127,7 +128,84 @@ def _plugin_version(lib_dir=None):
         return None
 
 
-def status_data():
+# The FIXED distribution repo the release probe queries (the upstream where the
+# plugin is published). Owned here so status never re-derives it.
+_DIST_REPO = "changyu87/auto-maintainer-framework"
+
+
+def _run_gh(args, timeout=10):
+    """Run ``gh <args>`` and return trimmed stdout; raise RuntimeError on any
+    non-zero exit. A thin deterministic wrapper (no AI) — the probe below catches
+    every failure so status never crashes."""
+    proc = subprocess.run(
+        ["gh"] + args, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "gh failed")
+    return proc.stdout.strip()
+
+
+def _normalize_version(v):
+    """Strip a leading ``v`` from a tag/version string (``v0.49.0`` -> ``0.49.0``)."""
+    if v is None:
+        return None
+    v = v.strip()
+    return v[1:] if v.startswith("v") else v
+
+
+def DEFAULT_RELEASE_PROBE():
+    """Resolve the latest PUBLISHED plugin version from the fixed distribution
+    repo via ``gh`` (script-tier — spec-rules §1; no AI). Prefers the latest
+    RELEASE (``gh api repos/<repo>/releases/latest``); falls back to the latest
+    semver TAG when there is no published release. Returns the version string
+    (leading ``v`` stripped) or raises — ``status_data`` catches any failure into
+    ``release_check_error`` so the probe NEVER crashes status.
+    """
+    try:
+        tag = _run_gh(["api", f"repos/{_DIST_REPO}/releases/latest",
+                       "--jq", ".tag_name"])
+        if tag:
+            return _normalize_version(tag)
+    except Exception:
+        pass  # No published release (or a transient error) — fall back to tags.
+    names = _run_gh(["api", f"repos/{_DIST_REPO}/tags", "--jq", ".[].name"])
+    versions = [
+        _normalize_version(n) for n in names.splitlines() if n.strip()]
+    parsed = [(_parse_semver(v), v) for v in versions]
+    parsed = [(p, v) for (p, v) in parsed if p is not None]
+    if not parsed:
+        raise RuntimeError("no semver tags found")
+    return max(parsed, key=lambda pv: pv[0])[1]
+
+
+def _parse_semver(v):
+    """Parse ``v`` into a ``(major, minor, patch)`` int tuple, or ``None`` when it
+    is missing/unparseable (tolerant — an unknown version never raises). A
+    pre-release/build suffix (``1.2.3-rc1`` / ``1.2.3+build``) is dropped to its
+    numeric core."""
+    if v is None:
+        return None
+    core = str(v).strip().lstrip("v").split("-")[0].split("+")[0]
+    parts = core.split(".")
+    if len(parts) < 3:
+        return None
+    try:
+        return tuple(int(p) for p in parts[:3])
+    except ValueError:
+        return None
+
+
+def _update_available(latest, installed):
+    """STRICT semver-greater: True iff ``latest`` parses strictly greater than
+    ``installed``. False whenever EITHER side is unknown (None) or unparseable —
+    the conservative guard so a bad/absent probe never claims an update."""
+    lp = _parse_semver(latest)
+    ip = _parse_semver(installed)
+    if lp is None or ip is None:
+        return False
+    return lp > ip
+
+
+def status_data(release_probe=None):
     """The machine-first status: a dict of EVERY surfaced field (philosophy §1).
 
     Reads the SAME real on-disk state ``status_line`` reads (the disposition
@@ -159,8 +237,27 @@ def status_data():
 
     active_route = rt.resolved_route(project_dir)
 
+    # Release-check: the INJECTABLE, TOLERANT probe resolves the latest published
+    # version (tests stub it with no network; the production default shells `gh`).
+    # ANY failure yields latest_version=None + update_available=False + a non-null
+    # release_check_error, and NEVER crashes status. update_available is a STRICT
+    # semver-greater comparison — False whenever either version is unknown.
+    plugin_version = _plugin_version()
+    if release_probe is None:
+        release_probe = DEFAULT_RELEASE_PROBE
+    latest_version = None
+    release_check_error = None
+    try:
+        latest_version = release_probe()
+    except Exception as exc:  # tolerant: any failure -> a reason string, no crash
+        release_check_error = str(exc) or type(exc).__name__
+    update_available = _update_available(latest_version, plugin_version)
+
     return {
-        "plugin_version": _plugin_version(),
+        "plugin_version": plugin_version,
+        "latest_version": latest_version,
+        "update_available": update_available,
+        "release_check_error": release_check_error,
         "disposition": disposition,
         "awaiting": checkpoint.get("next_state", "none") if checkpoint
         else "none",
@@ -230,6 +327,19 @@ def render_status(data):
     header = f"auto-maintainer   v{version}"
     rule = "─" * max(len(header), 40)
 
+    # The release-check line (ASCII only — coding-rules §5): update-available when
+    # a strictly-newer version was found, up-to-date when not, or a muted note when
+    # the check errored. Derived from status_data's release-check fields.
+    if data.get("update_available"):
+        release_line = (
+            f"update available: v{data.get('latest_version')} "
+            f"(installed v{version}) - run /plugin marketplace update")
+    elif data.get("release_check_error"):
+        release_line = (
+            f"release check unavailable ({data['release_check_error']})")
+    else:
+        release_line = f"up to date (v{version})"
+
     budget = data["budget"]
     ceiling = "none" if budget["ceiling"] is None else str(budget["ceiling"])
     budget_str = (f"{budget['spent']}/{ceiling}  win={budget['window'] or '-'}")
@@ -253,7 +363,7 @@ def render_status(data):
     ]
     label_w = max(len(label) for label, _ in rows)
 
-    lines = [header, rule]
+    lines = [header, rule, f"  {release_line}", ""]
     for label, value in rows:
         lines.append(f"  {label.ljust(label_w)}  {value}")
 
