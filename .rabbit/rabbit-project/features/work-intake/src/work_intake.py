@@ -38,6 +38,18 @@ Reject disposition (deterministic, at TRIAGE):
     comment carrying the reason + add-label; NEVER closes; idempotent no-op when
     already labeled.
 
+already_done disposition (on-issue, visible — mirrors reject; NOT a reject):
+  - ALREADY_DONE_MARKER — the fixed comment marker, DISTINCT from REJECT_MARKER,
+    so an already-done disposition is machine-distinguishable from a reject even
+    though the two SHARE the label (REJECTED_LABEL).
+  - gh_issue_already_done_sink() — injectable tracker sink mirroring the reject
+    sink: ensure the shared label + one ALREADY_DONE_MARKER comment carrying the
+    reason + add-label; NEVER closes; idempotent no-op when the marker is already
+    present (keyed off the marker, not the shared label).
+  - is_strong_reason() — pure guard both dispositions consult before enacting: a
+    reason is strong iff >= 40 chars stripped AND not reflexive-deferral
+    boilerplate.
+
 The only non-deterministic edge — the live `gh` call — sits behind an
 INJECTABLE source (Pull(source=...)), so tests drive PULL with a stub over
 fixture issues with no network (spec-rules §1: the failure is locatable to the
@@ -1317,6 +1329,54 @@ REJECTED_LABEL = "auto-maintainer-rejected"
 # comment (and its reason) is machine-recognizable and de-duplicable.
 REJECT_MARKER = "<!-- auto-maintainer:rejected -->"
 
+# The FIXED machine marker prefixing the one already_done-disposition comment.
+# DISTINCT from REJECT_MARKER so an already-done disposition is
+# machine-distinguishable from a reject in the comment thread even though the two
+# SHARE the label (REJECTED_LABEL). Owned here (work-intake owns tracker markers).
+ALREADY_DONE_MARKER = "<!-- auto-maintainer:already-done -->"
+
+# The minimum stripped length a disposition `reason` must reach to be "strong"
+# enough to post (the strong-reason guard, below).
+_MIN_REASON_CHARS = 40
+
+# Reflexive-deferral boilerplate phrases a disposition reason must NOT be composed
+# solely of. Mirrors rabbit-issue's item-status.py rejected-phrase concept: a
+# reason whose stripped, case-folded text IS one of these (or consists only of
+# them + separators) is REJECTED as weak — it does not tell a human WHY.
+_WEAK_REASON_PHRASES = frozenset({
+    "will look into", "todo", "deferred", "not sure", "later",
+    "n/a", "no reason", "as discussed", "see above", "wontfix",
+})
+
+
+def is_strong_reason(reason):
+    """Return True when `reason` is substantive enough to post on a disposition
+    comment (both the reject and already_done dispositions consult this before
+    enacting). A reason is strong iff it is at least _MIN_REASON_CHARS characters
+    (stripped) AND is not composed solely of reflexive-deferral boilerplate.
+
+    Pure and deterministic; no I/O. A non-string is never strong. The gating
+    (bounce-and-re-enter on a weak reason) lives in scheduling; this predicate
+    only judges the reason.
+    """
+    if not isinstance(reason, str):
+        return False
+    stripped = reason.strip()
+    if len(stripped) < _MIN_REASON_CHARS:
+        return False
+    folded = stripped.casefold()
+    if folded in _WEAK_REASON_PHRASES:
+        return False
+    # "Composed solely of boilerplate": strip every boilerplate phrase and the
+    # separators between them; if nothing substantive remains, it is weak.
+    residue = folded
+    for phrase in _WEAK_REASON_PHRASES:
+        residue = residue.replace(phrase, " ")
+    residue = re.sub(r"[\s,.;:/&+\-]+", "", residue)
+    if not residue:
+        return False
+    return True
+
 
 def _order_field(order, name, default=""):
     """Read a field from a WorkOrder object OR its machine-first dict form."""
@@ -1379,6 +1439,58 @@ def gh_issue_reject_sink(issue_ref, repo=None, reason="", label=REJECTED_LABEL,
                   description="disposed as rejected by the autonomous maintainer")
     comment_cmd = ["gh", "issue", "comment", str(issue_ref),
                    "--body", f"{REJECT_MARKER}\n{reason}"]
+    if repo:
+        comment_cmd += ["--repo", repo]
+    runner(comment_cmd, capture_output=True, text=True, check=True)
+    edit_cmd = ["gh", "issue", "edit", str(issue_ref), "--add-label", label]
+    if repo:
+        edit_cmd += ["--repo", repo]
+    runner(edit_cmd, capture_output=True, text=True, check=True)
+
+
+def gh_issue_already_done_sink(issue_ref, repo=None, reason="",
+                               label=REJECTED_LABEL, runner=subprocess.run):
+    """Enact the already_done disposition on ONE issue (MIRRORS
+    gh_issue_reject_sink). Used when the IMPLEMENT doer reports the requested
+    change is ALREADY PRESENT ON `main`: it makes that outcome VISIBLE on the
+    tracker so a human sees the loop resolved it, exactly parallel to a reject —
+    but it is NOT a reject (the work was real and is done, not invalid).
+
+    It ENSURES the (shared) label exists (idempotent `gh label create`), posts
+    ONE comment carrying the `reason` (the on-`main` evidence + a short note that
+    the change is already present) behind the FIXED ALREADY_DONE_MARKER, and
+    applies the label (`gh issue edit <ref> --add-label`). It NEVER closes the
+    issue.
+
+    Idempotent: it first reads the issue's current comments (`gh issue view
+    <ref> --json comments`); if any comment already carries ALREADY_DONE_MARKER
+    it is a NO-OP (no duplicate comment, no re-edit). Idempotency keys off the
+    MARKER, NOT the label — the label is SHARED with reject, so a prior reject's
+    label must not suppress an already_done comment (and vice versa). `issue_ref`
+    is any gh-actionable reference (issue number or URL). When `repo` is given it
+    is passed via `--repo`. The subprocess `runner` is INJECTABLE (defaulting to
+    subprocess.run) so tests pass a fake — no network, the failure locatable to
+    the sink boundary.
+    """
+    view_cmd = ["gh", "issue", "view", str(issue_ref), "--json", "comments"]
+    if repo:
+        view_cmd += ["--repo", repo]
+    out = runner(view_cmd, capture_output=True, text=True, check=True)
+    comments = json.loads(out.stdout).get("comments") or []
+    for comment in comments:
+        if ALREADY_DONE_MARKER in (comment.get("body") or ""):
+            # Already disposed — idempotent no-op (no duplicate comment/re-edit).
+            return
+
+    # ENSURE the (shared) label exists first (`gh issue edit --add-label` fails
+    # on a missing label in a fresh repo), tolerating a pre-existing label's
+    # non-zero exit (check=False), then COMMENT the reason behind the marker,
+    # then LABEL.
+    _ensure_label(
+        label, repo, runner,
+        description="disposed by the autonomous maintainer")
+    comment_cmd = ["gh", "issue", "comment", str(issue_ref),
+                   "--body", f"{ALREADY_DONE_MARKER}\n{reason}"]
     if repo:
         comment_cmd += ["--repo", repo]
     runner(comment_cmd, capture_output=True, text=True, check=True)

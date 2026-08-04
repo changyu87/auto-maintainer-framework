@@ -4,6 +4,32 @@ All notable changes to this feature are recorded here. Versions follow the
 `version:` frontmatter in `spec.md` / `contract.md` and the `feature.json`
 `version` field.
 
+## feature 0.13.0 / spec 0.13.0 — 2026-08-04
+
+- **already_done on-issue disposition (mirrors reject; NOT a reject)** — the
+  IMPLEMENT doer's terminal `already_done` verdict is now VISIBLE on the tracker.
+  New fixed comment marker `ALREADY_DONE_MARKER`
+  (`<!-- auto-maintainer:already-done -->`), DISTINCT from `REJECT_MARKER` so the
+  two dispositions are machine-distinguishable even though they SHARE the label.
+- New injectable tracker sink `gh_issue_already_done_sink(issue_ref, repo=None,
+  reason="", label=REJECTED_LABEL, runner=...)` mirroring `gh_issue_reject_sink`:
+  ENSURES the shared `REJECTED_LABEL`, posts ONE `ALREADY_DONE_MARKER` comment
+  carrying the evidence reason, applies the label, and NEVER closes the issue.
+  Idempotent on the MARKER (not the shared label), so a prior reject comment does
+  not suppress it and vice versa. Enactment + `triage_memory` recording are
+  scheduling's.
+- **Strong-reason guard** — new pure predicate `is_strong_reason(reason) -> bool`:
+  True iff the reason is >= 40 chars stripped AND not composed solely of
+  reflexive-deferral boilerplate (`todo`, `deferred`, `will look into`, …). Both
+  the reject and already_done dispositions consult it before enacting (the gating
+  lives in scheduling); no I/O.
+- **Triager mandate strengthened** — `ship/agents/auto-maintainer-triager.md`
+  now MANDATES a concrete, specific reject `reason` (name what/why, >= ~40 chars,
+  no boilerplate) so the guard rarely bounces a real reject (agent version
+  1.4.0 → 1.5.0).
+- Housekeep doc baseline re-anchored for the additively grown spec.md
+  (already_done disposition + strong-reason guard sections).
+
 ## feature 0.12.0 / spec 0.12.0 — 2026-08-03
 
 - **In-flight guard (convergence)** — a third deterministic PULL-exclusion guard
