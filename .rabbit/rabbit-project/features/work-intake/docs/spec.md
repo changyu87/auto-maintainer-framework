@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.11.0
+version: 0.12.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -38,7 +38,9 @@ Greenfield. Code under `.../features/work-intake/src/`.
    Fetches the configured repo's **open** issues (narrowed by the optional
    `issue_filter`, item 5 below), maps each to a `WorkItem`,
    under the `work_own_filings=False` opt-out **excludes loop-filed items**
-   (`is_loop_filed`, §3.11.5 — see below), writes survivors to `work_items`,
+   (`is_loop_filed`, §3.11.5 — see below), **excludes in-flight items** whose
+   issue already has an OPEN loop PR (`is_in_flight`, "In-flight guard" below),
+   writes survivors to `work_items`,
    emits `OK` if any remain else `EMPTY`. Per-state manifest:
    `{ reads: [], writes: ["work_items"], emits: ["OK", "EMPTY"] }`.
 
@@ -241,6 +243,43 @@ wanted.
   retried. A marker whose JSON payload is absent or unparseable (or carries no
   `pr_ref`) falls back to counting that comment as one distinct attempt (keyed by
   its position) so malformed markers never silently defeat the guard.
+- **In-flight guard (convergence) — UNCONDITIONAL PULL EXCLUSION of issues with
+  an OPEN loop PR.** An issue whose work is ALREADY IN FLIGHT — i.e. an open
+  auto-maintainer PR is already addressing it — must NOT be re-triaged or
+  re-implemented; doing so re-opens duplicate/superseding PRs and burns tokens
+  re-deriving work the open PR already carries. PULL therefore **EXCLUDES** any
+  candidate work_item whose issue ref is a member of an injected
+  `in_flight_issue_refs` set, via the pure
+  `work_intake.is_in_flight(item, in_flight_issue_refs)`. The excluded issue is
+  **LEFT OPEN and untouched** — its open PR's own lifecycle resolves it
+  (INTEGRATE/auto-merge on success, RECONCILE on conflict); PULL neither closes,
+  comments on, nor labels it. Like the loopback and park guards this is a PULL
+  exclusion (NOT a TRIAGE reject, which would apply `REJECTED_LABEL`); an
+  in-flight issue stays open and un-labeled.
+  - **Bounded scope — work-intake CONSUMES the set, it does NOT compute it.**
+    Resolving WHICH issues have an open loop PR requires PR-side reads (listing
+    open loop PRs, resolving each PR's closing-issue ref, and/or the acted
+    ledger's `opened` entries) that live OUTSIDE work-intake's repo-issue-I/O
+    scope. So `in_flight_issue_refs` is threaded IN by `scheduling` exactly as
+    the normalized `issue_filter` and `work_own_filings` are — computed by
+    scheduling by reusing the EXISTING seams (verify-integrate's open-PR /
+    graphql closing-issue resolver already used by RECONCILE same-issue dedup,
+    and/or the acted-ledger `opened` entries keyed `owner/repo#N-wo`). work-intake
+    adds **no new gh plumbing and no new cross-feature reads** — it applies a set
+    it is handed. `Pull(in_flight_issue_refs=...)` DEFAULTS to the empty set, a
+    **no-op** (PULL pulls every open issue exactly as before — non-breaking).
+  - **`is_in_flight(item, in_flight_issue_refs)`** — a pure, deterministic
+    predicate (mirrors `is_parked`): true iff the item's issue ref
+    (`owner/repo#N`, derived from the item's `url`/`number`) is in the injected
+    set. No I/O.
+  - **Merged/closed PRs do NOT exclude.** The set carries ONLY refs with an
+    **open** loop PR; an issue whose only loop PR is merged/closed — or which has
+    no loop PR — is NOT in the set and flows through PULL normally (the
+    already-merged-but-open case is handled elsewhere: IMPLEMENT's `already_done`
+    terminal outcome, recorded skip by scheduling).
+  - **Propagates to refire.** Because excluded items never enter `work_items`,
+    the refire/`_work_remains` predicate (scheduling) does not refire on an
+    in-flight issue — the loop converges instead of re-pulling it every tick.
 
 ## Reject disposition (deterministic, at TRIAGE — NOT at IMPLEMENT)
 

@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.46.0",
+  "version": "0.47.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -11,5 +11,5 @@
   "tdd_state": "test-green",
   "updated": "2026-08-03",
   "spec_change_reason": "Fix _reconcile_ledger_seed's malformed issue_ref. The live producer's work_order_id uses a -wo SUFFIX (owner/repo#N-wo), but the seed stripped only a legacy wo- PREFIX, leaving issue_ref=owner/repo#N-wo so `gh issue view N-wo` (issue_ref.split('#')[-1]) failed every tick, breaking RECONCILE's (A) merged-PR issue-close. _reconcile_ledger_seed now derives the CANONICAL owner/repo#N by stripping the wo- prefix (dry-run producer) OR the -wo suffix (live producer), else the id as-is; repo is the owner/repo before #. The pr_ref URL->owner/repo#N canonicalization from the prior wave is unchanged, and there is no verify-integrate change. Re-anchored the housekeep spec.md baseline 1462->1471 for the already-committed 0.46.0 spec growth (contract.md kept under its strictly-grew gate).",
-  "spec_no_change_reason": "spec.md was updated pre-dispatch in commit d510c49 (scheduling 0.46.0) documenting the -wo suffix issue_ref stripping; this cycle implements that spec in run_tick.py"
+  "spec_no_change_reason": "Spec already updated for this cycle in commit 3e3c4e4 (spec(scheduling): in-flight exclusion, already_done, terminal-resolved skip); no further spec change needed this transition."
 }

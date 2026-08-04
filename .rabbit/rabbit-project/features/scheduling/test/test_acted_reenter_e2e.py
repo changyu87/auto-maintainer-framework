@@ -369,14 +369,24 @@ def test_merged_pr_stays_locked():
 # ==========================================================================
 
 def test_open_pr_stays_locked():
+    # With the in-flight exclusion wiring, a still-OPEN loop PR now excludes its
+    # issue at PULL (in-flight) — an EARLIER lock than the re-entry gate: #7 never
+    # reaches TRIAGE/IMPLEMENT, so it cannot re-enter. The acted-ledger entry is
+    # preserved.
     project_dir, runtime_dir, state_path, journal_path = _setup_agent_project()
     _open_pr_once(project_dir, runtime_dir, state_path, journal_path)
 
     advanced_src = _stub_source(_gh_fixture(updated_7=_UPDATED_T2))
-    result = _resume_triage(
-        project_dir, runtime_dir, state_path, journal_path,
-        source=advanced_src, pr_state_source=_pr_state("OPEN", merged=False))
+    result = rt.run_tick(
+        project_dir=project_dir, runtime_dir=runtime_dir,
+        state_path=state_path, journal_path=journal_path,
+        source=advanced_src, now=_DAY1,
+        pr_state_source=_pr_state("OPEN", merged=False))
     assert result in ("idle", "refire", "break"), result
+    # #7 is in flight (OPEN loop PR) -> excluded from the pulled work_items.
+    assert all(it.get("id") != "acme/widget#7"
+               for it in rt.persisted_work_items(state_path)), \
+        rt.persisted_work_items(state_path)
     assert "wo-acme/widget#7" in rt.persisted_acted_ledger(state_path), \
         rt.persisted_acted_ledger(state_path)
 
@@ -408,8 +418,11 @@ def test_closed_unmerged_unchanged_stays_locked_and_not_queried():
     # Stays locked: the acted-ledger entry is preserved.
     assert "wo-acme/widget#7" in rt.persisted_acted_ledger(state_path), \
         rt.persisted_acted_ledger(state_path)
-    # And the PR was NEVER queried (the gh call is bounded to changed issues).
-    assert calls == [], calls
+    # The RE-ENTRY gate itself adds NO query (bounded to changed issues, and #7 is
+    # unchanged). The PULL in-flight check DOES query #7's opened-entry PR (finds
+    # it CLOSED -> not in-flight -> pulled normally), so the only PR ever queried
+    # is #7's own PR — never an unrelated one.
+    assert set(calls) <= {_PR_REF}, calls
 
 
 # ==========================================================================
@@ -434,7 +447,10 @@ def test_legacy_entry_without_pin_stays_locked():
     assert result in ("idle", "refire", "break"), result
     assert "wo-acme/widget#7" in rt.persisted_acted_ledger(state_path), \
         rt.persisted_acted_ledger(state_path)
-    assert calls == [], calls
+    # The RE-ENTRY gate adds NO query for a legacy (null-pin) entry — the null pin
+    # can never advance. The PULL in-flight check queries #7's opened-entry PR
+    # (CLOSED -> not in-flight -> pulled), so the only PR ever queried is #7's own.
+    assert set(calls) <= {_PR_REF}, calls
 
 
 # ==========================================================================

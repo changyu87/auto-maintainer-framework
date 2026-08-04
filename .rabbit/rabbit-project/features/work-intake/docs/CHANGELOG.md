@@ -4,6 +4,23 @@ All notable changes to this feature are recorded here. Versions follow the
 `version:` frontmatter in `spec.md` / `contract.md` and the `feature.json`
 `version` field.
 
+## feature 0.12.0 / spec 0.12.0 — 2026-08-03
+
+- **In-flight guard (convergence)** — a third deterministic PULL-exclusion guard
+  alongside the loopback and park guards. New pure predicate
+  `is_in_flight(item, in_flight_issue_refs) -> bool`: true iff the item's issue
+  ref (`owner/repo#N`, derived from its url/number) is in the injected set;
+  tolerant of full-URL vs short-form entries; empty/None set is always False;
+  no I/O.
+- `Pull` gains an `in_flight_issue_refs` param (default empty ⇒ no-op,
+  non-breaking). `Pull.run` UNCONDITIONALLY EXCLUDES any candidate whose ref is
+  in the set so the loop does not re-triage/re-implement an issue an OPEN loop
+  PR already addresses; the excluded issue is LEFT OPEN and untouched (a PULL
+  exclusion, NOT a TRIAGE reject). Bounded scope: work-intake CONSUMES the set
+  (threaded in by scheduling from existing verify-integrate open-PR /
+  acted-ledger seams) — it adds no gh plumbing and no new cross-feature reads.
+  Merged/closed PRs do NOT exclude (only OPEN-PR refs are in the set).
+
 ## feature 0.8.0 / spec 0.8.0 / contract 0.8.0 — 2026-06-27
 
 - **Authoritative `target_feature` blast-radius field on WorkOrder** (#258, the

@@ -455,6 +455,53 @@ def test_non_opened_handoff_does_not_require_a_verdict():
 
 
 # ==========================================================================
+# E2E Behaviour (v1.2.0): `already_done` is a TERMINAL already-satisfied outcome
+# — the doer determined the requested change is already present on `main`, so it
+# opened no PR and carries its evidence in artifact {kind:"already-on-main",
+# ref:<commit-sha>}. Like blocked/planned it is a non-`opened` handoff, so
+# validate_handoff accepts it WITHOUT a test_verdict; only `opened` requires a
+# passing verdict.
+# ==========================================================================
+
+def test_already_done_handoff_is_valid_without_a_verdict():
+    handoff = {
+        "schema_version": impl.HANDOFF_SCHEMA_VERSION,
+        "work_order_id": "wo-1",
+        "status": "already_done",
+        "artifact": {"kind": "already-on-main", "ref": "abc1234"},
+        "discovered_work": [],
+        "concerns": [],
+        "blocked_reason": None,
+        # no test_verdict — it opened no PR
+    }
+    result = impl.validate_handoff(handoff)
+    assert result.valid is True
+    assert result.reason is None
+
+
+def test_already_done_carries_already_on_main_commit_evidence():
+    """The `already_done` outcome records WHY the item resolved without work: the
+    commit on `main` that already carries the fix, in artifact.kind=
+    'already-on-main' / ref=<commit-sha>. This is distinct from the retryable
+    `blocked` (a cannot-proceed signal that scheduling re-dispatches)."""
+    handoff = {
+        "schema_version": impl.HANDOFF_SCHEMA_VERSION,
+        "work_order_id": "wo-1",
+        "status": "already_done",
+        "artifact": {"kind": "already-on-main", "ref": "deadbeef"},
+        "discovered_work": [],
+        "concerns": [],
+        "blocked_reason": None,
+    }
+    assert handoff["status"] == "already_done"
+    assert handoff["status"] != "blocked"
+    assert handoff["artifact"]["kind"] == "already-on-main"
+    assert handoff["artifact"]["ref"]
+    # a terminal already-satisfied outcome is valid without a verdict
+    assert impl.validate_handoff(handoff).valid is True
+
+
+# ==========================================================================
 # E2E Behaviour: the FULL gate seam end-to-end — run the gate against a real
 # passing target, read its SCRIPT-produced verdict, embed it in an opened
 # handoff, and assert the predicate accepts ONLY the script's recorded pass.

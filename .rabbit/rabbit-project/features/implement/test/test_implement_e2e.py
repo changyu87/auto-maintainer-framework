@@ -79,8 +79,9 @@ def test_handoffs_slot_descriptor_is_versioned():
     assert slot["name"] == "handoffs"
     assert slot["schema"] == {"type": "array"}
     assert slot["version"] == impl.HANDOFF_SCHEMA_VERSION
-    # 1.1.0: additive `concerns` field (auto-maintainer-framework#212).
-    assert impl.HANDOFF_SCHEMA_VERSION == "1.1.0"
+    # 1.2.0: additive `already_done` terminal status in the value space
+    # (evidence in artifact.kind="already-on-main"); 1.1.0 added `concerns`.
+    assert impl.HANDOFF_SCHEMA_VERSION == "1.2.0"
 
 
 # ==========================================================================

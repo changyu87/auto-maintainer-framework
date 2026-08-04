@@ -197,12 +197,40 @@ def test_shipped_implementer_body_supersedes_prior_same_issue_pr():
         "body must constrain the close to the SAME issue only")
 
 
-def test_shipped_implementer_frontmatter_version_is_2_11_0():
-    """v2.11.0 moves the worktree-setup + PR-open from prompt-tier git/gh prose
-    into the deterministic companion script open_pr.py (spec-rules §4), fixing
-    the wrong-base STACKED PR bug (#844/#846)."""
+def test_shipped_implementer_frontmatter_version_is_2_12_0():
+    """v2.12.0 adds the `already_done` terminal outcome: report `already_done`
+    (NOT blocked) with artifact {kind:already-on-main, ref:<sha>} when the
+    requested change is already present on `main`, opening no PR and leaving the
+    issue open. (v2.11.0 introduced the open_pr.py script; this bumps on top.)"""
     fm = _frontmatter()
-    assert fm["version"] == "2.11.0"
+    assert fm["version"] == "2.12.0"
+
+
+def test_shipped_implementer_body_reports_already_done_when_on_main():
+    """v2.12.0: when the subagent determines the requested change is ALREADY
+    PRESENT on `main` (nothing to implement), it MUST report
+    `status: already_done` (NOT `blocked`), open no PR, and set
+    `artifact = {kind: already-on-main, ref: <commit-sha>}` naming the commit on
+    main that already carries the fix. `already_done` is TERMINAL (distinct from
+    the retryable `blocked`); the issue is left OPEN this wave. The body must:
+      - name the `already_done` status and tie it to the fix being on `main`,
+      - carry the `already-on-main` artifact evidence with a commit ref,
+      - contrast it with `blocked` (report already_done, NOT blocked),
+      - state it opens no PR and leaves the issue open."""
+    body = _body()
+    lower = body.lower().replace("*", "")
+    assert "already_done" in lower, (
+        "body must name the already_done terminal status")
+    assert "already-on-main" in lower, (
+        "body must carry the already-on-main artifact evidence kind")
+    assert "on main" in lower or "on `main`" in body.lower(), (
+        "already_done must be tied to the fix already being on main")
+    # a commit ref is the evidence (resolved via git log/git blame)
+    assert "commit" in lower, (
+        "body must instruct naming the commit on main that carries the fix")
+    # explicitly NOT blocked
+    assert "not blocked" in lower or "not `blocked`" in body.lower(), (
+        "body must instruct reporting already_done, NOT blocked")
 
 
 def test_shipped_implementer_invokes_open_pr_script_at_deployed_lib_path():

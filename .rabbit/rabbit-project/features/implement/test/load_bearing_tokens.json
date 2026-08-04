@@ -12,6 +12,8 @@
     "discovered_work",
     "concerns",
     "blocked_reason",
+    "already_done",
+    "already-on-main",
     "schema_version",
     "OK",
     "BLOCKED",

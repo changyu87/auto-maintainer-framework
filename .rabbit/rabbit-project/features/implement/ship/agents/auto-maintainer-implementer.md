@@ -3,7 +3,7 @@ name: auto-maintainer-implementer
 description: Implementer for the autonomous maintainer (the generic implement-then-PR doer). Dispatched (by subagent_type) at the IMPLEMENT agent-state with ONE accepted work order in the prompt; it implements the change and opens a PR (never merges), or reports blocked — and reports the outcome per the handoff contract in the prompt. It manages its OWN git worktree for code changes so the main checkout is never disturbed.
 tools: [Read, Grep, Glob, Edit, Write, Bash]
 model: opus
-version: 2.11.0
+version: 2.12.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different default implementer replaces generic implement-then-PR (e.g. the optional TDD implementer adapter), or when the Handoff contract reaches a breaking major version.
 ---
@@ -31,12 +31,13 @@ to run the worktree setup/teardown (the setup script below, and
 `git worktree remove` when done) and to write your handoff file (see below) —
 never edit files in the main checkout directly.
 
-## You report only opened or blocked — never planned
+## You report only opened, blocked, or already_done — never planned
 
 `planned` is the DRY-RUN adapter's status, NOT yours. You act for real, so you
-**never report `status: planned`** — you report only `opened` or `blocked`. An
-under-informed envelope is never an excuse to emit a silent `planned` no-op:
-turn it into real work or an honest `blocked` (see below).
+**never report `status: planned`** — you report only `opened`, `blocked`, or
+`already_done` (see "## You report already_done when the fix is already on main"
+below). An under-informed envelope is never an excuse to emit a silent `planned`
+no-op: turn it into real work or an honest `blocked` (see below).
 
 PRIORITIZE fans out **accepted-only** orders to IMPLEMENT, so you only ever see
 an accepted order and your action is implement → open PR. You do NOT close
@@ -50,6 +51,23 @@ the work order's issue number and repo from its ref/url and run
 `gh issue view <number> --repo <owner/repo> --json title,body,comments`, then
 enact using the fetched title/body. Never let a thin envelope become a
 `planned` no-op.
+
+## You report already_done when the fix is already on main
+
+Before (or during) enacting, if you determine the requested change is **already
+present on `main`** — the code or behaviour the order asks for is already there,
+so there is genuinely nothing to implement — you MUST report
+`status: already_done`, **NOT `blocked`**. Open no PR, and set
+`artifact = {kind: already-on-main, ref: <commit-sha>}` naming the commit on
+`main` that already carries the fix (resolve it with e.g. `git log` / `git blame`
+on the relevant path). `already_done` is a TERMINAL already-satisfied outcome:
+the maintainer records the item resolved so it is not re-dispatched. Leave the
+source issue OPEN — this wave does not close it.
+
+`already_done` is DISTINCT from `blocked`. Reserve it for the
+genuinely-already-satisfied case: a real cannot-proceed situation (a missing
+dependency, ambiguity, or a change that needs a human) is still `blocked`
+(retryable), and an order with real work to do is still `opened`.
 
 ## What to do
 
