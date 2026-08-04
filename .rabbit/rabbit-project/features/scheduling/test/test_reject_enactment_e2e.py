@@ -115,14 +115,32 @@ _TRIAGE_ROUTE = {
 }
 
 
+# A STRONG reject reason: >= 40 chars, substantive (not boilerplate), so it
+# passes work_intake.is_strong_reason and enacts.
+_STRONG_REJECT_REASON = ("Not actionable: the reporter cannot reproduce this on "
+                         "any supported platform and provided no repro steps.")
+
+# A WEAK reject reason: boilerplate that fails is_strong_reason.
+_WEAK_REJECT_REASON = "wontfix"
+
 # One REJECTED work order for issue #7.
 _REJECTED_WORK_ORDERS = json.dumps([
     {"schema_version": "1.0.0", "id": "wo-acme/widget#7",
      "work_item_id": "acme/widget#7", "title": "Crash on empty config",
      "body": "", "url": "https://github.com/acme/widget/issues/7",
      "labels": [], "decision": "rejected",
-     "reason": "not actionable — cannot reproduce", "created_at": ""},
+     "reason": _STRONG_REJECT_REASON, "created_at": ""},
 ])
+
+
+def _rejected_work_orders(reason):
+    return json.dumps([
+        {"schema_version": "1.0.0", "id": "wo-acme/widget#7",
+         "work_item_id": "acme/widget#7", "title": "Crash on empty config",
+         "body": "", "url": "https://github.com/acme/widget/issues/7",
+         "labels": [], "decision": "rejected",
+         "reason": reason, "created_at": ""},
+    ])
 
 
 class _RejectSink:
@@ -212,7 +230,7 @@ def test_rejected_order_enacted_at_propose():
     assert len(sink.calls) == 1, sink.calls
     issue_ref, _repo, reason = sink.calls[0]
     assert issue_ref == "https://github.com/acme/widget/issues/7", issue_ref
-    assert "not actionable" in reason, reason
+    assert "Not actionable" in reason, reason
     # triage_memory records status='rejected' + the issue's current updated_at.
     mem = rt.persisted_triage_memory(state_path)
     assert mem.get("acme/widget#7", {}).get("status") == "rejected", mem
@@ -275,3 +293,34 @@ def test_rejected_unchanged_item_skips_second_tick_triage():
     assert sig == "idle", sig
     # No new reject enactment (nothing was re-dispatched).
     assert len(sink.calls) == 1, sink.calls
+
+
+# ==========================================================================
+# Strong-reason guard — a WEAK reject reason is not enacted and not recorded
+# (the item re-triages next tick); a STRONG reason enacts + records (regression).
+# ==========================================================================
+
+def test_weak_reject_reason_not_enacted_not_recorded():
+    project_dir, runtime_dir, state_path, journal_path = _setup("propose")
+    sink = _RejectSink()
+    src = _stub_source()
+    _tick_with_reject(project_dir, runtime_dir, state_path, journal_path,
+                      sink, src, work_orders=_rejected_work_orders(
+                          _WEAK_REJECT_REASON))
+    # Weak reason -> no sink call, no rejected status recorded (re-triaged next
+    # tick so the model must produce a substantive reason).
+    assert sink.calls == [], sink.calls
+    mem = rt.persisted_triage_memory(state_path)
+    assert mem.get("acme/widget#7", {}).get("status") != "rejected", mem
+
+
+def test_strong_reject_reason_enacted_and_recorded():
+    project_dir, runtime_dir, state_path, journal_path = _setup("propose")
+    sink = _RejectSink()
+    src = _stub_source()
+    _tick_with_reject(project_dir, runtime_dir, state_path, journal_path,
+                      sink, src, work_orders=_rejected_work_orders(
+                          _STRONG_REJECT_REASON))
+    assert len(sink.calls) == 1, sink.calls
+    mem = rt.persisted_triage_memory(state_path)
+    assert mem.get("acme/widget#7", {}).get("status") == "rejected", mem

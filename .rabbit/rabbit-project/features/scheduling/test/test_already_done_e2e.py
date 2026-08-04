@@ -230,20 +230,29 @@ def _resume_triage(project_dir, runtime_dir, state_path, journal_path,
                        source=src, now=now, resume=True)
 
 
+class _AlreadyDoneSink:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, issue_ref, repo=None, reason="", **kwargs):
+        self.calls.append((issue_ref, repo, reason))
+
+
 def _implement_once(project_dir, runtime_dir, state_path, journal_path,
                     status="already_done", now=_DAY1, source=None,
-                    blocked_reason=None):
+                    blocked_reason=None, ref="abc123", already_done_sink=None):
     """Run ONE full tick: TRIAGE -> IMPLEMENT -> resume with the given handoff
     status for #7 -> DONE. Returns the final signal."""
     paused = _resume_triage(project_dir, runtime_dir, state_path, journal_path,
                             now=now, source=source)
     assert paused["status"] == "paused" and paused["state"] == "IMPLEMENT", paused
     _write_outputs(paused, [_handoff(paused["dispatches"][0]["item"],
-                                     status=status,
+                                     status=status, ref=ref,
                                      blocked_reason=blocked_reason)])
     return rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                        state_path=state_path, journal_path=journal_path,
-                       source=source or _stub_source(), now=now, resume=True)
+                       source=source or _stub_source(), now=now, resume=True,
+                       already_done_sink=already_done_sink)
 
 
 # ==========================================================================
@@ -372,3 +381,64 @@ def test_blocked_still_increments_backoff():
                     status="blocked", blocked_reason="dep missing")
     backoff = rt.persisted_backoff_ledger(state_path)
     assert backoff.get("acme/widget#7", {}).get("blocked_count") == 1, backoff
+
+
+# ==========================================================================
+# already_done ON-ISSUE enactment + strong-reason guard.
+# ==========================================================================
+
+def test_already_done_enacted_at_propose():
+    """An already_done handoff with a valid evidence commit at propose calls the
+    injected already-done sink with a reason naming the commit AND records
+    triage_memory already_done (issue left OPEN — the sink never closes)."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
+        mode="propose")
+    sink = _AlreadyDoneSink()
+    signal = _implement_once(project_dir, runtime_dir, state_path, journal_path,
+                             status="already_done", ref="deadbeef",
+                             already_done_sink=sink)
+    assert signal in ("idle", "refire"), signal
+    assert len(sink.calls) == 1, sink.calls
+    issue_ref, _repo, reason = sink.calls[0]
+    assert issue_ref == "https://github.com/acme/widget/issues/7", issue_ref
+    assert "deadbeef" in reason, reason
+    mem = rt.persisted_triage_memory(state_path)
+    assert mem.get("acme/widget#7", {}).get("status") == "already_done", mem
+
+
+def test_already_done_dry_run_no_sink_but_records():
+    """At dry-run the file effect is not permitted: the enactment logs the intent
+    and does NOT call the sink, but the durable triage_memory already_done skip is
+    still recorded (the on-issue write is gated; the convergence skip is not).
+
+    Exercised directly against _record_triage_memory because the dry-run route's
+    acting IMPLEMENT is inert (never dispatches), so no already_done handoff can
+    flow through the full route at dry-run."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
+        mode="dry-run")
+    sink = _AlreadyDoneSink()
+    handoffs = [{"work_order_id": "wo-acme/widget#7", "status": "already_done",
+                 "artifact": {"kind": "already-on-main", "ref": "abc123"}}]
+    wo_to_wi = {"wo-acme/widget#7": "acme/widget#7"}
+    wi_updated_at = {"acme/widget#7": _UPDATED_7}
+    work_items = [{"id": "acme/widget#7", "updated_at": _UPDATED_7,
+                   "url": "https://github.com/acme/widget/issues/7"}]
+    rt._record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at,
+                             work_items, "dry-run", sink)
+    assert sink.calls == [], sink.calls
+    mem = rt.persisted_triage_memory(state_path)
+    assert mem.get("acme/widget#7", {}).get("status") == "already_done", mem
+
+
+def test_already_done_no_evidence_not_enacted_not_recorded():
+    """An already_done handoff with NO artifact.ref evidence yields no strong
+    reason: the enactment does NOT call the sink and does NOT record already_done,
+    so the item re-works next tick."""
+    project_dir, runtime_dir, state_path, journal_path = _setup_agent_project(
+        mode="propose")
+    sink = _AlreadyDoneSink()
+    _implement_once(project_dir, runtime_dir, state_path, journal_path,
+                    status="already_done", ref=None, already_done_sink=sink)
+    assert sink.calls == [], sink.calls
+    mem = rt.persisted_triage_memory(state_path)
+    assert mem.get("acme/widget#7", {}).get("status") != "already_done", mem
