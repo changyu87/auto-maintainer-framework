@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.48.0
+version: 0.49.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -228,6 +228,29 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
        `<lib_dir>/../.claude-plugin/plugin.json` (the installed-plugin
        deployment context; `null` when that file is absent, e.g. the source
        tree). Emphasized in the human view's header.
+     - **Release-check (`latest_version` / `update_available` /
+       `release_check_error`)** — status informs the user when a newer plugin
+       release is available. status.py gains a deterministic, **INJECTABLE**
+       release probe (`DEFAULT_RELEASE_PROBE`, overridable via a `status_data`
+       param so tests stub it with no network); the production probe shells `gh`
+       against the FIXED distribution repo `changyu87/auto-maintainer-framework`
+       (`gh api repos/<repo>/releases/latest`, falling back to the latest semver
+       tag) to resolve the latest published version. `status_data()` exposes
+       `latest_version` (the probe result, or `null` when unknown),
+       `update_available` (a **strict semver-greater** comparison of
+       `latest_version` vs the installed `plugin_version` — `false` whenever
+       either is unknown), and `release_check_error` (a short reason string, or
+       `null`). The probe is **TOLERANT**: any failure (no `gh` / no network /
+       parse error) yields `latest_version=null`, `update_available=false`, a
+       non-null `release_check_error`, and NEVER crashes status. `render_status`
+       shows a clear line — when `update_available`, an emphasized
+       `update available: v<latest> (installed v<plugin_version>) — run /plugin
+       marketplace update`; else `up to date (v<plugin_version>)`; and a muted
+       note when the check errored. `--json` emits the new fields; the `--line`
+       legacy one-liner is unchanged. The **status SKILL is UNCHANGED** — it
+       already reproduces `render_status`'s full human view verbatim, so the
+       update line reaches the user with no skill edit (the check is
+       script-tier, spec-rules §1, not model-driven).
      - **`route`** — the ACTIVE route resolved the SAME way `run_tick` hands it
        to `build_loop` (shipped `default-config/route.json` fresh, else the
        embedded `DEFAULT_ROUTE`, then the project-local `route.json` override),
@@ -832,7 +855,27 @@ kind outside the closed vocabulary):
 
 - **`tick_start`** — at the start of a FRESH tick (a `--step` with no checkpoint /
   not a resume). `detail` carries the route `source` (default vs
-  `override:<path>`) + the trust `mode`.
+  `override:<path>`) + the trust `mode`, PLUS a machine-first **version+file
+  provenance block** (debug enhancement) so an operator can see EXACTLY which
+  code + config a given tick ran with:
+  - **`plugin_version`** — the shipped plugin version, read the SAME way
+    `status.py` does (`<lib_dir>/../.claude-plugin/plugin.json`; `null` in the
+    source tree). Also surfaced as a compact `plugin_version=<v>` token on the
+    one-line trace.
+  - **`lib_dir`** — the ABSOLUTE directory of the running `run_tick.py` (the
+    deployed lib location) so a stale/duplicate install is visible in the log.
+  - **`runtime_dir`** — the resolved runtime dir (where durable-state / events /
+    dispatch-out live).
+  - **`config_path` / `route_path` / `adapter_map_path`** — the resolved config /
+    route / adapter-map FILE PATHS actually in use this tick, each with its
+    **source** (shipped-default vs project-local override), reusing run_tick's
+    EXISTING resolution (the same paths `load_config` / `build_loop` consume — the
+    provenance never re-resolves differently than what actually ran).
+
+  This block is **purely additive**: `observability.EVENT_KINDS` is unchanged
+  (this is `tick_start.detail`, a scheduling-owned opaque dict), every existing
+  behavior / trace field / test stays green, and a source-tree run with no
+  shipped `plugin.json` degrades gracefully (`plugin_version=null`, no crash).
 - **`state_run` + `signal`** — one pair per visited non-terminal state, in order.
   For the **pure-script path** (`to.run`) they are derived from the returned
   `RunResult.path` + `RunResult.signals` after the run. For the **agent-driver
