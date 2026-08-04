@@ -560,19 +560,15 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.35.0, operator/debug wave): version bumped to 0.35.0 in
-# BOTH plugin.json and marketplace.json, and the two are consistent. v0.35.0
-# rebuilds the committed plugin tree so it ships the scheduling 0.49.0 sources:
-# lib/run_tick.py (the tick_start event now carries a version+file provenance
-# block — plugin_version + a plugin_version=<v> trace token, lib_dir,
-# runtime_dir, and the resolved config/route/adapter-map file paths with their
-# default-vs-override source) and lib/status.py (a new injectable, tolerant
-# release-check probe DEFAULT_RELEASE_PROBE; status_data() gains
-# latest_version/update_available/release_check_error and render_status shows an
-# update-available / up-to-date / check-errored line). No _LIBS change and no
-# shipped default-config CONTENT change (schema unchanged).
+# Release (v0.35.1, status config-presence patch): version bumped to 0.35.1 in
+# BOTH plugin.json and marketplace.json, and the two are consistent. v0.35.1
+# rebuilds the committed plugin tree so it ships scheduling 0.50.0's lib/status.py
+# (status_data() gains config_path + local_config_present; render_status shows a
+# loud WARNING when the project-local config.json is missing/empty). LIB-REFRESH
+# patch: only lib/status.py re-normalizes; No _LIBS change and no shipped
+# default-config CONTENT change (schema unchanged).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_35_0_and_consistent():
+def test_version_bumped_to_0_35_1_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -584,10 +580,10 @@ def test_version_bumped_to_0_35_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.35.0", \
-            f"plugin.json version must be 0.35.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.35.0", \
-            "marketplace.json plugin entry version must be 0.35.0"
+        assert pdata.get("version") == "0.35.1", \
+            f"plugin.json version must be 0.35.1, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.35.1", \
+            "marketplace.json plugin entry version must be 0.35.1"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2628,6 +2624,47 @@ def test_committed_libs_carry_v0_35_0_operator_debug_wave():
         "committed status must surface release_check_error (never crash)"
     assert "latest_version" in st_body, \
         "committed status must surface latest_version"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.35.1 (status config-presence patch) deploy confirmation: the whole
+# point of this patch is that the committed (shipped) lib/status.py carries
+# scheduling 0.50.0's config-presence warning — status_data() gains config_path
+# + local_config_present, and render_status shows a loud WARNING line naming the
+# config path when the project-local config.json is missing/empty (surfacing the
+# wrong-anchor / unconfigured run at a glance). Assert the COMMITTED status.py —
+# the bytes an installed plugin runs — carries each, both in the freshly built
+# tree and the committed tree (deploy confirmation).
+# ---------------------------------------------------------------------------
+def test_committed_status_carries_v0_35_1_config_presence_warning():
+    def _assert_config_presence(st):
+        assert os.path.isfile(st), \
+            f"lib/status.py must ship at {st}"
+        with open(st, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "local_config_present" in body, \
+            "status must surface local_config_present"
+        assert "_local_config_present" in body, \
+            "status must carry the _local_config_present probe"
+        assert '"config_path"' in body, \
+            "status_data must surface config_path"
+        assert "WARNING" in body, \
+            "render_status must show a loud WARNING for a missing/empty config"
+
+    # committed tree — the bytes an installed plugin runs
+    _assert_config_presence(
+        os.path.join(_REPO_ROOT, "plugins", "auto-maintainer",
+                     "lib", "status.py")
+    )
+    # freshly built tree — the build re-normalizes it identically
+    out_root = _build_into_temp()
+    try:
+        _assert_config_presence(
+            os.path.join(out_root, "plugins", "auto-maintainer",
+                         "lib", "status.py")
+        )
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
