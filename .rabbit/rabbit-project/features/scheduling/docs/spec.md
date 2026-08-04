@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.49.0
+version: 0.50.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -251,6 +251,25 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
        already reproduces `render_status`'s full human view verbatim, so the
        update line reaches the user with no skill edit (the check is
        script-tier, spec-rules §1, not model-driven).
+     - **Local-config presence warning (`config_path` / `local_config_present`)**
+       — status WARNS when the project-local `config.json` is MISSING or EMPTY,
+       so an operator immediately sees a wrong-anchor / unconfigured run (the
+       trap where `run_tick` silently falls back to shipped-default governance
+       with an EMPTY `issue_filter` + aggressive `auto-merge` and pulls ALL open
+       issues). `status.py` resolves `config_path` = `<runtime_dir>/config.json`
+       (the SAME path `load_config` reads) and computes `local_config_present`:
+       **True ONLY when that file exists AND parses to a NON-EMPTY JSON object**
+       — an absent file, an unreadable/invalid file, or an empty `{}` all yield
+       False. The check NEVER crashes status (a read/parse error is treated as
+       absent, not raised). `status_data()` exposes `config_path` (absolute) and
+       `local_config_present`. `render_status` shows, when False, a LOUD warning —
+       `⚠ no local config.json at <config_path> — running on SHIPPED DEFAULTS:
+       no issue scope filter (pulls ALL open issues) + aggressive auto-merge;
+       start from the workspace dir or run /auto-maintainer:configure` — and, when
+       True, a quiet `config  <config_path>` confirmation. `--json` emits the new
+       fields; the `--line` legacy one-liner is unchanged. This only SURFACES the
+       fallback — it does NOT change `load_config`'s silent-fallback behavior. The
+       **status SKILL is UNCHANGED** (relays `render_status` verbatim).
      - **`route`** — the ACTIVE route resolved the SAME way `run_tick` hands it
        to `build_loop` (shipped `default-config/route.json` fresh, else the
        embedded `DEFAULT_ROUTE`, then the project-local `route.json` override),
