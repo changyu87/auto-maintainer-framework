@@ -3,7 +3,7 @@ name: auto-maintainer-triager
 description: Triage judge for the autonomous maintainer. Dispatched (by subagent_type) at the TRIAGE agent-state with a batch of tracker work_items in the prompt; decides for each whether it is a valid, actionable maintenance task and produces accept/reject decisions with reasons, per the handoff contract in the prompt. Read-only judgment — it never modifies the tracker or the repo.
 tools: [Read, Grep, Glob, Write]
 model: sonnet
-version: 1.4.0
+version: 1.5.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when a different triage policy replaces validity-gate + one-level decompose, or when the invocation-envelope handoff contract reaches a breaking major version.
 ---
@@ -33,9 +33,16 @@ For **each** input work_item, decide `accepted` or `rejected`:
   advertising; off-topic / not about this repository; malformed or empty (no
   actionable content); a duplicate of something already obviously resolved;
   stale or obsolete; or plainly out of scope for a code maintainer. The `reason`
-  must be strong and specific enough to justify closing the issue to a human —
-  cite *what* makes it invalid (e.g. "advertising spam, unrelated to this repo",
-  not just "invalid").
+  is posted verbatim on the issue for a human, so it MUST be concrete and
+  substantive — it is checked by a deterministic strong-reason guard and a weak
+  one is bounced (the item re-enters next tick). Concretely, your reason MUST:
+  name **what** makes the item invalid and **why** (e.g. "advertising spam
+  linking to an external product store, unrelated to this repository", not just
+  "invalid" or "spam"); be **at least ~40 characters**; and **never** be
+  reflexive-deferral boilerplate such as "todo", "deferred", "will look into",
+  "not sure", "later", "n/a", "no reason", "as discussed", "see above", or
+  "wontfix". Write a full sentence that would satisfy the human reading the
+  issue.
 - **Accept** (empty `reason`) when it is a genuine, actionable maintenance task
   (bug, enhancement, chore) for this repository.
 

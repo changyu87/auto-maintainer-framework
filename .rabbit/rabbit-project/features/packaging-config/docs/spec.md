@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.23
+version: 0.7.24
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -200,6 +200,24 @@ incrementing backoff). No `_LIBS` change (all three libs already registered) and
 no shipped `default-config/` CONTENT change (schema 2.9.0); this release
 re-normalizes the three libs + the shipped agent from source and bumps the
 version. No build change beyond `_PLUGIN_VERSION → 0.33.0`.
+
+**Plugin minor v0.34.0** — re-ship the disposition-visibility wave that makes the
+loop's terminal dispositions visible + well-reasoned on the tracker (work-intake
+0.13.0 + scheduling 0.48.0): `lib/work_intake.py` (new `ALREADY_DONE_MARKER` +
+`gh_issue_already_done_sink` — an on-issue disposition for an `already_done`
+outcome mirroring the reject sink, reusing `REJECTED_LABEL`, NEVER closing,
+idempotent on the distinct marker; plus the pure `is_strong_reason` guard so no
+weak/boilerplate disposition comment is ever posted), the shipped triager agent
+`agents/auto-maintainer-triager.md` (v1.5.0 — mandates a concrete, specific
+reject reason), and `lib/run_tick.py` (enacts the `already_done` on-issue
+disposition trust-gated by `permits('file', mode)`, leaving the issue open; and
+gates BOTH the reject and `already_done` dispositions on `is_strong_reason` — a
+weak reason or a missing evidence commit means the disposition is NOT enacted and
+NOT recorded, so the item re-works next tick). No `_LIBS` change (both libs
+already registered; the triager ships via `ship/agents`) and no shipped
+`default-config/` CONTENT change (schema unchanged); this release re-normalizes
+the two libs + the shipped triager agent from source and bumps the version. No
+build change beyond `_PLUGIN_VERSION → 0.34.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 

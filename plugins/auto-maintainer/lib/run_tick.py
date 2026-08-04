@@ -337,6 +337,14 @@ DEFAULT_ESCALATE_SINK = ob.gh_comment_sink
 # enacts via `gh`.
 DEFAULT_REJECT_SINK = wi.gh_issue_reject_sink
 
+# The production already-done-disposition sink: work-intake's live `gh` already-done
+# sink (mirrors DEFAULT_REJECT_SINK / DEFAULT_REPORT_SINK). At the acting-state
+# resume the already_done enactment invokes it per terminal already_done handoff
+# (comment behind the DISTINCT ALREADY_DONE_MARKER carrying the evidence reason +
+# apply the shared REJECTED_LABEL, NEVER close). Tests inject a stub so the suite
+# touches no network; the shipped run_tick (no injected sink) enacts via `gh`.
+DEFAULT_ALREADY_DONE_SINK = wi.gh_issue_already_done_sink
+
 # The durable-state document key under which the REPORT-LEDGER is persisted: a
 # durable CROSS-TICK fact (like BUDGET_KEY / ACTED_LEDGER_KEY, NOT a per-tick #64
 # read product) mapping {dedup_key: {"tracker_ref": <ref>, "url": <url>}}. It
@@ -1895,6 +1903,20 @@ def _work_items_updated_at(work_items):
     return mapping
 
 
+def _work_items_url(work_items):
+    """A {work_item_id: issue_ref} map from a list of WorkItem dicts, where the
+    ref is the item's gh-actionable `url` (falling back to the id when no url is
+    present). Used by the already_done on-issue enactment to resolve the issue_ref
+    to comment on, from the SAME work_item the triage_memory record keys on. A work
+    item missing its id is skipped."""
+    mapping = {}
+    for it in work_items or []:
+        wi_id = it.get("id")
+        if wi_id:
+            mapping[wi_id] = it.get("url") or wi_id
+    return mapping
+
+
 def _is_deferred_unchanged(wi_id, backoff, wi_updated_at):
     """True when work_item `wi_id` is DEFERRED in the backoff ledger AND its issue
     updated_at is UNCHANGED since deferral (current updated_at ==
@@ -2150,7 +2172,20 @@ def _record_backoff_outcomes(state_path, handoffs, wo_to_wi, wi_updated_at,
     ds.DurableState(state_path).save(doc)
 
 
-def _record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at):
+def _already_done_reason(artifact_ref):
+    """Compose the on-issue disposition reason for an `already_done` handoff from
+    its `artifact.ref` (the on-`main` evidence commit). Returns None when no
+    evidence ref is present (no strong reason can be composed — the guard treats it
+    as weak). Pure; no I/O."""
+    if not artifact_ref:
+        return None
+    return (f"Already present on main as of {artifact_ref}: the requested change "
+            f"is already on main, so no PR is needed. Leaving this issue open for "
+            f"a human to confirm and close.")
+
+
+def _record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at,
+                          work_items, mode, already_done_sink):
     """Upsert the durable triage memory from an acting-state resume's handoffs
     (§3.5.3). For each handoff, mapped from work_order_id -> work_item_id via
     `wo_to_wi`:
@@ -2159,10 +2194,18 @@ def _record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at):
       - an `already_done` outcome (implement's v1.2.0 terminal already-satisfied
         outcome — the requested fix is already on `main`) records
         status='already_done' so the next tick's skip-unchanged filter excludes
-        the unchanged item on the FIRST detection. It is TERMINAL, NOT a retryable
-        block: the backoff ledger is NOT incremented for it (see
-        _record_backoff_outcomes) and it is NOT recorded in the acted-ledger (it
-        opened no PR).
+        the unchanged item on the FIRST detection, AND ENACTS an on-issue
+        disposition: it composes a `reason` from the handoff's `artifact.ref` and
+        calls `already_done_sink(issue_ref, repo, reason)` (comment behind the
+        ALREADY_DONE_MARKER + apply REJECTED_LABEL, NEVER close), trust-gated by
+        sg.permits('file', mode) (at dry-run the intent is logged, the sink is NOT
+        called, but the durable convergence skip is still recorded). A STRONG-REASON
+        GUARD (wi.is_strong_reason) is applied BEFORE enacting AND recording: an
+        already_done handoff with no `artifact.ref` evidence — or whose composed
+        reason is weak — is NOT enacted and NOT recorded, so the item re-works next
+        tick. It is TERMINAL, NOT a retryable block: the backoff ledger is NOT
+        incremented for it (see _record_backoff_outcomes) and it is NOT recorded in
+        the acted-ledger (it opened no PR).
       - a `blocked` outcome that just reached the backoff DEFERRAL (its post-update
         backoff entry has a truthy `deferred_at_updated_at`) records
         status='deferred'.
@@ -2177,6 +2220,7 @@ def _record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at):
     doc = ds.DurableState(state_path).load()
     memory = dict(doc.get(TRIAGE_MEMORY_KEY, {}))
     backoff = doc.get(BACKOFF_LEDGER_KEY, {})
+    wi_url = _work_items_url(work_items or [])
     changed = False
     for h in handoffs:
         wo_id = h.get("work_order_id")
@@ -2187,6 +2231,19 @@ def _record_triage_memory(state_path, handoffs, wo_to_wi, wi_updated_at):
         if status in _COMPLETED_OUTCOMES:
             new_status = "done"
         elif status == "already_done":
+            # Strong-reason guard on the already_done disposition: compose the
+            # reason from the evidence commit; a missing evidence ref or a weak
+            # reason is NOT enacted and NOT recorded (the item re-works next tick).
+            reason = _already_done_reason(h.get("artifact", {}).get("ref"))
+            if not reason or not wi.is_strong_reason(reason):
+                continue
+            # Enact the on-issue disposition, trust-gated by permits('file', mode):
+            # at dry-run the intent is logged (no sink call); at propose/auto-merge
+            # it posts. The issue is left OPEN (the sink never closes).
+            if sg.permits("file", mode):
+                already_done_sink(wi_url.get(wi_id, wi_id),
+                                  repo=_repo_for_target("project", {}),
+                                  reason=reason)
             new_status = "already_done"
         elif status == "blocked" and backoff.get(wi_id, {}).get(
                 "deferred_at_updated_at"):
@@ -2212,10 +2269,13 @@ def _enact_rejects(state_path, work_orders, work_items, mode, reject_sink):
 
     Trust-gated by sg.permits('file', mode) (same rung as the REPORT filing flush):
     at dry-run the intent is NOT written — no sink call, no triage_memory record.
-    The reject destination repo is resolved via _repo_for_target('project', gov)
-    (project issues -> the gh default repo). Load-modify-save of ONLY
-    TRIAGE_MEMORY_KEY, preserving every other durable key. A tick with no rejected
-    orders is a no-op."""
+    A STRONG-REASON GUARD (wi.is_strong_reason) is applied per order BEFORE the sink
+    call AND before recording the `rejected` status: a WEAK/boilerplate reason is
+    NOT enacted and NOT recorded, so the item is re-triaged next tick (the triager
+    must produce a substantive reason). The reject destination repo is resolved via
+    _repo_for_target('project', gov) (project issues -> the gh default repo).
+    Load-modify-save of ONLY TRIAGE_MEMORY_KEY, preserving every other durable key.
+    A tick with no rejected orders is a no-op."""
     rejected = wi.reject_dispositions(work_orders or [])
     if not rejected:
         return
@@ -2224,17 +2284,24 @@ def _enact_rejects(state_path, work_orders, work_items, mode, reject_sink):
     wi_updated_at = _work_items_updated_at(work_items or [])
     doc = ds.DurableState(state_path).load()
     memory = dict(doc.get(TRIAGE_MEMORY_KEY, {}))
+    changed = False
     for r in rejected:
         issue_ref = r["issue_ref"]
         wi_id = r["work_item_id"]
+        # Strong-reason guard: a weak/boilerplate reason is not enacted and not
+        # recorded (the item re-triages next tick).
+        if not wi.is_strong_reason(r["reason"]):
+            continue
         # project issues -> gh default repo (None); the sink is idempotent (a
         # no-op when the label is already present).
         reject_sink(issue_ref, repo=_repo_for_target("project", {}),
                     reason=r["reason"])
         memory[wi_id] = {"updated_at": wi_updated_at.get(wi_id, ""),
                          "status": "rejected"}
-    doc[TRIAGE_MEMORY_KEY] = memory
-    ds.DurableState(state_path).save(doc)
+        changed = True
+    if changed:
+        doc[TRIAGE_MEMORY_KEY] = memory
+        ds.DurableState(state_path).save(doc)
 
 
 def _record_last_triaged(state_path, judged, pulled):
@@ -3054,7 +3121,8 @@ def _resume_agent_state(route, states, ctx, checkpoint, agentstates):
 def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
                     resume, mode, output_dir, gov, budget_clock, tick_id,
                     events=None, route_src=None, escalate_sink=None,
-                    escalate_now=None, pr_state_source=None, reject_sink=None):
+                    escalate_now=None, pr_state_source=None, reject_sink=None,
+                    already_done_sink=None):
     """Drive a tick over a route that contains agent-states (DESIGN §2.8, §3.4.6).
 
     Three cases, all keyed off the durable checkpoint (the source of truth):
@@ -3170,7 +3238,9 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
                 # TRIAGE skips re-judging handled-and-unchanged issues. Recorded
                 # AFTER the backoff ledger so just-deferred items are visible.
                 _record_triage_memory(
-                    state_path, handoffs, wo_to_wi, wi_updated_at)
+                    state_path, handoffs, wo_to_wi, wi_updated_at,
+                    _read_slot_or(ctx, wi.WORK_ITEMS_SLOT["name"], []),
+                    mode, already_done_sink or DEFAULT_ALREADY_DONE_SINK)
         # Reject-disposition enactment at the TRIAGE resume (Wave-2 consumer): the
         # triager (a NON-acting agent-state writing the work_orders slot) has just
         # written work_orders; enact every `decision: rejected` order via the
@@ -3222,7 +3292,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
              project_dir=None, source=None, now=None, tick_spend=0,
              return_run_result=False, resume=False, spent=0,
              report_sink=None, discoveries=None, escalate_sink=None,
-             pr_state_source=None, pr_files_source=None, reject_sink=None):
+             pr_state_source=None, pr_files_source=None, reject_sink=None,
+             already_done_sink=None):
     """Run exactly ONE tick of the maintainer loop and return the EXIT
     disposition signal (or the raw RunResult when return_run_result=True).
 
@@ -3456,7 +3527,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
             escalate_sink=escalate_sink or DEFAULT_ESCALATE_SINK,
             escalate_now=event_now,
             pr_state_source=pr_state_source or DEFAULT_PR_STATE_SOURCE,
-            reject_sink=reject_sink or DEFAULT_REJECT_SINK)
+            reject_sink=reject_sink or DEFAULT_REJECT_SINK,
+            already_done_sink=already_done_sink or DEFAULT_ALREADY_DONE_SINK)
         if agent_outcome[0] is not None:
             # PAUSED or invalid_output: return the structured dict directly. The
             # executor re-invokes run_tick(resume=True) to continue after the
