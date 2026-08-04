@@ -560,19 +560,21 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.32.0, audit-wave RECONCILE fixes): version bumped to 0.32.0 in
-# BOTH plugin.json and marketplace.json, and the two are consistent. v0.32.0
-# rebuilds the committed plugin tree so it ships the verify-integrate 0.12.0 +
-# scheduling 0.46.0 + implement 0.11.1 sources: lib/verify_integrate.py (all
-# disposable-worktree git ops in reconcile_rebase_worktree + the GATE helper run
-# `-c core.hooksPath=/dev/null` so the target repo's post-checkout hook can't
-# wedge tier-1; gh_closing_issue_ref uses `gh api graphql` + a `Closes #N` body
-# fallback), lib/run_tick.py (_reconcile_ledger_seed derives a canonical
-# owner/repo#N issue_ref by stripping the `-wo` suffix), and lib/open_pr.py
-# (implementer worktree add runs hooks-free). No _LIBS change and no shipped
+# Release (v0.33.0, loop-convergence wave): version bumped to 0.33.0 in
+# BOTH plugin.json and marketplace.json, and the two are consistent. v0.33.0
+# rebuilds the committed plugin tree so it ships the work-intake 0.12.0 +
+# implement 0.12.0 + scheduling 0.47.0 sources: lib/work_intake.py (the new pure
+# is_in_flight + Pull(in_flight_issue_refs) UNCONDITIONAL PULL exclusion of any
+# issue that already has an OPEN loop PR), lib/implement.py (Handoff schema
+# 1.1.0->1.2.0 adds the terminal already_done status carrying its
+# already-on-main evidence), and lib/run_tick.py (make_pull computes the
+# in-flight issue-ref set from the acted-ledger opened entries live-confirmed
+# OPEN and threads it into Pull; an already_done handoff records a
+# terminal-resolved triage_memory skip without incrementing backoff), plus the
+# shipped implementer agent v2.12.0. No _LIBS change and no shipped
 # default-config CONTENT change (still schema 2.9.0, same values).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_32_0_and_consistent():
+def test_version_bumped_to_0_33_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -584,10 +586,10 @@ def test_version_bumped_to_0_32_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.32.0", \
-            f"plugin.json version must be 0.32.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.32.0", \
-            "marketplace.json plugin entry version must be 0.32.0"
+        assert pdata.get("version") == "0.33.0", \
+            f"plugin.json version must be 0.33.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.33.0", \
+            "marketplace.json plugin entry version must be 0.33.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2465,6 +2467,71 @@ def test_committed_libs_carry_v0_32_0_audit_wave_reconcile_fixes():
     assert "core.hooksPath=/dev/null" in op_body, \
         "committed open_pr must run its implementer worktree add hooks-free " \
         "(core.hooksPath=/dev/null)"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.33.0 (loop-convergence wave) deploy confirmation: the whole point
+# of this release is that the committed (shipped) libs carry the work-intake
+# 0.12.0 in-flight PULL exclusion, implement 0.12.0's already_done terminal
+# Handoff status (schema 1.2.0), scheduling 0.47.0's in-flight wiring +
+# already_done skip, and the implementer agent v2.12.0. Assert the COMMITTED
+# libs + agent — the bytes an installed plugin runs — carry each.
+# ---------------------------------------------------------------------------
+def test_committed_libs_carry_v0_33_0_convergence_wave():
+    lib = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer", "lib")
+
+    # work-intake 0.12.0: the pure is_in_flight predicate + the
+    # Pull(in_flight_issue_refs=...) UNCONDITIONAL PULL exclusion.
+    wi = os.path.join(lib, "work_intake.py")
+    assert os.path.isfile(wi), \
+        "committed lib/work_intake.py must ship in the plugin tree"
+    with open(wi, encoding="utf-8") as fh:
+        wi_body = fh.read()
+    assert "def is_in_flight(item, in_flight_issue_refs):" in wi_body, \
+        "committed work_intake must carry the v0.33.0 is_in_flight predicate"
+    assert "in_flight_issue_refs=None" in wi_body, \
+        "committed work_intake's Pull must accept in_flight_issue_refs"
+
+    # implement 0.12.0: Handoff schema 1.2.0 + the terminal already_done status
+    # carrying its already-on-main evidence.
+    im = os.path.join(lib, "implement.py")
+    assert os.path.isfile(im), \
+        "committed lib/implement.py must ship in the plugin tree"
+    with open(im, encoding="utf-8") as fh:
+        im_body = fh.read()
+    assert 'HANDOFF_SCHEMA_VERSION = "1.2.0"' in im_body, \
+        "committed implement must carry the v0.33.0 Handoff schema 1.2.0"
+    assert "already_done" in im_body, \
+        "committed implement must carry the already_done terminal status"
+    assert "already-on-main" in im_body, \
+        "committed implement's already_done must carry already-on-main evidence"
+
+    # scheduling 0.47.0: run_tick computes the in-flight issue-ref set and
+    # records an already_done handoff as a terminal-resolved triage_memory skip.
+    rt = os.path.join(lib, "run_tick.py")
+    assert os.path.isfile(rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(rt, encoding="utf-8") as fh:
+        rt_body = fh.read()
+    assert "def _in_flight_issue_refs(" in rt_body, \
+        "committed run_tick must compute the in-flight issue-ref set (v0.33.0)"
+    assert 'status == "already_done"' in rt_body, \
+        "committed run_tick must record the already_done terminal skip (v0.33.0)"
+
+    # implementer agent v2.12.0: reports already_done (not blocked) when the fix
+    # is already on main.
+    agent = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "agents",
+        "auto-maintainer-implementer.md",
+    )
+    assert os.path.isfile(agent), \
+        "committed agents/auto-maintainer-implementer.md must ship"
+    with open(agent, encoding="utf-8") as fh:
+        agent_body = fh.read()
+    assert "\nversion: 2.12.0\n" in agent_body, \
+        "committed implementer agent must be v2.12.0"
+    assert "already_done" in agent_body, \
+        "committed implementer agent must report already_done when on main"
 
 
 # ---------------------------------------------------------------------------
