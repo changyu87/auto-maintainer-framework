@@ -192,6 +192,54 @@ def is_parked(item):
     return len(attempts) >= PARK_THRESHOLD
 
 
+def _item_issue_ref(item):
+    """Derive an item's issue ref `owner/repo#number` from its url + number.
+
+    Reuses `_derive_id` (the same derivation that stamps WorkItem.id), so the
+    ref is byte-identical to the item's id. `item` may be a WorkItem or a dict.
+    """
+    if isinstance(item, dict):
+        url = item.get("url") or ""
+        number = item.get("number")
+    else:
+        url = getattr(item, "url", "") or ""
+        number = getattr(item, "number", None)
+    return _derive_id(url, number)
+
+
+def _normalize_issue_ref(ref):
+    """Normalize a caller-supplied ref to the canonical `owner/repo#number` form
+    so membership is tolerant of a full issue URL vs the short form. A full
+    github.com issue URL is folded via `_derive_ref`; a non-URL ref is returned
+    as-is (already the short form). Pure and deterministic."""
+    if isinstance(ref, str) and "github.com/" in ref:
+        return _derive_ref(ref)
+    return ref
+
+
+def is_in_flight(item, in_flight_issue_refs):
+    """Return True when `item`'s issue already has an OPEN loop PR addressing it,
+    i.e. its issue ref (`owner/repo#number`, derived from the item's url/number)
+    is a member of the injected `in_flight_issue_refs` set.
+
+    Pure and deterministic — NO I/O. work-intake CONSUMES the set (computed by
+    scheduling from EXISTING verify-integrate open-PR / closing-issue seams
+    and/or the acted-ledger `opened` entries); it adds no gh plumbing here. Set
+    entries may be the short `owner/repo#number` form OR a full issue URL — both
+    are normalized before comparison. An empty/None set is always False.
+
+    PULL uses this to UNCONDITIONALLY EXCLUDE in-flight items so the loop does
+    not re-triage / re-implement work already in flight (which would re-open
+    duplicate/superseding PRs); the excluded issue is LEFT OPEN and untouched —
+    its open PR's own lifecycle resolves it. Like the loopback and park guards
+    this is a PULL exclusion, NOT a TRIAGE reject.
+    """
+    if not in_flight_issue_refs:
+        return False
+    normalized = {_normalize_issue_ref(r) for r in in_flight_issue_refs}
+    return _item_issue_ref(item) in normalized
+
+
 @dataclass(eq=True)
 class WorkItem:
     """The typed shape of a tracker item pulled from the issue tracker.
@@ -467,14 +515,24 @@ class Pull:
     (owned + normalized by safety-governance, threaded in by scheduling); it is
     the single filter point, passed straight through to the source. work-intake
     does NOT read config.json. The default `None` pulls every open issue.
+
+    `in_flight_issue_refs` is the set of issue refs (owner/repo#N) that already
+    have an OPEN loop PR, threaded in by scheduling (work-intake CONSUMES it —
+    it adds no gh plumbing). PULL UNCONDITIONALLY EXCLUDES any item whose ref is
+    in the set (the in-flight guard) so the loop does not re-work an issue an
+    open PR is already addressing. The default (empty) is a no-op.
     """
 
     def __init__(self, source=gh_issue_source, repo=None, work_own_filings=True,
-                 issue_filter=None):
+                 issue_filter=None, in_flight_issue_refs=None):
         self._source = source
         self._repo = repo
         self._work_own_filings = work_own_filings
         self._issue_filter = issue_filter
+        # The set of issue refs (owner/repo#N) that already have an OPEN loop PR,
+        # threaded in by scheduling (work-intake CONSUMES it, adds no gh
+        # plumbing). Default empty => the in-flight exclusion is a no-op.
+        self._in_flight_issue_refs = frozenset(in_flight_issue_refs or ())
 
     def run(self, ctx):  # noqa: ARG002 — ctx is the fsm-contracts TickContext
         # The source is the single filter point (issue_filter narrows what it
@@ -495,6 +553,14 @@ class Pull:
         # doer's close path and CLOSE the discovery, the opposite of intent).
         if not self._work_own_filings:
             items = [item for item in items if not is_loop_filed(item)]
+        # In-flight guard (convergence): UNCONDITIONALLY exclude any item whose
+        # issue already has an OPEN loop PR (its ref is in the injected set), so
+        # the loop does not re-triage/re-implement work already in flight. The
+        # excluded issue is LEFT OPEN and untouched — its open PR resolves it.
+        # Like the park/loopback guards this is a PULL exclusion, NOT a reject.
+        if self._in_flight_issue_refs:
+            items = [item for item in items
+                     if not is_in_flight(item, self._in_flight_issue_refs)]
         writes = {"work_items": [item.to_dict() for item in items]}
         signal = "OK" if items else "EMPTY"
         return fc.StateResult(signal=signal, writes=writes)
