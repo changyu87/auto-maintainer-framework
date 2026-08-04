@@ -8,8 +8,8 @@
   ],
   "created": "2026-06-11T07:47:37Z",
   "deprecation_criterion": "Superseded when the tracker-read model changes incompatibly (e.g. multi-tracker support, or the WorkItem schema reaches a breaking major version).",
-  "tdd_state": "test-red",
+  "tdd_state": "test-green",
   "updated": "2026-08-04",
-  "spec_change_reason": "already_done on-issue disposition + strong-reason guard: added ALREADY_DONE_MARKER (distinct from REJECT_MARKER) and gh_issue_already_done_sink(issue_ref, repo, reason, label=REJECTED_LABEL, runner=...) mirroring gh_issue_reject_sink — it ensures+applies the SHARED REJECTED_LABEL, posts ONE ALREADY_DONE_MARKER comment carrying the evidence reason, NEVER closes, and is idempotent on the marker (not the shared label). Added the pure is_strong_reason(reason) guard (>=40 chars stripped + no reflexive-deferral boilerplate) both dispositions consult before enacting. Strengthened the shipped triager agent's reject-reason mandate (concrete, >=~40 chars, no boilerplate; version bumped 1.4.0->1.5.0).",
+  "spec_change_reason": "already_done on-issue disposition + strong-reason guard: added ALREADY_DONE_MARKER (distinct from REJECT_MARKER) and gh_issue_already_done_sink(issue_ref, repo, reason, label=REJECTED_LABEL, runner=...) mirroring gh_issue_reject_sink \u2014 it ensures+applies the SHARED REJECTED_LABEL, posts ONE ALREADY_DONE_MARKER comment carrying the evidence reason, NEVER closes, and is idempotent on the marker (not the shared label). Added the pure is_strong_reason(reason) guard (>=40 chars stripped + no reflexive-deferral boilerplate) both dispositions consult before enacting. Strengthened the shipped triager agent's reject-reason mandate (concrete, >=~40 chars, no boilerplate; version bumped 1.4.0->1.5.0).",
   "spec_no_change_reason": "spec.md already committed at 0.13.0 in spec-update commit 223c9fe (already_done disposition + strong-reason guard); this cycle implements src+tests+baseline re-anchor against that committed spec (no further spec edit this cycle)"
 }
