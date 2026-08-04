@@ -1,5 +1,34 @@
 # Changelog — packaging-config
 
+## 0.34.0 — re-ship the disposition-visibility wave; release v0.34.0
+
+- **Release v0.34.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.33.0 -> 0.34.0;
+  committed plugin tree regenerated so the shipped libs + triager carry
+  work-intake 0.13.0 + scheduling 0.48.0's sources:
+  - `lib/work_intake.py` — new `ALREADY_DONE_MARKER` + `gh_issue_already_done_sink`:
+    an on-issue disposition for an `already_done` outcome mirroring the reject
+    sink, reusing `REJECTED_LABEL`, NEVER closing, idempotent on the distinct
+    marker; plus the pure `is_strong_reason` guard so no weak/boilerplate
+    disposition comment is ever posted.
+  - `lib/run_tick.py` — enacts the `already_done` on-issue disposition trust-gated
+    by `permits('file', mode)`, leaving the issue open; and gates BOTH the reject
+    and `already_done` dispositions on `is_strong_reason` (a weak reason or a
+    missing evidence commit means the disposition is NOT enacted and NOT recorded,
+    so the item re-works next tick).
+  - `agents/auto-maintainer-triager.md` — v1.5.0: mandates a concrete, specific
+    reject reason.
+- **No `_LIBS` change** — both libs already registered; the triager ships via
+  `ship/agents`; pure lib-refresh with no build change beyond the version bump.
+- **Shipped `default-config/` CONTENT unchanged** — config schema unchanged;
+  only the two affected libs, the shipped triager agent, and the version stamps
+  (`plugin.json` + `marketplace.json` -> 0.34.0) move.
+- Version-assertion test advanced to 0.34.0; an e2e test added asserting the
+  committed libs + triager carry the v0.34.0 already_done-sink + is_strong_reason
+  + triager-v1.5.0 tokens; `test/release_lib_baseline.json` re-anchored
+  (version -> 0.34.0, `lib_digest` -> the new committed-lib digest); the housekeep
+  doc baseline re-anchored to the grown spec (446 -> 464) so the drift, #355
+  monotonicity, and doc-size guards stay green.
+
 ## 0.33.0 — re-ship the loop-convergence wave; release v0.33.0
 
 - **Release v0.33.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.32.0 -> 0.33.0;
