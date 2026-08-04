@@ -560,21 +560,18 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.33.0, loop-convergence wave): version bumped to 0.33.0 in
-# BOTH plugin.json and marketplace.json, and the two are consistent. v0.33.0
-# rebuilds the committed plugin tree so it ships the work-intake 0.12.0 +
-# implement 0.12.0 + scheduling 0.47.0 sources: lib/work_intake.py (the new pure
-# is_in_flight + Pull(in_flight_issue_refs) UNCONDITIONAL PULL exclusion of any
-# issue that already has an OPEN loop PR), lib/implement.py (Handoff schema
-# 1.1.0->1.2.0 adds the terminal already_done status carrying its
-# already-on-main evidence), and lib/run_tick.py (make_pull computes the
-# in-flight issue-ref set from the acted-ledger opened entries live-confirmed
-# OPEN and threads it into Pull; an already_done handoff records a
-# terminal-resolved triage_memory skip without incrementing backoff), plus the
-# shipped implementer agent v2.12.0. No _LIBS change and no shipped
-# default-config CONTENT change (still schema 2.9.0, same values).
+# Release (v0.34.0, disposition-visibility wave): version bumped to 0.34.0 in
+# BOTH plugin.json and marketplace.json, and the two are consistent. v0.34.0
+# rebuilds the committed plugin tree so it ships the work-intake 0.13.0 +
+# scheduling 0.48.0 sources: lib/work_intake.py (the new ALREADY_DONE_MARKER +
+# gh_issue_already_done_sink on-issue disposition reusing REJECTED_LABEL, NEVER
+# closing; plus the pure is_strong_reason guard), lib/run_tick.py (enacts the
+# already_done on-issue disposition trust-gated by permits('file', mode) leaving
+# the issue open, and gates BOTH reject and already_done dispositions on
+# is_strong_reason), plus the shipped triager agent v1.5.0. No _LIBS change and
+# no shipped default-config CONTENT change (schema unchanged).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_33_0_and_consistent():
+def test_version_bumped_to_0_34_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -586,10 +583,10 @@ def test_version_bumped_to_0_33_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.33.0", \
-            f"plugin.json version must be 0.33.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.33.0", \
-            "marketplace.json plugin entry version must be 0.33.0"
+        assert pdata.get("version") == "0.34.0", \
+            f"plugin.json version must be 0.34.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.34.0", \
+            "marketplace.json plugin entry version must be 0.34.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2532,6 +2529,59 @@ def test_committed_libs_carry_v0_33_0_convergence_wave():
         "committed implementer agent must be v2.12.0"
     assert "already_done" in agent_body, \
         "committed implementer agent must report already_done when on main"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.34.0 (disposition-visibility wave) deploy confirmation: the whole
+# point of this release is that the committed (shipped) libs + triager carry the
+# work-intake 0.13.0 already_done on-issue disposition (ALREADY_DONE_MARKER +
+# gh_issue_already_done_sink reusing REJECTED_LABEL, NEVER closing) + the pure
+# is_strong_reason guard, scheduling 0.48.0's already_done enactment gated by
+# permits('file', mode) with the strong-reason guard on BOTH dispositions, and
+# the triager agent v1.5.0 (mandates a concrete reject reason). Assert the
+# COMMITTED libs + agent — the bytes an installed plugin runs — carry each.
+# ---------------------------------------------------------------------------
+def test_committed_libs_carry_v0_34_0_disposition_visibility_wave():
+    lib = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer", "lib")
+
+    # work-intake 0.13.0: the ALREADY_DONE_MARKER + gh_issue_already_done_sink
+    # on-issue disposition (reusing REJECTED_LABEL, never closing) + the pure
+    # is_strong_reason guard.
+    wi = os.path.join(lib, "work_intake.py")
+    assert os.path.isfile(wi), \
+        "committed lib/work_intake.py must ship in the plugin tree"
+    with open(wi, encoding="utf-8") as fh:
+        wi_body = fh.read()
+    assert "ALREADY_DONE_MARKER" in wi_body, \
+        "committed work_intake must carry the v0.34.0 ALREADY_DONE_MARKER"
+    assert "def gh_issue_already_done_sink(" in wi_body, \
+        "committed work_intake must carry the already_done on-issue sink"
+    assert "def is_strong_reason(" in wi_body, \
+        "committed work_intake must carry the is_strong_reason guard"
+
+    # scheduling 0.48.0: run_tick enacts the already_done disposition trust-gated
+    # by permits('file', mode) and gates BOTH dispositions on is_strong_reason.
+    rt = os.path.join(lib, "run_tick.py")
+    assert os.path.isfile(rt), \
+        "committed lib/run_tick.py must ship in the plugin tree"
+    with open(rt, encoding="utf-8") as fh:
+        rt_body = fh.read()
+    assert "gh_issue_already_done_sink" in rt_body, \
+        "committed run_tick must invoke the already_done on-issue sink"
+    assert "is_strong_reason" in rt_body, \
+        "committed run_tick must gate dispositions on is_strong_reason"
+
+    # triager agent v1.5.0: mandates a concrete, specific reject reason.
+    agent = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "agents",
+        "auto-maintainer-triager.md",
+    )
+    assert os.path.isfile(agent), \
+        "committed agents/auto-maintainer-triager.md must ship"
+    with open(agent, encoding="utf-8") as fh:
+        agent_body = fh.read()
+    assert "\nversion: 1.5.0\n" in agent_body, \
+        "committed triager agent must be v1.5.0"
 
 
 # ---------------------------------------------------------------------------
