@@ -1,5 +1,29 @@
 # Changelog — packaging-config
 
+## 0.35.1 — re-ship status config-presence warning; release v0.35.1
+
+- **Release v0.35.1 (patch — LIB-REFRESH):** `_PLUGIN_VERSION` 0.35.0 -> 0.35.1;
+  committed plugin tree regenerated so the shipped `lib/status.py` carries
+  scheduling 0.50.0's config-presence warning:
+  - `lib/status.py` — `status_data()` gains `config_path` + `local_config_present`;
+    `render_status` shows a loud `WARNING:` line naming the config path (plus the
+    shipped-defaults / no-scope-filter / aggressive-auto-merge trap) when the
+    project-local `config.json` is missing or empty, or a quiet `config <path>`
+    confirmation when present — surfacing the wrong-anchor / unconfigured run at a
+    glance.
+- **No `_LIBS` change** — `status.py` already registered in `_NORMALIZED_LIBS`;
+  pure lib-refresh with no build change beyond the version bump. `run_tick.py` /
+  `work_intake.py` byte-identical to 0.35.0.
+- **Shipped `default-config/` CONTENT unchanged** — config schema unchanged; no
+  shipped-agent change; only `lib/status.py` and the version stamps
+  (`plugin.json` + `marketplace.json` -> 0.35.1) move.
+- Version-assertion test advanced to 0.35.1; an e2e test added asserting the
+  committed `lib/status.py` carries the config-presence warning
+  (`local_config_present` + `config_path` + `render_status` `WARNING`);
+  `test/release_lib_baseline.json` re-anchored (version -> 0.35.1, `lib_digest`
+  -> the new committed-lib digest); the housekeep doc baseline re-anchored to the
+  grown spec (480 -> 491).
+
 ## 0.35.0 — re-ship the operator/debug wave; release v0.35.0
 
 - **Release v0.35.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.34.0 -> 0.35.0;

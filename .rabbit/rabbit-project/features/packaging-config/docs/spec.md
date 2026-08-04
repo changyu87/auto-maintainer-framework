@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.25
+version: 0.7.26
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -234,6 +234,17 @@ available). No `_LIBS` change (both libs already registered in `_NORMALIZED_LIBS
 no shipped `default-config/` CONTENT change (schema unchanged), no shipped-agent
 change; this release re-normalizes the two libs from source and bumps the
 version. No build change beyond `_PLUGIN_VERSION → 0.35.0`.
+
+**Plugin patch v0.35.1** — re-ship `lib/status.py` for the scheduling 0.50.0
+status enhancement: `/auto-maintainer:status` now WARNS when the project-local
+`config.json` is missing or empty (`status_data()` gains `config_path` +
+`local_config_present`; `render_status` shows a loud `WARNING:` line naming the
+config path + the shipped-defaults / no-scope-filter / aggressive-auto-merge
+trap, or a quiet `config <path>` confirmation when present) — surfacing the
+wrong-anchor / unconfigured run at a glance. LIB-REFRESH patch: only
+`lib/status.py` re-normalizes from source; no `_LIBS` change (already registered
+in `_NORMALIZED_LIBS`), no `default-config/` CONTENT change, no shipped-agent
+change. No build change beyond `_PLUGIN_VERSION → 0.35.1`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
