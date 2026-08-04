@@ -60,7 +60,13 @@ import fsm_contracts as fc
 # (analogous to superpowers' DONE_WITH_CONCERNS; auto-maintainer-framework#212).
 # It mirrors `discovered_work` (always present, defaults to an empty list); the
 # dry-run reference adapter flags nothing, so `concerns` is always [].
-HANDOFF_SCHEMA_VERSION = "1.1.0"
+# 1.2.0 (additive, backward-compatible): adds `already_done` to the `status`
+# value space — a TERMINAL already-satisfied outcome the doer emits when the
+# requested change is already present on `main`, carrying its evidence in
+# artifact {kind:"already-on-main", ref:<commit-sha>}. No existing field or
+# status changed; a prior consumer that does not recognize `already_done` simply
+# treats it as a non-`opened` handoff (which it is).
+HANDOFF_SCHEMA_VERSION = "1.2.0"
 
 # The fsm-contracts slot descriptor. `handoffs` is an array slot (a list of
 # Handoff dicts); the slot version tracks the schema version. Mirrors
@@ -171,10 +177,12 @@ def validate_handoff(handoff):
     `test_verdict` whose `passed` is True. The verdict is the SCRIPT-produced
     result recorded by test_gate.py — never the model's prose. An opened handoff
     with a missing or failing verdict is INVALID. A non-`opened` handoff
-    (`planned` dry-run, `blocked`; legacy `closed`) opened no PR and so
-    requires no verdict to be valid. The doer no longer emits `closed` (reject
-    disposition moved to TRIAGE), but the predicate stays tolerant of a legacy
-    `closed` handoff for backward compatibility.
+    (`planned` dry-run, `blocked`, `already_done`; legacy `closed`) opened no PR
+    and so requires no verdict to be valid. An `already_done` handoff resolved
+    the item without acting (the fix was already on `main`), so like
+    `blocked`/`planned` it is VALID without a `test_verdict`. The doer no longer
+    emits `closed` (reject disposition moved to TRIAGE), but the predicate stays
+    tolerant of a legacy `closed` handoff for backward compatibility.
 
     Pure function of the handoff dict: same input -> same ValidationResult.
     """

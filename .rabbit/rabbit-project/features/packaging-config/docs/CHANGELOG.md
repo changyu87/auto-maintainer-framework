@@ -1,5 +1,38 @@
 # Changelog — packaging-config
 
+## 0.33.0 — re-ship the loop-convergence wave; release v0.33.0
+
+- **Release v0.33.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.32.0 -> 0.33.0;
+  committed plugin tree regenerated so the shipped libs carry work-intake
+  0.12.0 + implement 0.12.0 + scheduling 0.47.0's sources:
+  - `lib/work_intake.py` — new pure `is_in_flight(item, in_flight_issue_refs)` +
+    `Pull(in_flight_issue_refs=…)`: an UNCONDITIONAL PULL exclusion of any issue
+    that already has an OPEN loop PR (left open/untouched); a consume-only set,
+    no new gh plumbing.
+  - `lib/implement.py` — Handoff schema 1.1.0 -> 1.2.0 adds the terminal
+    `already_done` status carrying its evidence in
+    `artifact.kind="already-on-main"` / `ref=<commit-sha>`; `validate_handoff`
+    treats it as a verdict-free non-`opened` handoff.
+  - `lib/run_tick.py` — `make_pull` computes the in-flight issue-ref set from the
+    acted-ledger `opened` entries live-confirmed OPEN via `gh_pr_state_source`
+    and threads it into `Pull`; an `already_done` handoff records a
+    terminal-resolved `triage_memory` skip WITHOUT incrementing backoff.
+  - `agents/auto-maintainer-implementer.md` — v2.12.0: report `already_done` (not
+    `blocked`) when the fix is already on `main`.
+- **No `_LIBS` change** — all three libs already registered; pure lib-refresh
+  with no build change beyond the version bump.
+- **Shipped `default-config/` CONTENT unchanged** — config still schema 2.9.0
+  with the same values; only the three affected libs, the shipped implementer
+  agent, and the version stamps (`plugin.json` + `marketplace.json` -> 0.33.0)
+  move.
+- Version-assertion test advanced to 0.33.0; an e2e test added asserting the
+  committed libs + agent carry the v0.33.0 in-flight-PULL-exclusion +
+  already_done (schema 1.2.0) + in-flight-wiring tokens;
+  `test/release_lib_baseline.json` re-anchored (version -> 0.33.0, lib_digest ->
+  the new committed-lib digest); the housekeep doc baseline re-anchored to the
+  grown spec (427 -> 446) so the drift, #355 monotonicity, and doc-size guards
+  stay green.
+
 ## 0.32.0 — re-ship the audit-wave RECONCILE fixes; release v0.32.0
 
 - **Release v0.32.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.31.0 -> 0.32.0;

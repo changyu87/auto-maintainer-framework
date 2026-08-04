@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.22
+version: 0.7.23
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -181,6 +181,25 @@ the `-wo` suffix), and `lib/open_pr.py` (implementer worktree add runs hooks-fre
 No `_LIBS` change and no shipped `default-config/` CONTENT change (schema 2.9.0);
 this release re-normalizes the three libs from source and bumps the version. No
 build change beyond `_PLUGIN_VERSION → 0.32.0`.
+
+**Plugin minor v0.33.0** — re-ship the loop-convergence wave that stops the loop
+re-dispatching already-addressed issues (work-intake 0.12.0 + implement 0.12.0 +
+scheduling 0.47.0): `lib/work_intake.py` (new pure `is_in_flight(item,
+in_flight_issue_refs)` + `Pull(in_flight_issue_refs=…)` — an UNCONDITIONAL PULL
+exclusion of any issue that already has an OPEN loop PR, left open/untouched; a
+consume-only set, no new gh plumbing), `lib/implement.py` (Handoff schema
+1.1.0→1.2.0 adds the terminal `already_done` status carrying its evidence in
+`artifact.kind="already-on-main"`/`ref=<commit-sha>`; `validate_handoff` treats it
+as a verdict-free non-`opened` handoff), the shipped implementer agent
+`agents/auto-maintainer-implementer.md` (v2.12.0 — report `already_done` not
+`blocked` when the fix is already on `main`), and `lib/run_tick.py` (`make_pull`
+computes the in-flight issue-ref set from the acted-ledger `opened` entries
+live-confirmed OPEN via `gh_pr_state_source` and threads it into `Pull`; an
+`already_done` handoff records a terminal-resolved `triage_memory` skip WITHOUT
+incrementing backoff). No `_LIBS` change (all three libs already registered) and
+no shipped `default-config/` CONTENT change (schema 2.9.0); this release
+re-normalizes the three libs + the shipped agent from source and bumps the
+version. No build change beyond `_PLUGIN_VERSION → 0.33.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
