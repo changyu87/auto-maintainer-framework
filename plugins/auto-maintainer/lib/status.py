@@ -205,6 +205,24 @@ def _update_available(latest, installed):
     return lp > ip
 
 
+def _local_config_present(config_path):
+    """True ONLY when the project-local ``config.json`` exists AND parses to a
+    NON-EMPTY JSON object. An absent file, an unreadable/invalid file, or an
+    empty ``{}`` (or any non-dict JSON) all yield False. NEVER raises — a
+    read/parse error is treated as absent, not raised — so it can never crash
+    status. This only SURFACES the wrong-anchor / unconfigured trap where
+    ``load_config`` silently falls back to shipped defaults (empty
+    ``issue_filter`` + aggressive ``auto-merge``); it does NOT change
+    ``load_config``'s fallback behavior.
+    """
+    try:
+        with open(config_path, "r") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and len(data) > 0
+
+
 def status_data(release_probe=None):
     """The machine-first status: a dict of EVERY surfaced field (philosophy §1).
 
@@ -236,6 +254,12 @@ def status_data(release_probe=None):
     checkpoint = rt.persisted_tick_checkpoint(state_path)
 
     active_route = rt.resolved_route(project_dir)
+
+    # Local-config presence: config_path is <runtime_dir>/config.json (the SAME
+    # path load_config reads); local_config_present WARNS when it is missing or
+    # empty so an operator sees a shipped-defaults fallback. Never crashes.
+    config_path = os.path.join(runtime_dir, "config.json")
+    local_config_present = _local_config_present(config_path)
 
     # Release-check: the INJECTABLE, TOLERANT probe resolves the latest published
     # version (tests stub it with no network; the production default shells `gh`).
@@ -292,6 +316,8 @@ def status_data(release_probe=None):
             "chain": rt.route_happy_chain(active_route),
         },
         "runtime_dir": runtime_dir,
+        "config_path": config_path,
+        "local_config_present": local_config_present,
     }
 
 
@@ -363,7 +389,21 @@ def render_status(data):
     ]
     label_w = max(len(label) for label, _ in rows)
 
-    lines = [header, rule, f"  {release_line}", ""]
+    # Local-config presence: a LOUD warning when the project-local config.json
+    # is missing/empty (running on shipped defaults — no scope filter, pulls ALL
+    # open issues, aggressive auto-merge), else a quiet confirmation line. ASCII
+    # only (coding-rules §5). Derived from status_data's config fields.
+    config_path = data.get("config_path")
+    if data.get("local_config_present"):
+        config_line = f"config  {config_path}"
+    else:
+        config_line = (
+            f"WARNING: no local config.json at {config_path} - running on "
+            f"SHIPPED DEFAULTS: no issue scope filter (pulls ALL open issues) "
+            f"+ aggressive auto-merge; start from the workspace dir or run "
+            f"/auto-maintainer:configure")
+
+    lines = [header, rule, f"  {release_line}", f"  {config_line}", ""]
     for label, value in rows:
         lines.append(f"  {label.ljust(label_w)}  {value}")
 
