@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.24
+version: 0.7.25
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -218,6 +218,22 @@ already registered; the triager ships via `ship/agents`) and no shipped
 `default-config/` CONTENT change (schema unchanged); this release re-normalizes
 the two libs + the shipped triager agent from source and bumps the version. No
 build change beyond `_PLUGIN_VERSION → 0.34.0`.
+
+**Plugin minor v0.35.0** — re-ship the operator/debug wave (scheduling 0.49.0):
+`lib/run_tick.py` (the `tick_start` event now carries a version+file provenance
+block — `plugin_version` [+ a `plugin_version=<v>` trace token], `lib_dir`,
+`runtime_dir`, and the resolved `config_path`/`route_path`/`adapter_map_path` with
+their default-vs-override source — so an operator can see exactly which code +
+config a tick ran with; purely additive, `EVENT_KINDS` unchanged) and
+`lib/status.py` (a new injectable, tolerant release-check probe
+`DEFAULT_RELEASE_PROBE` shelling `gh` against the distribution repo;
+`status_data()` gains `latest_version`/`update_available`/`release_check_error`
+and `render_status` shows an update-available / up-to-date / check-errored line,
+so `/auto-maintainer:status` tells the operator when a newer release is
+available). No `_LIBS` change (both libs already registered in `_NORMALIZED_LIBS`),
+no shipped `default-config/` CONTENT change (schema unchanged), no shipped-agent
+change; this release re-normalizes the two libs from source and bumps the
+version. No build change beyond `_PLUGIN_VERSION → 0.35.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
