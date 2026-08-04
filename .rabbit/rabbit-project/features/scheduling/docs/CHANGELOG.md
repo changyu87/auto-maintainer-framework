@@ -1,5 +1,28 @@
 # scheduling — Changelog
 
+## feature 0.50.0 — 2026-08-04
+
+- **Local-config presence warning in `status.py` (`config_path` /
+  `local_config_present`).** status now WARNS when the project-local
+  `config.json` is MISSING or EMPTY — the wrong-anchor / unconfigured trap where
+  `run_tick` silently falls back to shipped-default governance (empty
+  `issue_filter` + aggressive `auto-merge`, pulling ALL open issues). `status.py`
+  resolves `config_path` = `<runtime_dir>/config.json` (the SAME path
+  `load_config` reads) and computes `local_config_present`: True ONLY when the
+  file exists AND parses to a NON-EMPTY JSON object — an absent, empty `{}`, or
+  invalid file all yield False, and the check NEVER crashes status (a read/parse
+  error is treated as absent, not raised). `status_data()` exposes `config_path`
+  (absolute) + `local_config_present`; `render_status` shows a LOUD ASCII warning
+  naming `config_path` + that shipped defaults / no scope filter / aggressive
+  auto-merge are in effect (suggesting the workspace dir or
+  `/auto-maintainer:configure`) when absent, and a quiet `config  <config_path>`
+  confirmation when present. `--json` emits the new fields; the `--line` legacy
+  one-liner is UNCHANGED. This only SURFACES the fallback — it does NOT change
+  `load_config`'s silent-fallback behavior. The status SKILL is UNCHANGED (it
+  relays `render_status` verbatim).
+- **feature.json version reconciled to 0.50.0** (advancing from the prior 0.48.0
+  lag behind spec.md 0.49.0, consistent with spec.md).
+
 ## feature 0.48.0 — 2026-08-04
 
 - **`already_done` ON-ISSUE enactment (visible disposition).** In addition to the

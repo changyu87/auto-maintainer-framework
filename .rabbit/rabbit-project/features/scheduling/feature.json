@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.48.0",
+  "version": "0.50.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -8,8 +8,8 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-green",
+  "tdd_state": "impl",
   "updated": "2026-08-04",
-  "spec_change_reason": "Enact the already_done on-issue disposition and gate BOTH dispositions on a strong-reason guard. In addition to the durable triage_memory skip, an already_done IMPLEMENT handoff now composes a reason from artifact.ref (the on-main evidence commit) and calls work_intake.gh_issue_already_done_sink(issue_ref, repo, reason) via the injectable DEFAULT_ALREADY_DONE_SINK seam, trust-gated by permits('file', mode) (dry-run logs intent, no sink call; propose/auto-merge posts), leaving the issue OPEN. A strong-reason guard (work_intake.is_strong_reason) is applied before enacting AND before recording the terminal triage_memory status on BOTH the already_done and the reject dispositions: a weak reason (or an already_done handoff with no artifact.ref evidence) is not enacted and not recorded, so the item re-works next tick. A strong reason enacts+records exactly as before (regression).",
-  "spec_no_change_reason": "Spec already documents the tick_start provenance block and status release probe; this cycle implements them (no spec change)."
+  "spec_change_reason": "status.py warns when the project-local config.json is missing/empty (the wrong-anchor / unconfigured trap where run_tick silently falls back to shipped-default governance: empty issue_filter + aggressive auto-merge, pulling ALL open issues). status resolves config_path=<runtime_dir>/config.json and computes local_config_present (True ONLY when the file exists AND parses to a non-empty dict; absent/empty{}/invalid -> False, never crashes). status_data() exposes config_path + local_config_present; render_status shows a loud ASCII warning naming config_path + the shipped-defaults/auto-merge trap when absent, and a quiet 'config <path>' confirmation when present. --json emits the fields; --line legacy one-liner unchanged; no SKILL.md change. feature.json advanced 0.48.0 -> 0.50.0 to reconcile the prior lag behind spec.md 0.49.0.",
+  "spec_no_change_reason": "spec.md was already advanced to 0.50.0 (local-config presence warning) by the dispatcher's spec-update commit d9f0cc2 before this TDD cycle; this cycle implements that spec in status.py"
 }
