@@ -51,7 +51,7 @@ ALONGSIDE the existing one-line trace — purely additive, no existing behaviour
 changes. The VERIFY/INTEGRATE/CLEANUP ports (verify-integrate) are pre-mapped in
 DEFAULT_ADAPTER_MAP so the close-the-loop route wires by a pure route.json edit.
 
-Version: 0.6.0
+Version: 0.7.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the tick interval becomes
@@ -1254,6 +1254,83 @@ def route_source_label(project_dir=None):
     if label == "override":
         return f"override:{path}"
     return label
+
+
+def _plugin_version(lib_dir=None):
+    """The shipped plugin version, read from
+    ``<lib_dir>/../.claude-plugin/plugin.json`` — read the SAME way status.py's
+    ``_plugin_version`` does (this file ships as ``<plugin_root>/lib/run_tick.py``,
+    so the manifest is ``<plugin_root>/.claude-plugin/plugin.json``). Returns its
+    ``version`` string, or ``None`` when the file is absent/unparsable (e.g. the
+    source tree, which ships no plugin.json alongside src/). ``lib_dir`` defaults
+    to this file's own directory (the deployed lib location); tests inject a temp
+    dir so they never pollute the feature tree.
+    """
+    if lib_dir is None:
+        lib_dir = _SRC
+    path = os.path.join(lib_dir, "..", ".claude-plugin", "plugin.json")
+    try:
+        with open(path, "r") as f:
+            return json.load(f).get("version")
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+
+
+def _resolved_config_file(name, project_dir=None):
+    """The resolved FILE PATH + source for one config artifact (``config.json`` /
+    ``route.json`` / ``adapter-map.json``), reusing run_tick's EXISTING
+    override-else-shipped-else-embedded resolution (#337):
+
+      - a project-local ``${project_dir}/.auto-maintainer/<name>`` → source
+        ``override`` (the same override path adapter-wiring's loader reads);
+      - else the shipped ``<DEFAULT_CONFIG_DIR>/<name>`` read fresh → source
+        ``shipped-default``;
+      - else the embedded conservative constant (no file) → source
+        ``embedded-constant`` with a ``None`` path.
+
+    Returns ``{"path": <abs path or None>, "source": <label>}``. Read-only (never
+    creates the runtime dir), so it is safe in the tick_start provenance block.
+    """
+    if project_dir is None:
+        project_dir = _resolve_project_dir()
+    override = os.path.join(project_dir, _OVERRIDE_CONFIG_DIRNAME, name)
+    if os.path.isfile(override):
+        return {"path": override, "source": "override"}
+    shipped = os.path.join(DEFAULT_CONFIG_DIR, name)
+    if os.path.isfile(shipped):
+        return {"path": shipped, "source": "shipped-default"}
+    return {"path": None, "source": "embedded-constant"}
+
+
+def _tick_provenance(project_dir, runtime_dir, plugin_version):
+    """The machine-first version+file PROVENANCE block for a fresh tick_start's
+    ``detail`` (debug enhancement): EXACTLY which code + config a given tick ran
+    with, so a stale/duplicate install or a misplaced override is visible in the
+    log.
+
+    Carries the shipped ``plugin_version`` (read the same way status.py does;
+    ``None`` in the source tree), the ABSOLUTE ``lib_dir`` of the running
+    run_tick.py, the resolved ``runtime_dir``, and the resolved config / route /
+    adapter-map FILE PATHS + their default-vs-override source, reusing run_tick's
+    EXISTING resolution so the provenance never diverges from what actually ran.
+    Purely additive: it is a scheduling-owned opaque dict nested inside
+    tick_start.detail, NOT a new observability.EVENT_KINDS member. A source-tree
+    run with no shipped plugin.json degrades gracefully (plugin_version=None).
+    """
+    cfg = _resolved_config_file("config.json", project_dir)
+    rte = _resolved_config_file("route.json", project_dir)
+    amap = _resolved_config_file("adapter-map.json", project_dir)
+    return {
+        "plugin_version": plugin_version,
+        "lib_dir": _SRC,
+        "runtime_dir": runtime_dir,
+        "config_path": cfg["path"],
+        "config_source": cfg["source"],
+        "route_path": rte["path"],
+        "route_source": rte["source"],
+        "adapter_map_path": amap["path"],
+        "adapter_map_source": amap["source"],
+    }
 
 
 def resolved_route(project_dir=None):
@@ -3120,7 +3197,8 @@ def _resume_agent_state(route, states, ctx, checkpoint, agentstates):
 
 def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
                     resume, mode, output_dir, gov, budget_clock, tick_id,
-                    events=None, route_src=None, escalate_sink=None,
+                    events=None, route_src=None, provenance=None,
+                    escalate_sink=None,
                     escalate_now=None, pr_state_source=None, reject_sink=None,
                     already_done_sink=None):
     """Drive a tick over a route that contains agent-states (DESIGN §2.8, §3.4.6).
@@ -3173,6 +3251,7 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
         if events is not None:
             events.emit("tick_start", detail={
                 "source": route_src, "mode": mode,
+                "provenance": provenance,
                 "checkpoint_discarded": {
                     "state": stale_pending.get("state"),
                     "writes": stale_pending.get("writes"),
@@ -3280,7 +3359,8 @@ def _run_agent_tick(route, states, agentstates, ctx_seed, state_path,
     # tick's read products stale in top-level durable state.
     _reset_ephemeral_read_products(state_path)
     if events is not None:
-        events.emit("tick_start", detail={"source": route_src, "mode": mode})
+        events.emit("tick_start", detail={
+            "source": route_src, "mode": mode, "provenance": provenance})
     ctx = ctx_seed()
     return _drive_agent_tick(
         route, states, ctx, state_path, "GUARD", mode, tick_id,
@@ -3515,6 +3595,13 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
     events = _EventEmitter(runtime_dir, event_now, tick_id)
     mode = gov.get("mode", "")
     route_src = route_source_label(project_dir)
+    # The version+file provenance block for the fresh tick_start (debug
+    # enhancement): the shipped plugin_version + lib_dir + runtime_dir + the
+    # resolved config/route/adapter-map file paths & sources, reusing the SAME
+    # resolution the tick just ran. Computed once and used by BOTH the agent-driver
+    # tick_start (threaded into _run_agent_tick) and the pure-script tick_start.
+    plugin_version = _plugin_version()
+    provenance = _tick_provenance(project_dir, runtime_dir, plugin_version)
 
     if agentstates:
         agent_outcome = _run_agent_tick(
@@ -3523,7 +3610,7 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
             state_path=state_path,
             resume=resume, mode=mode, output_dir=output_dir,
             gov=gov, budget_clock=budget_clock, tick_id=tick_id, events=events,
-            route_src=route_src,
+            route_src=route_src, provenance=provenance,
             escalate_sink=escalate_sink or DEFAULT_ESCALATE_SINK,
             escalate_now=event_now,
             pr_state_source=pr_state_source or DEFAULT_PR_STATE_SOURCE,
@@ -3556,7 +3643,8 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
         # the run (one state_run/signal per visited non-terminal state, in order).
         # result.path ends at the terminal (DONE/HALTED), so path[:-1] are the
         # visited non-terminal states and signals[i] is path[i]'s emitted signal.
-        events.emit("tick_start", detail={"source": route_src, "mode": mode})
+        events.emit("tick_start", detail={
+            "source": route_src, "mode": mode, "provenance": provenance})
         for visited, sig in zip(result.path[:-1], result.signals):
             events.emit("state_run", state=visited)
             events.emit("signal", state=visited, signal=sig)
@@ -3819,12 +3907,17 @@ def run_tick(runtime_dir=None, state_path=None, journal_path=None,
                               "skipped": reported_skipped,
                               "errored": reported_errored}
     ds.DurableState(state_path).save(doc)
+    # The compact plugin_version=<v> provenance token (debug enhancement): the
+    # shipped plugin version, `null` in the source tree (no plugin.json) — degrades
+    # gracefully. Mirrors the tick_start provenance block's plugin_version.
+    plugin_version_token = plugin_version if plugin_version is not None else "null"
     sys.stdout.write(
         f"[tick] path={'->'.join(result.path)} work_items={work_items_count} "
         f"work_orders={work_orders_count} "
         f"execution_plan={execution_plan_count} handoffs={handoffs_count} "
         f"disposition={disposition} "
         f"signal={signal} route={route_src} default_src={default_src} "
+        f"plugin_version={plugin_version_token} "
         f"{gov_fields} {reported_field} "
         f"{triaged_field} {merged_field}{deduped_field}{auto_merged_field}"
         f"{rebased_field}{relanded_field}{reconcile_errors_field}"

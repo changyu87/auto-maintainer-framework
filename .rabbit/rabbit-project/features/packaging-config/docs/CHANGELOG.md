@@ -1,5 +1,34 @@
 # Changelog — packaging-config
 
+## 0.35.0 — re-ship the operator/debug wave; release v0.35.0
+
+- **Release v0.35.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.34.0 -> 0.35.0;
+  committed plugin tree regenerated so the shipped libs carry scheduling 0.49.0's
+  sources:
+  - `lib/run_tick.py` — the `tick_start` event now carries a version+file
+    provenance block: `plugin_version` (plus a `plugin_version=<v>` trace token),
+    `lib_dir`, `runtime_dir`, and the resolved `config_path`/`route_path`/
+    `adapter_map_path` with their default-vs-override source, so an operator can
+    see exactly which code + config a tick ran with. Purely additive;
+    `EVENT_KINDS` unchanged.
+  - `lib/status.py` — a new injectable, tolerant release-check probe
+    `DEFAULT_RELEASE_PROBE` shelling `gh` against the distribution repo;
+    `status_data()` gains `latest_version`/`update_available`/`release_check_error`
+    and `render_status` shows an update-available / up-to-date / check-errored
+    line, so `/auto-maintainer:status` tells the operator when a newer release is
+    available.
+- **No `_LIBS` change** — both libs already registered in `_NORMALIZED_LIBS`;
+  pure lib-refresh with no build change beyond the version bump.
+- **Shipped `default-config/` CONTENT unchanged** — config schema unchanged; no
+  shipped-agent change; only the two affected libs and the version stamps
+  (`plugin.json` + `marketplace.json` -> 0.35.0) move.
+- Version-assertion test advanced to 0.35.0; an e2e test added asserting the
+  committed `run_tick` + `status` carry the v0.35.0 provenance + release-check
+  tokens; `test/release_lib_baseline.json` re-anchored (version -> 0.35.0,
+  `lib_digest` -> the new committed-lib digest); the housekeep doc baseline
+  re-anchored to the grown spec (464 -> 480) so the drift, #355 monotonicity,
+  and doc-size guards stay green.
+
 ## 0.34.0 — re-ship the disposition-visibility wave; release v0.34.0
 
 - **Release v0.34.0 (minor — LIB-REFRESH):** `_PLUGIN_VERSION` 0.33.0 -> 0.34.0;
