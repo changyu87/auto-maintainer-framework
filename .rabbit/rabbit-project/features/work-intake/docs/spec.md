@@ -1,6 +1,6 @@
 ---
 feature: work-intake
-version: 0.12.0
+version: 0.13.0
 owner: changyu87
 deprecation_criterion: Superseded when the tracker I/O model changes incompatibly (e.g. multi-tracker support, or the WorkItem / WorkOrder / DiscoveredIssue schema reaches a breaking major version).
 ---
@@ -315,6 +315,74 @@ open and UN-labeled for human triage, exactly as before.
   `reject_dispositions` + `gh_issue_reject_sink` for each reject and records a
   `rejected` status in `triage_memory` (landed in the consumers wave). Closing a
   reject remains an explicit opt-in, never the default.
+
+## already_done disposition (on-issue, visible — mirrors reject; NOT a reject)
+
+When the IMPLEMENT doer determines the requested change is ALREADY PRESENT ON
+`main` it returns the terminal `already_done` handoff (implement's status, with
+its evidence commit in `artifact.ref`). Before this slice that outcome was
+recorded ONLY in scheduling's durable `triage_memory` skip — **invisible on the
+tracker**, so a human reading the issue had no signal the loop had resolved it.
+This slice gives `already_done` an **on-issue disposition** so the human clearly
+knows, exactly parallel to the reject disposition. It is a valid-but-already-
+satisfied disposition — **NOT** a reject (the work was real and is done, not
+invalid) — and, like reject, it **NEVER closes the issue** (a config-gated
+auto-close is a separate follow-on).
+
+- **`ALREADY_DONE_MARKER`** — the fixed comment marker
+  `<!-- auto-maintainer:already-done -->`, **distinct** from `REJECT_MARKER`
+  (`<!-- auto-maintainer:rejected -->`), so an already-done disposition is
+  machine-distinguishable from a reject in the comment thread even though the two
+  **share the label** (below). Owned here (work-intake owns tracker markers).
+- **Label — REUSES `REJECTED_LABEL`.** Per the owner's decision the disposition
+  applies the SAME `auto-maintainer-rejected` label. The label reads as
+  "auto-maintainer has disposed of this — see the comment"; the DISTINCT marker
+  and comment content is what tells already-done apart from a reject. Reusing the
+  label means an already_done issue is ALSO kept out of PULL by the existing
+  `exclude_labels` / `REJECTED_LABEL` negative filter and stays OPEN and
+  human-removable (removing the label re-admits it) — the same belt-and-suspenders
+  as a reject, without a second label to manage.
+- **`gh_issue_already_done_sink(issue_ref, repo=None, reason="",
+  label=REJECTED_LABEL, runner=...) -> None`** — a NEW injectable tracker sink
+  that MIRRORS `gh_issue_reject_sink`: it ENSURES the label exists
+  (`gh label create`, idempotent), posts ONE comment carrying the `reason`
+  (the on-`main` evidence commit + a short explanation that the requested change
+  is already present on main) behind `ALREADY_DONE_MARKER`, and applies the label
+  (`gh issue edit <n> --add-label`). It **NEVER closes the issue**. Idempotent: if
+  the item already carries `ALREADY_DONE_MARKER` it is a no-op (no duplicate
+  comment). The `runner` is injectable so tests drive it with no network.
+- **Enactment + `triage_memory` are scheduling's** — when `run_tick` collects an
+  `already_done` handoff it calls `gh_issue_already_done_sink` (trust-gated by
+  `permits('file', mode)`, same rung as reject/REPORT) and records the
+  `already_done` status in `triage_memory`. Composing the `reason` from the
+  handoff's `artifact.ref` is scheduling's job.
+
+## Strong-reason guard (`is_strong_reason`) — no weak/boilerplate disposition comment
+
+Both on-issue dispositions (reject and already_done) post a machine-marked
+comment carrying a `reason`. A weak or boilerplate reason defeats the whole point
+("so the user clearly knows WHY"). This slice adds a deterministic guard so a
+weak reason is never posted.
+
+- **`is_strong_reason(reason) -> bool`** — a pure, deterministic predicate: True
+  iff `reason` is substantive — at least a minimum length (**40 characters**,
+  stripped) AND free of reflexive-deferral boilerplate. The boilerplate set
+  mirrors `rabbit-issue`'s `item-status.py` rejected-phrase concept: a reason
+  whose stripped, case-folded text IS one of / consists only of phrases such as
+  `will look into`, `todo`, `deferred`, `not sure`, `later`, `n/a`, `no reason`,
+  `as discussed`, `see above`, `wontfix` is REJECTED as weak. No I/O.
+- **Consumed by scheduling before enactment.** scheduling checks
+  `is_strong_reason(reason)` before enacting EITHER disposition and before
+  recording the terminal `triage_memory` status. On a WEAK reason it does NOT
+  enact (no comment/label) and does NOT record the terminal status, so the item
+  RE-ENTERS next tick and the model must produce a strong reason; the
+  backoff/park threshold still bounds any pathological loop. The guard lives in
+  work-intake (next to the sinks it protects); the gating is scheduling's.
+- **Triager mandate.** The shipped triager subagent
+  (`ship/agents/auto-maintainer-triager.md`) is strengthened to MANDATE a
+  concrete, specific reject `reason` (naming what is stale/invalid and why, at or
+  above the guard minimum, no boilerplate) so the guard rarely bounces a real
+  reject.
 
 ## Slice 3 — REPORT (outbound filing → DiscoveredIssue)
 
