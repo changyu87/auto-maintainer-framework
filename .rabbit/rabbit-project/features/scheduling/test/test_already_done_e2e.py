@@ -249,10 +249,12 @@ def _implement_once(project_dir, runtime_dir, state_path, journal_path,
     _write_outputs(paused, [_handoff(paused["dispatches"][0]["item"],
                                      status=status, ref=ref,
                                      blocked_reason=blocked_reason)])
+    # Always inject a sink (a throwaway when the caller supplied none) so no test
+    # touches the network via DEFAULT_ALREADY_DONE_SINK's live `gh` adapter.
     return rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                        state_path=state_path, journal_path=journal_path,
                        source=source or _stub_source(), now=now, resume=True,
-                       already_done_sink=already_done_sink)
+                       already_done_sink=already_done_sink or _AlreadyDoneSink())
 
 
 # ==========================================================================
@@ -324,7 +326,8 @@ def test_already_done_unchanged_filtered_next_tick():
                                    status="already_done")])
     rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
                 state_path=state_path, journal_path=journal_path,
-                source=src, now=_DAY1, resume=True)
+                source=src, now=_DAY1, resume=True,
+                already_done_sink=_AlreadyDoneSink())
     assert rt.persisted_triage_memory(state_path).get(
         "acme/widget#7", {}).get("status") == "already_done"
 

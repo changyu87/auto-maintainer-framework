@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.47.0",
+  "version": "0.48.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -8,8 +8,8 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-green",
-  "updated": "2026-08-03",
-  "spec_change_reason": "Fix _reconcile_ledger_seed's malformed issue_ref. The live producer's work_order_id uses a -wo SUFFIX (owner/repo#N-wo), but the seed stripped only a legacy wo- PREFIX, leaving issue_ref=owner/repo#N-wo so `gh issue view N-wo` (issue_ref.split('#')[-1]) failed every tick, breaking RECONCILE's (A) merged-PR issue-close. _reconcile_ledger_seed now derives the CANONICAL owner/repo#N by stripping the wo- prefix (dry-run producer) OR the -wo suffix (live producer), else the id as-is; repo is the owner/repo before #. The pr_ref URL->owner/repo#N canonicalization from the prior wave is unchanged, and there is no verify-integrate change. Re-anchored the housekeep spec.md baseline 1462->1471 for the already-committed 0.46.0 spec growth (contract.md kept under its strictly-grew gate).",
-  "spec_no_change_reason": "Spec already updated for this cycle in commit 3e3c4e4 (spec(scheduling): in-flight exclusion, already_done, terminal-resolved skip); no further spec change needed this transition."
+  "tdd_state": "impl",
+  "updated": "2026-08-04",
+  "spec_change_reason": "Enact the already_done on-issue disposition and gate BOTH dispositions on a strong-reason guard. In addition to the durable triage_memory skip, an already_done IMPLEMENT handoff now composes a reason from artifact.ref (the on-main evidence commit) and calls work_intake.gh_issue_already_done_sink(issue_ref, repo, reason) via the injectable DEFAULT_ALREADY_DONE_SINK seam, trust-gated by permits('file', mode) (dry-run logs intent, no sink call; propose/auto-merge posts), leaving the issue OPEN. A strong-reason guard (work_intake.is_strong_reason) is applied before enacting AND before recording the terminal triage_memory status on BOTH the already_done and the reject dispositions: a weak reason (or an already_done handoff with no artifact.ref evidence) is not enacted and not recorded, so the item re-works next tick. A strong reason enacts+records exactly as before (regression).",
+  "spec_no_change_reason": "Spec content already committed for this cycle in b340843 (already_done on-issue disposition + strong-reason guard); this cycle bumps feature.json to 0.48.0 + adds the CHANGELOG 0.48.0 entry + re-anchors the housekeep spec.md baseline to 1566."
 }

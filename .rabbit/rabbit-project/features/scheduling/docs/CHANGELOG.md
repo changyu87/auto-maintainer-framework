@@ -1,5 +1,26 @@
 # scheduling — Changelog
 
+## feature 0.48.0 — 2026-08-04
+
+- **`already_done` ON-ISSUE enactment (visible disposition).** In addition to the
+  durable `triage_memory` skip, an `already_done` IMPLEMENT handoff now composes a
+  `reason` from the handoff's `artifact.ref` (the on-`main` evidence commit) plus a
+  short explanation, and calls `work_intake.gh_issue_already_done_sink(issue_ref,
+  repo, reason)` via the injectable `DEFAULT_ALREADY_DONE_SINK` seam
+  (`run_tick(already_done_sink=...)` overrides it for tests). It applies the shared
+  `REJECTED_LABEL` + posts behind the DISTINCT `ALREADY_DONE_MARKER`, NEVER closing
+  the issue. `issue_ref`/`repo` come from the SAME `work_order_id -> work_item`
+  mapping used to record `triage_memory`. Trust-gated by `sg.permits('file', mode)`:
+  at `dry-run` the intent is logged and the sink is NOT called (the durable
+  convergence skip is still recorded); at `propose`/`auto-merge` it posts.
+- **Strong-reason guard on BOTH dispositions (`is_strong_reason`).** BEFORE
+  enacting an `already_done` on-issue disposition (or a reject) AND before recording
+  its terminal `triage_memory` status, `run_tick` checks
+  `work_intake.is_strong_reason(reason)`. A WEAK reason — or an `already_done`
+  handoff with no `artifact.ref` evidence — is NOT enacted and NOT recorded, so the
+  item RE-WORKS next tick. A STRONG reason enacts + records exactly as before
+  (regression). The same guard is applied in the existing reject enactment path.
+
 ## feature 0.46.0 — 2026-08-03
 
 - **Fixed `_reconcile_ledger_seed`'s malformed `issue_ref`.** The live producer's
