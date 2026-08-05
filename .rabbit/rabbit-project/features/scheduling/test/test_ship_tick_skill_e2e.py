@@ -146,13 +146,16 @@ def _read_text(path):
 # prompt-cron heartbeat, consuming start.py --clear-only for the latch-clear.
 # --------------------------------------------------------------------------
 
-def test_ship_start_skill_exists_and_names_start_v040():
+def test_ship_start_skill_exists_and_names_start_v050():
     assert os.path.isfile(_START_SKILL), _START_SKILL
     fields = _parse_frontmatter(_START_SKILL)
     assert fields.get("name") == "start", fields
-    # v0.4.0: /start OWNS the drain-loop (tick #1 + each heartbeat fire /tick
-    # again on refire until non-refire, §3.3.3).
-    assert fields.get("version") == "0.4.0", fields
+    # v0.5.0: the "config is the bound" operator-in-control guidance is embedded
+    # in the start skill body (limits are config-owned + runner-enforced; the
+    # executor invents no ad-hoc caps and surfaces anomalies). The drain-loop
+    # ownership (tick #1 + each heartbeat fire /tick again on refire until
+    # non-refire, §3.3.3) is unchanged.
+    assert fields.get("version") == "0.5.0", fields
 
 
 def test_ship_start_skill_carries_lifecycle_metadata():
@@ -200,9 +203,12 @@ def test_ship_start_skill_heartbeat_interval_is_config_driven():
 # file; the skill marshals NO content.)
 # --------------------------------------------------------------------------
 
-def test_ship_tick_skill_version_is_0_7_0():
+def test_ship_tick_skill_version_is_0_8_0():
+    # v0.8.0: the "config is the bound" operator-in-control guidance is embedded
+    # in the tick skill body (the only limits are config-defined + runner-enforced;
+    # subagent_tokens is metering-only, never an executor stop trigger).
     fields = _parse_frontmatter(_TICK_SKILL)
-    assert fields.get("version") == "0.7.0", fields
+    assert fields.get("version") == "0.8.0", fields
 
 
 def test_ship_tick_skill_dispatches_by_prompt_path_file_reference():
@@ -314,6 +320,110 @@ def test_ship_tick_skill_meters_spend_via_resume_spent():
         "tick skill must pass --spent on the --resume invocation"
     assert "subagent_tokens" in body, \
         "tick skill must reference summing the reported subagent_tokens spend"
+
+
+# --------------------------------------------------------------------------
+# Behaviour — "Limits are operator-owned: config is the bound" guidance
+# (spec §"Limits are operator-owned"). Both the /start and /tick SKILL.md
+# bodies carry the operator-in-control + anomaly-surfacing guidance: limits are
+# config-owned + runner-enforced; the executor invents no ad-hoc token/tick/
+# issue caps and does not silently narrow the operator's configured scope; it
+# keeps draining while `refire` when no limit is configured; it SURFACES genuine
+# anomalies to the operator, who bounds/halts via /configure or /stop. It is
+# framed operator-in-control, NOT as an absolutist never-stop mandate.
+# --------------------------------------------------------------------------
+
+# The absolutist phrasings the spec explicitly forbids (§"Limits are
+# operator-owned"): the guidance is operator-in-control, not a never-stop
+# mandate. None may appear in either skill body.
+_FORBIDDEN_ABSOLUTIST = [
+    "never stop",
+    "strip the executor",
+    "cede all restraint",
+    "unbounded unsupervised",
+]
+
+
+def test_ship_start_skill_carries_config_is_the_bound_guidance():
+    """The /start skill embeds the operator-in-control guidance: the drain-loop's
+    limits are config-owned and runner-enforced; the executor invents no ad-hoc
+    caps and does not silently narrow scope; it keeps draining on `refire` when no
+    limit is configured; the operator bounds/halts via /configure or /stop; and it
+    surfaces genuine anomalies rather than silently self-limiting or silently
+    continuing a changed scope."""
+    body = _read_text(_START_SKILL)
+    lower = body.lower()
+    # Limits come from configuration and the operator owns them.
+    assert "config" in lower, "start skill must state limits come from configuration"
+    assert "operator" in lower, "start skill must frame the operator as in control"
+    # The operator bounds/halts via the two owned surfaces.
+    assert "/auto-maintainer:configure" in body, \
+        "start skill must name /auto-maintainer:configure as the operator's bound surface"
+    assert "/auto-maintainer:stop" in body, \
+        "start skill must name /auto-maintainer:stop as the operator's halt surface"
+    # The executor invents no ad-hoc caps.
+    assert "ad-hoc" in lower, \
+        "start skill must forbid inventing ad-hoc token/tick/issue caps"
+    # Config-defined limits the runner enforces are named.
+    assert "budget" in lower, "start skill must name the budget config limit"
+    assert "backoff" in lower or "park" in lower, \
+        "start skill must name backoff/park deferral as a config-defined limit"
+    # Keeps draining on refire absent a configured limit.
+    assert "refire" in lower, "start skill must reference the refire drain condition"
+    # Surfaces genuine anomalies to the operator.
+    assert "anomal" in lower or "surface" in lower, \
+        "start skill must say it surfaces anomalies to the operator"
+
+
+def test_ship_tick_skill_carries_config_is_the_bound_guidance():
+    """The /tick skill embeds the operator-in-control guidance: run the tick to
+    its terminal and dispatch the runner's requested subagents; the only limits
+    are config-defined and runner-enforced (budget pre-gate, backoff, park);
+    subagent_tokens is spend-metering into the configured budget window ONLY, not
+    an executor stop trigger; the executor invents no ad-hoc caps and surfaces
+    genuine anomalies to the operator."""
+    body = _read_text(_TICK_SKILL)
+    lower = body.lower()
+    assert "config" in lower, "tick skill must state limits come from configuration"
+    assert "operator" in lower, "tick skill must frame the operator as in control"
+    # The executor invents no ad-hoc caps.
+    assert "ad-hoc" in lower, \
+        "tick skill must forbid inventing ad-hoc token/issue caps"
+    # subagent_tokens is metering-only, not a stop trigger.
+    assert "metering" in lower, \
+        "tick skill must state subagent_tokens feeds spend metering"
+    assert "budget window" in lower, \
+        "tick skill must state spend meters into the configured budget window"
+    assert "stop trigger" in lower, \
+        "tick skill must state subagent_tokens is not itself a stop trigger"
+    # The runner-enforced config-defined limits are named.
+    assert "budget" in lower, "tick skill must name the budget pre-gate limit"
+    assert "backoff" in lower or "park" in lower, \
+        "tick skill must name backoff/park as a config-defined runner limit"
+    # Surfaces genuine anomalies to the operator.
+    assert "anomal" in lower or "surface" in lower, \
+        "tick skill must say it surfaces anomalies to the operator"
+
+
+def test_config_bound_guidance_is_not_absolutist_in_either_skill():
+    """The guidance is framed operator-in-control + anomaly-surfacing, NOT as an
+    absolutist never-stop mandate. Neither skill body may carry the forbidden
+    absolutist phrasings (spec §"Limits are operator-owned")."""
+    for path in (_START_SKILL, _TICK_SKILL):
+        lower = _read_text(path).lower()
+        for phrase in _FORBIDDEN_ABSOLUTIST:
+            assert phrase not in lower, (path, phrase)
+
+
+def test_tick_skill_metering_steps_unchanged_regression():
+    """Regression: the config-is-the-bound guidance is ADDITIVE — the existing
+    subagent_tokens spend-metering steps (sum the reported subagent_tokens, carry
+    the sum via `run_tick.py --resume --spent <sum>`) remain intact and unchanged."""
+    body = _read_text(_TICK_SKILL)
+    assert "run_tick.py --resume --spent" in body, \
+        "tick skill must keep the --resume --spent metering step"
+    assert "subagent_tokens" in body, \
+        "tick skill must keep summing the reported subagent_tokens spend"
 
 
 # --------------------------------------------------------------------------
