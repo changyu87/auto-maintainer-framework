@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.26
+version: 0.7.27
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -245,6 +245,21 @@ wrong-anchor / unconfigured run at a glance. LIB-REFRESH patch: only
 `lib/status.py` re-normalizes from source; no `_LIBS` change (already registered
 in `_NORMALIZED_LIBS`), no `default-config/` CONTENT change, no shipped-agent
 change. No build change beyond `_PLUGIN_VERSION → 0.35.1`.
+
+**Plugin minor v0.36.0** — re-ship the "config is the bound" operator-in-control
+guidance (scheduling 0.51.0): the shipped `skills/start/SKILL.md` and
+`skills/tick/SKILL.md` now carry guidance that the loop's limits are
+operator-owned via configuration (budget/backoff/issue_filter/mode), enforced by
+the deterministic runner; the executor does not invent ad-hoc token/tick/issue
+caps nor silently narrow scope, keeps draining while `refire` when no limit is
+configured, and surfaces genuine anomalies to the operator (who bounds via
+`/auto-maintainer:configure` or halts via `/auto-maintainer:stop`). The SAME
+principle is added to the shipped SessionStart persona hook
+(`plugin_assets/hooks/session-start-persona.py`) so it is reinforced every
+session. ASSET-REFRESH release: re-collects the two updated skills from `ship/`
+and re-emits the persona hook; no `_LIBS` change, no `default-config/` CONTENT
+change (schema unchanged), no shipped-agent change. No build change beyond
+`_PLUGIN_VERSION → 0.36.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
