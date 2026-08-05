@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.50.0
+version: 0.51.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -420,6 +420,46 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
 > **agent-mediated** (Claude Code exposes no plugin-level cron API), so the
 > `/start` skill body instructs the session scheduler. This seam is inherent to
 > the platform constraint in §3.3.1.
+
+## Limits are operator-owned: config is the bound (start + tick guidance)
+
+The loop's operational limits are **operator-owned** and come from its
+**configuration** — `budget.per_day_tokens`, `backoff.threshold`,
+`issue_filter`, `mode`, and the route/adapter-map. The **deterministic runner
+enforces every configured bound** (the budget pre-gate, backoff, park, and the
+label filter), so those limits are applied consistently without the executor
+re-deciding them each tick.
+
+Given that, the `/auto-maintainer:start` and `/auto-maintainer:tick` skills carry
+this operating guidance for the executor:
+
+- **Don't invent ad-hoc caps.** The executor should NOT impose ADDITIONAL
+  token / tick-count / issue-count limits that the operator did not configure,
+  nor silently narrow the operator's configured scope. When no such limit is
+  configured and a completed tick's signal is `refire`, the default is to keep
+  draining — that is the runner's signal that in-scope work remains.
+- **Limits are changed by the operator, not the executor.** To bound the loop,
+  the operator adds a `budget` / tightens `issue_filter` via
+  `/auto-maintainer:configure`, or halts via `/auto-maintainer:stop`. Adjusting
+  scope or stopping is the operator's decision.
+- **Surface anomalies; don't silently self-limit OR silently continue a changed
+  scope.** If a run looks genuinely unusual — e.g. an unexpected self-feeding
+  loop (REVIEW filing findings on the loop's own PRs), or high cost with NO
+  budget configured — the executor SURFACES the observation to the operator so
+  they can decide (configure a bound, or stop). It neither quietly caps itself
+  nor quietly presses on with a scope the operator did not intend.
+- **`/start`** — the drain-loop's stop conditions are a **non-`refire` signal**
+  (`idle`/`halt`/`break`) OR a **config-defined limit** (budget exhaustion,
+  backoff/park deferral, a latched `STOPPED` via `/stop`). It does not add a
+  discretionary token/tick/issue-count cap of its own.
+- **`/tick`** — run the tick to its terminal and dispatch the subagents the
+  runner requests; the only limits are the config-defined ones the runner
+  enforces (budget pre-gate, backoff, park). `subagent_tokens` is carried back
+  for **spend metering only** (into the configured budget window) — it is the
+  input to the operator's configured budget, not an executor stop trigger.
+
+This keeps the operator in control of scope and cost while ensuring the executor
+does not silently substitute its own limits for the configured ones.
 
 ## What you'll see (installed plugin)
 
