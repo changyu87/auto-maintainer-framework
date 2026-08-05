@@ -1861,7 +1861,7 @@ def test_shipped_run_tick_imports_observability_from_lib_alone():
 # (heartbeat.interval_minutes, read via start.py --print-interval) rather than a
 # hardcoded cadence.
 # ---------------------------------------------------------------------------
-def test_shipped_start_skill_is_v0_4_0_clear_only_executor_config_interval():
+def test_shipped_start_skill_is_v0_5_0_clear_only_executor_config_interval():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1871,8 +1871,8 @@ def test_shipped_start_skill_is_v0_4_0_clear_only_executor_config_interval():
         assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.4.0\n" in body, \
-            "shipped start skill frontmatter version must be 0.4.0"
+        assert "\nversion: 0.5.0\n" in body, \
+            "shipped start skill frontmatter version must be 0.5.0"
         assert "--clear-only" in body, \
             "shipped start skill must reference the --clear-only latch-clear flag"
         assert "/auto-maintainer:tick" in body, \
@@ -1897,7 +1897,7 @@ def test_shipped_start_skill_is_v0_4_0_clear_only_executor_config_interval():
 # and `prompt_path`, and it does NOT reference the old dispatch-result.json
 # marshalling path.
 # ---------------------------------------------------------------------------
-def test_shipped_tick_skill_is_v0_7_0_file_referenced_dispatch():
+def test_shipped_tick_skill_is_v0_8_0_file_referenced_dispatch():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1907,8 +1907,8 @@ def test_shipped_tick_skill_is_v0_7_0_file_referenced_dispatch():
         assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.7.0\n" in body, \
-            "shipped tick skill frontmatter version must be 0.7.0 " \
+        assert "\nversion: 0.8.0\n" in body, \
+            "shipped tick skill frontmatter version must be 0.8.0 " \
             "(#304 file-referenced dispatch prompts documented)"
         assert "run_tick.py --resume" in body, \
             "shipped tick skill must reference run_tick.py --resume"
