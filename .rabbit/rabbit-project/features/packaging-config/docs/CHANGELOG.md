@@ -1,5 +1,34 @@
 # Changelog — packaging-config
 
+## 0.36.0 — re-ship operator-in-control "config is the bound" guidance; release v0.36.0
+
+- **Release v0.36.0 (minor — ASSET-REFRESH):** `_PLUGIN_VERSION` 0.35.1 -> 0.36.0;
+  committed plugin tree regenerated so the shipped skills + persona hook carry the
+  "config is the bound" operator-in-control guidance:
+  - `skills/start/SKILL.md` (scheduling 0.51.0, v0.5.0) and `skills/tick/SKILL.md`
+    (v0.8.0) — re-collected from `ship/`, now carrying the "Limits are
+    operator-owned: config is the bound" section: the loop's limits are
+    operator-owned via configuration (budget / backoff / issue_filter / mode) and
+    enforced by the deterministic runner; the executor invents no ad-hoc
+    token/tick/issue caps nor silently narrows scope, keeps draining while a tick
+    reports `refire`, and surfaces genuine anomalies to the operator.
+  - `hooks/session-start-persona.py` (v0.6.0) — the shipped SessionStart persona
+    now carries the same operator-in-control principle (limits are config-owned +
+    runner-enforced; no ad-hoc caps; keeps working on `refire`; surfaces anomalies;
+    operator bounds via `/auto-maintainer:configure` or halts via
+    `/auto-maintainer:stop`), so it is reinforced every session.
+- **No `_LIBS` change** — asset-refresh only; the committed `lib/` digest is
+  byte-identical to 0.35.1. No shipped `default-config/` CONTENT change (schema
+  unchanged); no shipped-agent change.
+- Version-assertion test advanced to 0.36.0; e2e tests added asserting the shipped
+  persona hook carries the operator-in-control principle (operator-owned +
+  issue_filter + refire + configure/stop, no absolutist framing) and the shipped
+  start/tick skills carry the operator-owned guidance; the two skill-version
+  assertions advanced (start 0.4.0 -> 0.5.0, tick 0.7.0 -> 0.8.0);
+  `test/release_lib_baseline.json` re-anchored (version -> 0.36.0, `lib_digest`
+  unchanged); the housekeep doc baseline re-anchored to the grown spec
+  (491 -> 506).
+
 ## 0.35.1 — re-ship status config-presence warning; release v0.35.1
 
 - **Release v0.35.1 (patch — LIB-REFRESH):** `_PLUGIN_VERSION` 0.35.0 -> 0.35.1;

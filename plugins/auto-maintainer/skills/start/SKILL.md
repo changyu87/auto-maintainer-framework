@@ -1,7 +1,7 @@
 ---
 name: start
 description: Start (or resume) the auto-maintainer's in-session tick loop and OWN the drain-loop. Use this whenever the user runs /auto-maintainer:start, or asks to start, launch, run, kick off, restart, or resume the maintainer loop / heartbeat / background ticking — including resuming after a prior /auto-maintainer:stop. It clears a latched STOPPED disposition, then drives ticks through the /auto-maintainer:tick executor: it runs the first tick and, whenever a completed tick's final signal is `refire` (actionable work remains), fires another tick immediately, repeating until a non-refire signal (idle/halt/break) so the backlog drains promptly. It then schedules a recurring prompt-heartbeat at the configured interval (heartbeat.interval_minutes, default 3) whose prompt runs that SAME drain-loop each interval; a latched ABORTED fault is refused, not cleared.
-version: 0.4.0
+version: 0.5.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the route becomes config-driven via the /auto-maintainer:route CLI (Phase 4).
 ---
@@ -30,6 +30,39 @@ non-refire signal (`idle`/`halt`/`break`). That applies to BOTH the first tick
 (below) and each heartbeat firing, so the loop drains promptly without waiting a
 full interval between ticks. The recurring heartbeat is the safety net and the
 cross-session resumer; the drain-loop is what keeps a busy loop moving.
+
+## Limits are operator-owned: config is the bound
+
+The loop's operational limits are **operator-owned** — they come from its
+**configuration** (`budget.per_day_tokens`, `backoff.threshold`, `issue_filter`,
+`mode`, and the route/adapter-map), and the deterministic runner already
+ENFORCES every configured bound: the budget pre-gate, backoff, park deferral, and
+the label filter. Because the runner applies those limits for you, the drain-loop
+does not need to re-decide them each tick, and it should not substitute limits of
+its own for the ones the operator chose.
+
+- **Don't invent ad-hoc caps.** Do not impose additional token / tick-count /
+  issue-count limits the operator did not configure, and do not silently narrow
+  the operator's configured scope. When no such limit is configured and a
+  completed tick's signal is `refire`, keep draining — `refire` is the runner's
+  signal that in-scope work remains, so stopping early would leave configured work
+  undone.
+- **The operator owns the bound, not the executor.** To bound the loop the
+  operator adds a `budget` or tightens `issue_filter` via
+  `/auto-maintainer:configure`, or halts it via `/auto-maintainer:stop`. Widening
+  or narrowing scope, and choosing when to halt, are the operator's calls — so the
+  drain-loop keeps to the configured scope rather than second-guessing it.
+- **Surface anomalies; don't quietly self-limit or quietly press on.** If a run
+  looks genuinely unusual — e.g. an unexpected self-feeding loop (REVIEW filing
+  findings on the loop's own PRs), or high cost with NO budget configured —
+  SURFACE that observation to the operator so they can decide (configure a bound,
+  or stop). That keeps the operator in control: the loop neither caps itself
+  behind their back nor continues a scope they did not intend.
+- **Drain-loop stop conditions.** Concretely, the drain-loop stops on a
+  **non-`refire` signal** (`idle`/`halt`/`break`) OR a **config-defined limit**
+  (budget exhaustion, a backoff/park deferral, or a latched `STOPPED` from
+  `/auto-maintainer:stop`). It adds no discretionary token/tick/issue-count cap of
+  its own.
 
 ## Why the first tick clears the latch first
 

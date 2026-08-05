@@ -560,15 +560,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.35.1, status config-presence patch): version bumped to 0.35.1 in
-# BOTH plugin.json and marketplace.json, and the two are consistent. v0.35.1
-# rebuilds the committed plugin tree so it ships scheduling 0.50.0's lib/status.py
-# (status_data() gains config_path + local_config_present; render_status shows a
-# loud WARNING when the project-local config.json is missing/empty). LIB-REFRESH
-# patch: only lib/status.py re-normalizes; No _LIBS change and no shipped
+# Release (v0.36.0, operator-in-control asset-refresh): version bumped to 0.36.0
+# in BOTH plugin.json and marketplace.json, and the two are consistent. v0.36.0
+# re-ships scheduling 0.51.0's start+tick skills (the "config is the bound"
+# operator-in-control guidance) and adds the same principle to the shipped
+# SessionStart persona hook. ASSET-REFRESH: no _LIBS change and no shipped
 # default-config CONTENT change (schema unchanged).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_35_1_and_consistent():
+def test_version_bumped_to_0_36_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -580,14 +579,102 @@ def test_version_bumped_to_0_35_1_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.35.1", \
-            f"plugin.json version must be 0.35.1, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.35.1", \
-            "marketplace.json plugin entry version must be 0.35.1"
+        assert pdata.get("version") == "0.36.0", \
+            f"plugin.json version must be 0.36.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.36.0", \
+            "marketplace.json plugin entry version must be 0.36.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release (v0.36.0, operator-in-control asset-refresh): the whole point of this
+# release is that the shipped SessionStart persona hook carries the
+# operator-in-control "config is the bound" principle so it is reinforced every
+# session. The persona must state that the loop's limits are operator-owned via
+# configuration (budget / backoff / issue_filter / mode) with the runner
+# enforcing them, that the loop invents no ad-hoc caps and does not silently
+# narrow scope, keeps working while a tick reports refire, and surfaces anything
+# unusual to the operator (who bounds via /auto-maintainer:configure or halts via
+# /auto-maintainer:stop). It must NOT use absolutist "never stop" framing. Assert
+# BOTH the freshly built tree and the COMMITTED tree ship the principle.
+# ---------------------------------------------------------------------------
+def test_shipped_persona_hook_carries_operator_in_control_principle():
+    def _assert_persona(hook_path):
+        assert os.path.isfile(hook_path), \
+            f"session-start-persona.py must ship at {hook_path}"
+        with open(hook_path, encoding="utf-8") as fh:
+            body = fh.read()
+        # operator-in-control framing tokens
+        assert "operator-owned" in body, \
+            "persona must state the loop's limits are operator-owned"
+        assert "issue_filter" in body, \
+            "persona must name issue_filter as a configured bound"
+        assert "refire" in body, \
+            "persona must note the loop keeps working while a tick reports refire"
+        assert "/auto-maintainer:configure" in body, \
+            "persona must point the operator at /auto-maintainer:configure"
+        assert "/auto-maintainer:stop" in body, \
+            "persona must point the operator at /auto-maintainer:stop"
+        # banned absolutist framing
+        for banned in (
+            "never stop", "strip judgment", "cede all restraint",
+            "unbounded unsupervised",
+        ):
+            assert banned not in body.lower(), \
+                f"persona must not use absolutist framing: {banned!r}"
+
+    # freshly built tree (re-emitted from the edited source)
+    out_root = _build_into_temp()
+    try:
+        _assert_persona(os.path.join(
+            out_root, "plugins", "auto-maintainer",
+            "hooks", "session-start-persona.py",
+        ))
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+    # committed tree (deploy confirmation — the bytes a GitHub clone installs)
+    _assert_persona(os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer",
+        "hooks", "session-start-persona.py",
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Release (v0.36.0): the whole point of the re-ship is that the installed
+# plugin's start + tick skills carry scheduling 0.51.0's operator-in-control
+# "Limits are operator-owned: config is the bound" guidance. Assert BOTH the
+# freshly built tree and the COMMITTED tree ship start/tick SKILL.md carrying the
+# operator-owned guidance section (re-collected from ship/ via the ship/
+# convention).
+# ---------------------------------------------------------------------------
+def test_shipped_start_tick_skills_carry_operator_owned_guidance():
+    def _assert_guidance(sk):
+        assert os.path.isfile(sk), f"SKILL.md must ship at {sk}"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "Limits are operator-owned: config is the bound" in body, \
+            f"{sk} must carry the operator-owned guidance heading"
+        assert "operator-owned" in body, \
+            f"{sk} must state the limits are operator-owned"
+
+    for name in ("start", "tick"):
+        out_root = _build_into_temp()
+        try:
+            _assert_guidance(os.path.join(
+                out_root, "plugins", "auto-maintainer",
+                "skills", name, "SKILL.md",
+            ))
+        finally:
+            shutil.rmtree(out_root, ignore_errors=True)
+        # committed tree (deploy confirmation)
+        _assert_guidance(os.path.join(
+            _REPO_ROOT, "plugins", "auto-maintainer",
+            "skills", name, "SKILL.md",
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -1774,7 +1861,7 @@ def test_shipped_run_tick_imports_observability_from_lib_alone():
 # (heartbeat.interval_minutes, read via start.py --print-interval) rather than a
 # hardcoded cadence.
 # ---------------------------------------------------------------------------
-def test_shipped_start_skill_is_v0_4_0_clear_only_executor_config_interval():
+def test_shipped_start_skill_is_v0_5_0_clear_only_executor_config_interval():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1784,8 +1871,8 @@ def test_shipped_start_skill_is_v0_4_0_clear_only_executor_config_interval():
         assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.4.0\n" in body, \
-            "shipped start skill frontmatter version must be 0.4.0"
+        assert "\nversion: 0.5.0\n" in body, \
+            "shipped start skill frontmatter version must be 0.5.0"
         assert "--clear-only" in body, \
             "shipped start skill must reference the --clear-only latch-clear flag"
         assert "/auto-maintainer:tick" in body, \
@@ -1810,7 +1897,7 @@ def test_shipped_start_skill_is_v0_4_0_clear_only_executor_config_interval():
 # and `prompt_path`, and it does NOT reference the old dispatch-result.json
 # marshalling path.
 # ---------------------------------------------------------------------------
-def test_shipped_tick_skill_is_v0_7_0_file_referenced_dispatch():
+def test_shipped_tick_skill_is_v0_8_0_file_referenced_dispatch():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1820,8 +1907,8 @@ def test_shipped_tick_skill_is_v0_7_0_file_referenced_dispatch():
         assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.7.0\n" in body, \
-            "shipped tick skill frontmatter version must be 0.7.0 " \
+        assert "\nversion: 0.8.0\n" in body, \
+            "shipped tick skill frontmatter version must be 0.8.0 " \
             "(#304 file-referenced dispatch prompts documented)"
         assert "run_tick.py --resume" in body, \
             "shipped tick skill must reference run_tick.py --resume"

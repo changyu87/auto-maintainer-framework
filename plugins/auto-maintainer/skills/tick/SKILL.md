@@ -1,7 +1,7 @@
 ---
 name: tick
 description: Run EXACTLY ONE auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute a single tick or step the maintainer loop once, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) — pointing each one at the invocation-envelope file the runner names (prompt_path) and passing its description and (when present) isolation — and resumes, reporting the dispatched subagents' token usage, until the tick reaches its terminal. It runs one tick and STOPS: a `refire` final signal (actionable work remains) is REPORTED but does NOT auto-loop into another tick. Continuous back-to-back draining is /auto-maintainer:start's job, not this skill's.
-version: 0.7.0
+version: 0.8.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when Claude Code can dispatch subagents from within a script (removing the need for a session-mediated executor), or when the tick CLI's --step/--resume protocol reaches a breaking major version.
 ---
@@ -77,6 +77,32 @@ until `done`.**
 - `{"status":"invalid_output","state":"<name>","reason":"<why>"}` — a dispatched
   subagent's output file was missing or didn't match the schema. Re-dispatch
   that state (see step 5); after 2 failed attempts, print the reason and stop.
+
+## Limits are operator-owned: config is the bound
+
+A tick's limits are **operator-owned** — they come from the loop's
+**configuration** (`budget.per_day_tokens`, `backoff.threshold`, `issue_filter`,
+`mode`, and the route/adapter-map), and the deterministic runner already ENFORCES
+every configured bound: the budget pre-gate, backoff, and park deferral all live
+inside `run_tick.py`. So your job as the executor is to run the tick the runner
+describes, not to add limits of your own on top:
+
+- **Run the tick to its terminal and dispatch the subagents the runner
+  requests.** The only limits are the config-defined ones the runner enforces
+  (budget pre-gate, backoff, park). Do not invent an ad-hoc token / issue-count
+  cap of your own, and do not silently narrow the operator's configured scope —
+  if the runner keeps handing you dispatches, work them.
+- **`subagent_tokens` is spend-metering only.** The summed `subagent_tokens` you
+  carry back via `--resume --spent` feeds spend metering into the operator's
+  configured **budget window** — it is the INPUT to that budget so the runner can
+  enforce it, NOT itself a stop trigger you act on. The runner, not this executor,
+  decides against the configured budget; you never cap the tick because a spend
+  number looked large.
+- **Surface anomalies to the operator.** If a run looks genuinely unusual — e.g.
+  a self-feeding loop, or high cost with NO budget configured — SURFACE that
+  observation to the operator, who bounds the loop via `/auto-maintainer:configure`
+  or halts it via `/auto-maintainer:stop`. That keeps them in control rather than
+  the executor silently self-limiting or silently pressing on.
 
 ## Steps
 
