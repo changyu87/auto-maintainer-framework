@@ -1,5 +1,32 @@
 # scheduling — Changelog
 
+## feature 0.51.0 — 2026-08-04
+
+- **"Config is the bound" operator-in-control guidance in the `/start` and
+  `/tick` shipped skills.** The `/auto-maintainer:start` (skill **v0.5.0**) and
+  `/auto-maintainer:tick` (skill **v0.8.0**) SKILL.md bodies now embed guidance
+  that the loop's operational limits are **operator-owned** — they come from its
+  configuration (`budget.per_day_tokens`, `backoff.threshold`, `issue_filter`,
+  `mode`, and the route/adapter-map) and the deterministic runner ENFORCES every
+  configured bound (the budget pre-gate, backoff, park deferral, and the label
+  filter). The executor does NOT invent additional token/tick/issue-count caps
+  the operator did not configure, and does NOT silently narrow the configured
+  scope; when no limit is configured and a completed tick's signal is `refire`,
+  it keeps draining. To bound or halt the loop the OPERATOR uses
+  `/auto-maintainer:configure` (budget / `issue_filter`) or
+  `/auto-maintainer:stop`. A genuinely anomalous run (e.g. a self-feeding REVIEW
+  loop, or high cost with NO budget configured) is SURFACED to the operator
+  rather than silently self-limited or silently continued. For `/start` the
+  drain-loop's stop conditions remain a non-`refire` signal
+  (`idle`/`halt`/`break`) OR a config-defined limit (budget exhaustion,
+  backoff/park deferral, a latched `STOPPED`). For `/tick` the only limits are
+  the config-defined ones the runner enforces, and `subagent_tokens` is carried
+  back for spend metering into the configured budget window ONLY — it is not
+  itself an executor stop trigger. The guidance is framed operator-in-control +
+  anomaly-surfacing, NOT an absolutist never-stop mandate; the `/tick`
+  spend-metering steps are UNCHANGED (additive). SKILL-prose only; `run_tick.py`,
+  `start.py`, and the `--step`/`--resume` protocol are untouched.
+
 ## feature 0.50.0 — 2026-08-04
 
 - **Local-config presence warning in `status.py` (`config_path` /

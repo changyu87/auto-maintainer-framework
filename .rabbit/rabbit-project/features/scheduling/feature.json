@@ -1,6 +1,6 @@
 {
   "name": "scheduling",
-  "version": "0.50.0",
+  "version": "0.51.0",
   "owner": "changyu87",
   "paths": [
     "rabbit-project/features/scheduling/src/**",
@@ -8,8 +8,8 @@
   ],
   "created": "2026-06-11T04:09:05Z",
   "deprecation_criterion": "Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the tick interval/route become config-driven and this slice's hardcoding is removed.",
-  "tdd_state": "test-green",
+  "tdd_state": "test-red",
   "updated": "2026-08-04",
-  "spec_change_reason": "status.py warns when the project-local config.json is missing/empty (the wrong-anchor / unconfigured trap where run_tick silently falls back to shipped-default governance: empty issue_filter + aggressive auto-merge, pulling ALL open issues). status resolves config_path=<runtime_dir>/config.json and computes local_config_present (True ONLY when the file exists AND parses to a non-empty dict; absent/empty{}/invalid -> False, never crashes). status_data() exposes config_path + local_config_present; render_status shows a loud ASCII warning naming config_path + the shipped-defaults/auto-merge trap when absent, and a quiet 'config <path>' confirmation when present. --json emits the fields; --line legacy one-liner unchanged; no SKILL.md change. feature.json advanced 0.48.0 -> 0.50.0 to reconcile the prior lag behind spec.md 0.49.0.",
-  "spec_no_change_reason": "spec.md was already advanced to 0.50.0 (local-config presence warning) by the dispatcher's spec-update commit d9f0cc2 before this TDD cycle; this cycle implements that spec in status.py"
+  "spec_change_reason": "The /auto-maintainer:start (v0.5.0) and /auto-maintainer:tick (v0.8.0) shipped SKILL.md bodies embed 'config is the bound' operator-in-control guidance: the loop's operational limits are operator-owned (budget.per_day_tokens, backoff.threshold, issue_filter, mode, route/adapter-map) and the deterministic runner enforces them (budget pre-gate, backoff, park, label filter). The executor invents no ad-hoc token/tick/issue caps and does not silently narrow the configured scope; when no limit is configured and the tick signal is refire it keeps draining; subagent_tokens is metered into the configured budget window ONLY (never itself a stop trigger); and a genuine anomaly is surfaced to the operator, who bounds via /auto-maintainer:configure or halts via /auto-maintainer:stop. Framed operator-in-control + anomaly-surfacing, NOT an absolutist never-stop mandate. Additive: the /tick spend-metering steps are unchanged. feature.json advanced 0.50.0 -> 0.51.0.",
+  "spec_no_change_reason": "spec.md was already advanced to 0.51.0 (config-is-the-bound operator-in-control guidance for the start + tick skills) by the dispatcher's spec-update commit 0c1f5b9 before this TDD cycle; this cycle implements that spec in the two SKILL.md bodies"
 }
