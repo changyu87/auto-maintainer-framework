@@ -1,5 +1,32 @@
 # scheduling — Changelog
 
+## feature 0.52.0 — 2026-08-16
+
+- **"Reading the merge signals" observability guidance in the `/start` and
+  `/tick` shipped skills.** The `/auto-maintainer:start` (skill **v0.6.0**) and
+  `/auto-maintainer:tick` (skill **v0.9.0**) SKILL.md bodies now embed factual
+  guidance so the executor never misreads a paused/async auto-merge as a stuck
+  loop: `merged` counts only IN-TICK merges; a PR with GitHub auto-merge enabled
+  lands asynchronously and shows `merged=0` in the enabling tick (NORMAL, not a
+  block); `merged=0` with `auto_merge_enabled>0` means N PRs are pending GitHub
+  auto-merge (CI/mergeability in flight); async completions surface on a LATER
+  tick as RECONCILE `auto_merged` (reported once); a REAL merge problem is
+  `integrate_errored>0` or `reconcile_errors>0` (or a PR RECONCILE reports as
+  CONFLICTING), never `merged=0` alone; the counters are read TOGETHER. It is
+  factual observability only — no stop/limit behavior, and the `/tick`
+  `subagent_tokens` spend-metering steps are unchanged.
+- **`status.py` surfaces `open_loop_prs`.** `status.py` gains an injectable,
+  TOLERANT open-PR probe (`DEFAULT_OPEN_PR_SOURCE`, overridable via a
+  `status_data(open_pr_source=...)` param so tests stub it with no network); the
+  production probe shells `gh pr list --repo <project repo> --label
+  auto-maintainer --state open --json number,mergeStateStatus,autoMergeRequest`
+  and `status_data()` exposes `open_loop_prs` — a list of `{number,
+  auto_merge_enabled, merge_state}`. Any failure yields `open_loop_prs=[]` and
+  NEVER crashes status (same tolerance as the release probe). `render_status`
+  shows, per PR, `PR #<n> auto-merge pending (<merge_state>)` (or `auto-merge off
+  (<merge_state>)`), or `open loop PRs: none` when empty. `--json` emits the
+  field; `--line` is unchanged. status.py bumped **v0.3.0 -> v0.4.0**.
+
 ## feature 0.51.0 — 2026-08-04
 
 - **"Config is the bound" operator-in-control guidance in the `/start` and

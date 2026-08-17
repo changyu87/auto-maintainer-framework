@@ -146,16 +146,17 @@ def _read_text(path):
 # prompt-cron heartbeat, consuming start.py --clear-only for the latch-clear.
 # --------------------------------------------------------------------------
 
-def test_ship_start_skill_exists_and_names_start_v050():
+def test_ship_start_skill_exists_and_names_start_v060():
     assert os.path.isfile(_START_SKILL), _START_SKILL
     fields = _parse_frontmatter(_START_SKILL)
     assert fields.get("name") == "start", fields
-    # v0.5.0: the "config is the bound" operator-in-control guidance is embedded
-    # in the start skill body (limits are config-owned + runner-enforced; the
-    # executor invents no ad-hoc caps and surfaces anomalies). The drain-loop
-    # ownership (tick #1 + each heartbeat fire /tick again on refire until
-    # non-refire, §3.3.3) is unchanged.
-    assert fields.get("version") == "0.5.0", fields
+    # v0.6.0: the "Reading the merge signals" factual observability guidance is
+    # embedded in the start skill body (merged counts in-tick only; merged=0 +
+    # auto_merge_enabled>0 = pending async auto-merge, NOT blocked; real blocks are
+    # integrate_errored/reconcile_errors; async completions = RECONCILE
+    # auto_merged next tick). The v0.5.0 config-is-the-bound guidance and the
+    # drain-loop ownership (§3.3.3) are unchanged.
+    assert fields.get("version") == "0.6.0", fields
 
 
 def test_ship_start_skill_carries_lifecycle_metadata():
@@ -203,12 +204,14 @@ def test_ship_start_skill_heartbeat_interval_is_config_driven():
 # file; the skill marshals NO content.)
 # --------------------------------------------------------------------------
 
-def test_ship_tick_skill_version_is_0_8_0():
-    # v0.8.0: the "config is the bound" operator-in-control guidance is embedded
-    # in the tick skill body (the only limits are config-defined + runner-enforced;
-    # subagent_tokens is metering-only, never an executor stop trigger).
+def test_ship_tick_skill_version_is_0_9_0():
+    # v0.9.0: the "Reading the merge signals" factual observability guidance is
+    # embedded in the tick skill body (merged counts in-tick only; merged=0 +
+    # auto_merge_enabled>0 = pending async auto-merge, NOT blocked; real blocks are
+    # integrate_errored/reconcile_errors; async completions = RECONCILE
+    # auto_merged next tick). The v0.8.0 config-is-the-bound guidance is unchanged.
     fields = _parse_frontmatter(_TICK_SKILL)
-    assert fields.get("version") == "0.8.0", fields
+    assert fields.get("version") == "0.9.0", fields
 
 
 def test_ship_tick_skill_dispatches_by_prompt_path_file_reference():
@@ -424,6 +427,80 @@ def test_tick_skill_metering_steps_unchanged_regression():
         "tick skill must keep the --resume --spent metering step"
     assert "subagent_tokens" in body, \
         "tick skill must keep summing the reported subagent_tokens spend"
+
+
+# --------------------------------------------------------------------------
+# Behaviour — "Reading the merge signals: merged=0 is not blocked" guidance
+# (spec §"Reading the merge signals"). Both the /start and /tick SKILL.md bodies
+# carry factual observability guidance so the executor never misreads a
+# paused/async auto-merge as a stuck loop: `merged` counts IN-TICK merges only; a
+# PR with GitHub auto-merge enabled lands asynchronously and shows merged=0 in
+# the enabling tick (NORMAL, not a block); merged=0 with auto_merge_enabled>0 = N
+# PRs pending GitHub auto-merge (CI/mergeability in flight); async completions
+# surface next tick as RECONCILE auto_merged; a REAL merge problem is
+# integrate_errored>0 or reconcile_errors>0 (or a PR RECONCILE reports
+# CONFLICTING), never merged=0 alone. It is factual observability only — no
+# stop/limit behavior.
+# --------------------------------------------------------------------------
+
+def _assert_merge_signal_guidance(body):
+    """The shared assertions the merge-signal guidance must satisfy in a skill
+    body: the counters read together, the pending-not-blocked reading, the real
+    fault signals, and the async-completion-via-RECONCILE note."""
+    lower = body.lower()
+    # merged counts in-tick merges; a merged=0 enabling tick is NORMAL.
+    assert "merged" in lower, "skill must reference the merged counter"
+    assert "in-tick" in lower or "in tick" in lower, \
+        "skill must state merged counts IN-TICK merges only"
+    # merged=0 + auto_merge_enabled>0 = pending, NOT blocked.
+    assert "auto_merge_enabled" in body, \
+        "skill must reference the auto_merge_enabled counter"
+    assert "pending" in lower, \
+        "skill must describe auto_merge_enabled PRs as pending auto-merge"
+    assert "block" in lower, \
+        "skill must contrast pending against a 'blocked' misread"
+    # A real merge problem is integrate_errored / reconcile_errors (or
+    # CONFLICTING) — never merged=0 alone.
+    assert "integrate_errored" in body, \
+        "skill must name integrate_errored as a real merge-problem signal"
+    assert "reconcile_errors" in body, \
+        "skill must name reconcile_errors as a real merge-problem signal"
+    assert "conflicting" in lower, \
+        "skill must name a RECONCILE CONFLICTING PR as a real merge problem"
+    # Async completions surface next tick as RECONCILE auto_merged.
+    assert "auto_merged" in body, \
+        "skill must state async completions surface as RECONCILE auto_merged"
+    # Read the counters TOGETHER; do not report blocked from merged=0 alone.
+    assert "together" in lower, \
+        "skill must instruct reading the merge counters together"
+
+
+def test_ship_tick_skill_carries_merge_signal_guidance():
+    """The /tick skill embeds the factual merge-signal interpretation guidance so
+    the executor never misreads merged=0 as a stuck loop."""
+    _assert_merge_signal_guidance(_read_text(_TICK_SKILL))
+
+
+def test_ship_start_skill_carries_merge_signal_guidance():
+    """The /start skill embeds the SAME factual merge-signal interpretation
+    guidance (the drain-loop reads the same counters each tick)."""
+    _assert_merge_signal_guidance(_read_text(_START_SKILL))
+
+
+def test_merge_signal_guidance_is_factual_not_a_stop_mandate():
+    """The merge-signal guidance is factual observability only — it introduces no
+    stop/limit behavior. It must NOT tell the executor to stop/halt/pause the loop
+    because of the merge counters (that would contradict the operator-in-control
+    config-is-the-bound guidance)."""
+    for path in (_START_SKILL, _TICK_SKILL):
+        body = _read_text(path)
+        # The guidance section names status.py's open_loop_prs as the per-PR view.
+        assert "open_loop_prs" in body, (
+            path, "skill must point to status.py's open_loop_prs per-PR posture")
+        # It does not turn a merge counter into a stop trigger.
+        lower = body.lower()
+        assert "stop the loop because" not in lower, (path,)
+        assert "halt the loop because" not in lower, (path,)
 
 
 # --------------------------------------------------------------------------

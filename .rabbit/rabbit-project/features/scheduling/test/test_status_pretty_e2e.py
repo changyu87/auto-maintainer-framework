@@ -185,7 +185,8 @@ def test_status_data_has_every_field():
     data = _with_project_dir(project_dir, lambda: st.status_data(release_probe=lambda: None))
     for key in ("plugin_version", "disposition", "awaiting", "mode",
                 "budget", "work_items", "work_orders", "execution_plan",
-                "handoffs", "reported", "route", "runtime_dir"):
+                "handoffs", "reported", "route", "runtime_dir",
+                "open_loop_prs"):
         assert key in data, (key, sorted(data))
     # Nested shapes.
     for bkey in ("spent", "ceiling", "window", "paused"):
