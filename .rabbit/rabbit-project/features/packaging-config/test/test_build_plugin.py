@@ -560,14 +560,13 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.36.0, operator-in-control asset-refresh): version bumped to 0.36.0
-# in BOTH plugin.json and marketplace.json, and the two are consistent. v0.36.0
-# re-ships scheduling 0.51.0's start+tick skills (the "config is the bound"
-# operator-in-control guidance) and adds the same principle to the shipped
-# SessionStart persona hook. ASSET-REFRESH: no _LIBS change and no shipped
-# default-config CONTENT change (schema unchanged).
+# Release (v0.37.0, merge-signal observability asset-refresh): version bumped to
+# 0.37.0 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.37.0 re-ships scheduling 0.52.0's status.py (open-loop-PR probe) + the two
+# updated start+tick skills (merge-signal interpretation guidance). ASSET-REFRESH:
+# no _LIBS change and no shipped default-config CONTENT change (schema unchanged).
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_36_0_and_consistent():
+def test_version_bumped_to_0_37_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -579,10 +578,10 @@ def test_version_bumped_to_0_36_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.36.0", \
-            f"plugin.json version must be 0.36.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.36.0", \
-            "marketplace.json plugin entry version must be 0.36.0"
+        assert pdata.get("version") == "0.37.0", \
+            f"plugin.json version must be 0.37.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.37.0", \
+            "marketplace.json plugin entry version must be 0.37.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -1861,7 +1860,7 @@ def test_shipped_run_tick_imports_observability_from_lib_alone():
 # (heartbeat.interval_minutes, read via start.py --print-interval) rather than a
 # hardcoded cadence.
 # ---------------------------------------------------------------------------
-def test_shipped_start_skill_is_v0_5_0_clear_only_executor_config_interval():
+def test_shipped_start_skill_is_v0_6_0_clear_only_executor_config_interval():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1871,8 +1870,8 @@ def test_shipped_start_skill_is_v0_5_0_clear_only_executor_config_interval():
         assert os.path.isfile(sk), "skills/start/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.5.0\n" in body, \
-            "shipped start skill frontmatter version must be 0.5.0"
+        assert "\nversion: 0.6.0\n" in body, \
+            "shipped start skill frontmatter version must be 0.6.0"
         assert "--clear-only" in body, \
             "shipped start skill must reference the --clear-only latch-clear flag"
         assert "/auto-maintainer:tick" in body, \
@@ -1897,7 +1896,7 @@ def test_shipped_start_skill_is_v0_5_0_clear_only_executor_config_interval():
 # and `prompt_path`, and it does NOT reference the old dispatch-result.json
 # marshalling path.
 # ---------------------------------------------------------------------------
-def test_shipped_tick_skill_is_v0_8_0_file_referenced_dispatch():
+def test_shipped_tick_skill_is_v0_9_0_file_referenced_dispatch():
     out_root = _build_into_temp()
     try:
         sk = os.path.join(
@@ -1907,8 +1906,8 @@ def test_shipped_tick_skill_is_v0_8_0_file_referenced_dispatch():
         assert os.path.isfile(sk), "skills/tick/SKILL.md must ship"
         with open(sk, encoding="utf-8") as fh:
             body = fh.read()
-        assert "\nversion: 0.8.0\n" in body, \
-            "shipped tick skill frontmatter version must be 0.8.0 " \
+        assert "\nversion: 0.9.0\n" in body, \
+            "shipped tick skill frontmatter version must be 0.9.0 " \
             "(#304 file-referenced dispatch prompts documented)"
         assert "run_tick.py --resume" in body, \
             "shipped tick skill must reference run_tick.py --resume"
@@ -2750,6 +2749,71 @@ def test_committed_status_carries_v0_35_1_config_presence_warning():
             os.path.join(out_root, "plugins", "auto-maintainer",
                          "lib", "status.py")
         )
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Release v0.37.0 (merge-signal observability wave) deploy confirmation: the
+# whole point of this release is that the committed (shipped) lib/status.py
+# carries scheduling 0.52.0's injectable, tolerant open-loop-PR probe
+# (DEFAULT_OPEN_PR_SOURCE; status_data() gains open_loop_prs of
+# {number, auto_merge_enabled, merge_state} dicts and render_status shows each
+# loop PR's auto-merge posture — pending/off + merge_state, or "open loop PRs:
+# none") AND the shipped start/tick skills carry the merge-signal interpretation
+# guidance (merged counts in-tick merges only; merged=0 with
+# auto_merge_enabled>0 is pending async auto-merge, NOT blocked; real blocks are
+# integrate_errored/reconcile_errors). Assert BOTH the committed tree (the bytes
+# an installed plugin runs) and the freshly built tree (the build re-normalizes /
+# re-collects identically).
+# ---------------------------------------------------------------------------
+def test_committed_status_and_skills_carry_v0_37_0_merge_signal():
+    def _assert_status_probe(st):
+        assert os.path.isfile(st), f"lib/status.py must ship at {st}"
+        with open(st, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "def DEFAULT_OPEN_PR_SOURCE(" in body, \
+            "status must carry the v0.37.0 DEFAULT_OPEN_PR_SOURCE probe"
+        assert "open_loop_prs" in body, \
+            "status_data must surface open_loop_prs"
+        assert "auto_merge_enabled" in body, \
+            "status open_loop_prs entries must carry auto_merge_enabled"
+        assert "merge_state" in body, \
+            "status open_loop_prs entries must carry merge_state"
+        assert "open loop PRs: none" in body, \
+            "render_status must show 'open loop PRs: none' when the list is empty"
+
+    def _assert_skill_merge_signal(sk):
+        assert os.path.isfile(sk), f"SKILL.md must ship at {sk}"
+        with open(sk, encoding="utf-8") as fh:
+            body = fh.read()
+        assert "Reading the merge signals" in body, \
+            f"{sk} must carry the merge-signal interpretation guidance heading"
+        assert "auto_merge_enabled" in body, \
+            f"{sk} must explain merged=0 with auto_merge_enabled>0 is pending"
+        assert "integrate_errored" in body and "reconcile_errors" in body, \
+            f"{sk} must name integrate_errored/reconcile_errors as real blocks"
+
+    # committed tree — the bytes an installed plugin runs
+    committed_lib = os.path.join(
+        _REPO_ROOT, "plugins", "auto-maintainer", "lib", "status.py")
+    _assert_status_probe(committed_lib)
+    for name in ("start", "tick"):
+        _assert_skill_merge_signal(os.path.join(
+            _REPO_ROOT, "plugins", "auto-maintainer",
+            "skills", name, "SKILL.md",
+        ))
+
+    # freshly built tree — the build re-normalizes/re-collects identically
+    out_root = _build_into_temp()
+    try:
+        _assert_status_probe(os.path.join(
+            out_root, "plugins", "auto-maintainer", "lib", "status.py"))
+        for name in ("start", "tick"):
+            _assert_skill_merge_signal(os.path.join(
+                out_root, "plugins", "auto-maintainer",
+                "skills", name, "SKILL.md",
+            ))
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
