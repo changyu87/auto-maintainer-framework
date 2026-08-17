@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.27
+version: 0.7.28
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -260,6 +260,21 @@ session. ASSET-REFRESH release: re-collects the two updated skills from `ship/`
 and re-emits the persona hook; no `_LIBS` change, no `default-config/` CONTENT
 change (schema unchanged), no shipped-agent change. No build change beyond
 `_PLUGIN_VERSION → 0.36.0`.
+
+**Plugin minor v0.37.0** — re-ship the merge-signal observability wave
+(scheduling 0.52.0): `lib/status.py` gains an injectable, tolerant open-loop-PR
+probe so `status_data().open_loop_prs` (`[{number, auto_merge_enabled,
+merge_state}]`) and `render_status` show each loop PR's auto-merge posture
+(`pending`/`off` + `merge_state`, or `open loop PRs: none`) — making
+pending-vs-blocked visible at a glance; and the shipped `skills/start/SKILL.md`
+(v0.6.0) + `skills/tick/SKILL.md` (v0.9.0) now carry merge-signal interpretation
+guidance (`merged` counts in-tick merges only; `merged=0` with
+`auto_merge_enabled>0` is pending async auto-merge, NOT blocked; real blocks are
+`integrate_errored`/`reconcile_errors`; async completions surface as RECONCILE
+`auto_merged`). ASSET-REFRESH release: re-normalizes `lib/status.py` and
+re-collects the two updated skills from `ship/`; no `_LIBS` change, no
+`default-config/` CONTENT change (schema unchanged), no shipped-agent change. No
+build change beyond `_PLUGIN_VERSION → 0.37.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
