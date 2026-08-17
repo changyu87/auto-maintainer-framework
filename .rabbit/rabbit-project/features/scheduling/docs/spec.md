@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.51.0
+version: 0.52.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -270,6 +270,24 @@ components (the two skills + the tick-runner entrypoint) live under the feature'
        fields; the `--line` legacy one-liner is unchanged. This only SURFACES the
        fallback — it does NOT change `load_config`'s silent-fallback behavior. The
        **status SKILL is UNCHANGED** (relays `render_status` verbatim).
+     - **Open loop PRs (`open_loop_prs`) — pending-vs-blocked at a glance.**
+       status surfaces the loop's OWN open PRs and their merge posture so a human
+       (or the executor) can tell a PR that is *pending auto-merge* (waiting on
+       CI/mergeability) from one that is genuinely stuck — the exact confusion
+       behind a live "nothing is merging" misread. status.py adds an INJECTABLE,
+       TOLERANT open-PR probe (`DEFAULT_OPEN_PR_SOURCE`, overridable via a
+       `status_data` param so tests stub it with no network; production shells
+       `gh pr list --repo <project repo> --label auto-maintainer --state open
+       --json number,mergeStateStatus,autoMergeRequest`, reusing status's existing
+       project-repo resolution). `status_data()` exposes `open_loop_prs` — a list
+       of `{number, auto_merge_enabled, merge_state}`. The probe is TOLERANT: any
+       failure (no `gh` / no network / parse error) yields `open_loop_prs=[]` and
+       NEVER crashes status (same tolerance as the release probe).
+       `render_status` shows, per PR, `PR #<n> auto-merge pending (<merge_state>)`
+       when auto-merge is enabled (or `PR #<n> auto-merge off (<merge_state>)`
+       when not), and a quiet `open loop PRs: none` when the list is empty.
+       `--json` emits the field; `--line` is unchanged. The **status SKILL is
+       UNCHANGED** (relays `render_status` verbatim).
      - **`route`** — the ACTIVE route resolved the SAME way `run_tick` hands it
        to `build_loop` (shipped `default-config/route.json` fresh, else the
        embedded `DEFAULT_ROUTE`, then the project-local `route.json` override),
@@ -460,6 +478,30 @@ this operating guidance for the executor:
 
 This keeps the operator in control of scope and cost while ensuring the executor
 does not silently substitute its own limits for the configured ones.
+
+## Reading the merge signals (start + tick guidance) — `merged=0` is not "blocked"
+
+The `/auto-maintainer:start` and `/auto-maintainer:tick` skills carry guidance so
+the executor never misreads a paused/async auto-merge as a stuck loop (a live
+executor once read `merged=0 auto_merge_enabled=2` and wrongly reported "nothing
+is merging" — in fact one PR had already auto-merged between ticks and the other
+was auto-merge-enabled waiting on a still-running CI check):
+
+- **`merged` counts only IN-TICK merges.** When INTEGRATE enables GitHub
+  auto-merge on a PR, GitHub lands it **asynchronously** once CI + mergeability
+  settle — so the enabling tick shows `merged=0`. That is NORMAL, not a block.
+- **`merged=0` with `auto_merge_enabled>0` means "N PRs are pending GitHub
+  auto-merge" (CI/mergeability in flight), NOT "merges are blocked."** The async
+  completion surfaces on a LATER tick as RECONCILE `auto_merged` (reported once).
+- **A real merge problem is `integrate_errored>0` or `reconcile_errors>0`** (or a
+  PR RECONCILE reports as stuck CONFLICTING) — NEVER `merged=0` alone.
+- The executor MUST read `merged` / `auto_merge_enabled` / `auto_merged` /
+  `integrate_errored` / `reconcile_errors` TOGETHER, and must not report "nothing
+  is merging / merges blocked" from `merged=0` by itself. `status.py`'s
+  `open_loop_prs` (above) shows the same pending-vs-blocked posture per PR.
+
+This is factual observability interpretation only — it introduces no stop/limit
+behavior and changes none of the trace/tick_end counters.
 
 ## What you'll see (installed plugin)
 

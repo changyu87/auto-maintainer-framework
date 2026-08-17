@@ -1,0 +1,4 @@
+{
+  "test/test_scheduling_e2e.py::test_start_print_interval_emits_default_three": true,
+  "test/test_scheduling_e2e.py::test_start_heartbeat_interval_helper_reads_config": true
+}
