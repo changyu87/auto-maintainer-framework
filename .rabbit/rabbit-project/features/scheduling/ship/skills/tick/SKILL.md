@@ -1,7 +1,7 @@
 ---
 name: tick
 description: Run EXACTLY ONE auto-maintainer tick, including any subagent (agent-state) dispatches. Use this whenever the user runs /auto-maintainer:tick, asks to run/execute a single tick or step the maintainer loop once, or when the recurring heartbeat prompt asks for a tick. It drives the deterministic tick-runner and, whenever the runner pauses at an agent-state, dispatches the requested subagent(s) — pointing each one at the invocation-envelope file the runner names (prompt_path) and passing its description and (when present) isolation — and resumes, reporting the dispatched subagents' token usage, until the tick reaches its terminal. It runs one tick and STOPS: a `refire` final signal (actionable work remains) is REPORTED but does NOT auto-loop into another tick. Continuous back-to-back draining is /auto-maintainer:start's job, not this skill's.
-version: 0.8.0
+version: 0.9.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when Claude Code can dispatch subagents from within a script (removing the need for a session-mediated executor), or when the tick CLI's --step/--resume protocol reaches a breaking major version.
 ---
@@ -103,6 +103,32 @@ describes, not to add limits of your own on top:
   observation to the operator, who bounds the loop via `/auto-maintainer:configure`
   or halts it via `/auto-maintainer:stop`. That keeps them in control rather than
   the executor silently self-limiting or silently pressing on.
+
+## Reading the merge signals: `merged=0` is not "blocked"
+
+These counters are factual observability, not a control signal — reading them
+correctly keeps you from misreporting a healthy loop as a stuck one. A live
+executor once saw `merged=0 auto_merge_enabled=2` and wrongly announced "nothing
+is merging"; in fact one PR had already auto-merged between ticks and the other
+was auto-merge-enabled, waiting on a still-running CI check.
+
+- **`merged` counts only IN-TICK merges.** When INTEGRATE enables GitHub
+  auto-merge on a PR, GitHub lands it ASYNCHRONOUSLY once CI + mergeability
+  settle — so the enabling tick shows `merged=0`. That is NORMAL, not a block.
+- **`merged=0` with `auto_merge_enabled`>0 means N PRs are PENDING GitHub
+  auto-merge** (CI/mergeability in flight), NOT that merges are blocked. The
+  async completion surfaces on a LATER tick as RECONCILE `auto_merged` (reported
+  once).
+- **A REAL merge problem is `integrate_errored`>0 or `reconcile_errors`>0** (or a
+  PR that RECONCILE reports as CONFLICTING) — never `merged=0` alone.
+- **Read the counters TOGETHER.** Read `merged` / `auto_merge_enabled` /
+  `auto_merged` / `integrate_errored` / `reconcile_errors` together, and do NOT
+  report "nothing is merging / merges blocked" from `merged=0` by itself.
+  `/auto-maintainer:status`'s `open_loop_prs` shows the same pending-vs-blocked
+  posture per PR, so consult it when a PR seems stuck.
+
+This is interpretation guidance only: it introduces no stop/limit behavior and
+changes none of the trace/tick_end counters or the spend-metering steps.
 
 ## Steps
 
