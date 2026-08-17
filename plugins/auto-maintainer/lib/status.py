@@ -17,8 +17,10 @@ started" view: disposition IDLE, work_items 0.
 
 It also exposes a machine-first ``status_data()`` -> dict of EVERY surfaced
 field (``plugin_version``, ``disposition``, ``awaiting``, ``mode``, the budget
-window, the four read-product counts, ``reported``, the active ``route``, and
-``runtime_dir``) and a DERIVED human view ``render_status(data)`` (philosophy
+window, the four read-product counts, ``reported``, the active ``route``,
+``runtime_dir``, and ``open_loop_prs`` — the loop's own open PRs + their merge
+posture via an injectable tolerant probe) and a DERIVED human view
+``render_status(data)`` (philosophy
 §1: the pretty view is produced FROM the machine artifact, never authored
 alongside it). The CLI prints the human view by default, ``--json`` prints
 ``status_data()`` as JSON, and ``--line`` prints the retained byte-identical
@@ -27,7 +29,7 @@ legacy ``status_line()`` for back-compat + machine parsing.
 scheduling CONSUMES run_tick + lifecycle-dispositions UNCHANGED; it never edits
 or forks them.
 
-Version: 0.3.0
+Version: 0.4.0
 Owner: changyu87
 Deprecation criterion: Superseded when scheduling moves to a different clock
   source (e.g. a native plugin cron API) or when the control surface is replaced.
@@ -152,6 +154,36 @@ def _normalize_version(v):
     return v[1:] if v.startswith("v") else v
 
 
+# The label the loop stamps on its OWN PRs (mirrors verify-integrate's
+# LOOP_PR_LABEL); the open-PR probe filters by it so status surfaces only the
+# loop's PRs, never unrelated human PRs.
+_LOOP_PR_LABEL = "auto-maintainer"
+
+
+def DEFAULT_OPEN_PR_SOURCE():
+    """Resolve the loop's OWN open PRs and their merge posture from the project
+    repo via ``gh`` (script-tier — spec-rules §1; no AI). Shells
+    ``gh pr list --label auto-maintainer --state open --json
+    number,mergeStateStatus,autoMergeRequest`` (``gh`` resolves the project
+    default repo, the SAME way status's other ``gh`` reads do) and returns a list
+    of ``{number, auto_merge_enabled, merge_state}`` dicts: ``auto_merge_enabled``
+    is True iff the PR carries a non-null ``autoMergeRequest``; ``merge_state`` is
+    the raw ``mergeStateStatus``. Raises on any ``gh`` failure — ``status_data``
+    catches it into an empty ``open_loop_prs`` so the probe NEVER crashes status.
+    """
+    out = _run_gh(["pr", "list", "--label", _LOOP_PR_LABEL, "--state", "open",
+                   "--json", "number,mergeStateStatus,autoMergeRequest"])
+    prs = json.loads(out) if out else []
+    return [
+        {
+            "number": pr.get("number"),
+            "auto_merge_enabled": pr.get("autoMergeRequest") is not None,
+            "merge_state": pr.get("mergeStateStatus"),
+        }
+        for pr in prs
+    ]
+
+
 def DEFAULT_RELEASE_PROBE():
     """Resolve the latest PUBLISHED plugin version from the fixed distribution
     repo via ``gh`` (script-tier — spec-rules §1; no AI). Prefers the latest
@@ -223,7 +255,7 @@ def _local_config_present(config_path):
     return isinstance(data, dict) and len(data) > 0
 
 
-def status_data(release_probe=None):
+def status_data(release_probe=None, open_pr_source=None):
     """The machine-first status: a dict of EVERY surfaced field (philosophy §1).
 
     Reads the SAME real on-disk state ``status_line`` reads (the disposition
@@ -277,6 +309,18 @@ def status_data(release_probe=None):
         release_check_error = str(exc) or type(exc).__name__
     update_available = _update_available(latest_version, plugin_version)
 
+    # Open loop PRs: the INJECTABLE, TOLERANT probe surfaces the loop's own open
+    # PRs + their merge posture so a reader tells a PR PENDING auto-merge (waiting
+    # on CI/mergeability) from one genuinely stuck. ANY failure (no gh / no
+    # network / parse error) yields open_loop_prs=[] and NEVER crashes status
+    # (same tolerance as the release probe above).
+    if open_pr_source is None:
+        open_pr_source = DEFAULT_OPEN_PR_SOURCE
+    try:
+        open_loop_prs = open_pr_source()
+    except Exception:  # tolerant: any failure -> empty list, no crash
+        open_loop_prs = []
+
     return {
         "plugin_version": plugin_version,
         "latest_version": latest_version,
@@ -318,6 +362,7 @@ def status_data(release_probe=None):
         "runtime_dir": runtime_dir,
         "config_path": config_path,
         "local_config_present": local_config_present,
+        "open_loop_prs": open_loop_prs,
     }
 
 
@@ -403,7 +448,25 @@ def render_status(data):
             f"+ aggressive auto-merge; start from the workspace dir or run "
             f"/auto-maintainer:configure")
 
-    lines = [header, rule, f"  {release_line}", f"  {config_line}", ""]
+    # Open loop PRs: a per-PR pending-vs-off posture line (so a merged=0 tick with
+    # auto-merge enabled reads as PENDING, not blocked), or a quiet 'none' when the
+    # list is empty. ASCII only (coding-rules §5). Derived from open_loop_prs.
+    open_prs = data.get("open_loop_prs") or []
+    if open_prs:
+        pr_lines = []
+        for pr in open_prs:
+            n = pr.get("number")
+            ms = pr.get("merge_state")
+            if pr.get("auto_merge_enabled"):
+                pr_lines.append(f"  PR #{n} auto-merge pending ({ms})")
+            else:
+                pr_lines.append(f"  PR #{n} auto-merge off ({ms})")
+    else:
+        pr_lines = ["  open loop PRs: none"]
+
+    lines = [header, rule, f"  {release_line}", f"  {config_line}"]
+    lines.extend(pr_lines)
+    lines.append("")
     for label, value in rows:
         lines.append(f"  {label.ljust(label_w)}  {value}")
 

@@ -1,5 +1,33 @@
 # Changelog — packaging-config
 
+## 0.37.0 — re-ship merge-signal observability wave; release v0.37.0
+
+- **Release v0.37.0 (minor — ASSET-REFRESH):** `_PLUGIN_VERSION` 0.36.0 -> 0.37.0;
+  committed plugin tree regenerated so the shipped status lib + skills carry
+  scheduling 0.52.0's merge-signal observability:
+  - `lib/status.py` — re-normalized to carry the injectable, tolerant
+    open-loop-PR probe (`DEFAULT_OPEN_PR_SOURCE`): `status_data().open_loop_prs`
+    surfaces `[{number, auto_merge_enabled, merge_state}]` and `render_status`
+    shows each loop PR's auto-merge posture (`pending`/`off` + `merge_state`, or
+    `open loop PRs: none`), making pending-vs-blocked visible at a glance.
+  - `skills/start/SKILL.md` (v0.6.0) and `skills/tick/SKILL.md` (v0.9.0) —
+    re-collected from `ship/`, now carrying the merge-signal interpretation
+    guidance: `merged` counts in-tick merges only; `merged=0` with
+    `auto_merge_enabled>0` is pending async auto-merge, NOT blocked; real blocks
+    are `integrate_errored`/`reconcile_errors`; async completions surface as
+    RECONCILE `auto_merged`.
+- **No `_LIBS` change** — asset-refresh only; the committed `lib/status.py`
+  re-normalizes from source but `_LIBS`/`_NORMALIZED_LIBS` are unchanged. No
+  shipped `default-config/` CONTENT change (schema unchanged); no shipped-agent
+  change; `run_tick.py`/`work_intake.py` byte-identical to 0.36.0.
+- Version-assertion test advanced to 0.37.0; an e2e test added asserting the
+  committed + freshly built `lib/status.py` carries the open-loop-PR probe and the
+  shipped start/tick skills carry the merge-signal interpretation guidance; the two
+  skill-version assertions advanced (start 0.5.0 -> 0.6.0, tick 0.8.0 -> 0.9.0);
+  `test/release_lib_baseline.json` re-anchored (version -> 0.37.0, fresh
+  `lib_digest`); the housekeep doc baseline re-anchored to the grown spec
+  (506 -> 521).
+
 ## 0.36.0 — re-ship operator-in-control "config is the bound" guidance; release v0.36.0
 
 - **Release v0.36.0 (minor — ASSET-REFRESH):** `_PLUGIN_VERSION` 0.35.1 -> 0.36.0;

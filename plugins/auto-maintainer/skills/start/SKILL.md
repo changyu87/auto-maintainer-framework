@@ -1,7 +1,7 @@
 ---
 name: start
 description: Start (or resume) the auto-maintainer's in-session tick loop and OWN the drain-loop. Use this whenever the user runs /auto-maintainer:start, or asks to start, launch, run, kick off, restart, or resume the maintainer loop / heartbeat / background ticking — including resuming after a prior /auto-maintainer:stop. It clears a latched STOPPED disposition, then drives ticks through the /auto-maintainer:tick executor: it runs the first tick and, whenever a completed tick's final signal is `refire` (actionable work remains), fires another tick immediately, repeating until a non-refire signal (idle/halt/break) so the backlog drains promptly. It then schedules a recurring prompt-heartbeat at the configured interval (heartbeat.interval_minutes, default 3) whose prompt runs that SAME drain-loop each interval; a latched ABORTED fault is refused, not cleared.
-version: 0.5.0
+version: 0.6.0
 owner: rabbit-workflow team
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API) or when the route becomes config-driven via the /auto-maintainer:route CLI (Phase 4).
 ---
@@ -63,6 +63,34 @@ its own for the ones the operator chose.
   (budget exhaustion, a backoff/park deferral, or a latched `STOPPED` from
   `/auto-maintainer:stop`). It adds no discretionary token/tick/issue-count cap of
   its own.
+
+## Reading the merge signals: `merged=0` is not "blocked"
+
+While the drain-loop runs, read each tick's merge counters as factual
+observability, not a control signal — reading them correctly keeps you from
+misreporting a healthy loop as a stuck one. A live executor once saw
+`merged=0 auto_merge_enabled=2` and wrongly announced "nothing is merging"; in
+fact one PR had already auto-merged between ticks and the other was
+auto-merge-enabled, waiting on a still-running CI check.
+
+- **`merged` counts only IN-TICK merges.** When INTEGRATE enables GitHub
+  auto-merge on a PR, GitHub lands it ASYNCHRONOUSLY once CI + mergeability
+  settle — so the enabling tick shows `merged=0`. That is NORMAL, not a block.
+- **`merged=0` with `auto_merge_enabled`>0 means N PRs are PENDING GitHub
+  auto-merge** (CI/mergeability in flight), NOT that merges are blocked. The
+  async completion surfaces on a LATER tick as RECONCILE `auto_merged` (reported
+  once).
+- **A REAL merge problem is `integrate_errored`>0 or `reconcile_errors`>0** (or a
+  PR that RECONCILE reports as CONFLICTING) — never `merged=0` alone.
+- **Read the counters TOGETHER.** Read `merged` / `auto_merge_enabled` /
+  `auto_merged` / `integrate_errored` / `reconcile_errors` together, and do NOT
+  report "nothing is merging / merges blocked" from `merged=0` by itself.
+  `/auto-maintainer:status`'s `open_loop_prs` shows the same pending-vs-blocked
+  posture per PR, so consult it when a PR seems stuck.
+
+This is interpretation guidance only: it introduces no stop/limit behavior and
+changes none of the trace/tick_end counters, and it does not alter the drain-loop
+stop conditions above.
 
 ## Why the first tick clears the latch first
 
