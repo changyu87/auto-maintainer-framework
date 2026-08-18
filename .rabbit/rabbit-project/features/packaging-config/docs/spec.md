@@ -1,6 +1,6 @@
 ---
 feature: packaging-config
-version: 0.7.28
+version: 0.7.29
 owner: changyu87
 deprecation_criterion: Superseded when the framework adopts a different distribution channel than a self-hosted Claude Code plugin marketplace, or when later slices fold this into a full configure/run UX feature.
 ---
@@ -275,6 +275,20 @@ guidance (`merged` counts in-tick merges only; `merged=0` with
 re-collects the two updated skills from `ship/`; no `_LIBS` change, no
 `default-config/` CONTENT change (schema unchanged), no shipped-agent change. No
 build change beyond `_PLUGIN_VERSION → 0.37.0`.
+
+**Plugin minor v0.38.0** — DROP REVIEW from the shipped default route
+(scheduling 0.53.0). The shipped `default-config/route.json` SOURCE
+(`plugin_assets/default-config/route.json`) is edited to remove the advisory
+REVIEW state — `states` no longer lists `REVIEW`; `VERIFY OK → GATE` directly;
+the `REVIEW OK → GATE` and `REVIEW EMPTY → PERSIST` edges are gone — because a
+REVIEW-in-route loop with `work_own_filings` on self-feeds (REVIEW files ~one
+finding per loop-authored PR that re-enters as the next tick's backlog) and does
+not converge. Data-ready: GATE reads `verdicts`/`gate_results` and INTEGRATE
+reads ONLY `verdicts`, so `VERIFY → GATE` needs no `review_findings`. The shipped
+`default-config/adapter-map.json` still MAPS the REVIEW port (unused), so a
+project `route.json` override can re-add REVIEW. This is a `default-config/route`
+CONTENT change only — no lib change, no `config.json` change, no shipped-agent
+change. No build change beyond `_PLUGIN_VERSION → 0.38.0`.
 
 ## Slice 2 — ship the loop core (the `ship/` collection convention)
 
