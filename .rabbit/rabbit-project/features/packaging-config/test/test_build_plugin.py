@@ -560,13 +560,14 @@ def test_ship_collection_start_stop_skills_present():
 
 
 # ---------------------------------------------------------------------------
-# Release (v0.37.0, merge-signal observability asset-refresh): version bumped to
-# 0.37.0 in BOTH plugin.json and marketplace.json, and the two are consistent.
-# v0.37.0 re-ships scheduling 0.52.0's status.py (open-loop-PR probe) + the two
-# updated start+tick skills (merge-signal interpretation guidance). ASSET-REFRESH:
-# no _LIBS change and no shipped default-config CONTENT change (schema unchanged).
+# Release (v0.38.0, DROP-REVIEW default-config route change): version bumped to
+# 0.38.0 in BOTH plugin.json and marketplace.json, and the two are consistent.
+# v0.38.0 removes the advisory REVIEW state from the shipped default-config
+# route.json (VERIFY OK -> GATE directly). default-config route CONTENT change
+# only: no _LIBS change (lib digest byte-identical), no config.json change, no
+# shipped-agent change.
 # ---------------------------------------------------------------------------
-def test_version_bumped_to_0_37_0_and_consistent():
+def test_version_bumped_to_0_38_0_and_consistent():
     out_root = _build_into_temp()
     try:
         pj = os.path.join(
@@ -578,10 +579,10 @@ def test_version_bumped_to_0_37_0_and_consistent():
             pdata = json.load(fh)
         with open(mk, encoding="utf-8") as fh:
             mdata = json.load(fh)
-        assert pdata.get("version") == "0.37.0", \
-            f"plugin.json version must be 0.37.0, got {pdata.get('version')!r}"
-        assert mdata["plugins"][0].get("version") == "0.37.0", \
-            "marketplace.json plugin entry version must be 0.37.0"
+        assert pdata.get("version") == "0.38.0", \
+            f"plugin.json version must be 0.38.0, got {pdata.get('version')!r}"
+        assert mdata["plugins"][0].get("version") == "0.38.0", \
+            "marketplace.json plugin entry version must be 0.38.0"
         assert pdata["version"] == mdata["plugins"][0]["version"], \
             "plugin.json and marketplace.json versions must be consistent"
     finally:
@@ -2361,9 +2362,12 @@ def test_ship_collection_route_and_adapter_map_skills_present():
 
 # ---------------------------------------------------------------------------
 # Minor (v0.5.0, #211 aggressive default): the plugin ships a default-config/
-# dir with the aggressive seed assets (config.json mode=auto-merge, the full
-# acting route incl. REVIEW, the agent-wired adapter-map) that start.py seeds
-# into a fresh install's .auto-maintainer/ — the plug-and-play aggressive default.
+# dir with the aggressive seed assets (config.json mode=auto-merge, the acting
+# route, the agent-wired adapter-map) that start.py seeds into a fresh install's
+# .auto-maintainer/ — the plug-and-play aggressive default. As of v0.38.0 the
+# shipped default route DROPS the advisory REVIEW state (VERIFY OK -> GATE), but
+# the adapter-map still MAPS the REVIEW port (unused) so a project route.json
+# override can re-add REVIEW.
 # ---------------------------------------------------------------------------
 def test_default_config_seed_assets_shipped():
     out_root = _build_into_temp()
@@ -2377,12 +2381,14 @@ def test_default_config_seed_assets_shipped():
         assert cfg["mode"] == "auto-merge", "seed config.json mode must be auto-merge"
         with open(os.path.join(dc, "route.json"), encoding="utf-8") as fh:
             route = json.load(fh)
-        assert "REVIEW" in route["states"], "seed route must include the REVIEW gate"
+        assert "REVIEW" not in route["states"], \
+            "seed route must DROP the advisory REVIEW state (v0.38.0)"
         with open(os.path.join(dc, "adapter-map.json"), encoding="utf-8") as fh:
             amap = json.load(fh)
         agents = [k for k, v in amap.items() if isinstance(v, dict)]
         assert "IMPLEMENT" in agents and "TRIAGE" in agents and "REVIEW" in agents, \
-            "seed adapter-map must wire TRIAGE/IMPLEMENT/REVIEW to agents"
+            "seed adapter-map must still MAP the REVIEW port (unused) so a " \
+            "project route override can re-add REVIEW"
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
 
@@ -3766,7 +3772,7 @@ def test_committed_tree_has_no_self_deploy_action_or_knob():
 #     execution_plan.ordered, reads execution_plan, and declares NO harness
 #     isolation (#335);
 #   - the acting route is PULL -> TRIAGE -> PRIORITIZE -> IMPLEMENT -> VERIFY ->
-#     REVIEW -> INTEGRATE.
+#     GATE -> INTEGRATE (v0.38.0 drops the advisory REVIEW state).
 # ---------------------------------------------------------------------------
 def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
     import subprocess
@@ -3795,18 +3801,22 @@ def test_default_pipeline_wires_prioritize_and_build_loop_resolves():
         assert edge[("PRIORITIZE", "EMPTY")] == "VERIFY", \
             "PRIORITIZE EMPTY must route to VERIFY"
         assert edge[("IMPLEMENT", "OK")] == "VERIFY"
-        assert edge[("VERIFY", "OK")] == "REVIEW"
-        # V2 GATE: the acting chain now runs REVIEW -> GATE -> INTEGRATE, with
-        # the cumulative regression gate between the advisory review and the
-        # merge. REVIEW EMPTY -> PERSIST and INTEGRATE OK -> CLEANUP unchanged.
+        # v0.38.0: the advisory REVIEW state is DROPPED from the shipped default
+        # route — VERIFY OK routes DIRECTLY to the cumulative GATE.
+        assert edge[("VERIFY", "OK")] == "GATE", \
+            "VERIFY OK must route DIRECTLY to GATE (v0.38.0 drops REVIEW)"
+        assert "REVIEW" not in route["states"], \
+            "default route must DROP the advisory REVIEW state (v0.38.0)"
+        assert ("REVIEW", "OK") not in edge, \
+            "the REVIEW OK -> GATE edge must be gone (v0.38.0)"
+        assert ("REVIEW", "EMPTY") not in edge, \
+            "the REVIEW EMPTY -> PERSIST edge must be gone (v0.38.0)"
         assert "GATE" in route["states"], \
             "default route must include the V2 GATE state"
-        assert edge[("REVIEW", "OK")] == "GATE", \
-            "REVIEW OK must route to GATE (V2 cumulative gate)"
         assert edge[("GATE", "OK")] == "INTEGRATE", \
             "GATE OK must route to INTEGRATE"
-        assert edge[("REVIEW", "EMPTY")] == "PERSIST", \
-            "REVIEW EMPTY must route to PERSIST (unchanged)"
+        assert edge[("VERIFY", "EMPTY")] == "PERSIST", \
+            "VERIFY EMPTY must route to PERSIST (unchanged)"
         assert edge[("INTEGRATE", "OK")] == "CLEANUP", \
             "INTEGRATE OK must route to CLEANUP (unchanged)"
 
@@ -3998,3 +4008,76 @@ def test_committed_default_config_wires_reconcile():
         "committed route RECONCILE OK must route to PULL"
     assert amap.get("RECONCILE") == "run_tick:make_reconcile", \
         "committed adapter-map must wire RECONCILE to run_tick:make_reconcile"
+
+
+# ---------------------------------------------------------------------------
+# Release v0.38.0 (DROP REVIEW), COMMITTED-tree deploy confirmation: the
+# committed default-config route.json — the seed bytes a GitHub clone installs —
+# must DROP the advisory REVIEW state and route VERIFY OK -> GATE directly, while
+# the adapter-map still MAPS the REVIEW port (unused) so a project route override
+# can re-add REVIEW. Guards against a src edit that never reached the committed
+# tree. E2E: the committed route also validates + resolves through the committed
+# plugin's own lib/ (self-contained) REVIEW-less.
+# ---------------------------------------------------------------------------
+def test_committed_default_config_drops_review():
+    import subprocess
+
+    plugin = os.path.join(_REPO_ROOT, "plugins", "auto-maintainer")
+    dc = os.path.join(plugin, "default-config")
+    lib = os.path.join(plugin, "lib")
+    with open(os.path.join(dc, "route.json"), encoding="utf-8") as fh:
+        route = json.load(fh)
+    with open(os.path.join(dc, "adapter-map.json"), encoding="utf-8") as fh:
+        amap = json.load(fh)
+
+    assert "REVIEW" not in route["states"], \
+        "committed default route must DROP the advisory REVIEW state (v0.38.0)"
+    edge = {(e["state"], e["signal"]): e["next"] for e in route["edges"]}
+    assert edge[("VERIFY", "OK")] == "GATE", \
+        "committed route VERIFY OK must route DIRECTLY to GATE (v0.38.0)"
+    assert ("REVIEW", "OK") not in edge, \
+        "committed route REVIEW OK -> GATE edge must be gone (v0.38.0)"
+    assert ("REVIEW", "EMPTY") not in edge, \
+        "committed route REVIEW EMPTY -> PERSIST edge must be gone (v0.38.0)"
+    # the adapter-map STILL maps the REVIEW port (unused) for route overrides.
+    assert "REVIEW" in amap, \
+        "committed adapter-map must still MAP the REVIEW port (unused, v0.38.0)"
+
+    # E2E: the committed route validates + resolves through the committed
+    # plugin's own lib/ (self-contained) with REVIEW dropped and no WiringError.
+    script = (
+        "import sys, os, json, tempfile, shutil\n"
+        f"sys.path.insert(0, {lib!r})\n"
+        "import fsm_contracts as fc\n"
+        f"route = json.load(open({os.path.join(dc, 'route.json')!r}))\n"
+        "res = fc.validate_route(route)\n"
+        "assert res.passed, res.messages\n"
+        "import adapter_wiring as aw, run_tick as rt\n"
+        "proj = tempfile.mkdtemp(prefix='pkgcfg-noreview-')\n"
+        "amdir = os.path.join(proj, '.auto-maintainer')\n"
+        "os.makedirs(amdir, exist_ok=True)\n"
+        f"shutil.copy({os.path.join(dc, 'route.json')!r}, "
+        "os.path.join(amdir, 'route.json'))\n"
+        f"shutil.copy({os.path.join(dc, 'adapter-map.json')!r}, "
+        "os.path.join(amdir, 'adapter-map.json'))\n"
+        "runtime = {'project_dir': proj, 'runtime_dir': amdir, "
+        "'source': None, 'now': None, 'governance': {'mode': 'dry-run'}}\n"
+        "try:\n"
+        "    _route, states = aw.build_loop(rt.DEFAULT_ROUTE, "
+        "rt.DEFAULT_ADAPTER_MAP, runtime, 'GUARD', rt._INITIAL_SLOTS)\n"
+        "finally:\n"
+        "    shutil.rmtree(proj, ignore_errors=True)\n"
+        "assert 'REVIEW' not in states, 'REVIEW must NOT resolve (dropped)'\n"
+        "assert 'GATE' in states, 'GATE must resolve'\n"
+        "print('NOREVIEW_OK')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, (
+        "committed REVIEW-less default-config route failed validation / "
+        f"build_loop:\nstdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    assert "NOREVIEW_OK" in proc.stdout, \
+        f"REVIEW-less wiring did not resolve cleanly: {proc.stdout}"
