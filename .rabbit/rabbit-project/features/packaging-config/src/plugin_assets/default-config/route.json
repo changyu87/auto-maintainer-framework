@@ -9,7 +9,6 @@
     "PRIORITIZE",
     "IMPLEMENT",
     "VERIFY",
-    "REVIEW",
     "GATE",
     "INTEGRATE",
     "CLEANUP",
@@ -87,7 +86,7 @@
     {
       "state": "VERIFY",
       "signal": "OK",
-      "next": "REVIEW"
+      "next": "GATE"
     },
     {
       "state": "VERIFY",
@@ -128,16 +127,6 @@
       "state": "EXIT",
       "signal": "halt",
       "next": "DONE"
-    },
-    {
-      "state": "REVIEW",
-      "signal": "OK",
-      "next": "GATE"
-    },
-    {
-      "state": "REVIEW",
-      "signal": "EMPTY",
-      "next": "PERSIST"
     },
     {
       "state": "GATE",

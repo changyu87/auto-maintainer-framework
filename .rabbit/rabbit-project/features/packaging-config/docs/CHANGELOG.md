@@ -1,5 +1,31 @@
 # Changelog — packaging-config
 
+## 0.38.0 — drop REVIEW from the shipped default route; release v0.38.0
+
+- **Release v0.38.0 (minor — default-config route CONTENT change):**
+  `_PLUGIN_VERSION` 0.37.0 -> 0.38.0; committed plugin tree regenerated so the
+  shipped `default-config/route.json` DROPS the advisory REVIEW state:
+  - `src/plugin_assets/default-config/route.json` — `states` no longer lists
+    `REVIEW`; the `VERIFY OK -> REVIEW` edge is repointed to `VERIFY OK -> GATE`
+    (VERIFY routes directly to the cumulative GATE); the `REVIEW OK -> GATE` and
+    `REVIEW EMPTY -> PERSIST` edges are removed. A REVIEW-in-route loop with
+    `work_own_filings` on self-feeds (REVIEW files ~one finding per loop-authored
+    PR that re-enters as the next tick's backlog) and does not converge.
+    Data-ready: GATE reads `verdicts`/`gate_results` and INTEGRATE reads ONLY
+    `verdicts`, so `VERIFY -> GATE` needs no `review_findings`.
+  - `default-config/adapter-map.json` — UNCHANGED: it still MAPS the REVIEW port
+    (unused), so a project `route.json` override can re-add REVIEW.
+- **No `_LIBS` change, no `config.json` change, no shipped-agent change** — a
+  `default-config/route` CONTENT change only; the committed `lib/` digest is
+  byte-identical, so `_NORMALIZED_LIBS`/`_LIBS` are untouched.
+- Version-assertion test advanced to 0.38.0; the pipeline-wiring test updated to
+  assert `VERIFY OK -> GATE` and no REVIEW state/edges; the seed-assets test
+  updated (REVIEW dropped from route, still mapped in adapter-map); a
+  committed-tree e2e added asserting the REVIEW-less route validates + resolves
+  through the plugin's own `lib/`; `test/release_lib_baseline.json` re-anchored
+  (version -> 0.38.0, lib_digest unchanged); the housekeep doc baseline
+  re-anchored to the grown spec (521 -> 535).
+
 ## 0.37.0 — re-ship merge-signal observability wave; release v0.37.0
 
 - **Release v0.37.0 (minor — ASSET-REFRESH):** `_PLUGIN_VERSION` 0.36.0 -> 0.37.0;
