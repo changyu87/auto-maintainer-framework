@@ -1,6 +1,6 @@
 ---
 feature: scheduling
-version: 0.52.0
+version: 0.53.0
 owner: changyu87
 deprecation_criterion: Superseded when scheduling moves to a different clock source (e.g. a native plugin cron API), or when the route-config CLI (Phase 4) supersedes hand-edited route.json.
 ---
@@ -42,9 +42,27 @@ GUARD → DRAIN → PULL → PERSIST → EXIT
   the cumulative regression GATE §2.2 [v2]); `make_integrate` binds the loaded
   governance `mode` so INTEGRATE merges only at `auto-merge` (and consumes
   `safety_governance.permits` + `merge_guardrails`). The full close-the-loop
-  route `… IMPLEMENT → VERIFY → REVIEW → GATE → INTEGRATE → CLEANUP → PERSIST →
+  route `… IMPLEMENT → VERIFY → GATE → INTEGRATE → CLEANUP → PERSIST →
   EXIT` therefore wires with NO code change (all ports pre-mapped) — a pure
   `route.json` edit.
+- **REVIEW is NOT in the default route (dropped).** The advisory REVIEW state
+  (reviews the loop's own PRs, files `review_findings`) is **omitted from
+  `DEFAULT_ROUTE`**: with `work_own_filings` on, REVIEW files ~one finding per
+  loop-authored PR that re-enters as the next tick's backlog, so a REVIEW-in-route
+  loop self-feeds and does not converge. The default happy path is therefore
+  `… IMPLEMENT → VERIFY → GATE → INTEGRATE → CLEANUP → PERSIST → EXIT`
+  (`VERIFY OK → GATE` directly; the `REVIEW OK → GATE` / `REVIEW EMPTY → PERSIST`
+  edges are gone). This is DATA-READY — GATE reads `verdicts`/`gate_results` and
+  INTEGRATE reads ONLY `verdicts`; neither consumes REVIEW's `review_findings`
+  (REVIEW was advisory + decoupled, flushed out-of-band via REPORT) — so
+  `VERIFY → GATE` resolves + validates through `build_loop` with no
+  data-readiness break. REVIEW is only dropped from the default route's
+  states+edges; its machinery stays available-but-unused (`make_review`,
+  `DEFAULT_ADAPTER_MAP['REVIEW']`, `AGENT_PORT_TEMPLATES['REVIEW']`,
+  `REVIEW_FINDINGS_KEY` + the seeded-empty `review_findings` + REPORT flush all
+  intact), so a project MAY re-add REVIEW to its own `route.json` override. The
+  shipped `default-config/route.json` (packaging-config) is updated in lockstep
+  (a separate packaging release) so the shipped default matches `DEFAULT_ROUTE`.
 - **Override by config, not code:** a project-local
   `${CLAUDE_PROJECT_DIR}/.auto-maintainer/route.json` (and optional
   `adapters.json`) overrides the defaults. Inserting the act-side chain

@@ -1,5 +1,30 @@
 # scheduling — Changelog
 
+## feature 0.53.0 — 2026-08-18
+
+- **REVIEW dropped from the default happy path.** The shipped close-the-loop
+  route no longer runs the advisory REVIEW state: the default happy path is now
+  `… IMPLEMENT → VERIFY → GATE → INTEGRATE → CLEANUP → PERSIST → EXIT`
+  (`VERIFY OK → GATE` directly; the `REVIEW OK → GATE` / `REVIEW EMPTY → PERSIST`
+  edges are gone). With `work_own_filings` on, a REVIEW-in-route loop files
+  ~one finding per loop-authored PR that re-enters as the next tick's backlog,
+  so it self-feeds and never converges — hence the drop.
+- **Data-ready, no code change.** The drop is DATA-READY: GATE reads
+  `verdicts`/`gate_results` and INTEGRATE reads ONLY `verdicts`, so neither
+  consumes REVIEW's `review_findings`. `VERIFY → GATE` resolves + validates via
+  `adapter_wiring.build_loop` with no data-readiness break — the scheduling code
+  already supported the REVIEW-less route, so this cycle adds the guarantee e2e
+  tests + doc/version updates rather than editing `run_tick.py`.
+- **REVIEW stays available-but-unused.** REVIEW is dropped ONLY from the default
+  route's states+edges; its machinery — `make_review`,
+  `DEFAULT_ADAPTER_MAP['REVIEW']`, `AGENT_PORT_TEMPLATES['REVIEW']`,
+  `REVIEW_FINDINGS_KEY` + the seeded-empty `review_findings` + the REPORT flush —
+  is UNCHANGED, so a project MAY re-add REVIEW via its own `route.json` override.
+- **Scope note.** The embedded conservative `DEFAULT_ROUTE` (the read-and-idle
+  spine) already omits REVIEW; the shipped `default-config/route.json`
+  (packaging-config) is updated in lockstep by a separate packaging release so
+  the shipped default matches. feature.json advanced **0.52.0 → 0.53.0**.
+
 ## feature 0.52.0 — 2026-08-16
 
 - **"Reading the merge signals" observability guidance in the `/start` and

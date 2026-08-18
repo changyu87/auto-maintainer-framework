@@ -688,6 +688,152 @@ def test_gate_route_runs_end_to_end_auto_merge():
     assert result.final_state == "DONE", result.path
 
 
+# --------------------------------------------------------------------------
+# REVIEW dropped from the default happy path (scheduling 0.53.0). The shipped
+# default close-the-loop route no longer runs the advisory REVIEW state: with
+# work_own_filings on, REVIEW files ~one finding per loop-authored PR that
+# re-enters as the next tick's backlog, so a REVIEW-in-route loop self-feeds and
+# never converges. The default happy path is therefore
+# ... IMPLEMENT -> VERIFY -> GATE -> INTEGRATE -> CLEANUP -> PERSIST -> EXIT
+# (VERIFY OK -> GATE directly; the REVIEW OK -> GATE / REVIEW EMPTY -> PERSIST
+# edges are gone). It is DATA-READY: GATE reads verdicts/gate_results, INTEGRATE
+# reads ONLY verdicts, and neither consumes REVIEW's review_findings — so
+# VERIFY -> GATE resolves + validates through build_loop with no data-readiness
+# break. REVIEW is dropped ONLY from the route's states+edges; its machinery
+# (make_review, DEFAULT_ADAPTER_MAP['REVIEW'], AGENT_PORT_TEMPLATES['REVIEW'],
+# review_findings) stays available-but-unused so a project MAY re-add REVIEW via
+# its own route.json override.
+# --------------------------------------------------------------------------
+
+# The close-the-loop route WITHOUT REVIEW: VERIFY OK -> GATE directly (the
+# REVIEW state + its edges are gone; VERIFY EMPTY -> PERSIST is kept).
+_REVIEWLESS_GATE_ROUTE = {
+    "schema_version": "1.0.0",
+    "states": ["GUARD", "DRAIN", "PULL", "TRIAGE", "PRIORITIZE", "IMPLEMENT",
+               "VERIFY", "GATE", "INTEGRATE", "CLEANUP", "PERSIST",
+               "EXIT", "DONE", "HALTED"],
+    "edges": [
+        {"state": "GUARD", "signal": "OK", "next": "DRAIN"},
+        {"state": "GUARD", "signal": "HALT_REQUESTED", "next": "HALTED"},
+        {"state": "GUARD", "signal": "RESTART_REQUIRED", "next": "HALTED"},
+        {"state": "DRAIN", "signal": "OK", "next": "PULL"},
+        {"state": "PULL", "signal": "OK", "next": "TRIAGE"},
+        {"state": "PULL", "signal": "EMPTY", "next": "TRIAGE"},
+        {"state": "TRIAGE", "signal": "OK", "next": "PRIORITIZE"},
+        {"state": "TRIAGE", "signal": "EMPTY", "next": "PRIORITIZE"},
+        {"state": "PRIORITIZE", "signal": "OK", "next": "IMPLEMENT"},
+        {"state": "PRIORITIZE", "signal": "EMPTY", "next": "IMPLEMENT"},
+        {"state": "IMPLEMENT", "signal": "OK", "next": "VERIFY"},
+        {"state": "IMPLEMENT", "signal": "BLOCKED", "next": "VERIFY"},
+        {"state": "VERIFY", "signal": "OK", "next": "GATE"},
+        {"state": "VERIFY", "signal": "EMPTY", "next": "PERSIST"},
+        {"state": "GATE", "signal": "OK", "next": "INTEGRATE"},
+        {"state": "INTEGRATE", "signal": "OK", "next": "CLEANUP"},
+        {"state": "CLEANUP", "signal": "OK", "next": "PERSIST"},
+        {"state": "PERSIST", "signal": "OK", "next": "EXIT"},
+        {"state": "EXIT", "signal": "refire", "next": "DONE"},
+        {"state": "EXIT", "signal": "idle", "next": "DONE"},
+        {"state": "EXIT", "signal": "break", "next": "DONE"},
+        {"state": "EXIT", "signal": "halt", "next": "DONE"},
+    ],
+    "terminal": ["DONE", "HALTED"],
+}
+
+
+def _verify_ok_edge_next(route):
+    for e in route["edges"]:
+        if e["state"] == "VERIFY" and e["signal"] == "OK":
+            return e["next"]
+    return None
+
+
+def test_reviewless_route_resolves_and_validates_via_build_loop():
+    """The REVIEW-less close-the-loop route (VERIFY OK -> GATE) resolves +
+    validates via build_loop with NO WiringError: REVIEW is ABSENT from the
+    resolved states, VERIFY's OK edge goes straight to GATE, and data-readiness
+    holds (GATE reads verdicts/gate_results, INTEGRATE reads only verdicts —
+    neither needs REVIEW's review_findings)."""
+    runtime = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
+               "source": None, "now": None,
+               "governance": {"mode": "propose"}}
+    route, states = aw.build_loop(
+        _REVIEWLESS_GATE_ROUTE, rt.DEFAULT_ADAPTER_MAP, runtime,
+        start="GUARD", initial=rt._INITIAL_SLOTS)
+    assert "REVIEW" not in states, list(states)
+    assert _verify_ok_edge_next(_REVIEWLESS_GATE_ROUTE) == "GATE"
+    for s in ("VERIFY", "GATE", "INTEGRATE", "CLEANUP"):
+        assert s in states, (s, list(states))
+        assert not isinstance(states[s][1], aw.AgentState), s
+
+
+def test_reviewless_route_runs_end_to_end_auto_merge():
+    """The REVIEW-less route runs end-to-end at auto-merge: the happy path walks
+    IMPLEMENT -> VERIFY -> GATE -> INTEGRATE (REVIEW never runs), gate_results is
+    persisted, review_findings is NEVER written (REVIEW omitted), and the ok PR
+    still merges (INTEGRATE reads only verdicts)."""
+    project_dir = tempfile.mkdtemp(prefix="sched-reviewless-")
+    _write_project_route(project_dir, _REVIEWLESS_GATE_ROUTE)
+    _write_governance(project_dir, "auto-merge")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    journal_path = os.path.join(runtime_dir, "tick-journal.jsonl")
+
+    merge_calls = []
+    restore = _patch_vi_seams(None, merge_calls=merge_calls)
+    try:
+        result = rt.run_tick(project_dir=project_dir, runtime_dir=runtime_dir,
+                             state_path=state_path, journal_path=journal_path,
+                             source=_stub_source(), return_run_result=True)
+    finally:
+        restore()
+    assert "REVIEW" not in result.path, result.path
+    vi_i = result.path.index("VERIFY")
+    assert result.path[vi_i + 1] == "GATE", result.path
+    gate_i = result.path.index("GATE")
+    assert result.path[gate_i + 1] == "INTEGRATE", result.path
+    assert result.final_state == "DONE", result.path
+    # The ok PR merged WITHOUT any REVIEW step.
+    assert merge_calls == ["acme/widget#42"], merge_calls
+    doc = ds.DurableState(state_path).load()
+    assert len(doc.get("integration_result", {}).get("merged", [])) == 1, doc
+    # A route omitting REVIEW never writes review_findings (the #64 seed only
+    # registers/writes the slot when REVIEW is routed).
+    assert doc.get("review_findings", []) == [], doc
+
+
+def test_reviewless_route_does_not_seed_review_findings():
+    """A route omitting REVIEW does NOT register/seed the review_findings slot
+    (skipped-state safety, #64): REVIEW is its only producer, so its absence
+    leaves the slot unregistered — and the terminal persists review_findings as
+    the EMPTY #64-correct value, never crashing."""
+    project_dir = tempfile.mkdtemp(prefix="sched-reviewless-seed-")
+    runtime_dir = os.path.join(project_dir, ".auto-maintainer")
+    os.makedirs(runtime_dir, exist_ok=True)
+    state_path = os.path.join(runtime_dir, "durable-state.json")
+    ds.DurableState(state_path).save(
+        {"schema_version": ds.SCHEMA_VERSION, "counter": 0})
+    ctx = rt._seed_context(state_path, "/tmp/j.jsonl", _REVIEWLESS_GATE_ROUTE)
+    assert "review_findings" not in ctx.registered_slots(), (
+        ctx.registered_slots())
+
+
+def test_review_port_remains_resolvable_for_route_override():
+    """REVIEW stays a resolvable mapped port even though the default happy path
+    drops it: DEFAULT_ADAPTER_MAP['REVIEW'] is still make_review, and a route
+    that DOES include REVIEW (a project override) still resolves + validates via
+    build_loop — so a project MAY re-add REVIEW to its own route.json."""
+    assert rt.DEFAULT_ADAPTER_MAP["REVIEW"] == "run_tick:make_review"
+    runtime = {"project_dir": "/tmp/x", "runtime_dir": "/tmp/x/runtime",
+               "source": None, "now": None,
+               "governance": {"mode": "propose"}}
+    # A REVIEW-carrying override still wires (available-but-unused machinery).
+    _, states = aw.build_loop(
+        _GATE_ROUTE, rt.DEFAULT_ADAPTER_MAP, runtime,
+        start="GUARD", initial=rt._INITIAL_SLOTS)
+    assert "REVIEW" in states, list(states)
+    assert not isinstance(states["REVIEW"][1], aw.AgentState), states["REVIEW"]
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
